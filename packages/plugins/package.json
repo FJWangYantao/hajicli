@@ -1,0 +1,20 @@
+{
+  "name": "@hajicli/plugins",
+  "version": "1.0.0",
+  "description": "API plugins and providers implementation for hajicli",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@hajicli/core": "workspace:*"
+  }
+}

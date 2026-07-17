@@ -1,0 +1,14 @@
+{
+  "name": "hajicli-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A lightweight terminal AI helper CLI tool",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
