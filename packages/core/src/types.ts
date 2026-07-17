@@ -1,7 +1,40 @@
 /**
+ * 表示工具调用详情的接口。
+ */
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+/**
+ * 表示大模型工具定义的接口。
+ */
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+/**
+ * 通用工具执行契约接口。
+ */
+export interface BaseTool {
+  name: string;
+  definition: ToolDefinition;
+  execute(args: Record<string, unknown>): Promise<string>;
+}
+
+/**
  * 聊天消息发送者的角色。
  */
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 /**
  * 表示聊天历史记录中消息的接口。
@@ -9,6 +42,8 @@ export type ChatRole = 'system' | 'user' | 'assistant';
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
 }
 
 /**
@@ -19,6 +54,16 @@ export interface CompletionOptions {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  tools?: ToolDefinition[];
+  onToolCall?: (toolCalls: ToolCall[]) => void;
+  /**
+   * 接收大模型流式或非流式输出中的思考过程（如推理内容）。
+   */
+  onReasoning?: (content: string) => void;
+  /**
+   * 接收大模型本次调用的 token 消耗统计。
+   */
+  onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
 }
 
 /**
@@ -57,4 +102,25 @@ export class ProviderError extends HajiError {
   constructor(message: string, public readonly provider: string, public readonly status?: number) {
     super(message, 'PROVIDER_ERROR');
     this.name = 'ProviderError';
+  }
 }
+
+/**
+ * 生成系统提示词的上下文。
+ */
+export interface PromptContext {
+  cwd: string;
+  os: string;
+  tools?: string[];
+  vars?: Record<string, string>;
+}
+
+/**
+ * 单个系统提示词分片。
+ */
+export interface SystemPromptPart {
+  id: string;
+  priority: number;
+  getContent(context: PromptContext): Promise<string> | string;
+}
+
