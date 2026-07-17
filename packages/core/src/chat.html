@@ -421,12 +421,6 @@
       <span class="logo">haji</span>
       <span class="badge">对话助理</span>
     </div>
-    <div class="nav-actions">
-      <!-- 动态添加 Trace 查看链接，默认为 http://localhost:3000 -->
-      <a href="http://localhost:3000" target="_blank" class="btn-secondary" id="traceBtn">
-        📊 观测 Trace 控制台
-      </a>
-    </div>
   </header>
 
   <!-- 对话主区域 -->
@@ -632,12 +626,6 @@
               else if (data.type === 'done') {
                 currentSessionId = data.sessionId;
                 sessionStatus.innerText = `Active: ${currentSessionId.slice(0, 8)}`;
-                
-                // 动态更新观测 Trace 链接为对应的会话
-                const traceBtn = document.getElementById('traceBtn');
-                if (traceBtn) {
-                  traceBtn.href = `http://localhost:3000/viewer?session=${currentSessionId}`;
-                }
               }
             } catch (err) {
               console.error('JSON 行解析出错:', err, line);
