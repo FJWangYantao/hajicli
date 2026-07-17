@@ -15,6 +15,15 @@ importers:
         specifier: ^5.3.3
         version: 5.9.3
 
+  packages/cli:
+    dependencies:
+      '@hajicli/core':
+        specifier: workspace:*
+        version: link:../core
+      '@hajicli/plugins':
+        specifier: workspace:*
+        version: link:../plugins
+
   packages/core: {}
 
   packages/plugins:

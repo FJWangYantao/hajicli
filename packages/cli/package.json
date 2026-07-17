@@ -1,0 +1,24 @@
+{
+  "name": "@hajicli/cli",
+  "version": "1.0.0",
+  "description": "Interactive CLI terminal frontend for hajicli",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "haji": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@hajicli/core": "workspace:*",
+    "@hajicli/plugins": "workspace:*"
+  }
+}
