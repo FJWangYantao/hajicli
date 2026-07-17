@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>haji 交互式对话中心</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #09090B;
+      --bg-input: #18181B;
+      --bg-card: #18181B;
+      --border-color: #27272A;
+      --text-main: #F4F4F5;
+      --text-muted: #A1A1AA;
+      --primary: #8B5CF6;
+      --primary-glow: rgba(139, 92, 246, 0.15);
+      --code-bg: #0C0C0E;
+      --accent-green: #10B981;
+      --accent-yellow: #F59E0B;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* 顶部导航栏 */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-color);
+      background-color: rgba(9, 9, 11, 0.8);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: 0.5px;
+      background: linear-gradient(135deg, #A78BFA, var(--primary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      padding: 2px 4px;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      padding: 2px 8px;
+      border-radius: 20px;
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn-secondary {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-main);
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-secondary:hover {
+      background-color: #27272A;
+      border-color: #3F3F46;
+    }
+
+    /* 对话容器区域 */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .chat-container {
+      width: 100%;
+      max-width: 768px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    /* 欢迎状态 */
+    .welcome-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      margin-top: 10vh;
+      text-align: center;
+      gap: 16px;
+    }
+
+    .welcome-icon {
+      font-size: 48px;
+      opacity: 0.85;
+      animation: breathe 3s infinite ease-in-out;
+    }
+
+    .welcome-title {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+    }
+
+    .welcome-subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      max-width: 420px;
+      line-height: 1.6;
+    }
+
+    /* 消息气泡 */
+    .message {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .message-role-user {
+      color: #A78BFA;
+    }
+
+    .message-role-assistant {
+      color: var(--text-main);
+    }
+
+    .message-body {
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    .message-body p {
+      margin-bottom: 12px;
+    }
+
+    .message-body p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* 代码块与行内代码 */
+    .message-body code {
+      font-family: 'Fira Code', monospace;
+      font-size: 13px;
+      background-color: rgba(255, 255, 255, 0.06);
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    .code-block-wrapper {
+      margin: 12px 0;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: hidden;
+      background-color: var(--code-bg);
+    }
+
+    .code-block-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 14px;
+      background-color: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--border-color);
+      font-size: 11px;
+      font-family: 'Fira Code', monospace;
+      color: var(--text-muted);
+    }
+
+    .code-block-wrapper pre {
+      padding: 14px;
+      overflow-x: auto;
+      margin: 0;
+    }
+
+    .code-block-wrapper pre code {
+      background-color: transparent;
+      padding: 0;
+      border-radius: 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #E6EDF3;
+      display: block;
+    }
+
+    /* 工具调用卡片 */
+    .tool-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 8px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .tool-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .tool-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 500;
+    }
+
+    .tool-status {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .tool-status-running {
+      color: var(--accent-yellow);
+      background-color: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    .tool-status-done {
+      color: var(--accent-green);
+      background-color: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    .tool-details {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding-top: 8px;
+    }
+
+    .tool-details pre {
+      font-family: 'Fira Code', monospace;
+      font-size: 12px;
+      background-color: var(--code-bg);
+      border: 1px solid var(--border-color);
+      padding: 8px;
+      border-radius: 4px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+
+    /* 输入区域 */
+    footer {
+      padding: 24px 20px;
+      display: flex;
+      justify-content: center;
+      background-color: var(--bg-main);
+      border-top: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .input-wrapper {
+      width: 100%;
+      max-width: 768px;
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .input-wrapper:focus-within {
+      border-color: #4F46E5;
+      box-shadow: 0 0 10px rgba(139, 92, 246, 0.15);
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 48px;
+      max-height: 200px;
+      background-color: transparent;
+      border: none;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      line-height: 1.6;
+    }
+
+    textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .input-hints {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .btn-send {
+      background-color: var(--primary);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background-color 0.2s;
+    }
+
+    .btn-send:hover:not(:disabled) {
+      background-color: #7C3AED;
+    }
+
+    .btn-send:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* 呼吸/淡入动画 */
+    @keyframes breathe {
+      0%, 100% { opacity: 0.6; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.05); }
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 自定义滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶部导航栏 -->
+  <header>
+    <div class="logo-container">
+      <span class="logo">haji</span>
+      <span class="badge">对话助理</span>
+    </div>
+    <div class="nav-actions">
+      <!-- 动态添加 Trace 查看链接，默认为 http://localhost:3000 -->
+      <a href="http://localhost:3000" target="_blank" class="btn-secondary" id="traceBtn">
+        📊 观测 Trace 控制台
+      </a>
+    </div>
+  </header>
+
+  <!-- 对话主区域 -->
+  <main id="mainContainer">
+    <div class="chat-container" id="chatContainer">
+      <!-- 初始欢迎界面 -->
+      <div class="welcome-state" id="welcomeState">
+        <div class="welcome-icon">👾</div>
+        <h2 class="welcome-title">你好，我是 haji</h2>
+        <p class="welcome-subtitle">
+          一个轻量级的极简 AI 对话助理。我已被授予运行 bash、查看和修改文件等能力。随时在下方输入指令开始协作。
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- 输入底部栏 -->
+  <footer>
+    <div class="input-wrapper">
+      <textarea id="userInput" placeholder="输入问题或系统指令... (Ctrl + Enter 发送)" autofocus></textarea>
+      <div class="input-actions">
+        <div class="input-hints">
+          当前会话: <span id="sessionStatus">新建会话</span>
+        </div>
+        <button id="sendBtn" class="btn-send">
+          发送 🚀
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    let currentSessionId = null;
+    let isGenerating = false;
+
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const chatContainer = document.getElementById('chatContainer');
+    const mainContainer = document.getElementById('mainContainer');
+    const welcomeState = document.getElementById('welcomeState');
+    const sessionStatus = document.getElementById('sessionStatus');
+
+    // 自动高度调整
+    userInput.addEventListener('input', () => {
+      userInput.style.height = 'auto';
+      userInput.style.height = `${userInput.scrollHeight}px`;
+    });
+
+    // 快捷键支持
+    userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    sendBtn.addEventListener('click', sendMessage);
+
+    // HTML 转义
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // 极简 Markdown 转换：代码块与换行
+    function formatText(text) {
+      const parts = text.split('```');
+      return parts.map((part, index) => {
+        if (index % 2 === 1) {
+          // 代码块处理
+          const firstLineBreak = part.indexOf('\n');
+          let lang = 'code';
+          let code = part;
+          if (firstLineBreak !== -1) {
+            lang = part.substring(0, firstLineBreak).trim() || 'code';
+            code = part.substring(firstLineBreak + 1);
+          }
+          return `
+            <div class="code-block-wrapper">
+              <div class="code-block-header">
+                <span>${escapeHtml(lang)}</span>
+              </div>
+              <pre><code>${escapeHtml(code)}</code></pre>
+            </div>
+          `;
+        } else {
+          // 普通文本，进行 HTML 转义并保留换行
+          return escapeHtml(part).replace(/\n/g, '<br>');
+        }
+      }).join('');
+    }
+
+    // 发送消息核心逻辑
+    async function sendMessage() {
+      const text = userInput.value.trim();
+      if (!text || isGenerating) return;
+
+      // 清理输入框
+      userInput.value = '';
+      userInput.style.height = 'auto';
+
+      // 隐藏欢迎状态
+      if (welcomeState) {
+        welcomeState.remove();
+      }
+
+      // 添加用户消息
+      appendUserMessage(text);
+      isGenerating = true;
+      sendBtn.disabled = true;
+
+      // 预先创建 Assistant 消息框以容纳流式输出
+      const assistantMessageEl = appendAssistantMessage();
+      const bodyEl = assistantMessageEl.querySelector('.message-body');
+      
+      let fullContent = '';
+      let activeToolCardMap = new Map();
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            message: text,
+            sessionId: currentSessionId
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`服务器响应异常: ${response.statusText}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // 保存未完整接收的一行
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              
+              if (data.type === 'text') {
+                fullContent += data.content;
+                bodyEl.innerHTML = formatText(fullContent);
+                scrollToBottom();
+              } 
+              else if (data.type === 'tool_start') {
+                // 收到工具调用开始，在消息框底部生成工具卡片
+                const cardId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                const cardHtml = `
+                  <div class="tool-card" id="${cardId}">
+                    <div class="tool-header" onclick="toggleToolDetails('${cardId}')">
+                      <div class="tool-info">
+                        <span>⚙️</span>
+                        <strong>${escapeHtml(data.name)}</strong>
+                      </div>
+                      <span class="tool-status tool-status-running">正在执行...</span>
+                    </div>
+                    <div class="tool-details">
+                      <div><strong>入参:</strong></div>
+                      <pre>${escapeHtml(JSON.stringify(data.arguments, null, 2))}</pre>
+                    </div>
+                  </div>
+                `;
+                assistantMessageEl.appendChild(createElementFromHtml(cardHtml));
+                activeToolCardMap.set(data.name, cardId);
+                scrollToBottom();
+              } 
+              else if (data.type === 'tool_end') {
+                // 收到工具调用结束，更新状态
+                const cardId = activeToolCardMap.get(data.name);
+                if (cardId) {
+                  const cardEl = document.getElementById(cardId);
+                  if (cardEl) {
+                    const statusEl = cardEl.querySelector('.tool-status');
+                    statusEl.className = 'tool-status tool-status-done';
+                    statusEl.innerText = `完成 (${data.duration ? data.duration + 'ms' : '已自动执行'})`;
+                    
+                    const detailsEl = cardEl.querySelector('.tool-details');
+                    detailsEl.appendChild(createElementFromHtml(`
+                      <div style="margin-top: 8px;"><strong>输出:</strong></div>
+                      <pre>${escapeHtml(data.output || '')}</pre>
+                    `));
+                  }
+                }
+                scrollToBottom();
+              } 
+              else if (data.type === 'done') {
+                currentSessionId = data.sessionId;
+                sessionStatus.innerText = `Active: ${currentSessionId.slice(0, 8)}`;
+                
+                // 动态更新观测 Trace 链接为对应的会话
+                const traceBtn = document.getElementById('traceBtn');
+                if (traceBtn) {
+                  traceBtn.href = `http://localhost:3000/viewer?session=${currentSessionId}`;
+                }
+              }
+            } catch (err) {
+              console.error('JSON 行解析出错:', err, line);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        bodyEl.innerHTML += `<div style="color: #EF4444; margin-top: 8px;">❌ 对话发生异常: ${escapeHtml(err.message)}</div>`;
+      } finally {
+        isGenerating = false;
+        sendBtn.disabled = false;
+        userInput.focus();
+      }
+    }
+
+    // 帮助函数：创建元素
+    function createElementFromHtml(htmlString) {
+      const div = document.createElement('div');
+      div.innerHTML = htmlString.trim();
+      return div.firstChild;
+    }
+
+    // 辅助函数：折叠与展开工具调用卡片详情
+    function toggleToolDetails(cardId) {
+      const cardEl = document.getElementById(cardId);
+      if (cardEl) {
+        const detailsEl = cardEl.querySelector('.tool-details');
+        const isCollapsed = window.getComputedStyle(detailsEl).display === 'none';
+        detailsEl.style.display = isCollapsed ? 'flex' : 'none';
+      }
+    }
+
+    function appendUserMessage(text) {
+      const messageHtml = `
+        <div class="message">
+          <div class="message-header message-role-user">👤 你</div>
+          <div class="message-body">${escapeHtml(text).replace(/\n/g, '<br>')}</div>
+        </div>
+      `;
+      chatContainer.appendChild(createElementFromHtml(messageHtml));
+      scrollToBottom();
+    }
+
+    function appendAssistantMessage() {
+      const messageHtml = `
+        <div class="message">
+          <div class="message-header message-role-assistant">🤖 haji</div>
+          <div class="message-body"></div>
+        </div>
+      `;
+      const el = createElementFromHtml(messageHtml);
+      chatContainer.appendChild(el);
+      scrollToBottom();
+      return el;
+    }
+
+    function scrollToBottom() {
+      mainContainer.scrollTo({
+        top: mainContainer.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  </script>
+</body>
+</html>
