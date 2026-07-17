@@ -419,7 +419,6 @@
   <header>
     <div class="logo-container">
       <span class="logo">haji</span>
-      <span class="badge">对话助理</span>
     </div>
   </header>
 
@@ -442,9 +441,7 @@
     <div class="input-wrapper">
       <textarea id="userInput" placeholder="输入问题或系统指令... (Ctrl + Enter 发送)" autofocus></textarea>
       <div class="input-actions">
-        <div class="input-hints">
-          当前会话: <span id="sessionStatus">新建会话</span>
-        </div>
+        <div></div>
         <button id="sendBtn" class="btn-send">
           发送 🚀
         </button>
@@ -461,7 +458,6 @@
     const chatContainer = document.getElementById('chatContainer');
     const mainContainer = document.getElementById('mainContainer');
     const welcomeState = document.getElementById('welcomeState');
-    const sessionStatus = document.getElementById('sessionStatus');
 
     // 自动高度调整
     userInput.addEventListener('input', () => {
@@ -625,7 +621,6 @@
               } 
               else if (data.type === 'done') {
                 currentSessionId = data.sessionId;
-                sessionStatus.innerText = `Active: ${currentSessionId.slice(0, 8)}`;
               }
             } catch (err) {
               console.error('JSON 行解析出错:', err, line);
