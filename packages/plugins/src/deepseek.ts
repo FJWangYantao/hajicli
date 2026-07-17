@@ -1,4 +1,4 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall } from '@hajicli/core';
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -27,7 +27,27 @@ export class DeepSeekProvider implements ModelProvider {
     if (data.error) {
       throw new ProviderError(data.error.message || 'API error', 'deepseek', response.status);
     }
-    return data.choices?.[0]?.message?.content || '';
+    
+    const choice = data.choices?.[0];
+    if (choice?.message?.tool_calls && options.onToolCall) {
+      options.onToolCall(choice.message.tool_calls);
+    }
+
+    // 捕获思考内容并分发
+    if (choice?.message?.reasoning_content && options.onReasoning) {
+      options.onReasoning(choice.message.reasoning_content);
+    }
+
+    // 捕获 Token 用量并分发
+    if (data.usage && options.onUsage) {
+      options.onUsage({
+        prompt_tokens: data.usage.prompt_tokens,
+        completion_tokens: data.usage.completion_tokens,
+        total_tokens: data.usage.total_tokens
+      });
+    }
+    
+    return choice?.message?.content || '';
   }
 
   async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
@@ -40,6 +60,7 @@ export class DeepSeekProvider implements ModelProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+    const accumulatedToolCalls: any[] = [];
 
     try {
       while (true) {
@@ -55,13 +76,53 @@ export class DeepSeekProvider implements ModelProvider {
           const trimmed = line.trim();
           if (!trimmed) continue;
           if (trimmed === 'data: [DONE]') {
-            return;
+            break;
           }
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.slice(6);
             try {
               const data = JSON.parse(dataStr);
-              const content = data.choices?.[0]?.delta?.content || '';
+              const choice = data.choices?.[0];
+              
+              // 收集流式工具调用
+              const deltaToolCalls = choice?.delta?.tool_calls;
+              if (deltaToolCalls) {
+                for (const dtc of deltaToolCalls) {
+                  const idx = dtc.index ?? 0;
+                  if (!accumulatedToolCalls[idx]) {
+                    accumulatedToolCalls[idx] = {
+                      id: dtc.id || '',
+                      type: dtc.type || 'function',
+                      function: {
+                        name: dtc.function?.name || '',
+                        arguments: dtc.function?.arguments || ''
+                      }
+                    };
+                  } else {
+                    if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
+                    if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
+                    if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                  }
+                }
+              }
+
+              // 收集流式思考过程内容
+              const reasoningContent = choice?.delta?.reasoning_content || '';
+              if (reasoningContent && options.onReasoning) {
+                options.onReasoning(reasoningContent);
+              }
+
+              // 收集流式 Token 用量
+              if (data.usage && options.onUsage) {
+                options.onUsage({
+                  prompt_tokens: data.usage.prompt_tokens,
+                  completion_tokens: data.usage.completion_tokens,
+                  total_tokens: data.usage.total_tokens
+                });
+              }
+
+              // 收集文本内容
+              const content = choice?.delta?.content || '';
               if (content) {
                 yield content;
               }
@@ -78,7 +139,45 @@ export class DeepSeekProvider implements ModelProvider {
         if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
           try {
             const data = JSON.parse(trimmed.slice(6));
-            const content = data.choices?.[0]?.delta?.content || '';
+            const choice = data.choices?.[0];
+            const content = choice?.delta?.content || '';
+            
+            const deltaToolCalls = choice?.delta?.tool_calls;
+            if (deltaToolCalls) {
+              for (const dtc of deltaToolCalls) {
+                const idx = dtc.index ?? 0;
+                if (!accumulatedToolCalls[idx]) {
+                  accumulatedToolCalls[idx] = {
+                    id: dtc.id || '',
+                    type: dtc.type || 'function',
+                    function: {
+                      name: dtc.function?.name || '',
+                      arguments: dtc.function?.arguments || ''
+                    }
+                  };
+                } else {
+                  if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
+                  if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
+                  if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                }
+              }
+            }
+            
+            // 收集流式思考过程内容
+            const reasoningContent = choice?.delta?.reasoning_content || '';
+            if (reasoningContent && options.onReasoning) {
+              options.onReasoning(reasoningContent);
+            }
+
+            // 收集流式 Token 用量
+            if (data.usage && options.onUsage) {
+              options.onUsage({
+                prompt_tokens: data.usage.prompt_tokens,
+                completion_tokens: data.usage.completion_tokens,
+                total_tokens: data.usage.total_tokens
+              });
+            }
+
             if (content) {
               yield content;
             }
@@ -87,6 +186,12 @@ export class DeepSeekProvider implements ModelProvider {
           }
         }
       }
+
+      // 如果收集到了工具调用，在结束前触发回调
+      const finalToolCalls = accumulatedToolCalls.filter(Boolean);
+      if (finalToolCalls.length > 0 && options.onToolCall) {
+        options.onToolCall(finalToolCalls as ToolCall[]);
+      }
     } finally {
       reader.releaseLock();
     }
@@ -94,16 +199,43 @@ export class DeepSeekProvider implements ModelProvider {
 
   private async request(messages: ChatMessage[], options: CompletionOptions): Promise<Response> {
     const url = `${this.baseUrl}/chat/completions`;
-    const payload = {
-      model: options.model || this.defaultModel,
-      messages: messages.map(msg => ({
+    
+    const requestMessages = messages.map(msg => {
+      const payloadMsg: any = {
         role: msg.role,
         content: msg.content
-      })),
+      };
+      if (msg.tool_calls) {
+        payloadMsg.tool_calls = msg.tool_calls.map(tc => ({
+          id: tc.id,
+          type: tc.type,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments
+          }
+        }));
+      }
+      if (msg.tool_call_id) {
+        payloadMsg.tool_call_id = msg.tool_call_id;
+      }
+      return payloadMsg;
+    });
+
+    const payload: any = {
+      model: options.model || this.defaultModel,
+      messages: requestMessages,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
       stream: options.stream ?? false
     };
+
+    if (payload.stream) {
+      payload.stream_options = { include_usage: true };
+    }
+
+    if (options.tools && options.tools.length > 0) {
+      payload.tools = options.tools;
+    }
 
     try {
       const response = await fetch(url, {
