@@ -1,0 +1,987 @@
+{
+  "id": "1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074",
+  "startTime": "2026-07-17T19:59:39.273Z",
+  "events": [
+    {
+      "type": "user_input",
+      "timestamp": "2026-07-17T19:59:42.854Z",
+      "content": "hi"
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:59:42.855Z",
+      "data": {
+        "id": "ef9b7970-4c88-404a-ad81-c96f16e13b34",
+        "timestamp": "2026-07-17T19:59:42.855Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 835,
+        "duration": 1085,
+        "speed": 80,
+        "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？",
+        "usage": {
+          "prompt_tokens": 1705,
+          "completion_tokens": 20,
+          "total_tokens": 1725
+        }
+      }
+    },
+    {
+      "type": "user_input",
+      "timestamp": "2026-07-17T19:59:58.941Z",
+      "content": "查看当前目录"
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:59:58.942Z",
+      "data": {
+        "id": "ead32af2-2c2f-41af-9fe4-1c183d61d298",
+        "timestamp": "2026-07-17T19:59:58.942Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 1051,
+        "duration": 1051,
+        "speed": 24.738344433872506,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "type": "function",
+            "function": {
+              "name": "global",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1732,
+          "completion_tokens": 26,
+          "total_tokens": 1758
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:59:59.998Z",
+      "data": {
+        "timestamp": "2026-07-17T19:59:59.998Z",
+        "toolCallId": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+        "name": "global",
+        "arguments": {},
+        "approved": true,
+        "output": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json",
+        "duration": 5
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:59:59.999Z",
+      "data": {
+        "id": "5ee964a2-77ec-4eb8-b09d-fab807f2a52f",
+        "timestamp": "2026-07-17T19:59:59.999Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 653,
+        "duration": 1674,
+        "speed": 145.93535749265428,
+        "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？",
+        "usage": {
+          "prompt_tokens": 2442,
+          "completion_tokens": 149,
+          "total_tokens": 2591
+        }
+      }
+    },
+    {
+      "type": "user_input",
+      "timestamp": "2026-07-17T20:00:50.831Z",
+      "content": "搜索今日新闻"
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T20:00:50.832Z",
+      "data": {
+        "id": "3ad8ab2c-56f0-4d55-83b4-86b5f03fd92d",
+        "timestamp": "2026-07-17T20:00:50.832Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 1478,
+        "duration": 1478,
+        "speed": 33.82949932341001,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2598,
+          "completion_tokens": 50,
+          "total_tokens": 2648
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T20:00:53.202Z",
+      "data": {
+        "timestamp": "2026-07-17T20:00:53.202Z",
+        "toolCallId": "call_00_Koq3S83WAhAhfbDADyRB8685",
+        "name": "websearch",
+        "arguments": {
+          "query": "今日新闻 2025年1月"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 870
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T20:00:53.203Z",
+      "data": {
+        "id": "aa102167-3415-45d0-bff0-2d69e5e28c83",
+        "timestamp": "2026-07-17T20:00:53.203Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 1058,
+        "duration": 1058,
+        "speed": 42.53308128544423,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"今日头条新闻\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2694,
+          "completion_tokens": 45,
+          "total_tokens": 2739
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T20:00:54.592Z",
+      "data": {
+        "timestamp": "2026-07-17T20:00:54.592Z",
+        "toolCallId": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+        "name": "websearch",
+        "arguments": {
+          "query": "今日头条新闻"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 330
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T20:00:54.592Z",
+      "data": {
+        "id": "6e9eabae-2d28-4f2e-b18a-d4e7c17b374a",
+        "timestamp": "2026-07-17T20:00:54.592Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 1127,
+        "duration": 1127,
+        "speed": 39.92901508429459,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_qJAlES576gX8hE7291SG4507",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"latest news today\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 2780,
+          "completion_tokens": 45,
+          "total_tokens": 2825
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T20:00:56.084Z",
+      "data": {
+        "timestamp": "2026-07-17T20:00:56.084Z",
+        "toolCallId": "call_00_qJAlES576gX8hE7291SG4507",
+        "name": "websearch",
+        "arguments": {
+          "query": "latest news today"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 364
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T20:00:56.084Z",
+      "data": {
+        "id": "b9f95376-1709-4e28-a1f0-addcecf91f55",
+        "timestamp": "2026-07-17T20:00:56.084Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "你好！我是 haji，你的轻量级 AI 编程助手。有什么需要帮忙的吗？"
+          },
+          {
+            "role": "user",
+            "content": "查看当前目录"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+                "type": "function",
+                "function": {
+                  "name": "global",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_FFGRnfHw5KZMGkJ83dEr8970",
+            "content": "[全局文件查找结果 - 共找到 47 个文件]\n.agents/AGENTS.md\n.gitignore\n.haji/traces/session_1f0e42e5-1d9b-484f-a3ab-2d05bf5d6074.json\n.haji/traces/session_23c41a9c-bf78-4196-9095-c81c135178dc.json\n.haji/traces/session_29d95920-4321-4ddf-8114-29f6bd27652b.json\n.haji/traces/session_3d7eba74-e43f-44da-a12f-316a3c3cf388.json\n.haji/traces/session_545b1b09-8df9-4529-9e6e-6b68f6230bc2.json\n.haji/traces/session_64fda54f-2ece-448d-9043-6b3e57e16244.json\n.haji/traces/session_7352470e-3c43-4bdf-9706-2870b8466f6a.json\n.haji/traces/session_757b2c58-3d92-4c28-921b-182bb4e9b0fe.json\n.haji/traces/session_799cdf1f-79fd-42cf-a1ba-2461ad584a91.json\n.haji/traces/session_7bc99a32-2b3c-4446-b40d-86c45042757b.json\npackage.json\npackages/cli/package.json\npackages/cli/src/index.ts\npackages/cli/tsconfig.json\npackages/cli/tsconfig.tsbuildinfo\npackages/core/package.json\npackages/core/src/chat.html\npackages/core/src/index.ts\npackages/core/src/observable-provider.ts\npackages/core/src/prompt-manager.ts\npackages/core/src/serve-chat.ts\npackages/core/src/serve-traces.ts\npackages/core/src/trace-logger.ts\npackages/core/src/trace-viewer.html\npackages/core/src/types.ts\npackages/core/tsconfig.json\npackages/core/tsconfig.tsbuildinfo\npackages/plugins/package.json\npackages/plugins/src/bash-tool.ts\npackages/plugins/src/deepseek.ts\npackages/plugins/src/edit-tool.ts\npackages/plugins/src/global-tool.ts\npackages/plugins/src/grep-tool.ts\npackages/plugins/src/index.ts\npackages/plugins/src/read-tool.ts\npackages/plugins/src/web-fetch-tool.ts\npackages/plugins/src/web-search-tool.ts\npackages/plugins/src/write-tool.ts\npackages/plugins/tsconfig.json\npackages/plugins/tsconfig.tsbuildinfo\npnpm-lock.yaml\npnpm-workspace.yaml\nscratch/start-chat.mjs\nscratch/test-deepseek.mjs\ntsconfig.json"
+          },
+          {
+            "role": "assistant",
+            "content": "当前目录是 `hajicli`，是一个 monorepo 项目，结构如下：\n\n**项目结构概览：**\n\n| 目录/文件 | 说明 |\n|---|---|\n| `packages/cli/` | CLI 命令行入口 |\n| `packages/core/` | 核心模块（聊天、追踪、提示管理） |\n| `packages/plugins/` | 插件工具集（bash、edit、read、write 等） |\n| `.haji/traces/` | 会话追踪记录 |\n| `scratch/` | 测试脚本 |\n| `pnpm-workspace.yaml` | pnpm 工作区配置 |\n\n需要进一步查看某个文件或目录吗？"
+          },
+          {
+            "role": "user",
+            "content": "搜索今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_Koq3S83WAhAhfbDADyRB8685",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日头条新闻\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_90e3IJrWRVbDg8qCsc1a5106",
+            "content": "[网络搜索结果 - 检索关键字 \"今日头条新闻\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_qJAlES576gX8hE7291SG4507",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_qJAlES576gX8hE7291SG4507",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？"
+          }
+        ],
+        "ttft": 835,
+        "duration": 1519,
+        "speed": 80.4093567251462,
+        "content": "抱歉，网络搜索功能目前似乎不可用，无法获取今日新闻。\n\n建议你直接访问以下网站查看新闻：\n- **国内**：新浪新闻、腾讯新闻、百度热搜\n- **国际**：Google News、BBC、Reuters\n\n有其他我能帮忙的吗？",
+        "usage": {
+          "prompt_tokens": 2866,
+          "completion_tokens": 55,
+          "total_tokens": 2921
+        }
+      }
+    }
+  ]
+}

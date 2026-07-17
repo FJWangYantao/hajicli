@@ -1,0 +1,740 @@
+{
+  "id": "64fda54f-2ece-448d-9043-6b3e57e16244",
+  "startTime": "2026-07-17T19:53:41.079Z",
+  "events": [
+    {
+      "type": "user_input",
+      "timestamp": "2026-07-17T19:53:41.079Z",
+      "content": "today news,answer by english"
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:53:41.079Z",
+      "data": {
+        "id": "f96e9056-a280-4917-a488-617e0d487f88",
+        "timestamp": "2026-07-17T19:53:41.079Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "today news,answer by english"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today top news 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "content": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today July 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"breaking news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "content": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+                }
+              },
+              {
+                "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "content": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "content": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams."
+          }
+        ],
+        "ttft": 1418,
+        "duration": 1418,
+        "speed": 33.850493653032444,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"today top news 2025\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1710,
+          "completion_tokens": 48,
+          "total_tokens": 1758
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:53:43.270Z",
+      "data": {
+        "timestamp": "2026-07-17T19:53:43.270Z",
+        "toolCallId": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+        "name": "websearch",
+        "arguments": {
+          "query": "today top news 2025"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 772
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:53:43.270Z",
+      "data": {
+        "id": "8070cb1a-4e2e-465d-b5bd-596179f26e39",
+        "timestamp": "2026-07-17T19:53:43.270Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "today news,answer by english"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today top news 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "content": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today July 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"breaking news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "content": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+                }
+              },
+              {
+                "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "content": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "content": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams."
+          }
+        ],
+        "ttft": 1198,
+        "duration": 1198,
+        "speed": 40.90150250417362,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"latest news today July 2025\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1802,
+          "completion_tokens": 49,
+          "total_tokens": 1851
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:53:44.778Z",
+      "data": {
+        "timestamp": "2026-07-17T19:53:44.778Z",
+        "toolCallId": "call_00_1viuqBAfM9nXLjHdom0X1592",
+        "name": "websearch",
+        "arguments": {
+          "query": "latest news today July 2025"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 310
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:53:44.778Z",
+      "data": {
+        "id": "c0827ff5-89df-4006-b018-c5293a58748b",
+        "timestamp": "2026-07-17T19:53:44.778Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "today news,answer by english"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today top news 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "content": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today July 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"breaking news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "content": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+                }
+              },
+              {
+                "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "content": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "content": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams."
+          }
+        ],
+        "ttft": 1188,
+        "duration": 1188,
+        "speed": 37.87878787878788,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"breaking news today\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1896,
+          "completion_tokens": 45,
+          "total_tokens": 1941
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:53:46.286Z",
+      "data": {
+        "timestamp": "2026-07-17T19:53:46.286Z",
+        "toolCallId": "call_00_iiv5E3Jq7deldxmxSKn55869",
+        "name": "websearch",
+        "arguments": {
+          "query": "breaking news today"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 320
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:53:46.286Z",
+      "data": {
+        "id": "7ffc36ee-d404-44b4-9393-b0150bf5b2f1",
+        "timestamp": "2026-07-17T19:53:46.286Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "today news,answer by english"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today top news 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "content": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today July 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"breaking news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "content": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+                }
+              },
+              {
+                "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "content": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "content": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams."
+          }
+        ],
+        "ttft": 1427,
+        "duration": 1427,
+        "speed": 62.36860546601261,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "type": "function",
+            "function": {
+              "name": "webfetch",
+              "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+            }
+          },
+          {
+            "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "type": "function",
+            "function": {
+              "name": "webfetch",
+              "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1982,
+          "completion_tokens": 89,
+          "total_tokens": 2071
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:53:48.393Z",
+      "data": {
+        "timestamp": "2026-07-17T19:53:48.393Z",
+        "toolCallId": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+        "name": "webfetch",
+        "arguments": {
+          "url": "https://news.ycombinator.com/"
+        },
+        "approved": true,
+        "output": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:",
+        "duration": 680
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:53:49.276Z",
+      "data": {
+        "timestamp": "2026-07-17T19:53:49.276Z",
+        "toolCallId": "call_01_LwZv4TRMstTxIElNpHMM8813",
+        "name": "webfetch",
+        "arguments": {
+          "url": "https://www.bbc.com/news"
+        },
+        "approved": true,
+        "output": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]",
+        "duration": 882
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:53:49.277Z",
+      "data": {
+        "id": "a3319f20-5193-42ee-841e-92d826323070",
+        "timestamp": "2026-07-17T19:53:49.277Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "today news,answer by english"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today top news 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_XrqlI5Q3NV8xQRSW8Ddm6194",
+            "content": "[网络搜索结果 - 检索关键字 \"today top news 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"latest news today July 2025\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_1viuqBAfM9nXLjHdom0X1592",
+            "content": "[网络搜索结果 - 检索关键字 \"latest news today July 2025\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"breaking news today\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_iiv5E3Jq7deldxmxSKn55869",
+            "content": "[网络搜索结果 - 检索关键字 \"breaking news today\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.ycombinator.com/\"}"
+                }
+              },
+              {
+                "id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://www.bbc.com/news\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_nPUEo6A0QdcFaz9aJREi6299",
+            "content": "[网页抓取成功 - 目标地址: https://news.ycombinator.com/]\n\nHacker News new | past | comments | ask | show | jobs | submit login 1. AWS: Inaccurate Estimated Billing Data – $1.7 billion 821 points by nprateem 6 hours ago | hide | 452&nbsp;comments 2. First atmosphere found on Earth-like planet in habitable zone of distant star ( bbc.com ) 244 points by neversaydie 5 hours ago | hide | 175&nbsp;comments 3. Learning a few things about running SQLite ( jvns.ca ) 56 points by surprisetalk 2 hours ago | hide | 8&nbsp;comments 4. Kimi K3, and what we can still learn from the pelican benchmark ( simonwillison.net ) 171 points by droidjj 5 hours ago | hide | 100&nbsp;comments 5. Frame – the first Linux Assembly X server ( isene.org ) 90 points by guybedo 4 hours ago | hide | 52&nbsp;comments 6. Mozilla: The state of open source AI ( stateofopensource.ai ) 286 points by rellem 5 hours ago | hide | 192&nbsp;comments 7. ICE Flight Monitor Interactive Dashboard ( humanrightsfirst.org ) 8 points by mooreds 53 minutes ago | hide | 1&nbsp;comment 8. Three ways people respond to a problem (other than solving it) ( improvesomething.today ) 141 points by surprisetalk 5 hours ago | hide | 68&nbsp;comments 9. A Road to Lisp: Which Lisp ( scotto.me ) 131 points by silcoon 5 hours ago | hide | 82&nbsp;comments 10. Frank Lloyd Wright&#x27;s First Home ( architecturaldigest.com ) 39 points by NaOH 3 hours ago | hide | 19&nbsp;comments 11. The Zilog Z80 has turned 50 ( goliath32.com ) 3 points by st_goliath 11 minutes ago | hide | discuss 12. AI Meets Cryptography 2: What AI Found in OpenVM&#x27;s ZkVM ( zksecurity.xyz ) 64 points by duha 5 hours ago | hide | discuss 13. Show HN: Watch bots interact with an SSH honeypot in real time ( honeypotlive.cc ) 107 points by tusksm 5 hours ago | hide | 42&nbsp;comments 14. Show HN: A zoomable timeline of 4M Wikipedia events ( diena.co ) 8 points by lortex 1 hour ago | hide | 2&nbsp;comments 15. More Bounce to the Ounce ( mceglowski.substack.com ) 75 points by pavel_lishin 6 hours ago | hide | 25&nbsp;comments 16. Show HN: Explore the Workspaces of Modern Creators ( workspaces.xyz ) 41 points by ryangilbert 4 hours ago | hide | 29&nbsp;comments 17. EEG shows brain can simultaneous encode two speech streams ( plos.org ) 234 points by giuliomagnifico 14 hours ago | hide | 152&nbsp;comments 18. MoonBASIC: A modern BASIC for building 2D and 3D games ( github.com/charmingblaze ) 10 points by klaussilveira 1 hour ago | hide | 2&nbsp;comments 19. Manufact (YC S25) Is Hiring a Senior infra engineer to build the MCP cloud ( ycombinator.com ) 6 hours ago | hide 20. Pebble Mega Update – July 2026 ( repebble.com ) 242 points by crazysaem 15 hours ago | hide | 157&nbsp;comments 21. Apple targets dozens of OpenAI employees with legal letters ( ft.com ) 315 points by merksittich 7 hours ago | hide | 259&nbsp;comments 22. Faster binary search: from compiled code to mechanical sympathy ( pythonspeed.com ) 46 points by enz 7 hours ago | hide | 11&nbsp;comments 23. Latent Space as a New Medium ( kevinkelly.substack.com ) 58 points by thm 6 hours ago | hide | 18&nbsp;comments 24. Short sellers notch $8.7B profit as SpaceX shares dip to IPO price ( reuters.com ) 102 points by 1vuio0pswjnm7 4 hours ago | hide | 72&nbsp;comments 25. SpaceX stock drops to a new low and loses $1T in value in a month ( businessinsider.com ) 35 points by 01-_- 1 hour ago | hide | 23&nbsp;comments 26. Camera Chase Vehicle ( transistor-man.com ) 171 points by geerlingguy 12 hours ago | hide | 18&nbsp;comments 27. Homomorphically encrypted CIFAR-10 inference in 200ms ( belfortlabs.cloud ) 16 points by j2kun 3 hours ago | hide | 14&nbsp;comments 28. VulnHunter: Capital One&#x27;s agentic AI code security tool ( capitalone.com ) 47 points by medina 7 hours ago | hide | 28&nbsp;comments 29. Decoy Font ( mixfont.com ) 676 points by ray__ 1 day ago | hide | 151&nbsp;comments 30. Kimi K3: Open Frontier Intelligence ( kimi.com ) 1962 points by vincent_s 1 day ago | hide | 1137&nbsp;comments More Consider applying for YC's Fall 2026 batch! Applications are open till July 27. Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact Search:"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01_LwZv4TRMstTxIElNpHMM8813",
+            "content": "[网页抓取成功 - 目标地址: https://www.bbc.com/news]\n\nSkip to content Watch Live British Broadcasting Corporation Home News Football 2026 Sport Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries US &amp; Canada UK Africa Asia Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Home News US &amp; Canada UK UK Politics England N. Ireland N. Ireland Politics Scotland Scotland Politics Wales Wales Politics Africa Asia China India Australia Europe Latin America Middle East In Pictures BBC InDepth BBC Verify Football 2026 Sport Business World of Business Technology of Business NYSE Opening Bell Technology Watch Documentaries Artificial Intelligence Intelligence Revolution AI v the Mind Tech Now Health Watch Documentaries Culture Watch Documentaries Film &amp; TV Music Art &amp; Design Style Books Entertainment News Arts Watch Documentaries Arts in Motion Travel Watch Documentaries Destinations Africa Antarctica Asia Australia and Pacific Caribbean &amp; Bermuda Central America Europe Middle East North America South America World’s Table Culture &amp; Experiences Adventures The SpeciaList Earth Watch Documentaries Science Natural Wonders Climate Solutions Sustainable Business Green Living Audio Podcast Categories Radio Audio FAQs Video Watch Documentaries BBC Maestro Discover the World Live Live News Live Sport Documentaries Site search Home News Sport Football 2026 Business Technology Health Culture Arts Travel Earth Audio Video Live Documentaries Weather Newsletters Watch Live News LIVE Trump says US being &#x27;invaded by filthy air&#x27; as he hits out at Canada over wildfire response Earlier, Ontario&#x27;s Premier Doug Ford said America should send support rather than complain as smoke from more than 850 Canadian wildfires blankets parts of the US. Andy Burnham &#x27;finalising&#x27; top team before becoming UK prime minister on Monday The new Labour leader says his government will deliver the biggest change in British politics for 40 years. 2 hrs ago Politics US denies Iranian claims it hit civilian infrastructure in latest strikes The US military says its attacks were intended to &quot;further degrade Iranian military capabilities&quot;. 1 hr ago World Oscar-winning actress Brenda Fricker dies at 81 She won for her role in 1989 film My Left Foot and had well-loved parts in Home Alone 2 and TV&#x27;s Casualty. 4 hrs ago Culture Do declassified files support Trump&#x27;s election security claims? BBC Verify has reviewed these documents, although some of them have been heavily redacted. 2 hrs ago US &amp; Canada Health experts warn of fertility risk over US military&#x27;s testosterone plan Medical professionals told the BBC that Pete Hegseth&#x27;s new policy could lead to an increase in incorrect diagnoses, as well as other issues. 3 hrs ago US &amp; Canada Magnitude 7.3 earthquake quake strikes off Mexico coast The US Tsunami Warning Center issued a warning and has recorded waves 0.3m (1.1 feet) high in Puerto Madero and Chiapas in Mexico. 2 hrs ago Latin America Meet Magnolia, the stolen kitten used in an attempted bank robbery Magnolia, a black-and-white tuxedo cat, was safely rescued and is currently available for adoption. 30 mins ago US &amp; Canada The financial winners and losers from the World Cup How the World Cup made an &#x27;NFL-obsessed&#x27; American a football fan At least two dead in Texas floods ravaging same area where campers died Trump alleges China meddled in 2020 election and questions voting security ahead of midterms Caitlin Clark &#x27;a political football&#x27; says NBA chief Silver World Cup Are Argentina being treated favourably at World Cup? Egypt have alleged bias in favour of Argentina and favouritism towards their star player, Lionel Messi. Is this fair? Spain 2010 v Spain 2026: How do the two XIs compare? How do Spain&#x27;s 2010 World Cup winners compare to the current contingent who are looking to match their feat in the 2026 tournament? BBC Sport takes a look. Thousands of tickets still available for England v France Around 7,000 tickets are still listed on Fifa&#x27;s ticket sites for Saturday&#x27;s World Cup bronze medal match between England and France. Pele at the Azteca? England in &#x27;66? Ranking the best World Cup finals Pele and Brazil at the Azteca in 1970? Lionel Messi&#x27;s first World Cup? England winning it on home soil in 1966? BBC Sport attempts to rank the best finals. More to explore A very quick guide to Andy Burnham He is set to replace Sir Keir Starmer as the UK&#x27;s PM on Monday after winning Labour&#x27;s leadership race. 6 hrs ago Politics What type of procrastinator are you - and how to fix it now (not later) The nine types of stalling that researchers say can reveal something deeper about us and why it&#x27;s not always bad. 9 hrs ago Health More than 500 Rohingya vanished at sea - what happened? Two boats carrying an estimated 530 Rohingyas have disappeared since leaving Myanmar on 29 June. 17 hrs ago Asia I wouldn&#x27;t marry him until he paid off his debt, now I&#x27;m in charge of our money Sarah and her husband have shared one account for 25 years, but she says managing it falls to her. 21 hrs ago Business How will testosterone testing work in Hegseth&#x27;s military? US Defence Secretary Pete Hegseth has announced mandatory testosterone screening for military personnel aged 30 and over. 17 hrs ago US &amp; Canada Is Glasgow ready for the Commonwealth Games - and does the city care? Glasgow will welcome athletes against a backdrop of roadworks and refurbishments - but organisers stress the city is ready. 15 hrs ago Glasgow &amp; West Scotland Weekly quiz: What name did scientists give this $50m dinosaur? How much attention did you pay to what happened in the world over the past seven days? 1 day ago US &amp; Canada Most watched 1 Timelapse shows World Cup final stadium nearly vanish in smoky haze 2 How testosterone testing will work in Hegseth&#x27;s military 3 Meet Magnolia, the stolen kitten used in an attempted bank robbery 4 Drone images show major Cairngorms wildfire 5 Watch: Residents flee massive Canadian wildfire by boat Also in news Taco Bell removes lettuce from menu in US after links to explosive diarrhoea Lettuce from one supplier is being removed indefinitely &quot;out of an abundance of caution&quot;, the company says. 17 hrs ago US &amp; Canada Trump Media to sell instant access to &#x27;market-moving&#x27; social posts Trump Media is launching a fast, paid feed to its most influential posts for Wall Street traders. 12 hrs ago US &amp; Canada Buffett calls Bill Gates relationship with Epstein &#x27;distasteful&#x27; The billionaire investor&#x27;s firm has stopped giving donations to the Microsoft co-founder&#x27;s charity. 2 days ago Business Japan relaxes royal succession rules - but ban on female emperors remains The law now allows the adoption of male distant relatives aged over 15 back into the imperial family. 15 hrs ago Asia Boy attacked by crocodile is smiling again - parents The three-year-old&#x27;s parents say the boy is making progress after seven operations in a month. 8 hrs ago Cambridgeshire West Indies legend Sobers dies aged 89 Legendary former West Indies all-rounder Sir Garfield Sobers, regarded as one of the greatest cricketers of all time, dies aged 89. 4 hrs ago Cricket Trump drops BBC&#x27;s commercial arm from Panorama lawsuit, but main case remains The US president removes BBC Studios from his defamation lawsuit over a controversial documentary. 8 hrs ago Culture Most read 1 Do declassified files support Trump&#x27;s election security claims? 2 Magnitude 7.3 earthquake quake strikes off Mexico coast 3 Health experts warn of fertility risk over US military&#x27;s testosterone plan 4 US denies Iranian claims it hit civilian infrastructure in latest strikes 5 US Republicans accuse Canada of wildfire inaction 6 Man finds &#x27;rare&#x27; Roman treasures in a field 7 Oscar-winning actress Brend\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams."
+          }
+        ],
+        "ttft": 765,
+        "duration": 4345,
+        "speed": 105.8659217877095,
+        "content": "Here are today's top news highlights:\n\n---\n\n### 🌍 World & Politics\n- **Trump hits out at Canada** over wildfire response, says US being \"invaded by filthy air\" — smoke from 850+ Canadian wildfires blankets parts of the US.\n- **US denies Iranian claims** it hit civilian infrastructure in latest strikes against Iran.\n- **Andy Burnham \"finalising\" top team** before becoming UK Prime Minister on Monday.\n- **Declassified files** reviewed by BBC Verify over Trump's election security claims.\n- **Japan relaxes royal succession rules** — but ban on female emperors remains.\n\n### 🌊 Natural Disasters\n- **Magnitude 7.3 earthquake** strikes off Mexico coast; tsunami warning issued, waves recorded.\n- **Texas floods** — at least two dead in same area where campers previously died.\n- **Massive Canadian wildfires** — residents fleeing by boat.\n\n### 🚀 Tech & Business\n- **SpaceX stock drops to new low**, loses $1T in value in a month; short sellers notch $8.7B profit.\n- **Apple targets dozens of OpenAI employees** with legal letters (FT).\n- **Kimi K3** — open frontier intelligence model released, trending #1 on Hacker News.\n- **AWS inaccurate billing data** — $1.7 billion error reported.\n- **Taco Bell removes lettuce** from US menu after links to explosive diarrhoea.\n\n### 🎬 Culture\n- **Oscar-winning actress Brenda Fricker** (My Left Foot, Home Alone 2) dies at 81.\n- **West Indies legend Sir Garfield Sobers** dies aged 89.\n\n### 🔬 Science\n- **First atmosphere found** on Earth-like planet in habitable zone of distant star.\n- **EEG shows brain** can simultaneously encode two speech streams.",
+        "usage": {
+          "prompt_tokens": 5119,
+          "completion_tokens": 379,
+          "total_tokens": 5498
+        }
+      }
+    }
+  ],
+  "endTime": "2026-07-17T19:53:53.622Z"
+}

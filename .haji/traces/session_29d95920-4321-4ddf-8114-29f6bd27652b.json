@@ -1,0 +1,652 @@
+{
+  "id": "29d95920-4321-4ddf-8114-29f6bd27652b",
+  "startTime": "2026-07-17T19:50:27.652Z",
+  "events": [
+    {
+      "type": "user_input",
+      "timestamp": "2026-07-17T19:50:27.652Z",
+      "content": "今日新闻"
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:50:27.652Z",
+      "data": {
+        "id": "db791c77-a122-4900-90c1-637fb364a5f9",
+        "timestamp": "2026-07-17T19:50:27.652Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "我来搜索今日新闻。",
+            "tool_calls": [
+              {
+                "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "content": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today news top headlines\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "content": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "content": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？"
+          }
+        ],
+        "ttft": 1305,
+        "duration": 1620,
+        "speed": 177.77777777777777,
+        "content": "我来搜索今日新闻。",
+        "toolCalls": [
+          {
+            "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1706,
+          "completion_tokens": 56,
+          "total_tokens": 1762
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:50:30.107Z",
+      "data": {
+        "timestamp": "2026-07-17T19:50:30.107Z",
+        "toolCallId": "call_00_COHm7blGfxFFcHLfjHkN9291",
+        "name": "websearch",
+        "arguments": {
+          "query": "今日要闻 2025年1月"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 835
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:50:30.107Z",
+      "data": {
+        "id": "828d838e-1e07-4763-bed6-a52108d8b283",
+        "timestamp": "2026-07-17T19:50:30.107Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "我来搜索今日新闻。",
+            "tool_calls": [
+              {
+                "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "content": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today news top headlines\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "content": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "content": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？"
+          }
+        ],
+        "ttft": 1273,
+        "duration": 1273,
+        "speed": 40.06284367635507,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1808,
+          "completion_tokens": 51,
+          "total_tokens": 1859
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:50:31.700Z",
+      "data": {
+        "timestamp": "2026-07-17T19:50:31.700Z",
+        "toolCallId": "call_00_pZcSmbEGoTkkY0DONoF65378",
+        "name": "websearch",
+        "arguments": {
+          "query": "今日新闻头条 2025年1月"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 320
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:50:31.700Z",
+      "data": {
+        "id": "03b1eed5-87bd-486a-8106-447cfc85b193",
+        "timestamp": "2026-07-17T19:50:31.700Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "我来搜索今日新闻。",
+            "tool_calls": [
+              {
+                "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "content": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today news top headlines\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "content": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "content": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？"
+          }
+        ],
+        "ttft": 1208,
+        "duration": 1208,
+        "speed": 38.079470198675494,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "type": "function",
+            "function": {
+              "name": "websearch",
+              "arguments": "{\"query\": \"today news top headlines\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1906,
+          "completion_tokens": 46,
+          "total_tokens": 1952
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:50:33.220Z",
+      "data": {
+        "timestamp": "2026-07-17T19:50:33.220Z",
+        "toolCallId": "call_00_f2znMwPxHOVYtKyc3nu88369",
+        "name": "websearch",
+        "arguments": {
+          "query": "today news top headlines"
+        },
+        "approved": true,
+        "output": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n",
+        "duration": 311
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:50:33.220Z",
+      "data": {
+        "id": "42e03bc4-ccbd-4f15-ab5a-21b7c756347c",
+        "timestamp": "2026-07-17T19:50:33.220Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "我来搜索今日新闻。",
+            "tool_calls": [
+              {
+                "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "content": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today news top headlines\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "content": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "content": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？"
+          }
+        ],
+        "ttft": 1537,
+        "duration": 1537,
+        "speed": 59.20624593363696,
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "type": "function",
+            "function": {
+              "name": "webfetch",
+              "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1994,
+          "completion_tokens": 91,
+          "total_tokens": 2085
+        }
+      }
+    },
+    {
+      "type": "tool_execution",
+      "timestamp": "2026-07-17T19:50:36.753Z",
+      "data": {
+        "timestamp": "2026-07-17T19:50:36.753Z",
+        "toolCallId": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+        "name": "webfetch",
+        "arguments": {
+          "url": "https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB"
+        },
+        "approved": true,
+        "output": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]",
+        "duration": 1996
+      }
+    },
+    {
+      "type": "llm_call",
+      "timestamp": "2026-07-17T19:50:36.753Z",
+      "data": {
+        "id": "33b0cb38-b27a-40b7-a3a0-4e5cc9059743",
+        "timestamp": "2026-07-17T19:50:36.753Z",
+        "model": "unknown",
+        "messages": [
+          {
+            "role": "system",
+            "content": "你是一个轻量级的终端内 AI 辅助编程助手，名为 haji。你正通过命令行交互界面（REPL）与用户合作。\n\n交互与回复风格：\n- 回答保持短小精炼、直入主题，避免长篇大论或客套话。\n- 优先使用 Markdown 表格或列表展示文件信息。\n\n当前工作环境信息：\n- 操作系统 (OS): Windows (基于 Node.js 运行时环境)\n- 当前工作目录 (Cwd): C:\\Users\\WYT\\Desktop\\hajicli\n\n工具调用通用规范：\n- 针对具体的研发任务，你必须优先选用对应的专用工具，非必要不使用通用 bash 工具。这能带来更高的执行效率和更好的跨平台安全性。\n\n1. 查找文件 (global)：\n- 递归查找并列出当前工作目录下的文件列表。需要定位文件或了解项目结构时优先选用此工具，支持根据名称关键字过滤。\n\n2. 文本检索 (grep)：\n- 在文本文件中搜索匹配关键字的行。当你需要在项目内查找特定类、函数、变量的定义或引用时，应优先选用，切忌在 bash 中运行 grep 或 findstr。\n\n3. 读取文件 (read)：\n- 读取指定路径文件的内容。阅读文件必须优先使用此工具，严禁使用 bash 中的 cat/type。如果是大文件，请务必提供 startLine 和 endLine 参数进行范围读取，防止单次内容过大撑满上下文。\n\n4. 精准编辑 (edit)：\n- 在已有文件中以精准搜索与替换的形式修改局部代码。当你对已有文件进行微调、Bug 修复或局部重构时，必须优先使用此工具，严禁为了局部修改而使用 write 工具覆写整个文件。提供 oldText 时，建议包含前后几行代码作为上下文，保证其在目标文件中唯一存在，以防匹配失败。\n\n5. 写入文件 (write)：\n- 向指定路径创建新文件，或完全覆盖写入整个文件。当且仅当需要创建新文件，或需要将已有文件 100% 覆写（彻底重构）时，才应选用此工具。严禁使用此工具修改局部少数几行代码，局部编辑应使用 edit 工具。\n\n6. 网页搜索 (websearch)：\n- 在互联网上搜索指定关键字。当需要查询最新技术文档、解决疑难报错或获取实时信息时选用此工具。\n\n7. 网页抓取 (webfetch)：\n- 抓取指定 URL 网页的纯文本内容。获取第三方官方文档或网页教程时，优先选用此工具抓取，严禁使用 bash 中的 curl 或 wget。\n\n8. 本地终端命令 (bash)：\n- 仅在没有其他专有工具能够解决该任务时作为兜底手段使用。主要用于安装/更新依赖、编译/构建项目、执行单元测试（如 vitest）或启动开发服务。\n- 在发出命令前，请务必确认当前 Windows 平台是否支持该命令。绝不要在 Windows 下执行无法直接运行的 Linux 指令（如 cat, rm, ls）。如果命令报错，请阅读 stderr 信息自动纠正后重新尝试。"
+          },
+          {
+            "role": "user",
+            "content": "今日新闻"
+          },
+          {
+            "role": "assistant",
+            "content": "我来搜索今日新闻。",
+            "tool_calls": [
+              {
+                "id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日要闻 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_COHm7blGfxFFcHLfjHkN9291",
+            "content": "[网络搜索结果 - 检索关键字 \"今日要闻 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"今日新闻头条 2025年1月\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_pZcSmbEGoTkkY0DONoF65378",
+            "content": "[网络搜索结果 - 检索关键字 \"今日新闻头条 2025年1月\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+                "type": "function",
+                "function": {
+                  "name": "websearch",
+                  "arguments": "{\"query\": \"today news top headlines\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_f2znMwPxHOVYtKyc3nu88369",
+            "content": "[网络搜索结果 - 检索关键字 \"today news top headlines\"]\n\n(未找到相关搜索结果，可能是由于请求被限制，或者没有匹配的搜索结果)\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+                "type": "function",
+                "function": {
+                  "name": "webfetch",
+                  "arguments": "{\"url\": \"https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_00_R5vZWtaHbv1SqfaNKJPH4951",
+            "content": "[网页抓取成功 - 目标地址: https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnVHZ0pWVXlnQVAB]\n\nNews Google News Advanced search Help Help Privacy Terms About Google Get the Android app Get the iOS app Send feedback Settings Settings Language &amp; region English (United States) Sign in Home For you Following News Showcase U.S. World Local Business Technology Entertainment Sports Science Health More News Google News Headlines Follow Follow this topic Share Donald Trump delivers primetime address on election security&nbsp; chevron_right BBC More Do declassified files support Trump&#39;s election security claims? 1 hour ago By Lucy Gilder, Anthony Zurcher &amp; Jake Horton CNN More 5 takeaways from Trump’s primetime speech on elections 16 hours ago By Aaron Blake The Washington Post More Four takeaways from Trump’s prime-time address 3 hours ago By Cat Zakrzewski Politico More ‘Scared s--tless’: Republicans brace for Trump’s primetime speech Yesterday By Myah Ward, Megan Messerly &amp; Alex Gangitano See more headlines &amp; perspectives The Guardian More More Canadian wildfire smoke shrouds US midwest, mid-Atlantic and north-east 2 hours ago By Edward Helmore CNN More Wildfire smoke is driving terrible air quality in major cities, but relief is coming 6 hours ago By Brandon Miller &amp; Dakota Smith WIRED More What Cities From Chicago to Washington, DC, Look Like Under a Blanket of Wildfire Smoke 32 minutes ago By Brian L. Kahn Axios More Chicago wildfire smoke: Will &quot;smoke season&quot; become the new normal? 1 hour ago By Justin Kaufmann &amp; Alexander A Fitzpatrick See more headlines &amp; perspectives Pete Hegseth plans mandatory testosterone testing for troops&nbsp; chevron_right Business Insider More The Pentagon announced testosterone testing for troops. Researchers worry about young men&#39;s T problem. 10 hours ago By Kelsey Baker &amp; Gabby Landsverk Time Magazine More What Urologists Think of the Military’s New Testosterone Testing Policy 3 hours ago By Dominique Mosbergen The New York Times More Hegseth Plans to Screen All Troops, Including Women, for Low Testosterone 2 days ago By Greg Jaffe &amp; Azeen Ghorayshi Mother Jones More The Manosphere and Christian Nationalist Roots of Hegseth’s “Low-T” Fixation Yesterday By Kiera Butler See more headlines &amp; perspectives Fox News More Iran strikes US allies, Brent crude oil prices continue to rise 2 hours ago CNN More Live updates: Iran and US widen attacks as renewed conflict shows no sign of de-escalating 2 hours ago By Jessie Yeung, Isaac Yee &amp; Leila Gharagozlou The New York Times More Iran War Live Updates: U.S. Expands Airstrikes With Attacks on Bridges and a Port in Southern Iran 35 minutes ago By Leily Nikounazar, Lara Jakes &amp; Jenny Gross CNBC More Iran says civilian infrastructure hit by latest U.S. strikes, expands attacks to Syria, Bahrain 11 hours ago By Elsa Ohlen &amp; Sam Meredith See more headlines &amp; perspectives Andy Burnham as UK Prime Minister&nbsp; chevron_right AP News More Andy Burnham is declared leader of UK’s Labour Party, pledges to restore hope 4 hours ago By Jill Lawless BBC More Burnham says he is &#39;finalising&#39; cabinet ahead of becoming PM on Monday 2 hours ago The American Prospect More Can Prime Minister Burnham Succeed? 50 minutes ago By Robert Kuttner The New York Times More Opinion | The King of the North Won’t Save Britain 14 hours ago Opinion By Tom Hazeldine See more headlines &amp; perspectives Investigation into ICE shooting in Maine&nbsp; chevron_right The Hill More ICE officer in Maine shooting should have never been given badge, gun, relatives say 3 hours ago USA Today More Family remembers man killed in Maine ICE shooting as &#39;devoted father&#39; 2 hours ago By Jeanine Santucci NBC News More Wife of Colombian father killed by ICE in Maine says they had planned to grow old together 22 hours ago By Nicole Acevedo The New York Times More Maine ICE Victim Relentlessly Pursued Better Life, Loved Ones Say 17 hours ago By Jorge Valencia, Murray Carpenter &amp; Jenna Russell See more headlines &amp; perspectives Politico More California Dems seethe over Trump’s voter roll attack 5 hours ago By Blake Jones &amp; Lindsey Holden NBC News More Homeland Security Secretary Markwayne Mullin threatens states over elections 1 hour ago By Rebecca Shabad The New York Times More Trump’s Homeland Security Chief Threatens Election Officials With Prison Time 15 minutes ago By Nick Corasaniti &amp; Dustin Volz The Guardian More DHS chief threatens states that refuse Trump’s election demands after president’s widely condemned speech – live 10 hours ago By Lucy Campbell, Shrai Popat &amp; Vivian Ho See more headlines &amp; perspectives Trump&#39;s speech on elections&nbsp; chevron_right The Washington Post More Trump says ABC, NBC licenses should be revoked over refusal to air speech on election integrity 14 hours ago By Scott Nover The New York Times More In Prime Time, Trump Criticizes Networks for Not Carrying His Speech 17 hours ago By Michael Grynbaum Yahoo More FCC commissioner says Trump call to revoke ABC, NBC licenses is unconstitutional 1 hour ago By David Shepardson Poynter More Opinion | How the networks handled President Trump’s speech about election integrity 8 hours ago By Tom Jones See more headlines &amp; perspectives Fox News More Transgender Maine Senate candidate sparks online frenzy over response to debate question: &#39;Can&#39;t be serious&#39; 5 hours ago By Andrew Mark Miller Hindustan Times More Ashley Webb, Maine Democrat in Senate race to replace Graham Platner, draws Republican backlash: ‘Deadbeat songwriter’ 13 hours ago By Das Biswas New York Post More Dem trans activist vying to replace candidate Graham Platner for Senate goes viral over absurd debate answer 1 hour ago By Kate Sheehy Crypto Briefing More Trans activist Ashley Webb goes viral in Maine Senate race debate 4 hours ago By Estefano Gomez See more headlines &amp; perspectives 7.3 magnitude earthquake strikes southern Mexico&nbsp; chevron_right BBC More Magnitude 7.3 earthquake quake strikes off Mexico coast 1 hour ago By Jessica Rawnsley CNN More Powerful earthquake in Mexico shakes Guatemala and El Salvador 4 hours ago By Uriel Blanco Fierro The New York Times More 7.3-Magnitude Earthquake in Central America Sets Off Tsunami Threat 3 hours ago By Zane Irwin Reuters More Magnitude 7.4 earthquake strikes Puerto Madero, Mexico, USGS says 4 hours ago By Gnaneshwar Rajan See more headlines &amp; perspectives CNN More Trump is edging towards another American ‘forever war’ in Iran 15 hours ago By Nick Paton Walsh The New York Times More Trump Faces the Limits of U.S. Firepower and the Lessons of Past Wars 4 hours ago By Greg Jaffe &amp; Eric P. Schmitt AP News More What remains of the Iran deal as fighting rages Yesterday By Joseph Krauss CBS News More Iran War Updates: Strait of Hormuz &quot;back to the worst case scenario&quot; amid escalating attacks, analyst says 1 hour ago See more headlines &amp; perspectives Chron More Central Texas bridge collapses as raging floods tear through region 5 hours ago By Allyson Ackerman FOX 4 News Dallas-Fort Worth More Texas flooding: What we know about 2 people killed in Hill Country 1 hour ago By Aaron Barker KXAN Austin More Eanes ISD: Westlake grad identified as victim in Hill Country floods, family says 1 hour ago By Anthony Torres KVUE More ‘I can’t believe this happened again’ | One year later, another flood leaves Kerr County starting over 16 hours ago See more headlines &amp; perspectives Todd Blanche faces Senate confirmation hearing for attorney general&nbsp; chevron_right PBS More Blanche meets with Epstein accusers after demand from Republican senator crucial to confirmation 6 hours ago By Alanna Durkin Richer &amp; Joey Cappelletti MS NOW More Todd Blanche meeting leaves Epstein survivors stunned and angry Yesterday By Lisa Rubin CNBC More Epstein victims blast Trump attorney general nominee Todd B\n\n[输出已被截断，因为内容超过了 8000 字符限制]"
+          },
+          {
+            "role": "assistant",
+            "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？"
+          }
+        ],
+        "ttft": 968,
+        "duration": 4399,
+        "speed": 93.85018944914019,
+        "content": "以下是今日主要新闻摘要：\n\n---\n\n## 📰 今日要闻\n\n| 分类 | 标题 |\n|------|------|\n| 🌍 **国际** | **伊朗冲突升级** — 美军扩大对伊朗空袭，攻击桥梁及港口设施，伊朗反击至叙利亚、巴林，布伦特原油价格持续上涨 |\n| 🌍 **国际** | **墨西哥7.3级强震** — 南部海岸发生7.3级地震，波及危地马拉和萨尔瓦多，触发海啸警报 |\n| 🇺🇸 **美国** | **特朗普就选举安全发表黄金时段讲话**，声称ABC、NBC应被吊销广播执照，国土安全部长威胁对拒绝配合选举要求的州官员处以监禁 |\n| 🇺🇸 **美国** | **加拿大野火烟雾笼罩美国中西部及东北部**，芝加哥、华盛顿等多城市空气质量恶化 |\n| 🇺🇸 **美国** | **德州山洪暴发**，中央大桥垮塌，已造成2人死亡 |\n| 🇬🇧 **英国** | **安迪·伯纳姆当选英国工党领袖**，预计下周一就任首相 |\n| 🇺🇸 **美国** | **缅因州ICE枪击事件**调查持续，涉事警员被曝本不应配枪 |\n| 🏛️ **美国** | **Todd Blanche（司法部长提名人）** 与爱泼斯坦受害者会面，受害者称失望与愤怒 |\n\n需要了解某条新闻的更多细节吗？",
+        "usage": {
+          "prompt_tokens": 3912,
+          "completion_tokens": 322,
+          "total_tokens": 4234
+        }
+      }
+    }
+  ],
+  "endTime": "2026-07-17T19:50:41.153Z"
+}
