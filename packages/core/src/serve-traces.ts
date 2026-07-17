@@ -12,8 +12,13 @@ const __dirname = path.dirname(__filename);
  * 启动本地 Trace 可视化静态与数据服务器（零第三方依赖）。
  * @param port - 服务监听端口。
  * @param openBrowser - 是否自动在浏览器中打开可视化控制台。
+ * @param keepAlive - 是否让该服务阻止 Node.js 进程自然退出。
  */
-export async function startTraceServer(port: number = 3000, openBrowser: boolean = true): Promise<void> {
+export async function startTraceServer(
+  port: number = 3000,
+  openBrowser: boolean = true,
+  keepAlive: boolean = true
+): Promise<void> {
   const tracesDir = path.join(process.cwd(), '.haji', 'traces');
 
   const server = http.createServer(async (req, res) => {
@@ -93,6 +98,10 @@ export async function startTraceServer(port: number = 3000, openBrowser: boolean
     });
 
     server.listen(port, () => {
+      if (!keepAlive) {
+        server.unref();
+      }
+
       const addr = `http://localhost:${port}`;
       console.log(`\n📊 hajicli 可观测性 Trace 服务器已在本地运行: ${addr}`);
       console.log(`   Trace 记录目录: ${tracesDir}\n`);
