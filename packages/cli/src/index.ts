@@ -33,6 +33,18 @@ const colors = {
   gray: (text: string) => `\x1b[90m${text}\x1b[0m`,
   cyan: (text: string) => `\x1b[36m${text}\x1b[0m`,
   bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
+  userMsg: (text: string) => {
+    const bgStart = '\x1b[48;5;236m\x1b[38;5;255m';
+    const bgReset = '\x1b[0m';
+    const prefix = '\x1b[1;35m ❯ \x1b[0m';
+    const lines = text.split('\n');
+    return lines.map((line, idx) => {
+      if (idx === 0) {
+        return `${prefix}${bgStart} ${line} ${bgReset}`;
+      }
+      return `   ${bgStart} ${line} ${bgReset}`;
+    }).join('\n');
+  }
 };
 
 // 像素画风格的大写 HAJI 启动 Logo
@@ -269,7 +281,7 @@ async function main() {
         continue;
       }
 
-      ui.writeLine(userInput);
+      ui.writeLine(colors.userMsg(userInput));
       ui.writeLine();
 
       // 解析斜杠内置命令
@@ -519,7 +531,6 @@ async function main() {
         }
 
         ui.writeLine();
-        ui.writeLine();
 
         // 保存助理回复
         const assistantMessage: ChatMessage = { role: 'assistant', content: textContent };
@@ -632,6 +643,7 @@ async function main() {
               ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${toolDuration}ms)`)}`);
             }
           }
+          ui.writeLine();
           keepCalling = true;
         } else {
           keepCalling = false;
