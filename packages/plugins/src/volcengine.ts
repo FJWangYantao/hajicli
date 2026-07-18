@@ -376,18 +376,19 @@ export class VolcengineProvider implements ModelProvider {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(60000)
       });
 
       if (!response.ok) {
-        let errorMsg = `HTTP 错误状态码: ${response.status}`;
+        let errorMsg = `HTTP 错误！状态码: ${response.status}`;
         try {
           const errData = (await response.json()) as { error?: { message?: string } };
           if (errData.error?.message) {
             errorMsg = errData.error.message;
           }
         } catch {
-          // 忽略解析错误
+          // 忽略 JSON 解析错误
         }
         throw new ProviderError(errorMsg, 'volcengine', response.status);
       }
@@ -397,7 +398,9 @@ export class VolcengineProvider implements ModelProvider {
       if (error instanceof ProviderError) {
         throw error;
       }
-      throw new ProviderError(error instanceof Error ? error.message : String(error), 'volcengine');
+      const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+      const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
+      throw new ProviderError(msg, 'volcengine');
     }
   }
 }

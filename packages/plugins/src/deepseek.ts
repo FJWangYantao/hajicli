@@ -253,7 +253,8 @@ export class DeepSeekProvider implements ModelProvider {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(60000)
       });
 
       if (!response.ok) {
@@ -274,7 +275,9 @@ export class DeepSeekProvider implements ModelProvider {
       if (error instanceof ProviderError) {
         throw error;
       }
-      throw new ProviderError(error instanceof Error ? error.message : String(error), 'deepseek');
+      const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+      const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
+      throw new ProviderError(msg, 'deepseek');
     }
   }
 }

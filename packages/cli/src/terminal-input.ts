@@ -1,11 +1,44 @@
 import readline from 'node:readline';
 import readlinePromises from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { spawnSync } from 'node:child_process';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_START_PATTERN = /^\x1b\[[0-?]*[ -/]*[@-~]/;
 const ANSI_RESET = '\x1b[0m';
 const graphemeSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
+
+function enableWindowsVirtualTerminalInput(): boolean {
+  if (process.platform !== 'win32') {
+    return true;
+  }
+
+  const script = [
+    `Add-Type -Namespace Haji -Name ConsoleMode -MemberDefinition '${[
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern System.IntPtr GetStdHandle(int nStdHandle);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleMode(System.IntPtr handle, out uint mode);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleMode(System.IntPtr handle, uint mode);'
+    ].join(' ')}'`,
+    '$handle = [Haji.ConsoleMode]::GetStdHandle(-10)',
+    '[uint32]$mode = 0',
+    'if (-not [Haji.ConsoleMode]::GetConsoleMode($handle, [ref]$mode)) { exit 1 }',
+    '$virtualTerminalInput = [uint32]0x0200',
+    'if (-not [Haji.ConsoleMode]::SetConsoleMode($handle, ($mode -bor $virtualTerminalInput))) { exit 1 }'
+  ].join('; ');
+
+  const result = spawnSync('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    script
+  ], {
+    stdio: ['inherit', 'ignore', 'ignore'],
+    windowsHide: true
+  });
+
+  return result.status === 0;
+}
 
 export interface TerminalUIOptions {
   header: string;
@@ -26,6 +59,30 @@ export interface SlashCommand {
   description: string;
 }
 
+export interface TerminalSelectionItem {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface TerminalSelectionAxis {
+  label: string;
+  items: readonly TerminalSelectionItem[];
+  selectedValue?: string;
+}
+
+export interface TerminalSelectionOptions {
+  title: string;
+  items: readonly TerminalSelectionItem[];
+  selectedValue?: string;
+  secondary?: TerminalSelectionAxis;
+}
+
+export interface TerminalSelectionResult {
+  value: string;
+  secondaryValue?: string;
+}
+
 interface CursorPosition {
   row: number;
   column: number;
@@ -44,8 +101,15 @@ interface ActiveInput {
   preferredColumn?: number;
   slashCommands: readonly SlashCommand[];
   selectedCommandIndex: number;
-  originalRawMode: boolean;
   resolve: (value: string) => void;
+  reject: (error: Error) => void;
+}
+
+interface ActiveSelection {
+  options: TerminalSelectionOptions;
+  selectedIndex: number;
+  secondaryIndex: number;
+  resolve: (value: TerminalSelectionResult) => void;
   reject: (error: Error) => void;
 }
 
@@ -217,11 +281,28 @@ export class TerminalUI {
   private readonly interactive = Boolean(stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === 'function');
   private started = false;
   private chatContent = '';
+  private chatScrollOffset = 0;
+  private maxChatScrollOffset = 0;
+  private chatPageSize = 1;
   private status = '';
+  private permissionMode = '';
   private activeInput?: ActiveInput;
+  private activeSelection?: ActiveSelection;
+  private originalRawMode = false;
+  private suppressMouseKeypressUntil = 0;
+  private onShiftTabCallback?: () => void;
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
+  }
+
+  setPermissionMode(mode: string): void {
+    this.permissionMode = mode;
+    this.render();
+  }
+
+  onShiftTab(callback: () => void): void {
+    this.onShiftTabCallback = callback;
   }
 
   start(): void {
@@ -235,8 +316,15 @@ export class TerminalUI {
       return;
     }
 
-    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
+    this.originalRawMode = Boolean(stdin.isRaw);
+    readline.emitKeypressEvents(stdin);
+    stdin.setRawMode(true);
+    enableWindowsVirtualTerminalInput();
+    stdin.resume();
+    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h');
     stdout.on('resize', this.handleResize);
+    stdin.prependListener('data', this.handleMouseData);
+    stdin.on('keypress', this.handleIdleKeypress);
     process.on('exit', this.handleProcessExit);
     this.render();
   }
@@ -247,20 +335,29 @@ export class TerminalUI {
     }
 
     if (this.activeInput) {
-      this.removeInputListeners(this.activeInput.originalRawMode);
+      this.removeInputListeners();
       this.activeInput = undefined;
+    }
+    if (this.activeSelection) {
+      this.removeSelectionListeners();
+      this.activeSelection = undefined;
     }
 
     if (this.interactive) {
       stdout.off('resize', this.handleResize);
+      stdin.off('data', this.handleMouseData);
+      stdin.off('keypress', this.handleIdleKeypress);
+      stdin.setRawMode(this.originalRawMode);
+      stdin.pause();
       process.off('exit', this.handleProcessExit);
-      stdout.write('\x1b[?25h\x1b[0m\x1b[?1049l');
+      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?25h\x1b[0m\x1b[?1049l');
     }
     this.started = false;
   }
 
   clearChat(): void {
     this.chatContent = '';
+    this.chatScrollOffset = 0;
     this.render();
   }
 
@@ -271,6 +368,10 @@ export class TerminalUI {
     }
 
     this.chatContent += value;
+    // 仅当用户处于最底部（未手动向上滚动）时才重置滚轮偏移；如果用户正向上查看历史，则保留滚动位置
+    if (this.chatScrollOffset === 0) {
+      this.chatScrollOffset = 0;
+    }
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
     }
@@ -297,11 +398,10 @@ export class TerminalUI {
       }
     }
 
-    if (this.activeInput) {
+    if (this.activeInput || this.activeSelection) {
       throw new Error('已有输入请求正在等待处理');
     }
 
-    readline.emitKeypressEvents(stdin);
     return new Promise<string>((resolve, reject) => {
       this.activeInput = {
         prompt,
@@ -310,14 +410,54 @@ export class TerminalUI {
         cursorIndex: 0,
         slashCommands: options.slashCommands ?? [],
         selectedCommandIndex: 0,
-        originalRawMode: Boolean(stdin.isRaw),
         resolve,
         reject
       };
 
-      stdin.setRawMode(true);
-      stdin.resume();
       stdin.on('keypress', this.handleKeypress);
+      this.render();
+    });
+  }
+
+  async readSelection(options: TerminalSelectionOptions): Promise<TerminalSelectionResult> {
+    if (options.items.length === 0) {
+      throw new Error('选择器至少需要一个选项');
+    }
+    if (options.secondary && options.secondary.items.length === 0) {
+      throw new Error('选择器的次级选项不能为空');
+    }
+
+    const selectedIndex = Math.max(
+      0,
+      options.items.findIndex(item => item.value === options.selectedValue)
+    );
+    const secondaryIndex = options.secondary
+      ? Math.max(
+        0,
+        options.secondary.items.findIndex(item => item.value === options.secondary?.selectedValue)
+      )
+      : 0;
+
+    if (!this.interactive) {
+      return {
+        value: options.items[selectedIndex].value,
+        secondaryValue: options.secondary?.items[secondaryIndex].value
+      };
+    }
+    if (this.activeInput || this.activeSelection) {
+      throw new Error('已有输入请求正在等待处理');
+    }
+
+    return new Promise<TerminalSelectionResult>((resolve, reject) => {
+      this.activeSelection = {
+        options,
+        selectedIndex,
+        secondaryIndex,
+        resolve,
+        reject
+      };
+
+      stdin.on('keypress', this.handleSelectionKeypress);
       this.render();
     });
   }
@@ -326,11 +466,55 @@ export class TerminalUI {
     this.render();
   };
 
-  private readonly handleProcessExit = () => {
-    if (this.activeInput) {
-      stdin.setRawMode(this.activeInput.originalRawMode);
+  private readonly handleMouseData = (data: Buffer | string) => {
+    const value = typeof data === 'string' ? data : data.toString('utf-8');
+    let handledMouseEvent = false;
+
+    const handleWheelButton = (button: number) => {
+      if ((button & 64) === 0) {
+        return;
+      }
+      handledMouseEvent = true;
+      this.scrollChat((button & 1) === 0 ? 3 : -3);
+    };
+
+    // SGR 鼠标模式 (\x1b[<button;x;yM 或 \x1b[<button;x;ym)
+    for (const match of value.matchAll(/\x1b\[<(\d+);\d+;\d+[mM]/g)) {
+      handleWheelButton(Number.parseInt(match[1], 10));
     }
-    stdout.write('\x1b[?25h\x1b[0m\x1b[?1049l');
+
+    // URXVT 鼠标模式 (\x1b[button;x;yM)
+    for (const match of value.matchAll(/\x1b\[(\d+);\d+;\d+M/g)) {
+      handleWheelButton(Number.parseInt(match[1], 10));
+    }
+
+    // Legacy X10 鼠标模式兼容 (\x1b[M<cb><cx><cy>)
+    for (const match of value.matchAll(/\x1b\[M([\s\S])([\s\S])([\s\S])/g)) {
+      handleWheelButton(match[1].charCodeAt(0) - 32);
+    }
+
+    if (handledMouseEvent) {
+      // readline 会把鼠标序列的尾部再次拆成普通按键事件，短暂忽略这些派生事件。
+      this.suppressMouseKeypressUntil = Date.now() + 50;
+    }
+  };
+
+  private readonly handleIdleKeypress = (_value: string, key: readline.Key) => {
+    if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
+    if (this.activeInput || this.activeSelection) {
+      return;
+    }
+    if (key.ctrl && key.name === 'c') {
+      this.close();
+      process.exit(130);
+    }
+  };
+
+  private readonly handleProcessExit = () => {
+    stdin.setRawMode(this.originalRawMode);
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?25h\x1b[0m\x1b[?1049l');
   };
 
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
@@ -391,6 +575,79 @@ export class TerminalUI {
     });
   }
 
+  private getSelectionRows(width: number, maxRows: number): string[] {
+    const activeSelection = this.activeSelection;
+    if (!activeSelection || maxRows <= 0) {
+      return [];
+    }
+
+    const { options } = activeSelection;
+    const navigation = options.secondary
+      ? '↑↓ 模型 · ←→ 强度 · Enter 确认'
+      : '↑↓ 选择 · Enter 确认';
+    const rows = [
+      `\x1b[1m${truncateText(options.title, width)}\x1b[0m  \x1b[90m${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}\x1b[0m`
+    ];
+
+    if (options.secondary) {
+      const selectedSecondary = options.secondary.items[activeSelection.secondaryIndex];
+      const effortLabels = options.secondary.items.map((item, index) => (
+        index === activeSelection.secondaryIndex ? `‹${item.label}›` : item.label
+      ));
+      const fullSecondaryText = `${options.secondary.label}  ${effortLabels.join('  ')}`;
+      if (terminalWidth(fullSecondaryText) <= width) {
+        const styledEfforts = options.secondary.items.map((item, index) => (
+          index === activeSelection.secondaryIndex
+            ? `\x1b[1;35m‹${item.label}›\x1b[0m`
+            : `\x1b[90m${item.label}\x1b[0m`
+        ));
+        rows.push(`\x1b[90m${options.secondary.label}\x1b[0m  ${styledEfforts.join('  ')}`);
+      } else {
+        const secondaryText = `${options.secondary.label}  ‹ ${selectedSecondary.label} ›`;
+        rows.push(`\x1b[1;35m${truncateText(secondaryText, width)}\x1b[0m`);
+      }
+    }
+
+    const availableItemRows = Math.max(1, maxRows - rows.length);
+    const firstVisibleIndex = Math.min(
+      Math.max(0, activeSelection.selectedIndex - availableItemRows + 1),
+      Math.max(0, options.items.length - availableItemRows)
+    );
+    const visibleItems = options.items.slice(
+      firstVisibleIndex,
+      firstVisibleIndex + availableItemRows
+    );
+
+    for (let offset = 0; offset < visibleItems.length; offset += 1) {
+      const itemIndex = firstVisibleIndex + offset;
+      const item = visibleItems[offset];
+      const label = truncateText(
+        `${item.label}${item.description ? `  ${item.description}` : ''}`,
+        Math.max(1, width - 2)
+      );
+      rows.push(itemIndex === activeSelection.selectedIndex
+        ? `\x1b[1;35m› ${label}\x1b[0m`
+        : `\x1b[90m  ${label}\x1b[0m`);
+    }
+
+    return rows.slice(0, maxRows);
+  }
+
+  private scrollChat(rows: number): void {
+    if (rows === 0 || this.maxChatScrollOffset === 0) {
+      return;
+    }
+
+    const nextOffset = Math.max(
+      0,
+      Math.min(this.maxChatScrollOffset, this.chatScrollOffset + rows)
+    );
+    if (nextOffset !== this.chatScrollOffset) {
+      this.chatScrollOffset = nextOffset;
+      this.render();
+    }
+  }
+
   private render(): void {
     if (!this.started || !this.interactive) {
       return;
@@ -401,18 +658,49 @@ export class TerminalUI {
     const header = height >= 22 ? this.options.header : this.options.compactHeader;
     const headerRows = wrapAnsi(header, width);
     const divider = this.options.renderBorder(width);
-    const maxSuggestionRows = Math.max(0, height - headerRows.length - 5);
-    const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
-    const maxInputRows = Math.max(1, height - headerRows.length - 4 - suggestionRows.length);
-    const inputLayout = this.getInputLayout(width, maxInputRows);
-    const inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider];
+    let inputLayout: VisibleInputLayout | undefined;
+    let inputBlock: string[];
+
+    const badgeText = this.permissionMode ? `\x1b[90m[${this.permissionMode.replace('-', ' ')}]\x1b[0m` : '';
+
+    if (this.activeSelection) {
+      const maxSelectionRows = Math.max(1, height - headerRows.length - 5);
+      const selectionRows = this.getSelectionRows(width, maxSelectionRows);
+      inputBlock = [divider, ...selectionRows, divider, badgeText];
+    } else {
+      const maxSuggestionRows = Math.max(0, height - headerRows.length - 6);
+      const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
+      const maxInputRows = Math.max(1, height - headerRows.length - 5 - suggestionRows.length);
+      inputLayout = this.getInputLayout(width, maxInputRows);
+      inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, badgeText];
+    }
     const chatHeight = Math.max(1, height - headerRows.length - 1 - inputBlock.length);
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
     const wrappedChat = contentWithStatus ? wrapAnsi(contentWithStatus, width) : [];
-    const visibleChat = wrappedChat.slice(-chatHeight);
-    const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
+    let showScrollIndicator = this.chatScrollOffset > 0;
+    let chatViewportHeight = Math.max(1, chatHeight - (showScrollIndicator ? 1 : 0));
+    this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
+    this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
+
+    if (this.chatScrollOffset === 0 && showScrollIndicator) {
+      showScrollIndicator = false;
+      chatViewportHeight = chatHeight;
+      this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
+    }
+
+    this.chatPageSize = Math.max(1, chatViewportHeight - 1);
+    const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
+    const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
+    const visibleChat = wrappedChat.slice(visibleStart, visibleEnd);
+    const chatRows = showScrollIndicator
+      ? [
+        `\x1b[1;35m${truncateText(`↑ 历史消息 · 距底部 ${this.chatScrollOffset} 行 · PgDn 返回`, width)}\x1b[0m`,
+        ...visibleChat,
+        ...new Array(chatViewportHeight - visibleChat.length).fill('')
+      ]
+      : [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
     const screenRows = [...headerRows, divider, ...chatRows, ...inputBlock];
 
     let frame = '\x1b[?25l\x1b[H';
@@ -420,7 +708,7 @@ export class TerminalUI {
       frame += `\x1b[2K${screenRows[row] ?? ''}${row < height - 1 ? '\r\n' : ''}`;
     }
 
-    if (this.activeInput) {
+    if (this.activeInput && inputLayout) {
       const inputTop = headerRows.length + 1 + chatHeight;
       const cursorColumn = Math.min(inputLayout.cursor.column, width) + 1;
       const cursorRow = inputTop + inputLayout.cursor.row + 2;
@@ -429,10 +717,12 @@ export class TerminalUI {
     stdout.write(frame);
   }
 
-  private removeInputListeners(originalRawMode: boolean): void {
+  private removeInputListeners(): void {
     stdin.off('keypress', this.handleKeypress);
-    stdin.setRawMode(originalRawMode);
-    stdin.pause();
+  }
+
+  private removeSelectionListeners(): void {
+    stdin.off('keypress', this.handleSelectionKeypress);
   }
 
   private finishInput(error?: Error): void {
@@ -442,7 +732,7 @@ export class TerminalUI {
     }
 
     const value = activeInput.graphemes.join('');
-    this.removeInputListeners(activeInput.originalRawMode);
+    this.removeInputListeners();
     this.activeInput = undefined;
     this.render();
 
@@ -450,6 +740,29 @@ export class TerminalUI {
       activeInput.reject(error);
     } else {
       activeInput.resolve(value);
+    }
+  }
+
+  private finishSelection(error?: Error): void {
+    const activeSelection = this.activeSelection;
+    if (!activeSelection) {
+      return;
+    }
+
+    const selected = activeSelection.options.items[activeSelection.selectedIndex];
+    const selectedSecondary = activeSelection.options.secondary
+      ?.items[activeSelection.secondaryIndex];
+    this.removeSelectionListeners();
+    this.activeSelection = undefined;
+    this.render();
+
+    if (error) {
+      activeSelection.reject(error);
+    } else {
+      activeSelection.resolve({
+        value: selected.value,
+        secondaryValue: selectedSecondary?.value
+      });
     }
   }
 
@@ -507,14 +820,62 @@ export class TerminalUI {
     this.render();
   }
 
+  private readonly handleSelectionKeypress = (_value: string, key: readline.Key) => {
+    const activeSelection = this.activeSelection;
+    if (!activeSelection) {
+      return;
+    }
+    if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
+
+    if ((key.ctrl && key.name === 'c') || key.name === 'escape') {
+      this.finishSelection(new TerminalInputCancelledError());
+      return;
+    }
+    if (key.name === 'pageup' || key.name === 'pagedown') {
+      this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
+      return;
+    }
+    if (key.name === 'return' || key.name === 'enter') {
+      this.finishSelection();
+      return;
+    }
+    if (key.name === 'up' || key.name === 'down') {
+      const direction = key.name === 'up' ? -1 : 1;
+      const itemCount = activeSelection.options.items.length;
+      activeSelection.selectedIndex = (
+        activeSelection.selectedIndex + direction + itemCount
+      ) % itemCount;
+      this.render();
+      return;
+    }
+    if ((key.name === 'left' || key.name === 'right') && activeSelection.options.secondary) {
+      const direction = key.name === 'left' ? -1 : 1;
+      const itemCount = activeSelection.options.secondary.items.length;
+      activeSelection.secondaryIndex = (
+        activeSelection.secondaryIndex + direction + itemCount
+      ) % itemCount;
+      this.render();
+    }
+  };
+
   private readonly handleKeypress = (value: string, key: readline.Key) => {
     const activeInput = this.activeInput;
     if (!activeInput) {
       return;
     }
+    if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
 
     if (key.ctrl && key.name === 'c') {
       this.finishInput(new TerminalInputCancelledError());
+      return;
+    }
+
+    if (key.name === 'pageup' || key.name === 'pagedown') {
+      this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
       return;
     }
 
@@ -617,6 +978,13 @@ export class TerminalUI {
       activeInput.preferredColumn = undefined;
       activeInput.selectedCommandIndex = 0;
       this.render();
+      return;
+    }
+
+    if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
+      if (this.onShiftTabCallback) {
+        this.onShiftTabCallback();
+      }
       return;
     }
 

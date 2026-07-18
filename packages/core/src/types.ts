@@ -42,6 +42,7 @@ export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  reasoning_content?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
@@ -54,6 +55,8 @@ export interface CompletionOptions {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  reasoningEffort?: ReasoningEffort;
+  thinking?: boolean;
   tools?: ToolDefinition[];
   onToolCall?: (toolCalls: ToolCall[]) => void;
   /**
@@ -106,6 +109,20 @@ export class ProviderError extends HajiError {
 }
 
 /**
+ * 控制系统提示词的任务分析与验证强度。
+ */
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+
+/**
+ * 判断输入是否为受支持的思考强度。
+ */
+export function isReasoningEffort(value: string | undefined): value is ReasoningEffort {
+  return Boolean(value && REASONING_EFFORTS.includes(value as ReasoningEffort));
+}
+
+/**
  * 生成系统提示词的上下文。
  */
 export interface PromptContext {
@@ -113,6 +130,7 @@ export interface PromptContext {
   os: string;
   tools?: string[];
   vars?: Record<string, string>;
+  reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -123,4 +141,3 @@ export interface SystemPromptPart {
   priority: number;
   getContent(context: PromptContext): Promise<string> | string;
 }
-
