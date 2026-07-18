@@ -292,6 +292,7 @@ export class TerminalUI {
   private originalRawMode = false;
   private suppressMouseKeypressUntil = 0;
   private onShiftTabCallback?: () => void;
+  private onEscCallback?: () => void;
   private queueText = '';
   private isPasting = false;
   private pasteBuffer = '';
@@ -307,6 +308,10 @@ export class TerminalUI {
 
   onShiftTab(callback: () => void): void {
     this.onShiftTabCallback = callback;
+  }
+
+  onEsc(callback: () => void): void {
+    this.onEscCallback = callback;
   }
 
   setQueue(items: string[]): void {
