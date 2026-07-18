@@ -1,4 +1,5 @@
 import { stdout } from 'node:process';
+import { MarkdownStreamRenderer } from './markdown-renderer.js';
 
 /** ANSI 转义码匹配正则 */
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -15,6 +16,12 @@ export class TuiRenderer {
   private chatBuffer: string[] = [];
   /** 流式输出中尚未提交的行片段 */
   private streamFragment = '';
+  /** 流式 Markdown 渲染引擎 */
+  private mdStreamRenderer = new MarkdownStreamRenderer();
+  /** 当前流式输出是否启用 Markdown 格式化 */
+  private isMarkdownStream = false;
+  /** 当前流式输出在缓冲区中的起始索引 */
+  private streamStartIndex = 0;
   /** 输入区域预留行数（上边框 + 输入行 + 下边框 + 光标落点 + 留白） */
   private readonly INPUT_RESERVED = 5;
 
@@ -135,30 +142,52 @@ export class TuiRenderer {
   }
 
   /**
-   * 向聊天区追加完整文本并刷新。
-   * 文本可包含换行符，会被自动拆分为多行。
+   * 向聊天区追加文本并刷新。
+   * @param text 文本内容
+   * @param isMarkdown 是否使用 Markdown 引擎渲染
    */
-  appendToChat(text: string): void {
-    const lines = text.split('\n');
-    this.chatBuffer.push(...lines);
+  appendToChat(text: string, isMarkdown = false): void {
+    if (isMarkdown) {
+      const rendered = this.mdStreamRenderer.render(text, true);
+      const lines = rendered.split('\n');
+      this.chatBuffer.push(...lines);
+    } else {
+      const lines = text.split('\n');
+      this.chatBuffer.push(...lines);
+    }
     this.renderChatArea();
   }
 
-  /** 开始一次新的流式输出会话 */
-  beginStream(): void {
+  /**
+   * 开始一次新的流式输出会话。
+   * @param isMarkdown 是否启用流式 Markdown 渲染
+   */
+  beginStream(isMarkdown = false): void {
     this.streamFragment = '';
+    this.isMarkdownStream = isMarkdown;
+    this.streamStartIndex = this.chatBuffer.length;
+    this.mdStreamRenderer.reset();
   }
 
   /**
    * 流式追加文本块到聊天区。
-   * 遇到换行符时自动将已完成行提交到缓冲区。
+   * @param chunk 增量片段
    */
   streamChunk(chunk: string): void {
-    const parts = chunk.split('\n');
-    this.streamFragment += parts[0];
-    for (let i = 1; i < parts.length; i++) {
-      this.chatBuffer.push(this.streamFragment);
-      this.streamFragment = parts[i];
+    if (this.isMarkdownStream) {
+      const rendered = this.mdStreamRenderer.appendAndRender(chunk, false);
+      const lines = rendered.split('\n');
+      this.chatBuffer = [
+        ...this.chatBuffer.slice(0, this.streamStartIndex),
+        ...lines
+      ];
+    } else {
+      const parts = chunk.split('\n');
+      this.streamFragment += parts[0];
+      for (let i = 1; i < parts.length; i++) {
+        this.chatBuffer.push(this.streamFragment);
+        this.streamFragment = parts[i];
+      }
     }
     this.renderChatArea();
   }
@@ -173,10 +202,19 @@ export class TuiRenderer {
 
   /** 结束流式输出，将残余片段提交到缓冲区 */
   endStream(): void {
-    if (this.streamFragment) {
+    if (this.isMarkdownStream) {
+      const rendered = this.mdStreamRenderer.appendAndRender('', true);
+      const lines = rendered.split('\n');
+      this.chatBuffer = [
+        ...this.chatBuffer.slice(0, this.streamStartIndex),
+        ...lines
+      ];
+      this.isMarkdownStream = false;
+    } else if (this.streamFragment) {
       this.chatBuffer.push(this.streamFragment);
       this.streamFragment = '';
     }
+    this.renderChatArea();
   }
 
   /** 将光标定位到输入区域起始行 */

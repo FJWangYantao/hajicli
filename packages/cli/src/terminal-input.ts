@@ -428,6 +428,36 @@ export class TerminalUI {
     this.writeChat(`${value}\n`);
   }
 
+  /**
+   * 获取当前聊天缓冲区的总字符长度。
+   */
+  getChatLength(): number {
+    return this.chatContent.length;
+  }
+
+  /**
+   * 从指定偏置位置起覆盖更新聊天内容（用于 Markdown 流式平滑重绘）。
+   * @param offset 偏移起始位置
+   * @param value 新的文本内容
+   */
+  updateChatFrom(offset: number, value: string): void {
+    if (!this.interactive) {
+      const delta = value.slice(Math.max(0, this.chatContent.length - offset));
+      if (delta) {
+        stdout.write(delta);
+      }
+    }
+
+    this.chatContent = this.chatContent.slice(0, offset) + value;
+    if (this.chatScrollOffset === 0) {
+      this.chatScrollOffset = 0;
+    }
+    if (this.chatContent.length > 200_000) {
+      this.chatContent = this.chatContent.slice(-160_000);
+    }
+    this.render();
+  }
+
   setStatus(value: string = ''): void {
     this.status = value;
     this.render();

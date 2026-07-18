@@ -20,11 +20,14 @@ export function isRetryableError(error: unknown, status?: number): boolean {
     return status === 429 || status >= 500;
   }
   if (error instanceof Error) {
+    // 用户主动中断（AbortError）不应被视为可重试错误
+    if (error.name === 'AbortError') {
+      return false;
+    }
     const name = error.name.toLowerCase();
     const message = error.message.toLowerCase();
     return (
       name.includes('timeout') ||
-      name.includes('abort') ||
       message.includes('fetch failed') ||
       message.includes('network') ||
       message.includes('econnreset') ||
