@@ -2,8 +2,9 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, estimateMessagesChars } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -34,20 +35,14 @@ const colors = {
   cyan: (text: string) => `\x1b[36m${text}\x1b[0m`,
   bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
   userMsg: (text: string) => {
-    const bgStart = '\x1b[48;5;236m\x1b[38;5;255m';
-    const bgReset = '\x1b[0m';
     const prefix = '\x1b[1;35m ❯ \x1b[0m';
     const lines = text.split('\n');
-    const padded = [
-      `${prefix}${bgStart}   ${bgReset}`,
-      ...lines.map((line, idx) =>
-        idx === 0
-          ? `${prefix}${bgStart} ${line} ${bgReset}`
-          : `   ${bgStart} ${line} ${bgReset}`
-      ),
-      `   ${bgStart}   ${bgReset}`
-    ];
-    return padded.join('\n');
+    return lines.map((line, idx) => {
+      if (idx === 0) {
+        return `${prefix}${line}`;
+      }
+      return `   ${line}`;
+    }).join('\n');
   }
 };
 
@@ -141,7 +136,58 @@ function formatToolArgs(args: Record<string, any>, maxLen = 45): string {
   return formatted;
 }
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 动态获取当前 package.json 中的版本号。
+ */
+function getCliVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, '..', 'package.json');
+    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    const pkg = JSON.parse(raw);
+    return pkg.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
+
 async function main() {
+  const cliArgs = process.argv.slice(2);
+  const version = getCliVersion();
+
+  if (cliArgs.includes('--version') || cliArgs.includes('-v')) {
+    console.log(`haji v${version}`);
+    process.exit(0);
+  }
+
+  if (cliArgs.includes('--help') || cliArgs.includes('-h')) {
+    console.log(`
+${colors.boldPurple('HAJI CLI')} - 轻量级终端 AI 辅助编程工具 (v${version})
+
+${colors.bold('用法:')}
+  haji [选项]
+
+${colors.bold('选项:')}
+  -v, --version       显示版本号
+  -h, --help          显示帮助手册
+
+${colors.bold('快捷命令 (对话内):')}
+  /help               显示内部帮助
+  /permission         切换权限模式 (default, accept-edit, auto, bypass-permissions)
+  /effort             切换思考强度 (low, medium, high, xhigh, max)
+  /model              选择大模型与思考强度
+  /clear              清空聊天历史与上下文
+  /viewer             打开 Trace 观测中心
+  /exit               退出 haji
+
+${colors.bold('环境变量配置:')}
+  DEEPSEEK_API_KEY    DeepSeek 平台 API Key
+  VOLC_API_KEY        火山引擎 API Key (或 ARK_API_KEY)
+`);
+    process.exit(0);
+  }
+
   const volcApiKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
 
@@ -215,6 +261,73 @@ async function main() {
     ? savedPreference!.riskThreshold
     : 'medium') as RiskLevel;
 
+  const hookEngine = new HookEngine();
+
+  // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
+  hookEngine.register('PreToolUse', async (ctx) => {
+    const checkResult = await permissionEngine.evaluate({
+      mode: ctx.permissionMode as PermissionMode,
+      toolName: ctx.toolName!,
+      args: ctx.args || {},
+      userIntent: ctx.userIntent || '',
+      riskThreshold: ctx.riskThreshold as RiskLevel
+    });
+
+    const argsSummary = formatToolArgs(ctx.args || {});
+    const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
+
+    if (checkResult.action === 'allow') {
+      return null;
+    }
+    if (checkResult.action === 'prompt') {
+      if (ui.isInputActive()) {
+        ui.cancelInput();
+      }
+      const answer = await ui.readInput({
+        prompt: `  ${colors.boldYellow('⚠️  AI 申请执行修改型工具：')}${colors.purple(ctx.toolName!)}${displayArgs} ${colors.boldYellow('授权？(y/N)')} › `
+      });
+      const approved = answer.trim().toLowerCase() === 'y';
+      if (!approved) {
+        ui.writeLine(`  ${colors.boldRed('✕')} ${colors.purple(ctx.toolName!)}${displayArgs} ${colors.gray('(已拒绝执行)')}`);
+        return '错误: 用户拒绝了此命令的执行请求。';
+      }
+      return null;
+    }
+    if (checkResult.action === 'deny') {
+      const autoDeniedReason = checkResult.reason || 'Auto 分类器安全拦截';
+      ui.writeLine(`  ${colors.boldRed('🛡️ [Auto安全拦截]')} ${colors.purple(ctx.toolName!)}${displayArgs} ${colors.red(`(评级: ${checkResult.riskLevel} - ${autoDeniedReason})`)}`);
+      return `[安全引擎拒绝拦截] 命令 "${ctx.toolName}" 被 Auto 分类器检测为超出允许的危险阈值 (${checkResult.riskLevel})。拒绝原因: ${autoDeniedReason}。请重新分析用户意图，改用更安全的替代指令或步骤。`;
+    }
+    return null;
+  });
+
+  // 2. 注册 PostToolUse Hook：用于 Trace 轨迹审计收集与自动 Git 快照生成
+  hookEngine.register('PostToolUse', async (ctx) => {
+    const isApproved = !ctx.toolOutput?.startsWith('错误:') && !ctx.toolOutput?.startsWith('[安全引擎拒绝拦截]');
+    tracker.recordToolExecution(
+      ctx.toolCallId || '',
+      ctx.toolName!,
+      ctx.args || {},
+      isApproved,
+      ctx.toolOutput || ''
+    );
+
+    // AI 执行修改文件的工具后自动捕获提交轻量快照
+    if (isApproved && ['write_file', 'edit_file', 'bash'].includes(ctx.toolName || '')) {
+      const snapshotEngine = new SnapshotEngine(process.cwd());
+      snapshotEngine.createSnapshot(`auto snapshot after ${ctx.toolName}`);
+    }
+  });
+
+  // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
+  hookEngine.register('UserPromptSubmit', async (ctx) => {
+    if (ctx.messages && estimateMessagesChars(ctx.messages) > 60_000) {
+      ui.writeLine(colors.gray('🧹 检测到上下文空间消耗较高，已自动触发多层预压缩...'));
+      const result = await runCompactionPipeline(ctx.messages, { forceL4: false });
+      ctx.messages = result.messages;
+    }
+  });
+
   let provider = buildProvider(selectedModel);
   const systemPromptManager = new SystemPromptManager();
   // 在进入全屏 TUI 前启动服务，避免后台日志破坏固定布局。
@@ -256,6 +369,8 @@ async function main() {
   });
   const slashCommands = [
     { command: '/help', description: '显示帮助' },
+    { command: '/rewind', description: '历史节点撤销与代码回退' },
+    { command: '/compact', description: '多层上下文压缩' },
     { command: '/permission', description: '切换权限档次与安全阈值' },
     { command: '/effort', description: '切换思考强度' },
     { command: '/model', description: '选择模型与思考强度' },
@@ -276,16 +391,43 @@ async function main() {
     ui.setPermissionMode(permissionMode);
   });
 
+  // 待处理并发消息队列
+  const pendingInputs: string[] = [];
+
+  const startBackgroundInput = () => {
+    if (ui.isInputActive()) return;
+    ui.readInput({ slashCommands }).then(input => {
+      const trimmed = input.trim();
+      if (trimmed) {
+        pendingInputs.push(trimmed);
+        ui.setQueue(pendingInputs);
+      }
+      startBackgroundInput();
+    }).catch(err => {
+      if (err instanceof TerminalInputCancelledError) return;
+    });
+  };
+
   try {
     while (true) {
-      const userInput = await ui.readInput({ slashCommands });
+      let userInput: string;
+      if (pendingInputs.length > 0) {
+        userInput = pendingInputs.shift()!;
+        ui.setQueue(pendingInputs);
+      } else {
+        if (ui.isInputActive()) {
+          ui.cancelInput();
+        }
+        userInput = await ui.readInput({ slashCommands });
+      }
 
       const trimmedInput = userInput.trim();
       if (!trimmedInput) {
         continue;
       }
 
-      ui.writeLine(colors.userMsg(userInput));
+      ui.writeLine();
+      ui.writeLine(colors.userMsg(trimmedInput));
       ui.writeLine();
 
       // 解析斜杠内置命令
@@ -301,6 +443,99 @@ async function main() {
           messages = [{ role: 'system', content: systemPrompt }];
           ui.clearChat();
           ui.writeLine(colors.green('🧹 已清空聊天区并重置会话上下文。'));
+          continue;
+        }
+        if (command === 'rewind') {
+          const userMessageNodes: Array<{ index: number; content: string }> = [];
+          for (let i = 0; i < messages.length; i++) {
+            const m = messages[i];
+            if (m.role === 'user' && typeof m.content === 'string' && !m.content.startsWith('/')) {
+              userMessageNodes.push({ index: i, content: m.content });
+            }
+          }
+
+          if (userMessageNodes.length === 0) {
+            ui.writeLine(colors.yellow('⚠️ 当前会话中暂无合法的用户对话节点可供回退。'));
+            continue;
+          }
+
+          const items = [...userMessageNodes].reverse().map(node => {
+            const preview = node.content.length > 40 ? `${node.content.slice(0, 40)}...` : node.content;
+            return {
+              value: String(node.index),
+              label: `#${node.index}: ${preview}`,
+              description: node.content
+            };
+          });
+
+          try {
+            const selection = await ui.readSelection({
+              title: '选择要退回的用户历史节点',
+              items,
+              selectedValue: items[0].value,
+              secondary: {
+                label: '确认退回并重置代码？',
+                items: [
+                  { value: 'yes', label: 'Yes (确认回退消息与代码)' },
+                  { value: 'no', label: 'No (取消)' }
+                ],
+                selectedValue: 'no'
+              }
+            });
+
+            if (selection.secondaryValue !== 'yes') {
+              ui.writeLine(colors.gray('已取消 /rewind 退回操作。'));
+              continue;
+            }
+
+            const targetMsgIndex = parseInt(selection.value, 10);
+            const targetMsgNode = messages[targetMsgIndex];
+            const targetContent = typeof targetMsgNode?.content === 'string' ? targetMsgNode.content : '';
+
+            // 1. 截断消息历史（丢弃该节点之后的所有消息与回复）
+            messages = messages.slice(0, targetMsgIndex);
+
+            // 2. 联动回退代码文件变动
+            const snapshotEngine = new SnapshotEngine(process.cwd());
+            const headHash = snapshotEngine.getCurrentHeadHash();
+            if (headHash) {
+              snapshotEngine.rollback(headHash);
+            }
+
+            // 3. 清理聊天重置界面提示
+            ui.clearChat();
+            ui.writeLine(colors.boldGreen(`↺ 已成功退回历史至节点 #${targetMsgIndex}，并恢复了代码文件。`));
+            ui.writeLine(colors.gray('已将选中消息文本回填至底栏输入框，请修改后发送：'));
+
+            // 4. 将选中的用户消息文本回填回底栏输入框
+            if (targetContent) {
+              userInput = await ui.readInput({ slashCommands, initialValue: targetContent });
+              const refilledTrimmed = userInput.trim();
+              if (!refilledTrimmed) continue;
+              // 自动跳出斜杠解析进入流程
+              breakCommandProcessing: {
+                if (refilledTrimmed.startsWith('/')) {
+                  break breakCommandProcessing;
+                }
+              }
+            } else {
+              continue;
+            }
+          } catch (error) {
+            if (error instanceof TerminalInputCancelledError) {
+              ui.writeLine(colors.gray('已取消 /rewind 退回操作。'));
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (command === 'compact') {
+          ui.writeLine(colors.boldPurple('🧹 正在执行四层上下文压缩管线...'));
+          const result = await runCompactionPipeline(messages, { forceL4: true });
+          messages = result.messages;
+          const layersStr = result.layersApplied.length > 0 ? result.layersApplied.join(' -> ') : '已处于精简状态';
+          ui.writeLine(colors.boldGreen(`✓ 上下文压缩完成！(${layersStr})`));
+          ui.writeLine(colors.cyan(`  字符占用: ${result.originalChars.toLocaleString()} ➔ ${result.compactedChars.toLocaleString()} (释放了 ${result.freedPercentage}% 空间)`));
           continue;
         }
         if (command === 'effort') {
@@ -454,6 +689,7 @@ async function main() {
 
       let keepCalling = true;
       while (keepCalling) {
+        startBackgroundInput();
         let currentToolCalls: ToolCall[] | null = null;
 
         // 启动异步 Spinner 加载动画（TTFT 思考期）
@@ -571,35 +807,22 @@ async function main() {
             // 获取用户最新意图（提取上下文中的最近一条 user 消息）
             const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
 
-            // 使用 PermissionEngine 评估工具调用安全性
-            const checkResult = await permissionEngine.evaluate({
-              mode: permissionMode,
+            // 触发 PreToolUse 钩子（包含权限引擎评估与用户授权弹窗）
+            const preHookResult = await hookEngine.trigger('PreToolUse', {
               toolName,
               args,
               userIntent: lastUserMsg,
+              permissionMode,
               riskThreshold
             });
 
-            const argsSummary = formatToolArgs(args);
-            const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
-            let approved = false;
-            let autoDeniedReason: string | undefined = undefined;
-
-            if (checkResult.action === 'allow') {
-              approved = true;
-            } else if (checkResult.action === 'prompt') {
-              const answer = await ui.readInput({
-                prompt: `  ${colors.boldYellow('⚠️  AI 申请执行修改型工具：')}${colors.purple(toolName)}${displayArgs} ${colors.boldYellow('授权？(y/N)')} › `
-              });
-              approved = answer.trim().toLowerCase() === 'y';
-            } else if (checkResult.action === 'deny') {
-              approved = false;
-              autoDeniedReason = checkResult.reason || 'Auto 分类器安全拦截';
-            }
-
             let toolOutput = '';
             const toolStartTime = Date.now();
-            if (approved) {
+            if (preHookResult) {
+              // 被 Hook 拦截（安全拒绝或用户拒绝执行）
+              toolOutput = preHookResult;
+            } else {
+              // Hook 放行，执行真实工具
               ui.setStatus(`${colors.blue('⚙')} ${colors.gray(`正在执行 ${toolName}...`)}`);
               try {
                 toolOutput = await targetTool.execute(args);
@@ -608,24 +831,25 @@ async function main() {
               } finally {
                 ui.setStatus();
               }
-            } else {
-              if (autoDeniedReason) {
-                toolOutput = `[安全引擎拒绝拦截] 命令 "${toolName}" 被 Auto 分类器检测为超出允许的危险阈值 (${checkResult.riskLevel})。拒绝原因: ${autoDeniedReason}。请重新分析用户意图，改用更安全的替代指令或步骤。`;
+
+              // 输出工具正常/异常执行单行结果
+              const toolDuration = Date.now() - toolStartTime;
+              const argsSummary = formatToolArgs(args);
+              const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
+              if (toolOutput.startsWith('执行出错:')) {
+                ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${toolOutput})`)}`);
               } else {
-                toolOutput = '错误: 用户拒绝了此命令的执行请求。';
+                ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${toolDuration}ms)`)}`);
               }
             }
-            const toolDuration = Date.now() - toolStartTime;
 
-            // 记录事件到 Trace 追踪器
-            tracker.recordToolExecution(
-              tc.id,
+            // 触发 PostToolUse 钩子（记录 Trace 轨迹日志与后续切面动作）
+            await hookEngine.trigger('PostToolUse', {
+              toolCallId: tc.id,
               toolName,
               args,
-              approved,
-              toolOutput,
-              approved ? toolDuration : undefined
-            );
+              toolOutput
+            });
 
             // 保存工具输出至上下文
             messages.push({
@@ -633,19 +857,6 @@ async function main() {
               tool_call_id: tc.id,
               content: toolOutput
             });
-
-            // 统一单行输出工具执行结果
-            if (!approved) {
-              if (autoDeniedReason) {
-                ui.writeLine(`  ${colors.boldRed('🛡️ [Auto安全拦截]')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(评级: ${checkResult.riskLevel} - ${autoDeniedReason})`)}`);
-              } else {
-                ui.writeLine(`  ${colors.boldRed('✕')} ${colors.purple(toolName)}${displayArgs} ${colors.gray('(已拒绝执行)')}`);
-              }
-            } else if (toolOutput.startsWith('执行出错:')) {
-              ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${toolOutput})`)}`);
-            } else {
-              ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${toolDuration}ms)`)}`);
-            }
           }
           ui.writeLine();
           keepCalling = true;

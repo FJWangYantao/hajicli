@@ -7,3 +7,6 @@ export * from './serve-chat.js';
 export * from './security-classifier.js';
 export * from './permission-engine.js';
 export * from './retry.js';
+export * from './hook-engine.js';
+export * from './snapshot-engine.js';
+export * from './context-compact.js';

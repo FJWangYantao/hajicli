@@ -52,6 +52,7 @@ export interface ReadInputOptions {
   prompt?: string;
   continuationPrompt?: string;
   slashCommands?: readonly SlashCommand[];
+  initialValue?: string;
 }
 
 export interface SlashCommand {
@@ -291,6 +292,7 @@ export class TerminalUI {
   private originalRawMode = false;
   private suppressMouseKeypressUntil = 0;
   private onShiftTabCallback?: () => void;
+  private queueText = '';
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -303,6 +305,27 @@ export class TerminalUI {
 
   onShiftTab(callback: () => void): void {
     this.onShiftTabCallback = callback;
+  }
+
+  setQueue(items: string[]): void {
+    if (items.length === 0) {
+      this.queueText = '';
+    } else {
+      const formatted = items.map((msg, idx) => `[${idx + 1}] ${msg}`).join('  ');
+      const maxLen = Math.max(10, (stdout.columns || 80) - 26);
+      this.queueText = ` \x1b[1;33m⏳ 待处理队列 (${items.length} 条):\x1b[0m \x1b[36m${truncateText(formatted, maxLen)}\x1b[0m`;
+    }
+    this.render();
+  }
+
+  isInputActive(): boolean {
+    return Boolean(this.activeInput);
+  }
+
+  cancelInput(): void {
+    if (this.activeInput) {
+      this.finishInput(new TerminalInputCancelledError());
+    }
   }
 
   start(): void {
@@ -402,12 +425,13 @@ export class TerminalUI {
       throw new Error('已有输入请求正在等待处理');
     }
 
+    const initialGraphemes = options.initialValue ? splitGraphemes(options.initialValue) : [];
     return new Promise<string>((resolve, reject) => {
       this.activeInput = {
         prompt,
         continuationPrompt: options.continuationPrompt ?? this.options.continuationPrompt ?? '  ',
-        graphemes: [],
-        cursorIndex: 0,
+        graphemes: initialGraphemes,
+        cursorIndex: initialGraphemes.length,
         slashCommands: options.slashCommands ?? [],
         selectedCommandIndex: 0,
         resolve,
@@ -499,8 +523,14 @@ export class TerminalUI {
     }
   };
 
-  private readonly handleIdleKeypress = (_value: string, key: readline.Key) => {
+  private readonly handleIdleKeypress = (value: string, key: readline.Key) => {
     if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
+    if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
+      if (this.onShiftTabCallback) {
+        this.onShiftTabCallback();
+      }
       return;
     }
     if (this.activeInput || this.activeSelection) {
@@ -674,6 +704,9 @@ export class TerminalUI {
       inputLayout = this.getInputLayout(width, maxInputRows);
       inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, badgeText];
     }
+    if (this.queueText) {
+      inputBlock.unshift(this.queueText);
+    }
     const chatHeight = Math.max(1, height - headerRows.length - 1 - inputBlock.length);
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
@@ -711,7 +744,7 @@ export class TerminalUI {
     if (this.activeInput && inputLayout) {
       const inputTop = headerRows.length + 1 + chatHeight;
       const cursorColumn = Math.min(inputLayout.cursor.column, width) + 1;
-      const cursorRow = inputTop + inputLayout.cursor.row + 2;
+      const cursorRow = inputTop + inputLayout.cursor.row + 2 + (this.queueText ? 1 : 0);
       frame += `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }
     stdout.write(frame);
