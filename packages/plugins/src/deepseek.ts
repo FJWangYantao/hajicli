@@ -1,4 +1,4 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -246,38 +246,40 @@ export class DeepSeekProvider implements ModelProvider {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(60000)
-      });
+    return withExponentialBackoff(async () => {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(60000)
+        });
 
-      if (!response.ok) {
-        let errorMsg = `HTTP error! status: ${response.status}`;
-        try {
-          const errData = await response.json() as any;
-          if (errData.error?.message) {
-            errorMsg = errData.error.message;
+        if (!response.ok) {
+          let errorMsg = `HTTP error! status: ${response.status}`;
+          try {
+            const errData = await response.json() as any;
+            if (errData.error?.message) {
+              errorMsg = errData.error.message;
+            }
+          } catch {
+            // 忽略解析错误
           }
-        } catch {
-          // 忽略解析错误
+          throw new ProviderError(errorMsg, 'deepseek', response.status);
         }
-        throw new ProviderError(errorMsg, 'deepseek', response.status);
-      }
 
-      return response;
-    } catch (error) {
-      if (error instanceof ProviderError) {
-        throw error;
+        return response;
+      } catch (error) {
+        if (error instanceof ProviderError) {
+          throw error;
+        }
+        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
+        throw new ProviderError(msg, 'deepseek');
       }
-      const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
-      throw new ProviderError(msg, 'deepseek');
-    }
+    }, { maxRetries: 3, initialDelayMs: 1000, providerName: 'deepseek' });
   }
 }

@@ -1,4 +1,4 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
 
 /**
  * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
@@ -369,38 +369,40 @@ export class VolcengineProvider implements ModelProvider {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(60000)
-      });
+    return withExponentialBackoff(async () => {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(60000)
+        });
 
-      if (!response.ok) {
-        let errorMsg = `HTTP 错误！状态码: ${response.status}`;
-        try {
-          const errData = (await response.json()) as { error?: { message?: string } };
-          if (errData.error?.message) {
-            errorMsg = errData.error.message;
+        if (!response.ok) {
+          let errorMsg = `HTTP 错误！状态码: ${response.status}`;
+          try {
+            const errData = (await response.json()) as { error?: { message?: string } };
+            if (errData.error?.message) {
+              errorMsg = errData.error.message;
+            }
+          } catch {
+            // 忽略 JSON 解析错误
           }
-        } catch {
-          // 忽略 JSON 解析错误
+          throw new ProviderError(errorMsg, 'volcengine', response.status);
         }
-        throw new ProviderError(errorMsg, 'volcengine', response.status);
-      }
 
-      return response;
-    } catch (error) {
-      if (error instanceof ProviderError) {
-        throw error;
+        return response;
+      } catch (error) {
+        if (error instanceof ProviderError) {
+          throw error;
+        }
+        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
+        throw new ProviderError(msg, 'volcengine');
       }
-      const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
-      throw new ProviderError(msg, 'volcengine');
-    }
+    }, { maxRetries: 3, initialDelayMs: 1000, providerName: 'volcengine' });
   }
 }
