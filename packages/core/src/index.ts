@@ -6,3 +6,4 @@ export * from './serve-traces.js';
 export * from './serve-chat.js';
 export * from './security-classifier.js';
 export * from './permission-engine.js';
+export * from './retry.js';
