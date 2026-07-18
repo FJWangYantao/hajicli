@@ -1,4 +1,5 @@
 export * from './deepseek.js';
+export * from './volcengine.js';
 export * from './bash-tool.js';
 export * from './read-tool.js';
 export * from './write-tool.js';

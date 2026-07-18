@@ -1,33 +1,111 @@
 import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall } from '@hajicli/core';
 
-export interface DeepSeekConfig {
+/**
+ * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
+ */
+export interface VolcengineConfig {
+  /**
+   * 火山引擎 API 密钥（方舟 API Key）。
+   * 若不传，则默认读取环境变量 VOLC_API_KEY 或 ARK_API_KEY。
+   */
   apiKey?: string;
+
+  /**
+   * API 基础服务地址。
+   * 默认为 https://ark.cn-beijing.volces.com/api/v3。
+   */
   baseUrl?: string;
+
+  /**
+   * 默认推理接入点 ID（Endpoint ID），例如 ep-2025xxxxxx-xxxxx。
+   */
   defaultModel?: string;
 }
 
-export class DeepSeekProvider implements ModelProvider {
+/**
+ * 表示 SSE 数据块响应结构的类型定义。
+ */
+interface StreamChoiceDelta {
+  content?: string;
+  reasoning_content?: string;
+  tool_calls?: Array<{
+    index?: number;
+    id?: string;
+    type?: 'function';
+    function?: {
+      name?: string;
+      arguments?: string;
+    };
+  }>;
+}
+
+interface StreamChoice {
+  delta?: StreamChoiceDelta;
+}
+
+interface StreamResponseData {
+  choices?: StreamChoice[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+interface NonStreamChoice {
+  message?: {
+    content?: string;
+    reasoning_content?: string;
+    tool_calls?: ToolCall[];
+  };
+}
+
+interface NonStreamResponseData {
+  choices?: NonStreamChoice[];
+  error?: {
+    message?: string;
+  };
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+/**
+ * 火山引擎方舟 (Volcengine Ark) 大模型提供商实现。
+ */
+export class VolcengineProvider implements ModelProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultModel: string;
 
-  constructor(config: DeepSeekConfig = {}) {
-    const apiKey = config.apiKey || process.env.DEEPSEEK_API_KEY;
+  constructor(config: VolcengineConfig = {}) {
+    const apiKey = config.apiKey || process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
     if (!apiKey) {
-      throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
+      throw new ProviderError(
+        '火山引擎 API Key 缺失。请设置 VOLC_API_KEY 或 ARK_API_KEY 环境变量，或在构造函数中传入 apiKey。',
+        'volcengine'
+      );
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || 'deepseek-v4-flash';
+    this.baseUrl = config.baseUrl || 'https://ark.cn-beijing.volces.com/api/coding/v3';
+    this.defaultModel = config.defaultModel || process.env.VOLC_MODEL || process.env.ARK_MODEL || 'glm-5.2';
   }
 
+  /**
+   * 针对给定的聊天历史生成非流式响应。
+   * @param messages - 表示上下文的聊天消息数组。
+   * @param options - 生成配置项。
+   */
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
     const response = await this.request(messages, { ...options, stream: false });
-    const data = await response.json() as any;
+    const data = (await response.json()) as NonStreamResponseData;
+
     if (data.error) {
-      throw new ProviderError(data.error.message || 'API error', 'deepseek', response.status);
+      throw new ProviderError(data.error.message || '火山引擎 API 返回错误', 'volcengine', response.status);
     }
-    
+
     const choice = data.choices?.[0];
     if (choice?.message?.tool_calls && options.onToolCall) {
       options.onToolCall(choice.message.tool_calls);
@@ -46,21 +124,29 @@ export class DeepSeekProvider implements ModelProvider {
         total_tokens: data.usage.total_tokens
       });
     }
-    
+
     return choice?.message?.content || '';
   }
 
-  async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
+  /**
+   * 针对给定的聊天历史生成流式响应。
+   * @param messages - 表示上下文的聊天消息数组。
+   * @param options - 生成配置项。
+   */
+  async *completeStream(
+    messages: ChatMessage[],
+    options: CompletionOptions = {}
+  ): AsyncGenerator<string, void, unknown> {
     const response = await this.request(messages, { ...options, stream: true });
-    
+
     if (!response.body) {
-      throw new ProviderError('Response body is empty', 'deepseek', response.status);
+      throw new ProviderError('响应体为空', 'volcengine', response.status);
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    const accumulatedToolCalls: any[] = [];
+    const accumulatedToolCalls: ToolCall[] = [];
 
     try {
       while (true) {
@@ -81,9 +167,9 @@ export class DeepSeekProvider implements ModelProvider {
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.slice(6);
             try {
-              const data = JSON.parse(dataStr);
+              const data = JSON.parse(dataStr) as StreamResponseData;
               const choice = data.choices?.[0];
-              
+
               // 收集流式工具调用
               const deltaToolCalls = choice?.delta?.tool_calls;
               if (deltaToolCalls) {
@@ -101,7 +187,9 @@ export class DeepSeekProvider implements ModelProvider {
                   } else {
                     if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
                     if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
-                    if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                    if (dtc.function?.arguments) {
+                      accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                    }
                   }
                 }
               }
@@ -126,8 +214,8 @@ export class DeepSeekProvider implements ModelProvider {
               if (content) {
                 yield content;
               }
-            } catch (e) {
-              // 忽略不完整的行或 JSON 解析错误
+            } catch {
+              // 忽略解析错误或不完整的行
             }
           }
         }
@@ -138,10 +226,10 @@ export class DeepSeekProvider implements ModelProvider {
         const trimmed = buffer.trim();
         if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
           try {
-            const data = JSON.parse(trimmed.slice(6));
+            const data = JSON.parse(trimmed.slice(6)) as StreamResponseData;
             const choice = data.choices?.[0];
             const content = choice?.delta?.content || '';
-            
+
             const deltaToolCalls = choice?.delta?.tool_calls;
             if (deltaToolCalls) {
               for (const dtc of deltaToolCalls) {
@@ -158,18 +246,18 @@ export class DeepSeekProvider implements ModelProvider {
                 } else {
                   if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
                   if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
-                  if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                  if (dtc.function?.arguments) {
+                    accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
+                  }
                 }
               }
             }
-            
-            // 收集流式思考过程内容
+
             const reasoningContent = choice?.delta?.reasoning_content || '';
             if (reasoningContent && options.onReasoning) {
               options.onReasoning(reasoningContent);
             }
 
-            // 收集流式 Token 用量
             if (data.usage && options.onUsage) {
               options.onUsage({
                 prompt_tokens: data.usage.prompt_tokens,
@@ -181,16 +269,16 @@ export class DeepSeekProvider implements ModelProvider {
             if (content) {
               yield content;
             }
-          } catch (e) {
+          } catch {
             // 忽略错误
           }
         }
       }
 
-      // 如果收集到了工具调用，在结束前触发回调
+      // 触发工具调用回调
       const finalToolCalls = accumulatedToolCalls.filter(Boolean);
       if (finalToolCalls.length > 0 && options.onToolCall) {
-        options.onToolCall(finalToolCalls as ToolCall[]);
+        options.onToolCall(finalToolCalls);
       }
     } finally {
       reader.releaseLock();
@@ -199,14 +287,37 @@ export class DeepSeekProvider implements ModelProvider {
 
   private async request(messages: ChatMessage[], options: CompletionOptions): Promise<Response> {
     const url = `${this.baseUrl}/chat/completions`;
-    
-    const requestMessages = messages.map(msg => {
-      const payloadMsg: any = {
+    const modelToUse = options.model || this.defaultModel;
+
+    if (!modelToUse) {
+      throw new ProviderError(
+        '未指定模型接入点 Endpoint ID。请设置 VOLC_MODEL 环境变量，或在调用 complete/completeStream 时传入 model 参数。',
+        'volcengine'
+      );
+    }
+
+    interface RequestPayloadMessage {
+      role: string;
+      content: string;
+      tool_calls?: Array<{
+        id: string;
+        type: string;
+        function: {
+          name: string;
+          arguments: string;
+        };
+      }>;
+      tool_call_id?: string;
+      reasoning_content?: string;
+    }
+
+    const requestMessages: RequestPayloadMessage[] = messages.map((msg) => {
+      const payloadMsg: RequestPayloadMessage = {
         role: msg.role,
         content: msg.content
       };
       if (msg.tool_calls) {
-        payloadMsg.tool_calls = msg.tool_calls.map(tc => ({
+        payloadMsg.tool_calls = msg.tool_calls.map((tc) => ({
           id: tc.id,
           type: tc.type,
           function: {
@@ -224,8 +335,20 @@ export class DeepSeekProvider implements ModelProvider {
       return payloadMsg;
     });
 
-    const payload: any = {
-      model: options.model || this.defaultModel,
+    interface RequestPayload {
+      model: string;
+      messages: RequestPayloadMessage[];
+      temperature?: number;
+      max_tokens?: number;
+      stream: boolean;
+      stream_options?: { include_usage: boolean };
+      tools?: unknown[];
+      thinking?: { type: string };
+      reasoning_effort?: string;
+    }
+
+    const payload: RequestPayload = {
+      model: modelToUse,
       messages: requestMessages,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
@@ -251,22 +374,22 @@ export class DeepSeekProvider implements ModelProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
+          Authorization: `Bearer ${this.apiKey}`
         },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
-        let errorMsg = `HTTP error! status: ${response.status}`;
+        let errorMsg = `HTTP 错误状态码: ${response.status}`;
         try {
-          const errData = await response.json() as any;
+          const errData = (await response.json()) as { error?: { message?: string } };
           if (errData.error?.message) {
             errorMsg = errData.error.message;
           }
         } catch {
           // 忽略解析错误
         }
-        throw new ProviderError(errorMsg, 'deepseek', response.status);
+        throw new ProviderError(errorMsg, 'volcengine', response.status);
       }
 
       return response;
@@ -274,7 +397,7 @@ export class DeepSeekProvider implements ModelProvider {
       if (error instanceof ProviderError) {
         throw error;
       }
-      throw new ProviderError(error instanceof Error ? error.message : String(error), 'deepseek');
+      throw new ProviderError(error instanceof Error ? error.message : String(error), 'volcengine');
     }
   }
 }
