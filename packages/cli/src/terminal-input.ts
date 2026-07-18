@@ -287,6 +287,10 @@ export class TerminalUI {
   private chatPageSize = 1;
   private status = '';
   private permissionMode = '';
+  private modelName = '';
+  private reasoningEffort = '';
+  private usedTokens = 0;
+  private maxTokens = 1000000;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
   private originalRawMode = false;
@@ -303,6 +307,18 @@ export class TerminalUI {
 
   setPermissionMode(mode: string): void {
     this.permissionMode = mode;
+    this.render();
+  }
+
+  setModelInfo(model: string, effort?: string): void {
+    this.modelName = model;
+    this.reasoningEffort = effort || '';
+    this.render();
+  }
+
+  setContextUsage(usedTokens: number, maxTokens = 1000000): void {
+    this.usedTokens = Math.max(0, usedTokens);
+    this.maxTokens = Math.max(1, maxTokens);
     this.render();
   }
 
@@ -729,6 +745,55 @@ export class TerminalUI {
     }
   }
 
+  private buildStatusBar(width: number): string {
+    const permText = this.permissionMode ? `[${this.permissionMode.replace('-', ' ')}]` : '';
+    const permAnsi = permText ? `\x1b[90m${permText}\x1b[0m` : '';
+
+    let modelStr = '';
+    if (this.modelName) {
+      modelStr = this.reasoningEffort
+        ? `${this.modelName}(${this.reasoningEffort})`
+        : this.modelName;
+    }
+    const modelAnsi = modelStr ? `\x1b[1;36m${modelStr}\x1b[0m` : '';
+
+    const leftAnsi = [permAnsi, modelAnsi].filter(Boolean).join('  ');
+    const leftWidth = terminalWidth(leftAnsi);
+
+    const used = this.usedTokens;
+    const max = this.maxTokens;
+    const ratio = Math.min(1, Math.max(0, used / max));
+
+    let colorCode = '\x1b[36m';
+    if (ratio >= 0.85) {
+      colorCode = '\x1b[1;31m';
+    } else if (ratio >= 0.6) {
+      colorCode = '\x1b[33m';
+    }
+
+    const numText = `${used} / ${max}`;
+    let barCapacity = 10;
+    const minRightWidth = barCapacity + 1 + numText.length;
+
+    if (leftWidth + minRightWidth + 1 > width) {
+      barCapacity = Math.max(3, width - leftWidth - numText.length - 2);
+    }
+
+    const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
+    const emptyCount = Math.max(0, barCapacity - filledCount);
+    const barStr = `${'█'.repeat(filledCount)}${'░'.repeat(emptyCount)}`;
+
+    const rightAnsi = `${colorCode}${barStr} ${numText}\x1b[0m`;
+    const rightWidth = terminalWidth(rightAnsi);
+
+    if (leftWidth + rightWidth + 1 <= width) {
+      const padding = ' '.repeat(width - leftWidth - rightWidth);
+      return `${leftAnsi}${padding}${rightAnsi}`;
+    }
+
+    return truncateText(`${leftAnsi} ${rightAnsi}`, width);
+  }
+
   private render(): void {
     if (!this.started || !this.interactive) {
       return;
@@ -742,18 +807,18 @@ export class TerminalUI {
     let inputLayout: VisibleInputLayout | undefined;
     let inputBlock: string[];
 
-    const badgeText = this.permissionMode ? `\x1b[90m[${this.permissionMode.replace('-', ' ')}]\x1b[0m` : '';
+    const statusBar = this.buildStatusBar(width);
 
     if (this.activeSelection) {
       const maxSelectionRows = Math.max(1, height - headerRows.length - 5);
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
-      inputBlock = [divider, ...selectionRows, divider, badgeText];
+      inputBlock = [divider, ...selectionRows, divider, statusBar];
     } else {
       const maxSuggestionRows = Math.max(0, height - headerRows.length - 6);
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
       const maxInputRows = Math.max(1, height - headerRows.length - 5 - suggestionRows.length);
       inputLayout = this.getInputLayout(width, maxInputRows);
-      inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, badgeText];
+      inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, statusBar];
     }
     if (this.queueText) {
       inputBlock.unshift(this.queueText);

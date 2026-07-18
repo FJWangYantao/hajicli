@@ -24,6 +24,61 @@ export function estimateMessagesChars(messages: ChatMessage[]): number {
 }
 
 /**
+ * 启发式估算单个文本片段的 Token 数。
+ * 针对 CJK(中日韩字符)、ASCII 英文/数字、代码标点/缩进分别加权估算。
+ */
+export function estimateTextTokens(text: string): number {
+  if (!text) return 0;
+  let cjkCount = 0;
+  let asciiCount = 0;
+  let codeSymbolCount = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    // CJK 统一表意字符区间
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf)) {
+      cjkCount++;
+    } else if (code <= 127) {
+      // 常见代码标点、缩进、换行
+      if (code === 32 || code === 9 || code === 10 || code === 13 || (code >= 33 && code <= 47) || (code >= 58 && code <= 64) || (code >= 91 && code <= 96) || (code >= 123 && code <= 126)) {
+        codeSymbolCount++;
+      } else {
+        asciiCount++;
+      }
+    } else {
+      cjkCount++;
+    }
+  }
+
+  // CJK 字符约 0.7 Token/字；ASCII 字母数字约 0.25 Token/字；代码标点与缩进约 0.5 Token/字
+  return Math.ceil(cjkCount * 0.7 + asciiCount * 0.25 + codeSymbolCount * 0.5);
+}
+
+/**
+ * 启发式估算消息数组的总 Token 数。
+ * 默认不包含系统提示词 (role === 'system') 开销，以便新对话初始显示为 0。
+ * 结合文本加权估算与 Message Header 固定开销 (每条消息约 4 Tokens)。
+ */
+export function estimateMessagesTokens(messages: ChatMessage[], includeSystem = false): number {
+  let totalTokens = 0;
+  for (const m of messages) {
+    if (!includeSystem && m.role === 'system') {
+      continue;
+    }
+    totalTokens += 4; // 消息 Protocol 额外开销
+    if (typeof m.content === 'string') {
+      totalTokens += estimateTextTokens(m.content);
+    } else if (Array.isArray(m.content)) {
+      totalTokens += estimateTextTokens(JSON.stringify(m.content));
+    }
+    if (m.tool_calls) {
+      totalTokens += estimateTextTokens(JSON.stringify(m.tool_calls));
+    }
+  }
+  return totalTokens;
+}
+
+/**
  * L1: tool_result_budget（大工具结果落盘 - 0 API）
  * 检查最后一条消息或近几条消息中超大 tool_result（如超 150KB），将文本落盘至 .haji/task_outputs/
  */
