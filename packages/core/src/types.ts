@@ -58,6 +58,7 @@ export interface CompletionOptions {
   reasoningEffort?: ReasoningEffort;
   thinking?: boolean;
   tools?: ToolDefinition[];
+  abortSignal?: AbortSignal;
   onToolCall?: (toolCalls: ToolCall[]) => void;
   /**
    * 接收大模型流式或非流式输出中的思考过程（如推理内容）。

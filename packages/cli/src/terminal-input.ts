@@ -495,6 +495,15 @@ export class TerminalUI {
   private readonly handleMouseData = (data: Buffer | string) => {
     const value = typeof data === 'string' ? data : data.toString('utf-8');
 
+    // 0ms 敏捷捕获原生 Esc 单按键 (0x1b)，绕过 readline 默认的延时等待
+    if (value === '\x1b' || (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x1b)) {
+      this.suppressMouseKeypressUntil = Date.now() + 100;
+      if (this.onEscCallback) {
+        this.onEscCallback();
+      }
+      return;
+    }
+
     // 1. 括号粘贴模式 (Bracketed Paste Mode \x1b[200~ ... \x1b[201~) 原子拦截
     if (this.isPasting || value.includes('\x1b[200~')) {
       let content = value;

@@ -378,7 +378,7 @@ export class VolcengineProvider implements ModelProvider {
             Authorization: `Bearer ${this.apiKey}`
           },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(60000)
+          signal: options.abortSignal || AbortSignal.timeout(60000)
         });
 
         if (!response.ok) {
