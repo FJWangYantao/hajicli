@@ -39,7 +39,7 @@
 - **🚫 禁止修改** `.env`、`.gitignore`、`tsconfig.json`、`package.json` 等配置文件，除非我明确要求
 
 ### 2.3 行为红线
-- **🚫 禁止自主执行**任何 shell 命令（包括但不限于 `npm install`、`git commit`、`rm`、`mv`）
+- **🚫 禁止未经用户明确授权自主执行**任何 shell 命令（包括但不限于 `npm install`、`git commit`、`rm`、`mv`）。在获得用户明确同意后方可执行
 - **🚫 禁止假设**项目中不存在的文件内容——如果你不确定，先问我
 - **🚫 禁止跳过错误处理**——所有新增代码必须包含适当的 error handling
 
@@ -173,7 +173,7 @@ cli → core ← plugins
   - scope: `core` | `cli` | `plugins` | 省略
   - description: 用英文，简洁明了
 - 示例：`feat(core): add provider registry for model plugins`
-- **不得由 AI 自行执行 git 命令**——所有 git 操作由我手动执行
+- **未经用户授权同意不得自主执行 git 命令**——在获得用户明确授权确认后方可代为执行 git 操作
 
 ---
 
