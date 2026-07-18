@@ -38,12 +38,16 @@ const colors = {
     const bgReset = '\x1b[0m';
     const prefix = '\x1b[1;35m ❯ \x1b[0m';
     const lines = text.split('\n');
-    return lines.map((line, idx) => {
-      if (idx === 0) {
-        return `${prefix}${bgStart} ${line} ${bgReset}`;
-      }
-      return `   ${bgStart} ${line} ${bgReset}`;
-    }).join('\n');
+    const padded = [
+      `${prefix}${bgStart}   ${bgReset}`,
+      ...lines.map((line, idx) =>
+        idx === 0
+          ? `${prefix}${bgStart} ${line} ${bgReset}`
+          : `   ${bgStart} ${line} ${bgReset}`
+      ),
+      `   ${bgStart}   ${bgReset}`
+    ];
+    return padded.join('\n');
   }
 };
 
