@@ -114,6 +114,24 @@ interface ActiveSelection {
   reject: (error: Error) => void;
 }
 
+interface ChatSelectionPoint {
+  row: number;
+  column: number;
+}
+
+interface ChatTextSelection {
+  anchor: ChatSelectionPoint;
+  focus: ChatSelectionPoint;
+  dragging: boolean;
+}
+
+interface ChatViewport {
+  screenTop: number;
+  visibleStart: number;
+  visibleEnd: number;
+  width: number;
+}
+
 interface VisibleInputLayout {
   rows: string[];
   cursor: CursorPosition;
@@ -165,6 +183,70 @@ function terminalWidth(value: string): number {
   }
 
   return width;
+}
+
+function plainTextByColumns(value: string, startColumn: number, endColumn: number): string {
+  const plainText = value.replace(ANSI_PATTERN, '');
+  let result = '';
+  let column = 0;
+
+  for (const grapheme of splitGraphemes(plainText)) {
+    const width = terminalWidth(grapheme);
+    const graphemeEnd = column + width;
+    if (column < endColumn && graphemeEnd > startColumn) {
+      result += grapheme;
+    }
+    column = graphemeEnd;
+    if (column >= endColumn) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function highlightAnsiColumns(value: string, startColumn: number, endColumn: number): string {
+  if (endColumn <= startColumn) {
+    return value;
+  }
+
+  const selectionOn = '\x1b[7m';
+  const selectionOff = '\x1b[27m';
+  let result = '';
+  let column = 0;
+  let offset = 0;
+  let highlighted = false;
+
+  while (offset < value.length) {
+    if (value[offset] === '\x1b') {
+      const match = value.slice(offset).match(ANSI_AT_START_PATTERN);
+      if (match) {
+        const sequence = match[0];
+        result += sequence;
+        if (highlighted && /\x1b\[(?:0)?m/.test(sequence)) {
+          result += selectionOn;
+        }
+        offset += sequence.length;
+        continue;
+      }
+    }
+
+    const grapheme = splitGraphemes(value.slice(offset))[0];
+    const width = terminalWidth(grapheme);
+    const shouldHighlight = column < endColumn && column + width > startColumn;
+    if (shouldHighlight !== highlighted) {
+      result += shouldHighlight ? selectionOn : selectionOff;
+      highlighted = shouldHighlight;
+    }
+    result += grapheme;
+    column += width;
+    offset += grapheme.length;
+  }
+
+  if (highlighted) {
+    result += selectionOff;
+  }
+  return result;
 }
 
 function truncateText(value: string, width: number): string {
@@ -293,6 +375,8 @@ export class TerminalUI {
   private maxTokens = 1000000;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
+  private chatTextSelection?: ChatTextSelection;
+  private chatViewport?: ChatViewport;
   private originalRawMode = false;
   private suppressMouseKeypressUntil = 0;
   private onShiftTabCallback?: () => void;
@@ -374,10 +458,9 @@ export class TerminalUI {
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
-    // 不启用 1000/1002/1006 鼠标上报：这些模式会劫持终端原生拖选，
-    // Windows Terminal 中还可能把拖动产生的转义序列误识别为退出按键。
-    // 仅保留 1007 备用滚动，让滚轮在备用屏幕中转换为方向键。
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1007h\x1b[?2004h');
+    // 使用 SGR 按键拖动上报，由 haji 将选区锚定到聊天内容；1007 保留滚轮滚动。
+    // 启动前先清理旧进程可能遗留的鼠标模式，避免状态叠加。
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
     stdin.prependListener('data', this.handleMouseData);
     stdin.on('keypress', this.handleIdleKeypress);
@@ -424,6 +507,8 @@ export class TerminalUI {
   clearChat(): void {
     this.chatContent = '';
     this.chatScrollOffset = 0;
+    this.chatTextSelection = undefined;
+    this.chatViewport = undefined;
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
     this.render();
@@ -659,14 +744,106 @@ export class TerminalUI {
   private readonly handleResize = () => {
     this.cachedContentWithStatus = '';
     this.cachedWrappedWidth = 0;
+    this.chatTextSelection = undefined;
     this.render();
   };
+
+  private getChatPointFromMouse(column: number, row: number): ChatSelectionPoint | undefined {
+    const viewport = this.chatViewport;
+    if (!viewport || viewport.visibleEnd <= viewport.visibleStart) {
+      return undefined;
+    }
+
+    const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
+    const screenRowOffset = Math.max(0, Math.min(visibleRowCount - 1, row - viewport.screenTop));
+    const logicalRow = viewport.visibleStart + screenRowOffset;
+    const line = this.cachedWrappedChat[logicalRow] ?? '';
+    const lineWidth = terminalWidth(line);
+    return {
+      row: logicalRow,
+      column: Math.max(0, Math.min(lineWidth, column - 1))
+    };
+  }
+
+  private isMouseInChatViewport(row: number): boolean {
+    const viewport = this.chatViewport;
+    return Boolean(
+      viewport
+      && row >= viewport.screenTop
+      && row < viewport.screenTop + (viewport.visibleEnd - viewport.visibleStart)
+    );
+  }
+
+  private getNormalizedChatSelection(): { start: ChatSelectionPoint; end: ChatSelectionPoint } | undefined {
+    const selection = this.chatTextSelection;
+    if (!selection) {
+      return undefined;
+    }
+
+    const anchorFirst = selection.anchor.row < selection.focus.row
+      || (selection.anchor.row === selection.focus.row && selection.anchor.column <= selection.focus.column);
+    return anchorFirst
+      ? { start: selection.anchor, end: selection.focus }
+      : { start: selection.focus, end: selection.anchor };
+  }
+
+  private highlightChatRow(value: string, logicalRow: number): string {
+    const selection = this.getNormalizedChatSelection();
+    if (!selection || logicalRow < selection.start.row || logicalRow > selection.end.row) {
+      return value;
+    }
+
+    const startColumn = logicalRow === selection.start.row ? selection.start.column : 0;
+    const endColumn = logicalRow === selection.end.row
+      ? selection.end.column + 1
+      : Math.max(1, terminalWidth(value));
+    return highlightAnsiColumns(value, startColumn, endColumn);
+  }
+
+  private getSelectedChatText(): string {
+    const selection = this.getNormalizedChatSelection();
+    if (!selection) {
+      return '';
+    }
+
+    const rows: string[] = [];
+    for (let row = selection.start.row; row <= selection.end.row; row += 1) {
+      const value = this.cachedWrappedChat[row] ?? '';
+      const startColumn = row === selection.start.row ? selection.start.column : 0;
+      const endColumn = row === selection.end.row
+        ? selection.end.column + 1
+        : Math.max(1, terminalWidth(value));
+      rows.push(plainTextByColumns(value, startColumn, endColumn));
+    }
+    return rows.join('\n');
+  }
+
+  private copyChatSelection(): boolean {
+    const text = this.getSelectedChatText();
+    if (!text) {
+      return false;
+    }
+
+    if (process.platform === 'win32') {
+      const script = '[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())';
+      const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+        input: text,
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['pipe', 'ignore', 'ignore']
+      });
+      return result.status === 0;
+    }
+
+    stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
+    return true;
+  }
 
   private readonly handleMouseData = (data: Buffer | string) => {
     const value = typeof data === 'string' ? data : data.toString('utf-8');
 
     // 通用分包守卫：若待处理 ESC 定时器激活，且新到数据不是又一个孤立 \x1b，
-    // 则立即取消定时器。真实 Esc 单按后 25ms 内不会产生任何后续字节；
+    // 则立即取消定时器。真实 Esc 单按后短时间内不会产生任何后续字节；
     // 有后续字节（即使不以 \x1b 开头的分包，如 "[<64;col;rowM"）必然是转义序列的一部分。
     if (this.pendingEscTimer && value !== '\x1b') {
       clearTimeout(this.pendingEscTimer);
@@ -690,9 +867,12 @@ export class TerminalUI {
       this.suppressMouseKeypressUntil = Date.now() + 200;
     }
 
-    // 延迟触发 ESC 回调：等待 25ms 确认后续无鼠标序列字节再触发
+    // 延迟触发 ESC 回调：留出足够时间等待 Windows Terminal 的分包鼠标序列
     // 防止 SGR 鼠标序列分包时 \x1b 单独到达被误判为用户按下 Esc
     if (!isMouseSequence && (value === '\x1b' || (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x1b))) {
+      // readline 对分包鼠标序列的 ESC 可能延迟派生 keypress；先延长抑制窗口，
+      // 真正的 Esc 仍由下方的独立定时器直接触发。
+      this.suppressMouseKeypressUntil = Date.now() + 1000;
       if (this.pendingEscTimer) {
         clearTimeout(this.pendingEscTimer);
       }
@@ -702,7 +882,7 @@ export class TerminalUI {
         if (this.onEscCallback) {
           this.onEscCallback();
         }
-      }, 25);
+      }, 80);
       return;
     }
 
@@ -733,6 +913,7 @@ export class TerminalUI {
 
     let handledMouseEvent = false;
     let totalScrollRows = 0;
+    let dragPointer: { column: number; row: number } | undefined;
 
     const handleWheelButton = (button: number) => {
       if ((button & 64) === 0) {
@@ -745,8 +926,49 @@ export class TerminalUI {
     // SGR 鼠标模式 (\x1b[<button;x;yM 或 \x1b[<button;x;ym)
     if (/\x1b\[<\d+;\d+;\d+[mM]/.test(value)) {
       handledMouseEvent = true;
-      for (const match of value.matchAll(/\x1b\[<(\d+);\d+;\d+[mM]/g)) {
-        handleWheelButton(Number.parseInt(match[1], 10));
+      for (const match of value.matchAll(/\x1b\[<(\d+);(\d+);(\d+)([mM])/g)) {
+        const button = Number.parseInt(match[1], 10);
+        const column = Number.parseInt(match[2], 10);
+        const row = Number.parseInt(match[3], 10);
+        const eventType = match[4];
+
+        if ((button & 64) !== 0) {
+          handleWheelButton(button);
+          if (this.chatTextSelection?.dragging) {
+            dragPointer = { column, row };
+          }
+          continue;
+        }
+
+        const isLeftButton = (button & 3) === 0;
+        const isMotion = (button & 32) !== 0;
+        if (eventType === 'm') {
+          if (this.chatTextSelection?.dragging) {
+            const point = this.getChatPointFromMouse(column, row);
+            if (point) {
+              this.chatTextSelection.focus = point;
+            }
+            this.chatTextSelection.dragging = false;
+            this.render();
+          }
+        } else if (isMotion && isLeftButton && this.chatTextSelection?.dragging) {
+          const point = this.getChatPointFromMouse(column, row);
+          if (point) {
+            this.chatTextSelection.focus = point;
+            this.render();
+          }
+        } else if (!isMotion && isLeftButton) {
+          if (this.isMouseInChatViewport(row)) {
+            const point = this.getChatPointFromMouse(column, row);
+            if (point) {
+              this.chatTextSelection = { anchor: point, focus: point, dragging: true };
+              this.render();
+            }
+          } else if (this.chatTextSelection) {
+            this.chatTextSelection = undefined;
+            this.render();
+          }
+        }
       }
     }
 
@@ -768,6 +990,13 @@ export class TerminalUI {
 
     if (totalScrollRows !== 0) {
       this.scrollChat(totalScrollRows);
+      if (dragPointer && this.chatTextSelection?.dragging) {
+        const point = this.getChatPointFromMouse(dragPointer.column, dragPointer.row);
+        if (point) {
+          this.chatTextSelection.focus = point;
+          this.render();
+        }
+      }
     }
 
     if (handledMouseEvent) {
@@ -786,6 +1015,9 @@ export class TerminalUI {
       return;
     }
     if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
+      return;
+    }
+    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
       return;
     }
     if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
@@ -1058,7 +1290,15 @@ export class TerminalUI {
     this.chatPageSize = Math.max(1, chatViewportHeight - 1);
     const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
     const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
-    const visibleChat = wrappedChat.slice(visibleStart, visibleEnd);
+    this.chatViewport = {
+      screenTop: headerRows.length + 2 + (showScrollIndicator ? 1 : 0),
+      visibleStart,
+      visibleEnd,
+      width
+    };
+    const visibleChat = wrappedChat
+      .slice(visibleStart, visibleEnd)
+      .map((row, index) => this.highlightChatRow(row, visibleStart + index));
     const chatRows = showScrollIndicator
       ? [
         `\x1b[1;35m${truncateText(`↑ 历史消息 · 距底部 ${this.chatScrollOffset} 行 · PgDn 返回`, width)}\x1b[0m`,
@@ -1197,6 +1437,10 @@ export class TerminalUI {
       return;
     }
 
+    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
+      return;
+    }
+
     if ((key.ctrl && key.name === 'c') || key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
       return;
@@ -1237,6 +1481,10 @@ export class TerminalUI {
       return;
     }
     if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
+      return;
+    }
+
+    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
       return;
     }
 
