@@ -293,6 +293,8 @@ export class TerminalUI {
   private suppressMouseKeypressUntil = 0;
   private onShiftTabCallback?: () => void;
   private queueText = '';
+  private isPasting = false;
+  private pasteBuffer = '';
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -344,7 +346,7 @@ export class TerminalUI {
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
-    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h');
+    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
     stdin.prependListener('data', this.handleMouseData);
     stdin.on('keypress', this.handleIdleKeypress);
@@ -373,7 +375,7 @@ export class TerminalUI {
       stdin.setRawMode(this.originalRawMode);
       stdin.pause();
       process.off('exit', this.handleProcessExit);
-      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?25h\x1b[0m\x1b[?1049l');
+      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
     }
     this.started = false;
   }
@@ -492,6 +494,32 @@ export class TerminalUI {
 
   private readonly handleMouseData = (data: Buffer | string) => {
     const value = typeof data === 'string' ? data : data.toString('utf-8');
+
+    // 1. 括号粘贴模式 (Bracketed Paste Mode \x1b[200~ ... \x1b[201~) 原子拦截
+    if (this.isPasting || value.includes('\x1b[200~')) {
+      let content = value;
+      if (!this.isPasting && content.includes('\x1b[200~')) {
+        this.isPasting = true;
+        content = content.slice(content.indexOf('\x1b[200~') + 6);
+      }
+      if (this.isPasting) {
+        if (content.includes('\x1b[201~')) {
+          const endIdx = content.indexOf('\x1b[201~');
+          this.pasteBuffer += content.slice(0, endIdx);
+          this.isPasting = false;
+          const fullPastedText = this.pasteBuffer;
+          this.pasteBuffer = '';
+          this.suppressMouseKeypressUntil = Date.now() + 100;
+          if (fullPastedText) {
+            this.insert(fullPastedText);
+          }
+        } else {
+          this.pasteBuffer += content;
+        }
+        return;
+      }
+    }
+
     let handledMouseEvent = false;
 
     const handleWheelButton = (button: number) => {
@@ -503,23 +531,32 @@ export class TerminalUI {
     };
 
     // SGR 鼠标模式 (\x1b[<button;x;yM 或 \x1b[<button;x;ym)
-    for (const match of value.matchAll(/\x1b\[<(\d+);\d+;\d+[mM]/g)) {
-      handleWheelButton(Number.parseInt(match[1], 10));
+    if (/\x1b\[<\d+;\d+;\d+[mM]/.test(value)) {
+      handledMouseEvent = true;
+      for (const match of value.matchAll(/\x1b\[<(\d+);\d+;\d+[mM]/g)) {
+        handleWheelButton(Number.parseInt(match[1], 10));
+      }
     }
 
     // URXVT 鼠标模式 (\x1b[button;x;yM)
-    for (const match of value.matchAll(/\x1b\[(\d+);\d+;\d+M/g)) {
-      handleWheelButton(Number.parseInt(match[1], 10));
+    if (/\x1b\[\d+;\d+;\d+M/.test(value)) {
+      handledMouseEvent = true;
+      for (const match of value.matchAll(/\x1b\[(\d+);\d+;\d+M/g)) {
+        handleWheelButton(Number.parseInt(match[1], 10));
+      }
     }
 
     // Legacy X10 鼠标模式兼容 (\x1b[M<cb><cx><cy>)
-    for (const match of value.matchAll(/\x1b\[M([\s\S])([\s\S])([\s\S])/g)) {
-      handleWheelButton(match[1].charCodeAt(0) - 32);
+    if (/\x1b\[M[\s\S]{3}/.test(value)) {
+      handledMouseEvent = true;
+      for (const match of value.matchAll(/\x1b\[M([\s\S])([\s\S])([\s\S])/g)) {
+        handleWheelButton(match[1].charCodeAt(0) - 32);
+      }
     }
 
     if (handledMouseEvent) {
-      // readline 会把鼠标序列的尾部再次拆成普通按键事件，短暂忽略这些派生事件。
-      this.suppressMouseKeypressUntil = Date.now() + 50;
+      // 鼠标点击/滚轮事件触发后，忽略随后的派生按键与控制序列
+      this.suppressMouseKeypressUntil = Date.now() + 100;
     }
   };
 
@@ -544,7 +581,7 @@ export class TerminalUI {
 
   private readonly handleProcessExit = () => {
     stdin.setRawMode(this.originalRawMode);
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?25h\x1b[0m\x1b[?1049l');
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
   };
 
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
@@ -899,6 +936,9 @@ export class TerminalUI {
       return;
     }
     if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
+    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
       return;
     }
 

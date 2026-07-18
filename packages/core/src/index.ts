@@ -10,3 +10,4 @@ export * from './retry.js';
 export * from './hook-engine.js';
 export * from './snapshot-engine.js';
 export * from './context-compact.js';
+export * from './session-manager.js';

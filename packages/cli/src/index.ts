@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, estimateMessagesChars } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, estimateMessagesChars, SessionManager } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -357,8 +357,11 @@ ${colors.bold('环境变量配置:')}
   });
   let systemPrompt = await createSystemPrompt();
 
+  const sessionManager = new SessionManager();
+
   // 初始化会话历史记录
   let messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
+  sessionManager.saveCurrentSession(messages);
 
   const ui = new TerminalUI({
     header: LOGO.trim(),
@@ -369,6 +372,7 @@ ${colors.bold('环境变量配置:')}
   });
   const slashCommands = [
     { command: '/help', description: '显示帮助' },
+    { command: '/resume', description: '历史对话查看与热切换' },
     { command: '/rewind', description: '历史节点撤销与代码回退' },
     { command: '/compact', description: '多层上下文压缩' },
     { command: '/permission', description: '切换权限档次与安全阈值' },
@@ -440,10 +444,64 @@ ${colors.bold('环境变量配置:')}
           break;
         }
         if (command === 'clear') {
+          sessionManager.startNewSession();
           messages = [{ role: 'system', content: systemPrompt }];
+          sessionManager.saveCurrentSession(messages);
           ui.clearChat();
-          ui.writeLine(colors.green('🧹 已清空聊天区并重置会话上下文。'));
+          ui.writeLine(colors.green('🧹 已开启全新对话并重置上下文。'));
           continue;
+        }
+        if (command === 'resume') {
+          const sessions = sessionManager.listSessions();
+          if (sessions.length === 0) {
+            ui.writeLine(colors.yellow('⚠️ 暂无存盘的历史对话记录。'));
+            continue;
+          }
+
+          const items = sessions.map(s => {
+            const timeStr = new Date(s.updatedAt).toLocaleString('zh-CN', {
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+            const msgCount = s.messages.filter(m => m.role === 'user').length;
+            return {
+              value: s.id,
+              label: `[${timeStr}] ${s.title}`,
+              description: `(${msgCount} 条消息)`
+            };
+          });
+
+          try {
+            const selection = await ui.readSelection({
+              title: '选择要恢复的历史对话 (按最近时间排序)',
+              items,
+              selectedValue: sessionManager.getCurrentSession().id
+            });
+
+            const loaded = sessionManager.loadSession(selection.value);
+            if (loaded && loaded.messages.length > 0) {
+              messages = loaded.messages;
+              ui.clearChat();
+              ui.writeLine(colors.boldGreen(`✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`));
+              // 回显历史用户对话
+              for (const m of messages) {
+                if (m.role === 'user' && typeof m.content === 'string') {
+                  ui.writeLine(colors.userMsg(m.content));
+                }
+              }
+            } else {
+              ui.writeLine(colors.yellow('⚠️ 选中的会话为空或加载失败。'));
+            }
+            continue;
+          } catch (error) {
+            if (error instanceof TerminalInputCancelledError) {
+              ui.writeLine(colors.gray('已取消会话切换。'));
+              continue;
+            }
+            throw error;
+          }
         }
         if (command === 'rewind') {
           const userMessageNodes: Array<{ index: number; content: string }> = [];
@@ -679,13 +737,32 @@ ${colors.bold('环境变量配置:')}
           continue;
         }
 
-        ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助。`));
+ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助。`));
         continue;
       }
 
       // 记录用户消息到 Trace 与上下文
       tracker.recordUserInput(trimmedInput);
       messages.push({ role: 'user', content: trimmedInput });
+
+      // 首条用户消息触发后台并行生成标题与存盘
+      const isFirstUserMsg = messages.filter(m => m.role === 'user').length === 1;
+      if (isFirstUserMsg) {
+        sessionManager.saveCurrentSession(messages);
+        sessionManager.generateTitleAsync(trimmedInput, async (prompt) => {
+          let fullTitleText = '';
+          const titleStream = provider.completeStream([{ role: 'user', content: prompt }], {
+            model: selectedModel,
+            reasoningEffort: 'low'
+          });
+          for await (const chunk of titleStream) {
+            fullTitleText += chunk;
+          }
+          return fullTitleText;
+        }).catch(() => {});
+      } else {
+        sessionManager.saveCurrentSession(messages);
+      }
 
       let keepCalling = true;
       while (keepCalling) {
