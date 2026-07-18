@@ -39,6 +39,13 @@ export class SessionManager {
   }
 
   /**
+   * 判断会话中是否包含有效对话消息（包含至少一条 user 或 assistant 消息）
+   */
+  public hasEffectiveMessages(messages: ChatMessage[] = []): boolean {
+    return messages.some(m => m.role === 'user' || m.role === 'assistant');
+  }
+
+  /**
    * 获取当前会话信息
    */
   public getCurrentSession(): StoredSession {
@@ -46,7 +53,7 @@ export class SessionManager {
   }
 
   /**
-   * 更新并持久化当前会话
+   * 更新并持久化当前会话（仅在包含有效消息时存盘，0 条有效消息时清理磁盘空文件）
    */
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
     this.currentSession.messages = messages;
@@ -55,9 +62,20 @@ export class SessionManager {
       this.currentSession.title = title;
     }
 
+    const filePath = path.join(this.sessionsDir, `session_${this.currentSession.id}.json`);
+
+    // 若无有效对话内容（0 条用户/模型消息），拦截落盘，并清理可能存在的对应磁盘空文件
+    if (!this.hasEffectiveMessages(messages)) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch {}
+      return;
+    }
+
     try {
       this.ensureDir();
-      const filePath = path.join(this.sessionsDir, `session_${this.currentSession.id}.json`);
       fs.writeFileSync(filePath, JSON.stringify(this.currentSession, null, 2), 'utf-8');
     } catch {}
   }
@@ -81,7 +99,8 @@ export class SessionManager {
   }
 
   /**
-   * 获取所有存盘的会话列表，按 updatedAt 最近修改时间降序排列
+   * 获取所有存盘的有效会话列表，按 updatedAt 最近修改时间降序排列。
+   * 自动过滤并清理 0 条有效消息的空会话文件。
    */
   public listSessions(): StoredSession[] {
     try {
@@ -90,11 +109,17 @@ export class SessionManager {
       const sessions: StoredSession[] = [];
 
       for (const file of files) {
+        const filePath = path.join(this.sessionsDir, file);
         try {
-          const raw = fs.readFileSync(path.join(this.sessionsDir, file), 'utf-8');
+          const raw = fs.readFileSync(filePath, 'utf-8');
           const session = JSON.parse(raw) as StoredSession;
-          if (session && session.id) {
+          if (session && session.id && this.hasEffectiveMessages(session.messages)) {
             sessions.push(session);
+          } else if (session && (!session.messages || !this.hasEffectiveMessages(session.messages))) {
+            // 自动清理盘面上残留的 0 条消息的空会话文件
+            try {
+              fs.unlinkSync(filePath);
+            } catch {}
           }
         } catch {}
       }
