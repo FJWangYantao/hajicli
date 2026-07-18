@@ -520,7 +520,7 @@ ${colors.bold('环境变量配置:')}
                       } catch {}
                       const argsSummary = formatToolArgs(argsObj);
                       const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
-                      ui.writeLine(`  ${colors.purple(`⚙️ ${tc.function.name}`)}${displayArgs}`);
+                      ui.writeLine(`  ${colors.purple(tc.function.name)}${displayArgs}`);
                     }
                   }
                   ui.writeLine();
@@ -923,6 +923,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
           assistantMessage.tool_calls = toolCalls;
         }
         messages.push(assistantMessage);
+        sessionManager.saveCurrentSession(messages);
         updateStatusUI();
 
         // 处理工具调用逻辑
@@ -943,6 +944,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
                 tool_call_id: tc.id,
                 content: `错误: 工具 "${toolName}" 未注册。`
               });
+              sessionManager.saveCurrentSession(messages);
               updateStatusUI();
               continue;
             }
@@ -1005,6 +1007,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
               tool_call_id: tc.id,
               content: toolOutput
             });
+            sessionManager.saveCurrentSession(messages);
             updateStatusUI();
           }
           ui.writeLine();
@@ -1012,6 +1015,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
         } else {
           keepCalling = false;
         }
+        sessionManager.saveCurrentSession(messages);
       }
     }
   } catch (error) {
