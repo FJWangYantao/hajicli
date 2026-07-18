@@ -300,6 +300,13 @@ export class TerminalUI {
   private queueText = '';
   private isPasting = false;
   private pasteBuffer = '';
+  private cachedContentWithStatus = '';
+  private cachedWrappedWidth = 0;
+  private cachedWrappedChat: string[] = [];
+  private renderScheduled = false;
+  private streamRenderTimer: NodeJS.Timeout | null = null;
+  // 延迟触发 ESC 的定时器，用于区分真实 Esc 按键与鼠标序列分包中的 \x1b 字节
+  private pendingEscTimer: NodeJS.Timeout | null = null;
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -367,7 +374,10 @@ export class TerminalUI {
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
-    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h');
+    // 不启用 1000/1002/1006 鼠标上报：这些模式会劫持终端原生拖选，
+    // Windows Terminal 中还可能把拖动产生的转义序列误识别为退出按键。
+    // 仅保留 1007 备用滚动，让滚轮在备用屏幕中转换为方向键。
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1007h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
     stdin.prependListener('data', this.handleMouseData);
     stdin.on('keypress', this.handleIdleKeypress);
@@ -396,15 +406,92 @@ export class TerminalUI {
       stdin.setRawMode(this.originalRawMode);
       stdin.pause();
       process.off('exit', this.handleProcessExit);
-      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
+      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
     }
+    if (this.streamRenderTimer) {
+      clearTimeout(this.streamRenderTimer);
+      this.streamRenderTimer = null;
+    }
+    // 清理待处理的 ESC 延迟定时器，防止 close 后仍触发回调
+    if (this.pendingEscTimer) {
+      clearTimeout(this.pendingEscTimer);
+      this.pendingEscTimer = null;
+    }
+    this.renderScheduled = false;
     this.started = false;
   }
 
   clearChat(): void {
     this.chatContent = '';
     this.chatScrollOffset = 0;
+    this.cachedContentWithStatus = '';
+    this.cachedWrappedChat = [];
     this.render();
+  }
+
+  /**
+   * 获取缓存或平滑增量计算的软换行聊天行。
+   */
+  private getWrappedChat(contentWithStatus: string, width: number): string[] {
+    if (!contentWithStatus) {
+      this.cachedContentWithStatus = '';
+      this.cachedWrappedChat = [];
+      this.cachedWrappedWidth = width;
+      return [];
+    }
+
+    if (contentWithStatus === this.cachedContentWithStatus && width === this.cachedWrappedWidth) {
+      return this.cachedWrappedChat;
+    }
+
+    if (
+      width === this.cachedWrappedWidth &&
+      this.cachedContentWithStatus.length > 0 &&
+      contentWithStatus.startsWith(this.cachedContentWithStatus)
+    ) {
+      const addedText = contentWithStatus.slice(this.cachedContentWithStatus.length);
+      const lastNL = this.cachedContentWithStatus.lastIndexOf('\n');
+
+      if (lastNL === -1) {
+        this.cachedWrappedChat = wrapAnsi(contentWithStatus, width);
+      } else if (this.cachedContentWithStatus.endsWith('\n')) {
+        const newRows = wrapAnsi(addedText, width);
+        this.cachedWrappedChat = [...this.cachedWrappedChat, ...newRows];
+      } else {
+        const tailText = this.cachedContentWithStatus.slice(lastNL + 1);
+        const fullTail = tailText + addedText;
+        const prefixText = this.cachedContentWithStatus.slice(0, lastNL + 1);
+        const prefixRows = wrapAnsi(prefixText, width);
+        const tailRows = wrapAnsi(fullTail, width);
+        this.cachedWrappedChat = [...prefixRows, ...tailRows];
+      }
+
+      this.cachedContentWithStatus = contentWithStatus;
+      return this.cachedWrappedChat;
+    }
+
+    this.cachedWrappedChat = wrapAnsi(contentWithStatus, width);
+    this.cachedContentWithStatus = contentWithStatus;
+    this.cachedWrappedWidth = width;
+    return this.cachedWrappedChat;
+  }
+
+  /**
+   * 流式输出重绘节流调度器（防抖至下一个微任务周期，兼顾平滑度与帧率）。
+   */
+  private scheduleRender(): void {
+    if (this.renderScheduled) {
+      return;
+    }
+    this.renderScheduled = true;
+    if (this.streamRenderTimer) {
+      clearTimeout(this.streamRenderTimer);
+    }
+    this.streamRenderTimer = setTimeout(() => {
+      this.renderScheduled = false;
+      this.streamRenderTimer = null;
+      this.render();
+    }, 16);
   }
 
   writeChat(value: string): void {
@@ -413,15 +500,30 @@ export class TerminalUI {
       return;
     }
 
+    const width = Math.max(20, (stdout.columns || 80) - 1);
+    const oldWrappedCount = this.cachedWrappedChat.length;
+
     this.chatContent += value;
-    // 仅当用户处于最底部（未手动向上滚动）时才重置滚轮偏移；如果用户正向上查看历史，则保留滚动位置
-    if (this.chatScrollOffset === 0) {
-      this.chatScrollOffset = 0;
-    }
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
+      this.cachedContentWithStatus = '';
     }
-    this.render();
+
+    const contentWithStatus = this.status
+      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
+      : this.chatContent;
+
+    const newWrapped = this.getWrappedChat(contentWithStatus, width);
+    const deltaRows = newWrapped.length - oldWrappedCount;
+
+    // 当用户向上查看历史（chatScrollOffset > 0）且产生新行时，补偿 offset 以锁定当前视区
+    if (this.chatScrollOffset > 0 && deltaRows > 0) {
+      this.chatScrollOffset += deltaRows;
+    } else if (this.chatScrollOffset === 0) {
+      this.chatScrollOffset = 0;
+    }
+
+    this.scheduleRender();
   }
 
   writeLine(value: string = ''): void {
@@ -448,14 +550,29 @@ export class TerminalUI {
       }
     }
 
+    const width = Math.max(20, (stdout.columns || 80) - 1);
+    const oldWrappedCount = this.cachedWrappedChat.length;
+
     this.chatContent = this.chatContent.slice(0, offset) + value;
-    if (this.chatScrollOffset === 0) {
-      this.chatScrollOffset = 0;
-    }
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
+      this.cachedContentWithStatus = '';
     }
-    this.render();
+
+    const contentWithStatus = this.status
+      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
+      : this.chatContent;
+
+    const newWrapped = this.getWrappedChat(contentWithStatus, width);
+    const deltaRows = newWrapped.length - oldWrappedCount;
+
+    if (this.chatScrollOffset > 0 && deltaRows > 0) {
+      this.chatScrollOffset += deltaRows;
+    } else if (this.chatScrollOffset === 0) {
+      this.chatScrollOffset = 0;
+    }
+
+    this.scheduleRender();
   }
 
   setStatus(value: string = ''): void {
@@ -540,18 +657,52 @@ export class TerminalUI {
   }
 
   private readonly handleResize = () => {
+    this.cachedContentWithStatus = '';
+    this.cachedWrappedWidth = 0;
     this.render();
   };
 
   private readonly handleMouseData = (data: Buffer | string) => {
     const value = typeof data === 'string' ? data : data.toString('utf-8');
 
-    // 0ms 敏捷捕获原生 Esc 单按键 (0x1b)，绕过 readline 默认的延时等待
-    if (value === '\x1b' || (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x1b)) {
-      this.suppressMouseKeypressUntil = Date.now() + 100;
-      if (this.onEscCallback) {
-        this.onEscCallback();
+    // 通用分包守卫：若待处理 ESC 定时器激活，且新到数据不是又一个孤立 \x1b，
+    // 则立即取消定时器。真实 Esc 单按后 25ms 内不会产生任何后续字节；
+    // 有后续字节（即使不以 \x1b 开头的分包，如 "[<64;col;rowM"）必然是转义序列的一部分。
+    if (this.pendingEscTimer && value !== '\x1b') {
+      clearTimeout(this.pendingEscTimer);
+      this.pendingEscTimer = null;
+      this.suppressMouseKeypressUntil = Date.now() + 150;
+    }
+
+    // 检测鼠标序列：包含完整格式与分包时的不完整前缀
+    // \x1b[< 前缀（SGR 格式，含分包不完整体）、URXVT 格式、X10 格式
+    const isMouseSequence =
+      /\x1b\[<[\d;]*[mM]?/.test(value) ||
+      /\x1b\[\d+;\d+;\d+M/.test(value) ||
+      /\x1b\[M[\s\S]{0,3}/.test(value);
+
+    if (isMouseSequence) {
+      // 鼠标序列到达时取消待处理的 ESC 延迟，防止分包 \x1b 误触发 ESC 回调
+      if (this.pendingEscTimer) {
+        clearTimeout(this.pendingEscTimer);
+        this.pendingEscTimer = null;
       }
+      this.suppressMouseKeypressUntil = Date.now() + 200;
+    }
+
+    // 延迟触发 ESC 回调：等待 25ms 确认后续无鼠标序列字节再触发
+    // 防止 SGR 鼠标序列分包时 \x1b 单独到达被误判为用户按下 Esc
+    if (!isMouseSequence && (value === '\x1b' || (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x1b))) {
+      if (this.pendingEscTimer) {
+        clearTimeout(this.pendingEscTimer);
+      }
+      this.pendingEscTimer = setTimeout(() => {
+        this.pendingEscTimer = null;
+        this.suppressMouseKeypressUntil = Date.now() + 100;
+        if (this.onEscCallback) {
+          this.onEscCallback();
+        }
+      }, 25);
       return;
     }
 
@@ -581,13 +732,14 @@ export class TerminalUI {
     }
 
     let handledMouseEvent = false;
+    let totalScrollRows = 0;
 
     const handleWheelButton = (button: number) => {
       if ((button & 64) === 0) {
         return;
       }
       handledMouseEvent = true;
-      this.scrollChat((button & 1) === 0 ? 3 : -3);
+      totalScrollRows += (button & 1) === 0 ? 3 : -3;
     };
 
     // SGR 鼠标模式 (\x1b[<button;x;yM 或 \x1b[<button;x;ym)
@@ -614,9 +766,18 @@ export class TerminalUI {
       }
     }
 
+    if (totalScrollRows !== 0) {
+      this.scrollChat(totalScrollRows);
+    }
+
     if (handledMouseEvent) {
       // 鼠标点击/滚轮事件触发后，忽略随后的派生按键与控制序列
-      this.suppressMouseKeypressUntil = Date.now() + 100;
+      // 同时取消待处理的 ESC 延迟，防止鼠标序列后续字节稍晚到达触发误判
+      if (this.pendingEscTimer) {
+        clearTimeout(this.pendingEscTimer);
+        this.pendingEscTimer = null;
+      }
+      this.suppressMouseKeypressUntil = Date.now() + 200;
     }
   };
 
@@ -624,10 +785,29 @@ export class TerminalUI {
     if (Date.now() <= this.suppressMouseKeypressUntil) {
       return;
     }
+    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
+      return;
+    }
     if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
       if (this.onShiftTabCallback) {
         this.onShiftTabCallback();
       }
+      return;
+    }
+    if (key.name === 'pageup' || key.name === 'pagedown') {
+      this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
+      return;
+    }
+    if (key.name === 'up' || key.name === 'down') {
+      this.scrollChat(key.name === 'up' ? 1 : -1);
+      return;
+    }
+    if (key.name === 'home') {
+      this.scrollChat(this.maxChatScrollOffset);
+      return;
+    }
+    if (key.name === 'end') {
+      this.scrollChat(-this.chatScrollOffset);
       return;
     }
     if (this.activeInput || this.activeSelection) {
@@ -641,7 +821,7 @@ export class TerminalUI {
 
   private readonly handleProcessExit = () => {
     stdin.setRawMode(this.originalRawMode);
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
   };
 
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
@@ -825,6 +1005,12 @@ export class TerminalUI {
   }
 
   private render(): void {
+    if (this.streamRenderTimer) {
+      clearTimeout(this.streamRenderTimer);
+      this.streamRenderTimer = null;
+    }
+    this.renderScheduled = false;
+
     if (!this.started || !this.interactive) {
       return;
     }
@@ -857,7 +1043,7 @@ export class TerminalUI {
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
-    const wrappedChat = contentWithStatus ? wrapAnsi(contentWithStatus, width) : [];
+    const wrappedChat = this.getWrappedChat(contentWithStatus, width);
     let showScrollIndicator = this.chatScrollOffset > 0;
     let chatViewportHeight = Math.max(1, chatHeight - (showScrollIndicator ? 1 : 0));
     this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
@@ -999,12 +1185,15 @@ export class TerminalUI {
     this.render();
   }
 
-  private readonly handleSelectionKeypress = (_value: string, key: readline.Key) => {
+  private readonly handleSelectionKeypress = (value: string, key: readline.Key) => {
     const activeSelection = this.activeSelection;
     if (!activeSelection) {
       return;
     }
     if (Date.now() <= this.suppressMouseKeypressUntil) {
+      return;
+    }
+    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
       return;
     }
 
@@ -1058,6 +1247,11 @@ export class TerminalUI {
 
     if (key.name === 'pageup' || key.name === 'pagedown') {
       this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
+      return;
+    }
+
+    if (key.shift && (key.name === 'up' || key.name === 'down')) {
+      this.scrollChat(key.name === 'up' ? 3 : -3);
       return;
     }
 
