@@ -1,4 +1,4 @@
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 
 /**
  * 网页抓取工具（类似 webfetch）。
@@ -27,7 +27,7 @@ export class WebFetchTool implements BaseTool {
   /**
    * 执行网页内容抓取。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const url = args.url as string;
     if (!url) {
       return '错误: 缺少 url 参数。';
@@ -35,6 +35,7 @@ export class WebFetchTool implements BaseTool {
 
     try {
       const response = await fetch(url, {
+        signal: context?.abortSignal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
@@ -66,6 +67,7 @@ export class WebFetchTool implements BaseTool {
 
       return result;
     } catch (error) {
+      if (context?.abortSignal?.aborted) return '[网页抓取已中止]';
       return `网页抓取失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

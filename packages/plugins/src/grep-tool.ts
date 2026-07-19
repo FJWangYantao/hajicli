@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { runRipgrep } from './ripgrep.js';
 
 /**
  * 全局文本检索工具（类似 grep）。
@@ -33,7 +34,7 @@ export class GrepSearchTool implements BaseTool {
   /**
    * 执行文本检索。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const query = args.query as string;
     if (!query) {
       return '错误: 缺少 query 参数。';
@@ -43,22 +44,52 @@ export class GrepSearchTool implements BaseTool {
     const rootDir = process.cwd();
     const startDir = path.resolve(rootDir, relativePath);
 
-    const excludeDirs = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.gemini']);
+    const excludeDirs = new Set(['.git', '.haji', 'node_modules', 'dist', 'build', 'out', '.gemini']);
     const excludeExtensions = new Set([
       '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz',
       '.mp3', '.mp4', '.wav', '.mov', '.exe', '.dll', '.bin', '.woff', '.woff2', '.ttf', '.eot'
     ]);
+    const throwIfAborted = () => {
+      if (!context?.abortSignal?.aborted) return;
+      const error = new Error('Grep 搜索已中止');
+      error.name = 'AbortError';
+      throw error;
+    };
 
     try {
+      throwIfAborted();
       const matches: { file: string; line: number; content: string }[] = [];
       const maxMatches = 100; // 限制最多匹配 100 条
 
+      const fastResult = await runRipgrep([
+        '--line-number', '--no-heading', '--color', 'never', '--fixed-strings',
+        '--glob', '!node_modules/**', '--glob', '!.git/**', '--glob', '!dist/**',
+        '--glob', '!build/**', '--glob', '!out/**', '--glob', '!.gemini/**', '--glob', '!.haji/**',
+        query, '.'
+      ], startDir, context?.abortSignal);
+      if (fastResult) {
+        for (const line of fastResult.stdout.split(/\r?\n/)) {
+          throwIfAborted();
+          if (!line || matches.length >= maxMatches) break;
+          const match = line.match(/^(.*?):(\d+):(.*)$/);
+          if (!match) continue;
+          matches.push({
+            file: path.relative(rootDir, path.resolve(startDir, match[1])).replace(/\\/g, '/'),
+            line: Number(match[2]),
+            content: match[3].trim()
+          });
+        }
+      }
+
       const searchFile = async (filePath: string, relPath: string) => {
         try {
-          const buffer = await fs.readFile(filePath);
+          throwIfAborted();
+          const buffer = await fs.readFile(filePath, { signal: context?.abortSignal });
+          throwIfAborted();
           
           // 简易判断是否是二进制文件 (含有 null 字节)
           for (let i = 0; i < Math.min(buffer.length, 1024); i++) {
+            throwIfAborted();
             if (buffer[i] === 0) {
               return; // 判定为二进制，跳过
             }
@@ -68,6 +99,7 @@ export class GrepSearchTool implements BaseTool {
           const lines = content.split(/\r?\n/);
           
           for (let i = 0; i < lines.length; i++) {
+            throwIfAborted();
             if (lines[i].includes(query)) {
               matches.push({
                 file: relPath.replace(/\\/g, '/'),
@@ -79,16 +111,22 @@ export class GrepSearchTool implements BaseTool {
               }
             }
           }
-        } catch (e) {
+        } catch (error) {
+          if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+            throw error;
+          }
           // 忽略单个文件读取出错
         }
       };
 
       const walk = async (currentDir: string) => {
+        throwIfAborted();
         if (matches.length >= maxMatches) return;
 
         const entries = await fs.readdir(currentDir, { withFileTypes: true });
+        throwIfAborted();
         for (const entry of entries) {
+          throwIfAborted();
           if (matches.length >= maxMatches) return;
 
           const entryPath = path.join(currentDir, entry.name);
@@ -109,7 +147,7 @@ export class GrepSearchTool implements BaseTool {
         }
       };
 
-      await walk(startDir);
+      if (!fastResult) await walk(startDir);
 
       let result = `[Grep 搜索结果 - 检索关键字 "${query}"]\n`;
       if (matches.length === 0) {
@@ -131,6 +169,9 @@ export class GrepSearchTool implements BaseTool {
 
       return result;
     } catch (error) {
+      if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        return '[Grep 搜索已中止]';
+      }
       return `Grep 搜索失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { runRipgrep } from './ripgrep.js';
 
 /**
  * 全局文件查找工具（类似 global）。
@@ -28,17 +29,41 @@ export class GlobalFindFilesTool implements BaseTool {
   /**
    * 执行全局文件检索。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const pattern = args.pattern ? (args.pattern as string).toLowerCase() : undefined;
     const rootDir = process.cwd();
-    const excludeDirs = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.gemini']);
+    const excludeDirs = new Set(['.git', '.haji', 'node_modules', 'dist', 'build', 'out', '.gemini']);
+    const throwIfAborted = () => {
+      if (!context?.abortSignal?.aborted) return;
+      const error = new Error('文件查找已中止');
+      error.name = 'AbortError';
+      throw error;
+    };
 
     try {
+      throwIfAborted();
       const files: string[] = [];
 
+      const fastResult = await runRipgrep([
+        '--files', '--hidden',
+        '--glob', '!node_modules/**', '--glob', '!.git/**', '--glob', '!dist/**',
+        '--glob', '!build/**', '--glob', '!out/**', '--glob', '!.gemini/**', '--glob', '!.haji/**'
+      ], rootDir, context?.abortSignal);
+      if (fastResult) {
+        for (const file of fastResult.stdout.split(/\r?\n/)) {
+          throwIfAborted();
+          if (!file) continue;
+          const normalized = file.replace(/\\/g, '/');
+          if (!pattern || normalized.toLowerCase().includes(pattern)) files.push(normalized);
+        }
+      }
+
       const walk = async (currentDir: string) => {
+        throwIfAborted();
         const entries = await fs.readdir(currentDir, { withFileTypes: true });
+        throwIfAborted();
         for (const entry of entries) {
+          throwIfAborted();
           const entryPath = path.join(currentDir, entry.name);
           const relativePath = path.relative(rootDir, entryPath);
 
@@ -56,7 +81,7 @@ export class GlobalFindFilesTool implements BaseTool {
         }
       };
 
-      await walk(rootDir);
+      if (!fastResult) await walk(rootDir);
 
       let result = `[全局文件查找结果 - 共找到 ${files.length} 个文件]\n`;
       if (files.length === 0) {
@@ -73,6 +98,9 @@ export class GlobalFindFilesTool implements BaseTool {
 
       return result;
     } catch (error) {
+      if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        return '[文件查找已中止]';
+      }
       return `文件检索失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

@@ -8,3 +8,5 @@ export * from './grep-tool.js';
 export * from './web-search-tool.js';
 export * from './web-fetch-tool.js';
 export * from './edit-tool.js';
+export * from './task-tool.js';
+export * from './subagent-tool.js';
