@@ -42,6 +42,8 @@ export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  /** 该用户消息提交前的本地工作区快照 ID，仅用于 /rewind。 */
+  snapshotId?: string;
   reasoning_content?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;

@@ -1,109 +1,247 @@
-import { execSync } from 'node:child_process';
-import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 
-/** Git 快照节点结构 */
-export interface SnapshotNode {
-  id: string;
-  commitHash: string;
-  timestamp: number;
-  description: string;
+interface SnapshotFile {
+  path: string;
+  blob: string;
+  kind: 'file' | 'symlink';
+  mode: number;
 }
 
-/**
- * Git 状态与文件恢复快照引擎。
- * 为 /rewind 指令提供代码与工作区文件的精确回退还原能力。
- */
+interface SnapshotManifest {
+  version: 1;
+  id: string;
+  headHash: string;
+  timestamp: number;
+  description: string;
+  files: SnapshotFile[];
+  indexBlob?: string;
+}
+
+/** 不修改 Git 历史的工作区快照引擎。 */
 export class SnapshotEngine {
   private readonly cwd: string;
+  private readonly snapshotRoot: string;
+  private readonly manifestsDir: string;
+  private readonly blobsDir: string;
 
-  constructor(cwd: string = process.cwd()) {
-    this.cwd = cwd;
+  constructor(cwd: string = process.cwd(), snapshotRoot = path.join(cwd, '.haji', 'snapshots')) {
+    this.cwd = path.resolve(cwd);
+    this.snapshotRoot = path.resolve(snapshotRoot);
+    this.manifestsDir = path.join(this.snapshotRoot, 'manifests');
+    this.blobsDir = path.join(this.snapshotRoot, 'blobs');
   }
 
-  /**
-   * 检查当前工作目录是否为一个 Git 仓库。
-   */
   isGitRepo(): boolean {
     try {
-      const output = execSync('git rev-parse --is-inside-work-tree', {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      }).toString().trim();
-      return output === 'true';
+      return this.git(['rev-parse', '--is-inside-work-tree']).trim() === 'true';
     } catch {
       return false;
     }
   }
 
-  /**
-   * 获取当前 Git HEAD 的提交 Commit Hash。
-   */
   getCurrentHeadHash(): string | null {
-    if (!this.isGitRepo()) {
-      return null;
-    }
+    if (!this.isGitRepo()) return null;
     try {
-      return execSync('git rev-parse HEAD', {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      }).toString().trim();
+      return this.git(['rev-parse', 'HEAD']).trim();
     } catch {
       return null;
     }
   }
 
   /**
-   * 创建一个自动轻量快照 Commit。
-   * @param description 快照描述
+   * 保存当前 HEAD、索引以及全部 tracked/untracked 非忽略文件。
+   * 文件内容按哈希去重存放，不会执行 git add、commit 或 stash。
    */
   createSnapshot(description: string): string | null {
-    if (!this.isGitRepo()) {
-      return null;
-    }
-    try {
-      const status = execSync('git status --porcelain', {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      }).toString().trim();
+    const headHash = this.getCurrentHeadHash();
+    if (!headHash) return null;
 
-      if (!status) {
-        return this.getCurrentHeadHash();
+    try {
+      fs.mkdirSync(this.manifestsDir, { recursive: true });
+      fs.mkdirSync(this.blobsDir, { recursive: true });
+
+      const files: SnapshotFile[] = [];
+      for (const relativePath of this.listManagedPaths()) {
+        const absolutePath = this.resolveWorkspacePath(relativePath);
+        if (!fs.existsSync(absolutePath)) continue;
+
+        const stat = fs.lstatSync(absolutePath);
+        if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+
+        const kind = stat.isSymbolicLink() ? 'symlink' : 'file';
+        const content = kind === 'symlink'
+          ? Buffer.from(fs.readlinkSync(absolutePath), 'utf8')
+          : fs.readFileSync(absolutePath);
+        files.push({
+          path: relativePath,
+          blob: this.storeBlob(content, kind),
+          kind,
+          mode: stat.mode & 0o777
+        });
       }
 
-      const safeMsg = description.replace(/"/g, "'");
-      execSync(`git add -A && git commit -m "haji-snapshot: ${safeMsg}" --no-verify`, {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      });
-
-      return this.getCurrentHeadHash();
+      const indexPath = this.getIndexPath();
+      const indexBlob = fs.existsSync(indexPath)
+        ? this.storeBlob(fs.readFileSync(indexPath), 'index')
+        : undefined;
+      const id = crypto.randomUUID();
+      const manifest: SnapshotManifest = {
+        version: 1,
+        id,
+        headHash,
+        timestamp: Date.now(),
+        description,
+        files,
+        indexBlob
+      };
+      fs.writeFileSync(this.getManifestPath(id), JSON.stringify(manifest, null, 2), 'utf8');
+      return id;
     } catch {
       return null;
     }
   }
 
-  /**
-   * 将代码工作区完全回退至指定的 Commit Hash / 快照节点。
-   * @param commitHash 目标 Commit Hash
-   */
-  rollback(commitHash: string): boolean {
-    if (!this.isGitRepo() || !commitHash) {
-      return false;
-    }
+  /** 精确恢复指定快照；HEAD 已变化时拒绝操作，避免重写用户提交历史。 */
+  rollback(snapshotId: string): boolean {
+    if (!this.isValidSnapshotId(snapshotId)) return false;
+
     try {
-      // 重置代码仓到目标节点并清理未追踪文件
-      execSync(`git reset --hard ${commitHash}`, {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      });
-      execSync('git clean -fd', {
-        cwd: this.cwd,
-        stdio: 'pipe'
-      });
+      const manifest = this.readManifest(snapshotId);
+      if (!manifest || this.getCurrentHeadHash() !== manifest.headHash) return false;
+
+      // 在修改工作区前先验证所有快照数据完整可读。
+      for (const file of manifest.files) {
+        this.resolveWorkspacePath(file.path);
+        if (!fs.existsSync(this.getBlobPath(file.blob))) return false;
+      }
+      if (manifest.indexBlob && !fs.existsSync(this.getBlobPath(manifest.indexBlob))) return false;
+
+      const targetPaths = new Set(manifest.files.map(file => file.path));
+      for (const currentPath of this.listManagedPaths()) {
+        if (targetPaths.has(currentPath)) continue;
+        const absolutePath = this.resolveWorkspacePath(currentPath);
+        if (fs.existsSync(absolutePath)) {
+          fs.rmSync(absolutePath, { force: true, recursive: true });
+          this.removeEmptyParents(path.dirname(absolutePath));
+        }
+      }
+
+      for (const file of manifest.files) {
+        const absolutePath = this.resolveWorkspacePath(file.path);
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        if (fs.existsSync(absolutePath)) {
+          const stat = fs.lstatSync(absolutePath);
+          if (stat.isDirectory() || stat.isSymbolicLink()) {
+            fs.rmSync(absolutePath, { force: true, recursive: true });
+          }
+        }
+
+        const content = fs.readFileSync(this.getBlobPath(file.blob));
+        if (file.kind === 'symlink') {
+          fs.symlinkSync(content.toString('utf8'), absolutePath);
+        } else {
+          fs.writeFileSync(absolutePath, content, { mode: file.mode });
+          try {
+            fs.chmodSync(absolutePath, file.mode);
+          } catch {}
+        }
+      }
+
+      if (manifest.indexBlob) {
+        const indexPath = this.getIndexPath();
+        fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+        fs.copyFileSync(this.getBlobPath(manifest.indexBlob), indexPath);
+      }
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private git(args: string[]): string {
+    return execFileSync('git', args, {
+      cwd: this.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8'
+    });
+  }
+
+  private listManagedPaths(): string[] {
+    const output = this.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    return output
+      .split('\0')
+      .filter(Boolean)
+      .map(file => this.normalizeRelativePath(file));
+  }
+
+  private getIndexPath(): string {
+    const gitPath = this.git(['rev-parse', '--git-path', 'index']).trim();
+    return path.isAbsolute(gitPath) ? gitPath : path.resolve(this.cwd, gitPath);
+  }
+
+  private normalizeRelativePath(value: string): string {
+    const normalized = value.replace(/\\/g, '/');
+    if (
+      !normalized ||
+      path.posix.isAbsolute(normalized) ||
+      normalized.split('/').some(part => part === '..')
+    ) {
+      throw new Error(`Invalid snapshot path: ${value}`);
+    }
+    return normalized;
+  }
+
+  private resolveWorkspacePath(relativePath: string): string {
+    const normalized = this.normalizeRelativePath(relativePath);
+    const resolved = path.resolve(this.cwd, ...normalized.split('/'));
+    if (resolved !== this.cwd && !resolved.startsWith(`${this.cwd}${path.sep}`)) {
+      throw new Error(`Snapshot path escaped workspace: ${relativePath}`);
+    }
+    return resolved;
+  }
+
+  private storeBlob(content: Buffer, kind: string): string {
+    const hash = crypto.createHash('sha256').update(kind).update('\0').update(content).digest('hex');
+    const blobPath = this.getBlobPath(hash);
+    if (!fs.existsSync(blobPath)) {
+      fs.writeFileSync(blobPath, content, { flag: 'wx' });
+    }
+    return hash;
+  }
+
+  private getBlobPath(hash: string): string {
+    if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid snapshot blob hash');
+    return path.join(this.blobsDir, hash);
+  }
+
+  private getManifestPath(id: string): string {
+    return path.join(this.manifestsDir, `${id}.json`);
+  }
+
+  private isValidSnapshotId(id: string): boolean {
+    return /^[a-f0-9-]{36}$/.test(id);
+  }
+
+  private readManifest(id: string): SnapshotManifest | null {
+    const manifestPath = this.getManifestPath(id);
+    if (!fs.existsSync(manifestPath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as SnapshotManifest;
+    if (parsed.version !== 1 || parsed.id !== id || !Array.isArray(parsed.files)) return null;
+    return parsed;
+  }
+
+  private removeEmptyParents(startPath: string): void {
+    let current = path.resolve(startPath);
+    while (current !== this.cwd && current.startsWith(`${this.cwd}${path.sep}`)) {
+      try {
+        fs.rmdirSync(current);
+      } catch {
+        break;
+      }
+      current = path.dirname(current);
     }
   }
 }
