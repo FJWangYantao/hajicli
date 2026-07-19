@@ -2,6 +2,9 @@ import readline from 'node:readline';
 import readlinePromises from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { PassThrough } from 'node:stream';
+import { TerminalProtocolParser, type TerminalMouseEvent, type TerminalProtocolEvent } from './terminal-protocol.js';
+import { TextSelectionModel, type TextCell } from './text-selection.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_START_PATTERN = /^\x1b\[[0-?]*[ -/]*[@-~]/;
@@ -114,22 +117,23 @@ interface ActiveSelection {
   reject: (error: Error) => void;
 }
 
-interface ChatSelectionPoint {
-  row: number;
-  column: number;
-}
-
-interface ChatTextSelection {
-  anchor: ChatSelectionPoint;
-  focus: ChatSelectionPoint;
-  dragging: boolean;
-}
-
 interface ChatViewport {
   screenTop: number;
   visibleStart: number;
   visibleEnd: number;
   width: number;
+}
+
+interface AnsiLayoutRow {
+  ansi: string;
+  plain: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+interface AnsiTextLayout {
+  rows: AnsiLayoutRow[];
+  document: string;
 }
 
 interface VisibleInputLayout {
@@ -142,6 +146,14 @@ export class TerminalInputCancelledError extends Error {
     super('Terminal input cancelled');
     this.name = 'TerminalInputCancelledError';
   }
+}
+
+function isRealCtrlC(value: string, key: readline.Key): boolean {
+  return value === '\x03' && key.ctrl === true && key.name === 'c';
+}
+
+function isRealCtrlD(value: string, key: readline.Key): boolean {
+  return value === '\x04' && key.ctrl === true && key.name === 'd';
 }
 
 function splitGraphemes(value: string): string[] {
@@ -183,26 +195,6 @@ function terminalWidth(value: string): number {
   }
 
   return width;
-}
-
-function plainTextByColumns(value: string, startColumn: number, endColumn: number): string {
-  const plainText = value.replace(ANSI_PATTERN, '');
-  let result = '';
-  let column = 0;
-
-  for (const grapheme of splitGraphemes(plainText)) {
-    const width = terminalWidth(grapheme);
-    const graphemeEnd = column + width;
-    if (column < endColumn && graphemeEnd > startColumn) {
-      result += grapheme;
-    }
-    column = graphemeEnd;
-    if (column >= endColumn) {
-      break;
-    }
-  }
-
-  return result;
 }
 
 function highlightAnsiColumns(value: string, startColumn: number, endColumn: number): string {
@@ -359,8 +351,98 @@ function wrapAnsi(value: string, width: number): string[] {
   return rows;
 }
 
+function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
+  const rows: AnsiLayoutRow[] = [];
+  let rowAnsi = '';
+  let rowPlain = '';
+  let rowWidth = 0;
+  let activeStyle = '';
+  let document = '';
+  let rowStartOffset = 0;
+  let offset = 0;
+
+  const pushRow = () => {
+    rows.push({
+      ansi: `${rowAnsi}${ANSI_RESET}`,
+      plain: rowPlain,
+      startOffset: rowStartOffset,
+      endOffset: document.length
+    });
+    rowAnsi = activeStyle;
+    rowPlain = '';
+    rowWidth = 0;
+    rowStartOffset = document.length;
+  };
+
+  while (offset < value.length) {
+    if (value[offset] === '\x1b') {
+      const match = value.slice(offset).match(ANSI_AT_START_PATTERN);
+      if (match) {
+        const sequence = match[0];
+        rowAnsi += sequence;
+        if (sequence.endsWith('m')) {
+          if (/\x1b\[(?:0)?m/.test(sequence)) {
+            activeStyle = '';
+          } else {
+            activeStyle += sequence;
+          }
+        }
+        offset += sequence.length;
+        continue;
+      }
+    }
+
+    const grapheme = splitGraphemes(value.slice(offset))[0];
+    offset += grapheme.length;
+    if (grapheme === '\r') {
+      continue;
+    }
+    if (grapheme === '\n') {
+      pushRow();
+      document += '\n';
+      rowStartOffset = document.length;
+      continue;
+    }
+
+    const graphemeWidth = terminalWidth(grapheme);
+    if (rowWidth + graphemeWidth > width && rowWidth > 0) {
+      pushRow();
+    }
+    rowAnsi += grapheme;
+    rowPlain += grapheme;
+    rowWidth += graphemeWidth;
+    document += grapheme;
+  }
+
+  pushRow();
+  return { rows, document };
+}
+
+function cellAtColumn(row: AnsiLayoutRow, column: number, clampToText = false): TextCell | undefined {
+  const targetColumn = Math.max(0, column - 1);
+  let visualColumn = 0;
+  let textOffset = row.startOffset;
+
+  let lastCell: TextCell | undefined;
+  for (const grapheme of splitGraphemes(row.plain)) {
+    const width = terminalWidth(grapheme);
+    const cell = { startOffset: textOffset, endOffset: textOffset + grapheme.length };
+    if (targetColumn >= visualColumn && targetColumn < visualColumn + width) {
+      return cell;
+    }
+    lastCell = cell;
+    visualColumn += width;
+    textOffset += grapheme.length;
+  }
+
+  return clampToText ? lastCell : undefined;
+}
+
 export class TerminalUI {
   private readonly options: TerminalUIOptions;
+  private readonly keyInput = new PassThrough();
+  private readonly protocolParser = new TerminalProtocolParser();
+  private readonly textSelection = new TextSelectionModel();
   private readonly interactive = Boolean(stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === 'function');
   private started = false;
   private chatContent = '';
@@ -375,22 +457,20 @@ export class TerminalUI {
   private maxTokens = 1000000;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
-  private chatTextSelection?: ChatTextSelection;
   private chatViewport?: ChatViewport;
+  private selectionLayout?: AnsiTextLayout;
+  private currentContentWithStatus = '';
+  private currentLayoutWidth = 0;
   private originalRawMode = false;
-  private suppressMouseKeypressUntil = 0;
   private onShiftTabCallback?: () => void;
   private onEscCallback?: () => void;
   private queueText = '';
-  private isPasting = false;
-  private pasteBuffer = '';
   private cachedContentWithStatus = '';
   private cachedWrappedWidth = 0;
   private cachedWrappedChat: string[] = [];
   private renderScheduled = false;
   private streamRenderTimer: NodeJS.Timeout | null = null;
-  // 延迟触发 ESC 的定时器，用于区分真实 Esc 按键与鼠标序列分包中的 \x1b 字节
-  private pendingEscTimer: NodeJS.Timeout | null = null;
+  private protocolFlushTimer: NodeJS.Timeout | null = null;
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -454,16 +534,15 @@ export class TerminalUI {
     }
 
     this.originalRawMode = Boolean(stdin.isRaw);
-    readline.emitKeypressEvents(stdin);
+    readline.emitKeypressEvents(this.keyInput);
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
-    // 使用 SGR 按键拖动上报，由 haji 将选区锚定到聊天内容；1007 保留滚轮滚动。
-    // 启动前先清理旧进程可能遗留的鼠标模式，避免状态叠加。
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h');
+    // 1002 负责拖动和滚轮，1006 统一为 SGR 坐标；禁用 1007，避免滚轮重复转成方向键。
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
-    stdin.prependListener('data', this.handleMouseData);
-    stdin.on('keypress', this.handleIdleKeypress);
+    stdin.on('data', this.handleMouseData);
+    this.keyInput.on('keypress', this.dispatchKeypress);
     process.on('exit', this.handleProcessExit);
     this.render();
   }
@@ -474,18 +553,16 @@ export class TerminalUI {
     }
 
     if (this.activeInput) {
-      this.removeInputListeners();
       this.activeInput = undefined;
     }
     if (this.activeSelection) {
-      this.removeSelectionListeners();
       this.activeSelection = undefined;
     }
 
     if (this.interactive) {
       stdout.off('resize', this.handleResize);
       stdin.off('data', this.handleMouseData);
-      stdin.off('keypress', this.handleIdleKeypress);
+      this.keyInput.off('keypress', this.dispatchKeypress);
       stdin.setRawMode(this.originalRawMode);
       stdin.pause();
       process.off('exit', this.handleProcessExit);
@@ -495,11 +572,13 @@ export class TerminalUI {
       clearTimeout(this.streamRenderTimer);
       this.streamRenderTimer = null;
     }
-    // 清理待处理的 ESC 延迟定时器，防止 close 后仍触发回调
-    if (this.pendingEscTimer) {
-      clearTimeout(this.pendingEscTimer);
-      this.pendingEscTimer = null;
+    if (this.protocolFlushTimer) {
+      clearTimeout(this.protocolFlushTimer);
+      this.protocolFlushTimer = null;
     }
+    this.protocolParser.reset();
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
     this.renderScheduled = false;
     this.started = false;
   }
@@ -507,7 +586,8 @@ export class TerminalUI {
   clearChat(): void {
     this.chatContent = '';
     this.chatScrollOffset = 0;
-    this.chatTextSelection = undefined;
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
     this.chatViewport = undefined;
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
@@ -693,7 +773,6 @@ export class TerminalUI {
         reject
       };
 
-      stdin.on('keypress', this.handleKeypress);
       this.render();
     });
   }
@@ -736,7 +815,6 @@ export class TerminalUI {
         reject
       };
 
-      stdin.on('keypress', this.handleSelectionKeypress);
       this.render();
     });
   }
@@ -744,25 +822,29 @@ export class TerminalUI {
   private readonly handleResize = () => {
     this.cachedContentWithStatus = '';
     this.cachedWrappedWidth = 0;
-    this.chatTextSelection = undefined;
+    this.selectionLayout = undefined;
     this.render();
   };
 
-  private getChatPointFromMouse(column: number, row: number): ChatSelectionPoint | undefined {
+  private getSelectionLayout(): AnsiTextLayout {
+    if (!this.selectionLayout) {
+      this.selectionLayout = layoutAnsiDocument(this.currentContentWithStatus, this.currentLayoutWidth);
+    }
+    return this.selectionLayout;
+  }
+
+  private getChatCellFromMouse(column: number, row: number, clampToText = false): TextCell | undefined {
     const viewport = this.chatViewport;
     if (!viewport || viewport.visibleEnd <= viewport.visibleStart) {
       return undefined;
     }
 
+    const layout = this.getSelectionLayout();
     const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
     const screenRowOffset = Math.max(0, Math.min(visibleRowCount - 1, row - viewport.screenTop));
     const logicalRow = viewport.visibleStart + screenRowOffset;
-    const line = this.cachedWrappedChat[logicalRow] ?? '';
-    const lineWidth = terminalWidth(line);
-    return {
-      row: logicalRow,
-      column: Math.max(0, Math.min(lineWidth, column - 1))
-    };
+    const layoutRow = layout.rows[logicalRow];
+    return layoutRow ? cellAtColumn(layoutRow, column, clampToText) : undefined;
   }
 
   private isMouseInChatViewport(row: number): boolean {
@@ -774,48 +856,22 @@ export class TerminalUI {
     );
   }
 
-  private getNormalizedChatSelection(): { start: ChatSelectionPoint; end: ChatSelectionPoint } | undefined {
-    const selection = this.chatTextSelection;
-    if (!selection) {
-      return undefined;
-    }
-
-    const anchorFirst = selection.anchor.row < selection.focus.row
-      || (selection.anchor.row === selection.focus.row && selection.anchor.column <= selection.focus.column);
-    return anchorFirst
-      ? { start: selection.anchor, end: selection.focus }
-      : { start: selection.focus, end: selection.anchor };
-  }
-
   private highlightChatRow(value: string, logicalRow: number): string {
-    const selection = this.getNormalizedChatSelection();
-    if (!selection || logicalRow < selection.start.row || logicalRow > selection.end.row) {
+    const selection = this.textSelection.range();
+    const layoutRow = this.getSelectionLayout().rows[logicalRow];
+    if (!selection || !layoutRow || selection.endOffset <= layoutRow.startOffset || selection.startOffset >= layoutRow.endOffset) {
       return value;
     }
 
-    const startColumn = logicalRow === selection.start.row ? selection.start.column : 0;
-    const endColumn = logicalRow === selection.end.row
-      ? selection.end.column + 1
-      : Math.max(1, terminalWidth(value));
+    const startInRow = Math.max(0, selection.startOffset - layoutRow.startOffset);
+    const endInRow = Math.min(layoutRow.plain.length, selection.endOffset - layoutRow.startOffset);
+    const startColumn = terminalWidth(layoutRow.plain.slice(0, startInRow));
+    const endColumn = terminalWidth(layoutRow.plain.slice(0, endInRow));
     return highlightAnsiColumns(value, startColumn, endColumn);
   }
 
   private getSelectedChatText(): string {
-    const selection = this.getNormalizedChatSelection();
-    if (!selection) {
-      return '';
-    }
-
-    const rows: string[] = [];
-    for (let row = selection.start.row; row <= selection.end.row; row += 1) {
-      const value = this.cachedWrappedChat[row] ?? '';
-      const startColumn = row === selection.start.row ? selection.start.column : 0;
-      const endColumn = row === selection.end.row
-        ? selection.end.column + 1
-        : Math.max(1, terminalWidth(value));
-      rows.push(plainTextByColumns(value, startColumn, endColumn));
-    }
-    return rows.join('\n');
+    return this.textSelection.selectedText(this.getSelectionLayout().document);
   }
 
   private copyChatSelection(): boolean {
@@ -832,193 +888,120 @@ export class TerminalUI {
         windowsHide: true,
         stdio: ['pipe', 'ignore', 'ignore']
       });
-      return result.status === 0;
+      if (result.status === 0) {
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        this.render();
+        return true;
+      }
+      return false;
     }
 
     stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.render();
     return true;
   }
 
-  private readonly handleMouseData = (data: Buffer | string) => {
-    const value = typeof data === 'string' ? data : data.toString('utf-8');
-
-    // 通用分包守卫：若待处理 ESC 定时器激活，且新到数据不是又一个孤立 \x1b，
-    // 则立即取消定时器。真实 Esc 单按后短时间内不会产生任何后续字节；
-    // 有后续字节（即使不以 \x1b 开头的分包，如 "[<64;col;rowM"）必然是转义序列的一部分。
-    if (this.pendingEscTimer && value !== '\x1b') {
-      clearTimeout(this.pendingEscTimer);
-      this.pendingEscTimer = null;
-      this.suppressMouseKeypressUntil = Date.now() + 150;
+  private dispatchProtocolEvent(event: TerminalProtocolEvent): void {
+    if (event.type === 'keyboard') {
+      this.keyInput.write(event.data);
+      return;
     }
-
-    // 检测鼠标序列：包含完整格式与分包时的不完整前缀
-    // \x1b[< 前缀（SGR 格式，含分包不完整体）、URXVT 格式、X10 格式
-    const isMouseSequence =
-      /\x1b\[<[\d;]*[mM]?/.test(value) ||
-      /\x1b\[\d+;\d+;\d+M/.test(value) ||
-      /\x1b\[M[\s\S]{0,3}/.test(value);
-
-    if (isMouseSequence) {
-      // 鼠标序列到达时取消待处理的 ESC 延迟，防止分包 \x1b 误触发 ESC 回调
-      if (this.pendingEscTimer) {
-        clearTimeout(this.pendingEscTimer);
-        this.pendingEscTimer = null;
+    if (event.type === 'paste') {
+      if (event.text) {
+        this.insert(event.text);
       }
-      this.suppressMouseKeypressUntil = Date.now() + 200;
+      return;
     }
+    this.handleMouseEvent(event);
+  }
 
-    // 延迟触发 ESC 回调：留出足够时间等待 Windows Terminal 的分包鼠标序列
-    // 防止 SGR 鼠标序列分包时 \x1b 单独到达被误判为用户按下 Esc
-    if (!isMouseSequence && (value === '\x1b' || (Buffer.isBuffer(data) && data.length === 1 && data[0] === 0x1b))) {
-      // readline 对分包鼠标序列的 ESC 可能延迟派生 keypress；先延长抑制窗口，
-      // 真正的 Esc 仍由下方的独立定时器直接触发。
-      this.suppressMouseKeypressUntil = Date.now() + 1000;
-      if (this.pendingEscTimer) {
-        clearTimeout(this.pendingEscTimer);
-      }
-      this.pendingEscTimer = setTimeout(() => {
-        this.pendingEscTimer = null;
-        this.suppressMouseKeypressUntil = Date.now() + 100;
-        if (this.onEscCallback) {
-          this.onEscCallback();
+  private handleMouseEvent(event: TerminalMouseEvent): void {
+    if (event.action === 'wheel') {
+      this.scrollChat(event.wheelRows ?? 0);
+      if (this.textSelection.dragging) {
+        const cell = this.getChatCellFromMouse(event.column, event.row, true);
+        if (cell) {
+          this.textSelection.update(cell);
+          this.scheduleRender();
         }
-      }, 80);
+      }
       return;
     }
 
-    // 1. 括号粘贴模式 (Bracketed Paste Mode \x1b[200~ ... \x1b[201~) 原子拦截
-    if (this.isPasting || value.includes('\x1b[200~')) {
-      let content = value;
-      if (!this.isPasting && content.includes('\x1b[200~')) {
-        this.isPasting = true;
-        content = content.slice(content.indexOf('\x1b[200~') + 6);
-      }
-      if (this.isPasting) {
-        if (content.includes('\x1b[201~')) {
-          const endIdx = content.indexOf('\x1b[201~');
-          this.pasteBuffer += content.slice(0, endIdx);
-          this.isPasting = false;
-          const fullPastedText = this.pasteBuffer;
-          this.pasteBuffer = '';
-          this.suppressMouseKeypressUntil = Date.now() + 100;
-          if (fullPastedText) {
-            this.insert(fullPastedText);
-          }
-        } else {
-          this.pasteBuffer += content;
-        }
+    const isLeftButton = (event.button & 3) === 0;
+    if (event.action === 'down' && isLeftButton) {
+      if (!this.isMouseInChatViewport(event.row)) {
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        this.scheduleRender();
         return;
       }
+
+      this.selectionLayout = layoutAnsiDocument(this.currentContentWithStatus, this.currentLayoutWidth);
+      const cell = this.getChatCellFromMouse(event.column, event.row);
+      if (cell) {
+        this.textSelection.begin(cell);
+      } else {
+        this.textSelection.clear();
+      }
+      this.scheduleRender();
+      return;
     }
 
-    let handledMouseEvent = false;
-    let totalScrollRows = 0;
-    let dragPointer: { column: number; row: number } | undefined;
-
-    const handleWheelButton = (button: number) => {
-      if ((button & 64) === 0) {
-        return;
+    if (event.action === 'move' && isLeftButton && this.textSelection.dragging) {
+      const cell = this.getChatCellFromMouse(event.column, event.row, true);
+      if (cell) {
+        this.textSelection.update(cell);
+        this.scheduleRender();
       }
-      handledMouseEvent = true;
-      totalScrollRows += (button & 1) === 0 ? 3 : -3;
-    };
-
-    // SGR 鼠标模式 (\x1b[<button;x;yM 或 \x1b[<button;x;ym)
-    if (/\x1b\[<\d+;\d+;\d+[mM]/.test(value)) {
-      handledMouseEvent = true;
-      for (const match of value.matchAll(/\x1b\[<(\d+);(\d+);(\d+)([mM])/g)) {
-        const button = Number.parseInt(match[1], 10);
-        const column = Number.parseInt(match[2], 10);
-        const row = Number.parseInt(match[3], 10);
-        const eventType = match[4];
-
-        if ((button & 64) !== 0) {
-          handleWheelButton(button);
-          if (this.chatTextSelection?.dragging) {
-            dragPointer = { column, row };
-          }
-          continue;
-        }
-
-        const isLeftButton = (button & 3) === 0;
-        const isMotion = (button & 32) !== 0;
-        if (eventType === 'm') {
-          if (this.chatTextSelection?.dragging) {
-            const point = this.getChatPointFromMouse(column, row);
-            if (point) {
-              this.chatTextSelection.focus = point;
-            }
-            this.chatTextSelection.dragging = false;
-            this.render();
-          }
-        } else if (isMotion && isLeftButton && this.chatTextSelection?.dragging) {
-          const point = this.getChatPointFromMouse(column, row);
-          if (point) {
-            this.chatTextSelection.focus = point;
-            this.render();
-          }
-        } else if (!isMotion && isLeftButton) {
-          if (this.isMouseInChatViewport(row)) {
-            const point = this.getChatPointFromMouse(column, row);
-            if (point) {
-              this.chatTextSelection = { anchor: point, focus: point, dragging: true };
-              this.render();
-            }
-          } else if (this.chatTextSelection) {
-            this.chatTextSelection = undefined;
-            this.render();
-          }
-        }
-      }
+      return;
     }
 
-    // URXVT 鼠标模式 (\x1b[button;x;yM)
-    if (/\x1b\[\d+;\d+;\d+M/.test(value)) {
-      handledMouseEvent = true;
-      for (const match of value.matchAll(/\x1b\[(\d+);\d+;\d+M/g)) {
-        handleWheelButton(Number.parseInt(match[1], 10));
-      }
+    if (event.action === 'up' && this.textSelection.dragging) {
+      const cell = this.getChatCellFromMouse(event.column, event.row, true);
+      this.textSelection.finish(cell);
+      this.scheduleRender();
+    }
+  }
+
+  private readonly handleMouseData = (data: Buffer | string) => {
+    if (this.protocolFlushTimer) {
+      clearTimeout(this.protocolFlushTimer);
+      this.protocolFlushTimer = null;
     }
 
-    // Legacy X10 鼠标模式兼容 (\x1b[M<cb><cx><cy>)
-    if (/\x1b\[M[\s\S]{3}/.test(value)) {
-      handledMouseEvent = true;
-      for (const match of value.matchAll(/\x1b\[M([\s\S])([\s\S])([\s\S])/g)) {
-        handleWheelButton(match[1].charCodeAt(0) - 32);
-      }
+    for (const event of this.protocolParser.push(data)) {
+      this.dispatchProtocolEvent(event);
     }
 
-    if (totalScrollRows !== 0) {
-      this.scrollChat(totalScrollRows);
-      if (dragPointer && this.chatTextSelection?.dragging) {
-        const point = this.getChatPointFromMouse(dragPointer.column, dragPointer.row);
-        if (point) {
-          this.chatTextSelection.focus = point;
-          this.render();
-        }
+    this.protocolFlushTimer = setTimeout(() => {
+      this.protocolFlushTimer = null;
+      for (const event of this.protocolParser.flushPending()) {
+        this.dispatchProtocolEvent(event);
       }
-    }
+    }, 80);
+  };
 
-    if (handledMouseEvent) {
-      // 鼠标点击/滚轮事件触发后，忽略随后的派生按键与控制序列
-      // 同时取消待处理的 ESC 延迟，防止鼠标序列后续字节稍晚到达触发误判
-      if (this.pendingEscTimer) {
-        clearTimeout(this.pendingEscTimer);
-        this.pendingEscTimer = null;
-      }
-      this.suppressMouseKeypressUntil = Date.now() + 200;
+  private readonly dispatchKeypress = (value: string, key: readline.Key) => {
+    if (this.activeSelection) {
+      this.handleSelectionKeypress(value, key);
+    } else if (this.activeInput) {
+      this.handleKeypress(value, key);
+    } else {
+      this.handleIdleKeypress(value, key);
     }
   };
 
   private readonly handleIdleKeypress = (value: string, key: readline.Key) => {
-    if (Date.now() <= this.suppressMouseKeypressUntil) {
+    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
       return;
     }
-    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
-      return;
-    }
-    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
-      return;
+    if (isRealCtrlC(value, key) && !this.activeInput && !this.activeSelection) {
+      this.close();
+      process.exit(130);
     }
     if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
       if (this.onShiftTabCallback) {
@@ -1044,10 +1027,6 @@ export class TerminalUI {
     }
     if (this.activeInput || this.activeSelection) {
       return;
-    }
-    if (key.ctrl && key.name === 'c') {
-      this.close();
-      process.exit(130);
     }
   };
 
@@ -1275,23 +1254,23 @@ export class TerminalUI {
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
-    const wrappedChat = this.getWrappedChat(contentWithStatus, width);
-    let showScrollIndicator = this.chatScrollOffset > 0;
-    let chatViewportHeight = Math.max(1, chatHeight - (showScrollIndicator ? 1 : 0));
+    if (contentWithStatus !== this.currentContentWithStatus || width !== this.currentLayoutWidth) {
+      this.currentContentWithStatus = contentWithStatus;
+      this.currentLayoutWidth = width;
+      this.selectionLayout = undefined;
+    }
+    const wrappedChat = this.textSelection.active
+      ? this.getSelectionLayout().rows.map(row => row.ansi)
+      : this.getWrappedChat(contentWithStatus, width);
+    const chatViewportHeight = chatHeight;
     this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
     this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
-
-    if (this.chatScrollOffset === 0 && showScrollIndicator) {
-      showScrollIndicator = false;
-      chatViewportHeight = chatHeight;
-      this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
-    }
 
     this.chatPageSize = Math.max(1, chatViewportHeight - 1);
     const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
     const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
     this.chatViewport = {
-      screenTop: headerRows.length + 2 + (showScrollIndicator ? 1 : 0),
+      screenTop: headerRows.length + 2,
       visibleStart,
       visibleEnd,
       width
@@ -1299,13 +1278,7 @@ export class TerminalUI {
     const visibleChat = wrappedChat
       .slice(visibleStart, visibleEnd)
       .map((row, index) => this.highlightChatRow(row, visibleStart + index));
-    const chatRows = showScrollIndicator
-      ? [
-        `\x1b[1;35m${truncateText(`↑ 历史消息 · 距底部 ${this.chatScrollOffset} 行 · PgDn 返回`, width)}\x1b[0m`,
-        ...visibleChat,
-        ...new Array(chatViewportHeight - visibleChat.length).fill('')
-      ]
-      : [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
+    const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
     const screenRows = [...headerRows, divider, ...chatRows, ...inputBlock];
 
     let frame = '\x1b[?25l\x1b[H';
@@ -1322,14 +1295,6 @@ export class TerminalUI {
     stdout.write(frame);
   }
 
-  private removeInputListeners(): void {
-    stdin.off('keypress', this.handleKeypress);
-  }
-
-  private removeSelectionListeners(): void {
-    stdin.off('keypress', this.handleSelectionKeypress);
-  }
-
   private finishInput(error?: Error): void {
     const activeInput = this.activeInput;
     if (!activeInput) {
@@ -1337,7 +1302,6 @@ export class TerminalUI {
     }
 
     const value = activeInput.graphemes.join('');
-    this.removeInputListeners();
     this.activeInput = undefined;
     this.render();
 
@@ -1357,7 +1321,6 @@ export class TerminalUI {
     const selected = activeSelection.options.items[activeSelection.selectedIndex];
     const selectedSecondary = activeSelection.options.secondary
       ?.items[activeSelection.secondaryIndex];
-    this.removeSelectionListeners();
     this.activeSelection = undefined;
     this.render();
 
@@ -1430,18 +1393,15 @@ export class TerminalUI {
     if (!activeSelection) {
       return;
     }
-    if (Date.now() <= this.suppressMouseKeypressUntil) {
+    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
       return;
     }
-    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
-      return;
-    }
-
-    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
+    if (isRealCtrlC(value, key)) {
+      this.finishSelection(new TerminalInputCancelledError());
       return;
     }
 
-    if ((key.ctrl && key.name === 'c') || key.name === 'escape') {
+    if (key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
       return;
     }
@@ -1477,19 +1437,21 @@ export class TerminalUI {
     if (!activeInput) {
       return;
     }
-    if (Date.now() <= this.suppressMouseKeypressUntil) {
+    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
       return;
     }
-    if (value && (/^\[?<\d+;\d+;\d+[mM]$/.test(value) || /^\d+;\d+;\d+[mM]?$/.test(value) || value.includes('[M') || value.includes('[<'))) {
-      return;
-    }
-
-    if (key.ctrl && key.name === 'c' && this.copyChatSelection()) {
-      return;
-    }
-
-    if (key.ctrl && key.name === 'c') {
+    if (isRealCtrlC(value, key)) {
       this.finishInput(new TerminalInputCancelledError());
+      return;
+    }
+    if (key.name === 'escape') {
+      if (this.textSelection.active) {
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        this.render();
+      } else if (this.onEscCallback) {
+        this.onEscCallback();
+      }
       return;
     }
 
@@ -1534,8 +1496,8 @@ export class TerminalUI {
       return;
     }
 
-    if (key.name === 'delete' || (key.ctrl && key.name === 'd')) {
-      if (key.ctrl && key.name === 'd' && activeInput.graphemes.length === 0) {
+    if (key.name === 'delete' || isRealCtrlD(value, key)) {
+      if (isRealCtrlD(value, key) && activeInput.graphemes.length === 0) {
         this.finishInput(new TerminalInputCancelledError());
       } else if (activeInput.cursorIndex < activeInput.graphemes.length) {
         activeInput.graphemes.splice(activeInput.cursorIndex, 1);
