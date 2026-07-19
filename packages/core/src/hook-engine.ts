@@ -17,6 +17,9 @@ export interface HookContext {
   permissionMode?: string;
   riskThreshold?: string;
   messages?: ChatMessage[];
+  agentId?: string;
+  parentAgentId?: string;
+  depth?: number;
 }
 
 /** Hook 处理器函数定义：返回 string 代表拦截或修改，返回 void/null/undefined 代表放行 */

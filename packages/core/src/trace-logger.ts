@@ -61,6 +61,9 @@ export interface TraceSession {
 export class SessionTracker {
   private readonly session: TraceSession;
   private readonly tracesDir: string;
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeScheduled = false;
+  private dirty = false;
 
   constructor(tracesDir: string = path.join(process.cwd(), '.haji', 'traces')) {
     this.tracesDir = tracesDir;
@@ -77,10 +80,27 @@ export class SessionTracker {
    * 将当前会话数据实时写盘，实现“实时更新能看”。
    */
   private async persist(): Promise<void> {
+    this.dirty = true;
+    if (!this.writeScheduled) {
+      this.writeScheduled = true;
+      this.writeChain = this.writeChain.then(async () => {
+        try {
+          while (this.dirty) {
+            this.dirty = false;
+            await fs.mkdir(this.tracesDir, { recursive: true });
+            const filePath = path.join(this.tracesDir, `session_${this.session.id}.json`);
+            await fs.writeFile(filePath, JSON.stringify(this.session), 'utf-8');
+          }
+        } catch {
+          this.dirty = false;
+        } finally {
+          this.writeScheduled = false;
+          if (this.dirty) void this.persist();
+        }
+      });
+    }
     try {
-      await fs.mkdir(this.tracesDir, { recursive: true });
-      const filePath = path.join(this.tracesDir, `session_${this.session.id}.json`);
-      await fs.writeFile(filePath, JSON.stringify(this.session, null, 2), 'utf-8');
+      await this.writeChain;
     } catch {
       // 静默捕获写入异常，防止写盘失败崩溃影响核心 Agent 流程
     }

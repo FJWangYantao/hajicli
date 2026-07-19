@@ -18,6 +18,9 @@ export interface StoredSession {
 export class SessionManager {
   private readonly sessionsDir: string;
   private currentSession: StoredSession;
+  private lastSavedMessageRefs: ChatMessage[] = [];
+  private lastSavedTitle = '';
+  private hasPersistedSnapshot = false;
 
   constructor(sessionsDir = path.join(process.cwd(), '.haji', 'sessions')) {
     this.sessionsDir = sessionsDir;
@@ -56,11 +59,18 @@ export class SessionManager {
    * 更新并持久化当前会话（仅在包含有效消息时存盘，0 条有效消息时清理磁盘空文件）
    */
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
-    this.currentSession.messages = messages;
-    this.currentSession.updatedAt = new Date().toISOString();
     if (title) {
       this.currentSession.title = title;
     }
+
+    const unchanged = this.hasPersistedSnapshot
+      && this.lastSavedTitle === this.currentSession.title
+      && this.lastSavedMessageRefs.length === messages.length
+      && this.lastSavedMessageRefs.every((message, index) => message === messages[index]);
+    if (unchanged) return;
+
+    this.currentSession.messages = messages;
+    this.currentSession.updatedAt = new Date().toISOString();
 
     const filePath = path.join(this.sessionsDir, `session_${this.currentSession.id}.json`);
 
@@ -71,12 +81,18 @@ export class SessionManager {
           fs.unlinkSync(filePath);
         }
       } catch {}
+      this.hasPersistedSnapshot = false;
+      this.lastSavedMessageRefs = [];
+      this.lastSavedTitle = this.currentSession.title;
       return;
     }
 
     try {
       this.ensureDir();
       fs.writeFileSync(filePath, JSON.stringify(this.currentSession, null, 2), 'utf-8');
+      this.hasPersistedSnapshot = true;
+      this.lastSavedMessageRefs = [...messages];
+      this.lastSavedTitle = this.currentSession.title;
     } catch {}
   }
 
@@ -92,6 +108,9 @@ export class SessionManager {
       const raw = fs.readFileSync(filePath, 'utf-8');
       const session = JSON.parse(raw) as StoredSession;
       this.currentSession = session;
+      this.hasPersistedSnapshot = true;
+      this.lastSavedMessageRefs = [...session.messages];
+      this.lastSavedTitle = session.title;
       return session;
     } catch {
       return null;
@@ -143,6 +162,9 @@ export class SessionManager {
       updatedAt: now,
       messages: []
     };
+    this.hasPersistedSnapshot = false;
+    this.lastSavedMessageRefs = [];
+    this.lastSavedTitle = '';
     return this.currentSession;
   }
 

@@ -28,7 +28,21 @@ export interface ToolDefinition {
 export interface BaseTool {
   name: string;
   definition: ToolDefinition;
-  execute(args: Record<string, unknown>): Promise<string>;
+  execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string>;
+}
+
+/** A single tool invocation's runtime context, shared by parent and child agents. */
+export interface ToolExecutionContext {
+  abortSignal?: AbortSignal;
+  toolCallId?: string;
+  agentId?: string;
+  parentAgentId?: string;
+  depth?: number;
+  userIntent?: string;
+  permissionMode?: string;
+  riskThreshold?: string;
+  anchorSnapshotId?: string;
+  agentAccess?: 'readonly' | 'workspace-write';
 }
 
 /**
@@ -134,6 +148,7 @@ export interface PromptContext {
   tools?: string[];
   vars?: Record<string, string>;
   reasoningEffort?: ReasoningEffort;
+  permissionMode?: string;
 }
 
 /**

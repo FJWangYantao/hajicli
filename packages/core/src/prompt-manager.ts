@@ -105,6 +105,24 @@ export class ToolsPromptPart implements SystemPromptPart {
     if (activeTools.includes('bash')) {
       rules.push('- bash：用于构建、测试、依赖、版本控制和必要的系统命令。命令必须适配当前 OS；执行前确认工作目录和影响范围，避免破坏性通配符或宽泛路径。');
     }
+    if (activeTools.includes('taskcreate')) {
+      rules.push('- taskcreate：逐条创建计划，让任务列表实时呈现；第一条提供简短总标题，最后一条设置 finalize=true 提交审批。标题优先使用 4-8 个汉字，最多 12 个字符，只保留核心目标，不加项目名及“计划、任务、实施方案”等空泛后缀。');
+    }
+    if (activeTools.includes('tasklist')) {
+      rules.push('- tasklist：读取当前任务、依赖与已验证记录。');
+    }
+    if (activeTools.includes('updatetask')) {
+      rules.push('- updatetask：执行前将任务设为 in_progress，也可根据新证据调整内容或依赖。');
+    }
+    if (activeTools.includes('taskfinish')) {
+      rules.push('- taskfinish：只有完成实际验证后才能结束任务；结束后重新审视剩余计划，全部完成后做总验证。');
+    }
+    if (activeTools.includes('subagent')) {
+      rules.push('- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。');
+    }
+    if (activeTools.includes('verifyagent')) {
+      rules.push('- verifyagent：子代理完成后，其报告仅是未验证线索。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果未验证时禁止 taskfinish。');
+    }
 
     return rules.join('\n');
   }
@@ -164,6 +182,26 @@ export class ReasoningEffortPromptPart implements SystemPromptPart {
   }
 }
 
+/** Plan 权限模式的只读调研与计划提交约束。 */
+export class PlanModePromptPart implements SystemPromptPart {
+  public readonly id = 'plan-mode';
+  public readonly priority = 50;
+
+  public getContent(context: PromptContext): string {
+    if (context.permissionMode !== 'plan') return '';
+    return [
+      '# 当前权限模式：Plan',
+      '- 只进行只读调研、需求澄清、风险分析和实施方案设计；不得编辑文件、创建文件或执行会改变系统状态的命令。',
+      '- 先使用 read、grep、global、websearch、webfetch 等只读工具获得足够证据，不要根据猜测制定计划。',
+      '- 计划必须具体到可执行步骤，写明涉及的文件或模块、关键实现方式和验证方法。',
+      '- 使用 taskcreate 一条一条创建任务；第一条填写简短总标题：优先 4-8 个汉字、最多 12 个字符，只概括核心目标，不重复项目名，不使用“计划、任务、实施方案”等后缀。依赖通过 blockedBy 表示，最后一条设置 finalize=true。',
+      '- 可使用 tasklist 检查计划，用 updatetask 修订；不要调用 taskfinish，审批前该工具不可用。',
+      '- 可以使用 subagent 隔离复杂调研，但 Plan 模式下子代理同样只有只读工具，不能借此绕过权限。',
+      '- 用户批准后系统会退出 Plan 模式并要求你继续实施；批准前不得提前修改代码。'
+    ].join('\n');
+  }
+}
+
 /**
  * 系统提示词管理器，负责收集、排序并拼接各层级的提示词内容。
  */
@@ -176,6 +214,7 @@ export class SystemPromptManager {
     this.registerPart(new EnvPromptPart());
     this.registerPart(new ToolsPromptPart());
     this.registerPart(new ReasoningEffortPromptPart());
+    this.registerPart(new PlanModePromptPart());
   }
 
   /**
