@@ -7,7 +7,7 @@ import { TerminalProtocolParser, type TerminalMouseEvent, type TerminalProtocolE
 import { TextSelectionModel, type TextCell } from './text-selection.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-const ANSI_AT_START_PATTERN = /^\x1b\[[0-?]*[ -/]*[@-~]/;
+const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
 const ANSI_RESET = '\x1b[0m';
 const graphemeSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
@@ -124,6 +124,12 @@ interface ChatViewport {
   width: number;
 }
 
+interface PendingMouseSelection {
+  column: number;
+  row: number;
+  logicalRow: number;
+}
+
 interface AnsiLayoutRow {
   ansi: string;
   plain: string;
@@ -160,6 +166,11 @@ function splitGraphemes(value: string): string[] {
   return Array.from(graphemeSegmenter.segment(value), part => part.segment);
 }
 
+function ansiSequenceAt(value: string, offset: number): string | undefined {
+  ANSI_AT_OFFSET_PATTERN.lastIndex = offset;
+  return ANSI_AT_OFFSET_PATTERN.exec(value)?.[0];
+}
+
 function isZeroWidth(codePoint: number): boolean {
   return codePoint === 0x200d
     || (codePoint >= 0x0300 && codePoint <= 0x036f)
@@ -184,17 +195,17 @@ function isWide(codePoint: number): boolean {
   );
 }
 
-function terminalWidth(value: string): number {
-  let width = 0;
-
-  for (const grapheme of splitGraphemes(value.replace(ANSI_PATTERN, ''))) {
-    const codePoints = Array.from(grapheme, character => character.codePointAt(0) ?? 0);
-    if (!codePoints.every(isZeroWidth)) {
-      width += codePoints.some(isWide) ? 2 : 1;
-    }
+function measureGrapheme(grapheme: string): number {
+  const codePoints = Array.from(grapheme, character => character.codePointAt(0) ?? 0);
+  if (codePoints.every(isZeroWidth)) {
+    return 0;
   }
+  return codePoints.some(isWide) ? 2 : 1;
+}
 
-  return width;
+function terminalWidth(value: string): number {
+  return splitGraphemes(value.replace(ANSI_PATTERN, ''))
+    .reduce((width, grapheme) => width + measureGrapheme(grapheme), 0);
 }
 
 function highlightAnsiColumns(value: string, startColumn: number, endColumn: number): string {
@@ -211,9 +222,8 @@ function highlightAnsiColumns(value: string, startColumn: number, endColumn: num
 
   while (offset < value.length) {
     if (value[offset] === '\x1b') {
-      const match = value.slice(offset).match(ANSI_AT_START_PATTERN);
-      if (match) {
-        const sequence = match[0];
+      const sequence = ansiSequenceAt(value, offset);
+      if (sequence) {
         result += sequence;
         if (highlighted && /\x1b\[(?:0)?m/.test(sequence)) {
           result += selectionOn;
@@ -224,7 +234,7 @@ function highlightAnsiColumns(value: string, startColumn: number, endColumn: num
     }
 
     const grapheme = splitGraphemes(value.slice(offset))[0];
-    const width = terminalWidth(grapheme);
+    const width = measureGrapheme(grapheme);
     const shouldHighlight = column < endColumn && column + width > startColumn;
     if (shouldHighlight !== highlighted) {
       result += shouldHighlight ? selectionOn : selectionOff;
@@ -246,7 +256,7 @@ function truncateText(value: string, width: number): string {
   let resultWidth = 0;
 
   for (const grapheme of splitGraphemes(value)) {
-    const graphemeWidth = terminalWidth(grapheme);
+    const graphemeWidth = measureGrapheme(grapheme);
     if (resultWidth + graphemeWidth > width) {
       break;
     }
@@ -280,7 +290,7 @@ function layoutInput(
       continue;
     }
 
-    const graphemeWidth = terminalWidth(grapheme);
+    const graphemeWidth = measureGrapheme(grapheme);
     if (column + graphemeWidth > width) {
       rows.push(continuationPrompt);
       row += 1;
@@ -296,11 +306,16 @@ function layoutInput(
   return { rows, positions };
 }
 
-function wrapAnsi(value: string, width: number): string[] {
+interface WrappedAnsiResult {
+  rows: string[];
+  activeStyle: string;
+}
+
+export function wrapAnsiWithState(value: string, width: number, initialStyle = ''): WrappedAnsiResult {
   const rows: string[] = [];
-  let row = '';
+  let row = initialStyle;
   let rowWidth = 0;
-  let activeStyle = '';
+  let activeStyle = initialStyle;
   let offset = 0;
 
   const pushRow = () => {
@@ -311,9 +326,8 @@ function wrapAnsi(value: string, width: number): string[] {
 
   while (offset < value.length) {
     if (value[offset] === '\x1b') {
-      const match = value.slice(offset).match(ANSI_AT_START_PATTERN);
-      if (match) {
-        const sequence = match[0];
+      const sequence = ansiSequenceAt(value, offset);
+      if (sequence) {
         row += sequence;
         if (sequence.endsWith('m')) {
           if (/\x1b\[(?:0)?m/.test(sequence)) {
@@ -337,7 +351,7 @@ function wrapAnsi(value: string, width: number): string[] {
         continue;
       }
 
-      const graphemeWidth = terminalWidth(grapheme);
+      const graphemeWidth = measureGrapheme(grapheme);
       if (rowWidth + graphemeWidth > width && rowWidth > 0) {
         pushRow();
       }
@@ -348,10 +362,14 @@ function wrapAnsi(value: string, width: number): string[] {
   }
 
   rows.push(`${row}${ANSI_RESET}`);
-  return rows;
+  return { rows, activeStyle };
 }
 
-function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
+export function wrapAnsi(value: string, width: number): string[] {
+  return wrapAnsiWithState(value, width).rows;
+}
+
+export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
   const rows: AnsiLayoutRow[] = [];
   let rowAnsi = '';
   let rowPlain = '';
@@ -374,11 +392,31 @@ function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
     rowStartOffset = document.length;
   };
 
+  const appendGrapheme = (grapheme: string) => {
+    if (grapheme === '\r') {
+      return;
+    }
+    if (grapheme === '\n') {
+      pushRow();
+      document += '\n';
+      rowStartOffset = document.length;
+      return;
+    }
+
+    const graphemeWidth = measureGrapheme(grapheme);
+    if (rowWidth + graphemeWidth > width && rowWidth > 0) {
+      pushRow();
+    }
+    rowAnsi += grapheme;
+    rowPlain += grapheme;
+    rowWidth += graphemeWidth;
+    document += grapheme;
+  };
+
   while (offset < value.length) {
     if (value[offset] === '\x1b') {
-      const match = value.slice(offset).match(ANSI_AT_START_PATTERN);
-      if (match) {
-        const sequence = match[0];
+      const sequence = ansiSequenceAt(value, offset);
+      if (sequence) {
         rowAnsi += sequence;
         if (sequence.endsWith('m')) {
           if (/\x1b\[(?:0)?m/.test(sequence)) {
@@ -392,26 +430,17 @@ function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
       }
     }
 
-    const grapheme = splitGraphemes(value.slice(offset))[0];
-    offset += grapheme.length;
-    if (grapheme === '\r') {
+    const nextAnsi = value.indexOf('\x1b', offset);
+    const textEnd = nextAnsi === -1 ? value.length : nextAnsi;
+    if (textEnd === offset) {
+      appendGrapheme(value[offset]);
+      offset += 1;
       continue;
     }
-    if (grapheme === '\n') {
-      pushRow();
-      document += '\n';
-      rowStartOffset = document.length;
-      continue;
+    for (const grapheme of splitGraphemes(value.slice(offset, textEnd))) {
+      appendGrapheme(grapheme);
     }
-
-    const graphemeWidth = terminalWidth(grapheme);
-    if (rowWidth + graphemeWidth > width && rowWidth > 0) {
-      pushRow();
-    }
-    rowAnsi += grapheme;
-    rowPlain += grapheme;
-    rowWidth += graphemeWidth;
-    document += grapheme;
+    offset = textEnd;
   }
 
   pushRow();
@@ -425,7 +454,7 @@ function cellAtColumn(row: AnsiLayoutRow, column: number, clampToText = false): 
 
   let lastCell: TextCell | undefined;
   for (const grapheme of splitGraphemes(row.plain)) {
-    const width = terminalWidth(grapheme);
+    const width = measureGrapheme(grapheme);
     const cell = { startOffset: textOffset, endOffset: textOffset + grapheme.length };
     if (targetColumn >= visualColumn && targetColumn < visualColumn + width) {
       return cell;
@@ -459,8 +488,9 @@ export class TerminalUI {
   private activeSelection?: ActiveSelection;
   private chatViewport?: ChatViewport;
   private selectionLayout?: AnsiTextLayout;
-  private currentContentWithStatus = '';
-  private currentLayoutWidth = 0;
+  private pendingMouseSelection?: PendingMouseSelection;
+  private selectionLayoutContent = '';
+  private selectionLayoutWidth = 0;
   private originalRawMode = false;
   private onShiftTabCallback?: () => void;
   private onEscCallback?: () => void;
@@ -468,6 +498,10 @@ export class TerminalUI {
   private cachedContentWithStatus = '';
   private cachedWrappedWidth = 0;
   private cachedWrappedChat: string[] = [];
+  private stableWrapPrefix = '';
+  private stableWrapPrefixWidth = 0;
+  private stableWrapPrefixRows: string[] = [];
+  private stableWrapPrefixStyle = '';
   private renderScheduled = false;
   private streamRenderTimer: NodeJS.Timeout | null = null;
   private protocolFlushTimer: NodeJS.Timeout | null = null;
@@ -478,19 +512,19 @@ export class TerminalUI {
 
   setPermissionMode(mode: string): void {
     this.permissionMode = mode;
-    this.render();
+    this.scheduleRender();
   }
 
   setModelInfo(model: string, effort?: string): void {
     this.modelName = model;
     this.reasoningEffort = effort || '';
-    this.render();
+    this.scheduleRender();
   }
 
   setContextUsage(usedTokens: number, maxTokens = 1000000): void {
     this.usedTokens = Math.max(0, usedTokens);
     this.maxTokens = Math.max(1, maxTokens);
-    this.render();
+    this.scheduleRender();
   }
 
   onShiftTab(callback: () => void): void {
@@ -509,7 +543,7 @@ export class TerminalUI {
       const maxLen = Math.max(10, (stdout.columns || 80) - 26);
       this.queueText = ` \x1b[1;33m⏳ 待处理队列 (${items.length} 条):\x1b[0m \x1b[36m${truncateText(formatted, maxLen)}\x1b[0m`;
     }
-    this.render();
+    this.scheduleRender();
   }
 
   isInputActive(): boolean {
@@ -579,6 +613,7 @@ export class TerminalUI {
     this.protocolParser.reset();
     this.textSelection.clear();
     this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
     this.renderScheduled = false;
     this.started = false;
   }
@@ -588,15 +623,28 @@ export class TerminalUI {
     this.chatScrollOffset = 0;
     this.textSelection.clear();
     this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
     this.chatViewport = undefined;
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
+    this.setStableWrapPrefix('');
     this.render();
   }
 
   /**
    * 获取缓存或平滑增量计算的软换行聊天行。
    */
+  private setStableWrapPrefix(value: string): void {
+    const prefix = value.endsWith('\n') ? value : '';
+    if (prefix === this.stableWrapPrefix) {
+      return;
+    }
+    this.stableWrapPrefix = prefix;
+    this.stableWrapPrefixWidth = 0;
+    this.stableWrapPrefixRows = [];
+    this.stableWrapPrefixStyle = '';
+  }
+
   private getWrappedChat(contentWithStatus: string, width: number): string[] {
     if (!contentWithStatus) {
       this.cachedContentWithStatus = '';
@@ -609,29 +657,21 @@ export class TerminalUI {
       return this.cachedWrappedChat;
     }
 
-    if (
-      width === this.cachedWrappedWidth &&
-      this.cachedContentWithStatus.length > 0 &&
-      contentWithStatus.startsWith(this.cachedContentWithStatus)
-    ) {
-      const addedText = contentWithStatus.slice(this.cachedContentWithStatus.length);
-      const lastNL = this.cachedContentWithStatus.lastIndexOf('\n');
-
-      if (lastNL === -1) {
-        this.cachedWrappedChat = wrapAnsi(contentWithStatus, width);
-      } else if (this.cachedContentWithStatus.endsWith('\n')) {
-        const newRows = wrapAnsi(addedText, width);
-        this.cachedWrappedChat = [...this.cachedWrappedChat, ...newRows];
-      } else {
-        const tailText = this.cachedContentWithStatus.slice(lastNL + 1);
-        const fullTail = tailText + addedText;
-        const prefixText = this.cachedContentWithStatus.slice(0, lastNL + 1);
-        const prefixRows = wrapAnsi(prefixText, width);
-        const tailRows = wrapAnsi(fullTail, width);
-        this.cachedWrappedChat = [...prefixRows, ...tailRows];
+    if (this.stableWrapPrefix && contentWithStatus.startsWith(this.stableWrapPrefix)) {
+      if (width !== this.stableWrapPrefixWidth) {
+        const wrappedPrefix = wrapAnsiWithState(this.stableWrapPrefix, width);
+        this.stableWrapPrefixRows = wrappedPrefix.rows.slice(0, -1);
+        this.stableWrapPrefixStyle = wrappedPrefix.activeStyle;
+        this.stableWrapPrefixWidth = width;
       }
-
+      const wrappedTail = wrapAnsiWithState(
+        contentWithStatus.slice(this.stableWrapPrefix.length),
+        width,
+        this.stableWrapPrefixStyle
+      ).rows;
+      this.cachedWrappedChat = [...this.stableWrapPrefixRows, ...wrappedTail];
       this.cachedContentWithStatus = contentWithStatus;
+      this.cachedWrappedWidth = width;
       return this.cachedWrappedChat;
     }
 
@@ -665,27 +705,11 @@ export class TerminalUI {
       return;
     }
 
-    const width = Math.max(20, (stdout.columns || 80) - 1);
-    const oldWrappedCount = this.cachedWrappedChat.length;
-
     this.chatContent += value;
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = '';
-    }
-
-    const contentWithStatus = this.status
-      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
-      : this.chatContent;
-
-    const newWrapped = this.getWrappedChat(contentWithStatus, width);
-    const deltaRows = newWrapped.length - oldWrappedCount;
-
-    // 当用户向上查看历史（chatScrollOffset > 0）且产生新行时，补偿 offset 以锁定当前视区
-    if (this.chatScrollOffset > 0 && deltaRows > 0) {
-      this.chatScrollOffset += deltaRows;
-    } else if (this.chatScrollOffset === 0) {
-      this.chatScrollOffset = 0;
+      this.setStableWrapPrefix('');
     }
 
     this.scheduleRender();
@@ -702,6 +726,31 @@ export class TerminalUI {
     return this.chatContent.length;
   }
 
+  markStableChatPrefix(offset: number = this.chatContent.length): void {
+    const safeOffset = Math.max(0, Math.min(offset, this.chatContent.length));
+    this.setStableWrapPrefix(this.chatContent.slice(0, safeOffset));
+  }
+
+  replaceChat(value: string): void {
+    if (!this.interactive) {
+      stdout.write(value);
+      return;
+    }
+
+    this.chatContent = value.length > 200_000 ? value.slice(-160_000) : value;
+    this.chatScrollOffset = 0;
+    this.textSelection.clear();
+    this.pendingMouseSelection = undefined;
+    this.selectionLayout = undefined;
+    this.selectionLayoutContent = '';
+    this.selectionLayoutWidth = 0;
+    this.cachedContentWithStatus = '';
+    this.cachedWrappedWidth = 0;
+    this.cachedWrappedChat = [];
+    this.setStableWrapPrefix(this.chatContent);
+    this.scheduleRender();
+  }
+
   /**
    * 从指定偏置位置起覆盖更新聊天内容（用于 Markdown 流式平滑重绘）。
    * @param offset 偏移起始位置
@@ -715,26 +764,12 @@ export class TerminalUI {
       }
     }
 
-    const width = Math.max(20, (stdout.columns || 80) - 1);
-    const oldWrappedCount = this.cachedWrappedChat.length;
-
+    this.markStableChatPrefix(offset);
     this.chatContent = this.chatContent.slice(0, offset) + value;
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = '';
-    }
-
-    const contentWithStatus = this.status
-      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
-      : this.chatContent;
-
-    const newWrapped = this.getWrappedChat(contentWithStatus, width);
-    const deltaRows = newWrapped.length - oldWrappedCount;
-
-    if (this.chatScrollOffset > 0 && deltaRows > 0) {
-      this.chatScrollOffset += deltaRows;
-    } else if (this.chatScrollOffset === 0) {
-      this.chatScrollOffset = 0;
+      this.setStableWrapPrefix('');
     }
 
     this.scheduleRender();
@@ -742,7 +777,7 @@ export class TerminalUI {
 
   setStatus(value: string = ''): void {
     this.status = value;
-    this.render();
+    this.scheduleRender();
   }
 
   async readInput(options: ReadInputOptions = {}): Promise<string> {
@@ -822,13 +857,22 @@ export class TerminalUI {
   private readonly handleResize = () => {
     this.cachedContentWithStatus = '';
     this.cachedWrappedWidth = 0;
+    this.stableWrapPrefixWidth = 0;
     this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
     this.render();
   };
 
   private getSelectionLayout(): AnsiTextLayout {
-    if (!this.selectionLayout) {
-      this.selectionLayout = layoutAnsiDocument(this.currentContentWithStatus, this.currentLayoutWidth);
+    const width = this.chatViewport?.width ?? Math.max(20, (stdout.columns || 80) - 1);
+    if (
+      !this.selectionLayout
+      || this.selectionLayoutContent !== this.chatContent
+      || this.selectionLayoutWidth !== width
+    ) {
+      this.selectionLayout = layoutAnsiDocument(this.chatContent, width);
+      this.selectionLayoutContent = this.chatContent;
+      this.selectionLayoutWidth = width;
     }
     return this.selectionLayout;
   }
@@ -839,12 +883,24 @@ export class TerminalUI {
       return undefined;
     }
 
-    const layout = this.getSelectionLayout();
     const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
     const screenRowOffset = Math.max(0, Math.min(visibleRowCount - 1, row - viewport.screenTop));
     const logicalRow = viewport.visibleStart + screenRowOffset;
+    return this.getChatCellAtLogicalRow(column, logicalRow, clampToText);
+  }
+
+  private getChatCellAtLogicalRow(column: number, logicalRow: number, clampToText = false): TextCell | undefined {
+    const layout = this.getSelectionLayout();
     const layoutRow = layout.rows[logicalRow];
     return layoutRow ? cellAtColumn(layoutRow, column, clampToText) : undefined;
+  }
+
+  private getLogicalChatRow(row: number): number | undefined {
+    const viewport = this.chatViewport;
+    if (!viewport || viewport.visibleEnd <= viewport.visibleStart || !this.isMouseInChatViewport(row)) {
+      return undefined;
+    }
+    return viewport.visibleStart + (row - viewport.screenTop);
   }
 
   private isMouseInChatViewport(row: number): boolean {
@@ -858,8 +914,11 @@ export class TerminalUI {
 
   private highlightChatRow(value: string, logicalRow: number): string {
     const selection = this.textSelection.range();
+    if (!selection) {
+      return value;
+    }
     const layoutRow = this.getSelectionLayout().rows[logicalRow];
-    if (!selection || !layoutRow || selection.endOffset <= layoutRow.startOffset || selection.startOffset >= layoutRow.endOffset) {
+    if (!layoutRow || selection.endOffset <= layoutRow.startOffset || selection.startOffset >= layoutRow.endOffset) {
       return value;
     }
 
@@ -920,6 +979,7 @@ export class TerminalUI {
 
   private handleMouseEvent(event: TerminalMouseEvent): void {
     if (event.action === 'wheel') {
+      this.pendingMouseSelection = undefined;
       this.scrollChat(event.wheelRows ?? 0);
       if (this.textSelection.dragging) {
         const cell = this.getChatCellFromMouse(event.column, event.row, true);
@@ -933,21 +993,40 @@ export class TerminalUI {
 
     const isLeftButton = (event.button & 3) === 0;
     if (event.action === 'down' && isLeftButton) {
-      if (!this.isMouseInChatViewport(event.row)) {
+      const logicalRow = this.getLogicalChatRow(event.row);
+      if (logicalRow === undefined) {
+        this.pendingMouseSelection = undefined;
         this.textSelection.clear();
         this.selectionLayout = undefined;
         this.scheduleRender();
         return;
       }
 
-      this.selectionLayout = layoutAnsiDocument(this.currentContentWithStatus, this.currentLayoutWidth);
-      const cell = this.getChatCellFromMouse(event.column, event.row);
-      if (cell) {
-        this.textSelection.begin(cell);
-      } else {
-        this.textSelection.clear();
-      }
+      // 单击只记录轻量屏幕锚点；收到真实移动事件后才计算完整文档布局。
+      this.pendingMouseSelection = {
+        column: event.column,
+        row: event.row,
+        logicalRow
+      };
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
       this.scheduleRender();
+      return;
+    }
+
+    if (event.action === 'move' && isLeftButton && this.pendingMouseSelection) {
+      const pending = this.pendingMouseSelection;
+      if (pending.column === event.column && pending.row === event.row) {
+        return;
+      }
+      this.pendingMouseSelection = undefined;
+      const anchor = this.getChatCellAtLogicalRow(pending.column, pending.logicalRow);
+      const cell = this.getChatCellFromMouse(event.column, event.row, true);
+      if (anchor && cell) {
+        this.textSelection.begin(anchor);
+        this.textSelection.update(cell);
+        this.scheduleRender();
+      }
       return;
     }
 
@@ -960,7 +1039,13 @@ export class TerminalUI {
       return;
     }
 
-    if (event.action === 'up' && this.textSelection.dragging) {
+    if (event.action === 'up' && isLeftButton && this.pendingMouseSelection) {
+      this.pendingMouseSelection = undefined;
+      this.selectionLayout = undefined;
+      return;
+    }
+
+    if (event.action === 'up' && isLeftButton && this.textSelection.dragging) {
       const cell = this.getChatCellFromMouse(event.column, event.row, true);
       this.textSelection.finish(cell);
       this.scheduleRender();
@@ -1162,7 +1247,14 @@ export class TerminalUI {
     );
     if (nextOffset !== this.chatScrollOffset) {
       this.chatScrollOffset = nextOffset;
-      this.render();
+      const viewport = this.chatViewport;
+      if (viewport) {
+        const viewportHeight = viewport.visibleEnd - viewport.visibleStart;
+        const totalRows = this.maxChatScrollOffset + viewportHeight;
+        viewport.visibleEnd = Math.max(0, totalRows - nextOffset);
+        viewport.visibleStart = Math.max(0, viewport.visibleEnd - viewportHeight);
+      }
+      this.scheduleRender();
     }
   }
 
@@ -1254,14 +1346,13 @@ export class TerminalUI {
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
-    if (contentWithStatus !== this.currentContentWithStatus || width !== this.currentLayoutWidth) {
-      this.currentContentWithStatus = contentWithStatus;
-      this.currentLayoutWidth = width;
-      this.selectionLayout = undefined;
+    const contentChanged = contentWithStatus !== this.cachedContentWithStatus || width !== this.cachedWrappedWidth;
+    const previousWrappedCount = this.cachedWrappedChat.length;
+    const wrappedChat = this.getWrappedChat(contentWithStatus, width);
+    const wrappedRowDelta = wrappedChat.length - previousWrappedCount;
+    if (contentChanged && this.chatScrollOffset > 0 && wrappedRowDelta !== 0) {
+      this.chatScrollOffset = Math.max(0, this.chatScrollOffset + wrappedRowDelta);
     }
-    const wrappedChat = this.textSelection.active
-      ? this.getSelectionLayout().rows.map(row => row.ansi)
-      : this.getWrappedChat(contentWithStatus, width);
     const chatViewportHeight = chatHeight;
     this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
     this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);

@@ -493,24 +493,25 @@ ${colors.bold('环境变量配置:')}
             if (loaded && loaded.messages.length > 0) {
               messages = loaded.messages;
               updateStatusUI();
-              ui.clearChat();
-              ui.writeLine(colors.boldGreen(`✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`));
+              const historyOutput: string[] = [];
+              const appendHistoryLine = (value: string = '') => historyOutput.push(`${value}\n`);
+              appendHistoryLine(colors.boldGreen(`✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`));
               // 完整回显历史会话中的全量消息轨迹 (User / Assistant / Tool)
               for (const m of messages) {
                 if (m.role === 'system') continue;
 
                 if (m.role === 'user' && typeof m.content === 'string') {
-                  ui.writeLine();
-                  ui.writeLine(colors.userMsg(m.content));
-                  ui.writeLine();
+                  appendHistoryLine();
+                  appendHistoryLine(colors.userMsg(m.content));
+                  appendHistoryLine();
                 } else if (m.role === 'assistant') {
                   if (m.reasoning_content) {
-                    ui.writeLine(colors.gray(`💭 深度思考 (${m.reasoning_content.length} 字)`));
+                    appendHistoryLine(colors.gray(`💭 深度思考 (${m.reasoning_content.length} 字)`));
                   }
                   if (m.content) {
                     const mdRenderer = new MarkdownStreamRenderer();
                     const rendered = mdRenderer.render(m.content, true);
-                    ui.writeLine(rendered);
+                    appendHistoryLine(rendered);
                   }
                   if (m.tool_calls && m.tool_calls.length > 0) {
                     for (const tc of m.tool_calls) {
@@ -520,19 +521,20 @@ ${colors.bold('环境变量配置:')}
                       } catch {}
                       const argsSummary = formatToolArgs(argsObj);
                       const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
-                      ui.writeLine(`  ${colors.purple(tc.function.name)}${displayArgs}`);
+                      appendHistoryLine(`  ${colors.purple(tc.function.name)}${displayArgs}`);
                     }
                   }
-                  ui.writeLine();
+                  appendHistoryLine();
                 } else if (m.role === 'tool') {
                   const isError = typeof m.content === 'string' && (m.content.startsWith('错误:') || m.content.startsWith('执行出错:'));
                   if (isError) {
-                    ui.writeLine(`  ${colors.boldRed('❌')} ${colors.red('工具执行出错')}`);
+                    appendHistoryLine(`  ${colors.boldRed('❌')} ${colors.red('工具执行出错')}`);
                   } else {
-                    ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.gray('工具执行成功')}`);
+                    appendHistoryLine(`  ${colors.boldGreen('✓')} ${colors.gray('工具执行成功')}`);
                   }
                 }
               }
+              ui.replaceChat(historyOutput.join(''));
             } else {
               ui.writeLine(colors.yellow('⚠️ 选中的会话为空或加载失败。'));
             }
@@ -815,6 +817,8 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
       while (keepCalling) {
         startBackgroundInput();
         let currentToolCalls: ToolCall[] | null = null;
+        let completionTokens: number | undefined;
+        const thinkingStartedAt = Date.now();
 
         // 启动异步 Spinner 加载动画（TTFT 思考期）
         let isThinking = true;
@@ -838,6 +842,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
         let currentAbortController: AbortController | null = null;
         const mdStreamRenderer = new MarkdownStreamRenderer();
         const streamStartOffset = ui.getChatLength();
+        ui.markStableChatPrefix(streamStartOffset);
 
         ui.onEsc(() => {
           isTurnAborted = true;
@@ -863,6 +868,9 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
             if (isThinking) {
               ui.setStatus(`${spinnerChars[spinIdx]} ${colors.gray(`深度思考中... (${reasoningContent.length} 字)`)}`);
             }
+          },
+          onUsage: usage => {
+            completionTokens = usage.completion_tokens;
           }
         });
 
@@ -911,14 +919,22 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
           isThinking = false;
         }
 
-        ui.writeLine();
+        const toolCalls = currentToolCalls as ToolCall[] | null;
+        if (toolCalls && toolCalls.length > 0) {
+          const thinkingSeconds = Math.max(1, Math.round((Date.now() - thinkingStartedAt) / 1000));
+          const tokenSummary = completionTokens === undefined
+            ? 'token usage unavailable'
+            : `${completionTokens.toLocaleString('en-US')} tokens consumed`;
+          ui.writeLine(colors.gray(`Think ${thinkingSeconds} s, ${tokenSummary}.`));
+        } else {
+          ui.writeLine();
+        }
 
         // 保存助理回复
         const assistantMessage: ChatMessage = { role: 'assistant', content: textContent };
         if (reasoningContent) {
           assistantMessage.reasoning_content = reasoningContent;
         }
-        const toolCalls = currentToolCalls as ToolCall[] | null;
         if (toolCalls && toolCalls.length > 0) {
           assistantMessage.tool_calls = toolCalls;
         }
@@ -1010,7 +1026,6 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
             sessionManager.saveCurrentSession(messages);
             updateStatusUI();
           }
-          ui.writeLine();
           keepCalling = true;
         } else {
           keepCalling = false;
