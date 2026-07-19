@@ -8,6 +8,7 @@ export interface CompactionResult {
   compactedChars: number;
   freedPercentage: number;
   layersApplied: string[];
+  summaryMode: 'none' | 'model' | 'fallback';
 }
 
 /** 估算消息数组的总字符数（粗略 4 字符 ≈ 1 Token） */
@@ -79,23 +80,86 @@ export function estimateMessagesTokens(messages: ChatMessage[], includeSystem = 
 }
 
 /**
+ * Removes protocol-invalid tool exchanges without inventing tool results.
+ * A tool-calling assistant message is valid only when the immediately following
+ * tool messages contain exactly one result for every declared tool call ID.
+ */
+export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
+  const repaired: ChatMessage[] = [];
+  let changed = false;
+
+  for (let i = 0; i < messages.length;) {
+    const message = messages[i];
+    const toolCalls = message.role === 'assistant' && Array.isArray(message.tool_calls)
+      ? message.tool_calls
+      : [];
+
+    if (toolCalls.length > 0) {
+      const expectedIds = toolCalls.map(call => call.id).filter(Boolean);
+      const expected = new Set(expectedIds);
+      const seen = new Set<string>();
+      const validToolMessages: ChatMessage[] = [];
+      let cursor = i + 1;
+
+      while (cursor < messages.length && messages[cursor].role === 'tool') {
+        const toolMessage = messages[cursor];
+        const toolCallId = toolMessage.tool_call_id;
+        if (toolCallId && expected.has(toolCallId) && !seen.has(toolCallId)) {
+          seen.add(toolCallId);
+          validToolMessages.push(toolMessage);
+        } else {
+          changed = true;
+        }
+        cursor += 1;
+      }
+
+      const complete = expectedIds.length === toolCalls.length
+        && expected.size === toolCalls.length
+        && seen.size === expected.size;
+      if (complete) {
+        repaired.push(message, ...validToolMessages);
+      } else {
+        changed = true;
+        if (message.content.trim() || message.reasoning_content) {
+          const preservedMessage = { ...message };
+          delete preservedMessage.tool_calls;
+          repaired.push(preservedMessage);
+        }
+      }
+      i = cursor;
+      continue;
+    }
+
+    if (message.role === 'tool') {
+      changed = true;
+      i += 1;
+      continue;
+    }
+
+    repaired.push(message);
+    i += 1;
+  }
+
+  return changed ? repaired : messages;
+}
+
+/**
  * L1: tool_result_budget（大工具结果落盘 - 0 API）
  * 检查最后一条消息或近几条消息中超大 tool_result（如超 150KB），将文本落盘至 .haji/task_outputs/
  */
 export function toolResultBudget(messages: ChatMessage[], maxBytes = 150_000): ChatMessage[] {
-  const result = JSON.parse(JSON.stringify(messages)) as ChatMessage[];
-  const lastMsg = result[result.length - 1];
-  if (!lastMsg || lastMsg.role !== 'tool') return result;
-
   const outputDir = path.join(process.cwd(), '.haji', 'task_outputs');
   let totalLen = 0;
-  for (const m of result) {
+  for (const m of messages) {
     if (m.role === 'tool' && typeof m.content === 'string') {
       totalLen += m.content.length;
     }
   }
 
-  if (totalLen <= maxBytes) return result;
+  if (totalLen <= maxBytes) return messages;
+
+  const result = JSON.parse(JSON.stringify(messages)) as ChatMessage[];
+  let changed = false;
 
   try {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -110,11 +174,12 @@ export function toolResultBudget(messages: ChatMessage[], maxBytes = 150_000): C
         fs.writeFileSync(filePath, m.content, 'utf-8');
         const preview = m.content.slice(0, 1500);
         m.content = `<persisted-output path="${filePath}">\n${preview}\n... [超大输出 (${m.content.length} 字节) 已持久化落盘至 ${filePath}] ...\n</persisted-output>`;
+        changed = true;
       } catch {}
     }
   }
 
-  return result;
+  return changed ? result : messages;
 }
 
 /**
@@ -147,7 +212,7 @@ export function snipCompact(messages: ChatMessage[], maxMessages = 40): ChatMess
     content: `[已裁切中间 ${snippedCount} 条历史对话]`
   };
 
-  return [...result.slice(0, headEnd), placeholder, ...result.slice(tailStart)];
+  return repairToolCallPairs([...result.slice(0, headEnd), placeholder, ...result.slice(tailStart)]);
 }
 
 /**
@@ -155,28 +220,30 @@ export function snipCompact(messages: ChatMessage[], maxMessages = 40): ChatMess
  * 仅保留最近 3 条 tool_result 的完整内容，更早的旧 tool_result 占位替换
  */
 export function microCompact(messages: ChatMessage[], keepRecentCount = 3): ChatMessage[] {
-  const result = JSON.parse(JSON.stringify(messages)) as ChatMessage[];
   const toolIndices: number[] = [];
 
-  for (let i = 0; i < result.length; i++) {
-    if (result[i].role === 'tool') {
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'tool') {
       toolIndices.push(i);
     }
   }
 
   if (toolIndices.length <= keepRecentCount) {
-    return result;
+    return messages;
   }
 
+  const result = JSON.parse(JSON.stringify(messages)) as ChatMessage[];
+  let changed = false;
   const toCompactIndices = toolIndices.slice(0, toolIndices.length - keepRecentCount);
   for (const idx of toCompactIndices) {
     const msg = result[idx];
     if (typeof msg.content === 'string' && msg.content.length > 120) {
       msg.content = '[早期工具执行结果已自动占位，必要时可重新读取]';
+      changed = true;
     }
   }
 
-  return result;
+  return changed ? result : messages;
 }
 
 /**
@@ -185,12 +252,14 @@ export function microCompact(messages: ChatMessage[], keepRecentCount = 3): Chat
  */
 export async function compactHistory(
   messages: ChatMessage[],
-  summaryProvider?: (messages: ChatMessage[]) => Promise<string>
+  summaryProvider?: (messages: ChatMessage[]) => Promise<string>,
+  recentSource: ChatMessage[] = messages
 ): Promise<ChatMessage[]> {
   const transcriptDir = path.join(process.cwd(), '.haji', 'transcripts');
+  let transcriptPath = '';
   try {
     fs.mkdirSync(transcriptDir, { recursive: true });
-    const transcriptPath = path.join(transcriptDir, `transcript_${Date.now()}.jsonl`);
+    transcriptPath = path.join(transcriptDir, `transcript_${Date.now()}.jsonl`);
     const jsonlContent = messages.map(m => JSON.stringify(m)).join('\n');
     fs.writeFileSync(transcriptPath, jsonlContent, 'utf-8');
   } catch {}
@@ -199,6 +268,9 @@ export async function compactHistory(
   if (summaryProvider) {
     try {
       summaryText = await summaryProvider(messages);
+      if (!summaryText.trim()) {
+        throw new Error('摘要模型返回了空内容');
+      }
     } catch {
       summaryText = generateFallbackSummary(messages);
     }
@@ -206,17 +278,34 @@ export async function compactHistory(
     summaryText = generateFallbackSummary(messages);
   }
 
-  const systemMsg = messages.find(m => m.role === 'system') || {
+  const originalSystemMsg = messages.find(m => m.role === 'system') || {
     role: 'system',
     content: '你是一个高效的 AI 辅助编程助手。'
   };
-
-  const compactedUserMsg: ChatMessage = {
-    role: 'user',
-    content: `[Compacted Context Summary]\n\n${summaryText}`
+  const summaryMarker = '\n\n[Compacted Context Summary]';
+  const markerIndex = originalSystemMsg.content.indexOf(summaryMarker);
+  const baseSystemContent = markerIndex >= 0
+    ? originalSystemMsg.content.slice(0, markerIndex)
+    : originalSystemMsg.content;
+  const transcriptHint = transcriptPath ? `\n完整压缩前记录：${transcriptPath}` : '';
+  const systemMsg: ChatMessage = {
+    ...originalSystemMsg,
+    content: `${baseSystemContent}${summaryMarker}\n\n${summaryText}${transcriptHint}`
   };
+  const recentMessages = selectRecentConversation(recentSource, 2);
 
-  return [systemMsg, compactedUserMsg];
+  return repairToolCallPairs([systemMsg, ...recentMessages]);
+}
+
+function selectRecentConversation(messages: ChatMessage[], userTurns: number): ChatMessage[] {
+  const userIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'user') userIndices.push(i);
+  }
+  if (userIndices.length === 0) return [];
+
+  const start = userIndices[Math.max(0, userIndices.length - userTurns)];
+  return JSON.parse(JSON.stringify(messages.slice(start).filter(m => m.role !== 'system'))) as ChatMessage[];
 }
 
 function generateFallbackSummary(messages: ChatMessage[]): string {
@@ -245,6 +334,7 @@ export async function runCompactionPipeline(
   const originalChars = estimateMessagesChars(messages);
   const layersApplied: string[] = [];
   let currentMessages = messages;
+  let summaryMode: CompactionResult['summaryMode'] = 'none';
 
   // L1: 大结果落盘
   const l1Messages = toolResultBudget(currentMessages);
@@ -272,10 +362,25 @@ export async function runCompactionPipeline(
 
   // L4: 全量结构化摘要
   if (options.forceL4 || currentChars > threshold) {
-    currentMessages = await compactHistory(currentMessages, options.summaryProvider);
-    layersApplied.push('L4:全量结构化摘要');
+    let modelSummaryCompleted = false;
+    const summaryProvider = options.summaryProvider
+      ? async (sourceMessages: ChatMessage[]) => {
+          const summary = await options.summaryProvider!(sourceMessages);
+          if (!summary.trim()) throw new Error('摘要模型返回了空内容');
+          modelSummaryCompleted = true;
+          return summary;
+        }
+      : undefined;
+    currentMessages = await compactHistory(messages, summaryProvider, currentMessages);
+    summaryMode = modelSummaryCompleted ? 'model' : 'fallback';
+    layersApplied.push(modelSummaryCompleted ? 'L4:模型结构化摘要' : 'L4:本地降级摘要');
   }
 
+  const pairedMessages = repairToolCallPairs(currentMessages);
+  if (pairedMessages !== currentMessages) {
+    layersApplied.push('协议:工具调用配对修复');
+    currentMessages = pairedMessages;
+  }
   const compactedChars = estimateMessagesChars(currentMessages);
   const freedPercentage = Math.max(0, Math.round(((originalChars - compactedChars) / Math.max(1, originalChars)) * 1000) / 10);
 
@@ -284,6 +389,7 @@ export async function runCompactionPipeline(
     originalChars,
     compactedChars,
     freedPercentage,
-    layersApplied
+    layersApplied,
+    summaryMode
   };
 }
