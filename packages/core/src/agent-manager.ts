@@ -32,6 +32,7 @@ export interface AgentRecord {
   startedAt?: number;
   finishedAt?: number;
   currentTool?: string;
+  timeoutMs?: number;
   usage: AgentUsage;
   result?: SubagentResult;
   verification?: {
@@ -82,6 +83,18 @@ const AGENT_STATUSES = new Set<AgentStatus>([
   'queued', 'running', 'awaiting_verification', 'verified', 'rejected', 'failed', 'aborted'
 ]);
 
+export const DEFAULT_SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
+export const MIN_SUBAGENT_TIMEOUT_MS = 100;
+export const MAX_SUBAGENT_TIMEOUT_MS = 60 * 60 * 1000;
+
+export function normalizeSubagentTimeoutMs(
+  value: number | undefined,
+  fallback = DEFAULT_SUBAGENT_TIMEOUT_MS
+): number {
+  const candidate = Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
+  return Math.max(MIN_SUBAGENT_TIMEOUT_MS, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.trunc(candidate)));
+}
+
 function isAgentRecord(value: unknown): value is AgentRecord {
   if (!value || typeof value !== 'object') return false;
   const record = value as Partial<AgentRecord>;
@@ -93,6 +106,7 @@ function isAgentRecord(value: unknown): value is AgentRecord {
     && ['readonly', 'workspace-write'].includes(String(record.access))
     && AGENT_STATUSES.has(record.status as AgentStatus)
     && Number.isFinite(record.createdAt)
+    && (record.timeoutMs === undefined || Number.isFinite(record.timeoutMs))
     && Boolean(usage)
     && Number.isFinite(usage?.promptTokens)
     && Number.isFinite(usage?.completionTokens)
@@ -124,6 +138,7 @@ export interface AgentLaunchRequest {
   background: boolean;
   access: AgentAccess;
   parentSignal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface AgentLaunch {
@@ -144,6 +159,8 @@ interface RuntimeEntry {
   resolve: (record: AgentRecord) => void;
   parentSignal?: AbortSignal;
   parentAbort?: () => void;
+  timeoutMs: number;
+  timeoutHandle?: NodeJS.Timeout;
 }
 
 export interface AgentManagerOptions {
@@ -176,6 +193,7 @@ export class AgentManager {
     let previousScopeChanged = false;
     for (const [id, runtime] of this.runtimes) {
       runtime.controller.abort();
+      if (runtime.timeoutHandle) clearTimeout(runtime.timeoutHandle);
       if (runtime.parentSignal && runtime.parentAbort) runtime.parentSignal.removeEventListener('abort', runtime.parentAbort);
       const record = this.records.get(id);
       if (record) {
@@ -221,6 +239,7 @@ export class AgentManager {
 
   launch(request: AgentLaunchRequest, executor: AgentExecutor): AgentLaunch {
     const id = `sub-${randomUUID().slice(0, 8)}`;
+    const timeoutMs = normalizeSubagentTimeoutMs(request.timeoutMs);
     const record: AgentRecord = {
       id,
       role: request.role,
@@ -228,6 +247,7 @@ export class AgentManager {
       taskId: request.taskId,
       background: request.background,
       access: request.access,
+      timeoutMs,
       status: 'queued',
       createdAt: Date.now(),
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
@@ -246,7 +266,8 @@ export class AgentManager {
       controller: new AbortController(),
       executor,
       resolve: resolveCompletion,
-      parentSignal: request.parentSignal
+      parentSignal: request.parentSignal,
+      timeoutMs
     };
     if (request.parentSignal) {
       runtime.parentAbort = () => this.abort(id);
@@ -392,6 +413,21 @@ export class AgentManager {
     record.status = 'running';
     record.startedAt = Date.now();
     this.persistAndEmit();
+    runtime.timeoutHandle = setTimeout(() => {
+      if (this.runtimes.get(agentId) !== runtime) return;
+      const timeoutError = new Error(`子代理运行超过 ${runtime.timeoutMs}ms，已自动中止。`);
+      timeoutError.name = 'TimeoutError';
+      runtime.controller.abort(timeoutError);
+      const result: SubagentResult = {
+        agentId,
+        status: 'aborted',
+        summary: timeoutError.message,
+        filesChanged: [],
+        verification: [],
+        unresolved: ['timeout']
+      };
+      this.finishRuntime(record, runtime, 'aborted', result);
+    }, runtime.timeoutMs);
     void runtime.executor({ agentId, signal: runtime.controller.signal })
       .then(result => {
         if (this.runtimes.get(agentId) !== runtime) return;
@@ -421,6 +457,7 @@ export class AgentManager {
     record.finishedAt = Date.now();
     record.currentTool = undefined;
     if (result) record.result = result;
+    if (runtime.timeoutHandle) clearTimeout(runtime.timeoutHandle);
     if (runtime.parentSignal && runtime.parentAbort) runtime.parentSignal.removeEventListener('abort', runtime.parentAbort);
     this.runtimes.delete(record.id);
     runtime.resolve(this.copy(record));

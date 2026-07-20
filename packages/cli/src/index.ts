@@ -597,6 +597,7 @@ ${colors.bold('环境变量配置:')}
       taskId: request.taskId,
       background: false,
       access,
+      timeoutMs: request.timeoutMs,
       parentSignal: context?.abortSignal
     }, ({ agentId, signal }) => subagentRunner.runResult({ ...request, agentId }, {
       ...context,
@@ -645,7 +646,8 @@ ${colors.bold('环境变量配置:')}
       description: request.description,
       taskId: request.taskId,
       background,
-      access
+      access,
+      timeoutMs: request.timeoutMs
     }, ({ agentId, signal }) => subagentRunner.runResult({ ...request, agentId }, {
       abortSignal: signal,
       depth: 0,
@@ -804,6 +806,7 @@ ${colors.bold('环境变量配置:')}
                 role: roleSelection.value as 'research' | 'review' | 'implement',
                 background: modeSelection.value === 'background',
                 taskId,
+                timeoutMs: undefined,
                 description: description.trim()
               };
             }
@@ -814,7 +817,8 @@ ${colors.bold('环境变量配置:')}
             const launch = launchManualAgent({
               description: parsed.description,
               role: parsed.role,
-              taskId: parsed.taskId
+              taskId: parsed.taskId,
+              timeoutMs: parsed.timeoutMs
             }, parsed.background);
             ui.writeLine(colors.cyan(`🤖 ${launch.agent.id} ${parsed.background ? '已在后台排队/启动' : '已在前台启动'}。`));
             if (parsed.background) continue;
@@ -1235,7 +1239,7 @@ ${colors.bold('环境变量配置:')}
           const helpLines = [
             colors.bold('可用斜杠指令：'),
             `  ${colors.purple('/help')}        - 显示帮助手册`,
-            `  ${colors.purple('/subagent')}    - 启动子代理（例：/subagent bg research 检查权限链）`,
+            `  ${colors.purple('/subagent')}    - 启动子代理（例：/subagent bg research --timeout-ms 60000 检查权限链）`,
             `  ${colors.purple('/agents')}      - 查看和管理 Agent（stop <id|all> / clear）`,
             `  ${colors.purple('/permission')}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
             `  ${colors.purple('/effort')}      - 切换思考强度（当前：${reasoningEffort}）`,

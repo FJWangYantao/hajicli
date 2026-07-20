@@ -27,7 +27,13 @@ export class SubagentTool implements BaseTool {
         properties: {
           description: { type: 'string', description: '完整、可独立执行的子任务说明和验收标准' },
           taskId: { type: 'string', description: '可选：当前 Todo 中对应的任务 ID' },
-          role: { type: 'string', enum: ['research', 'implement', 'review'], description: '子代理角色' }
+          role: { type: 'string', enum: ['research', 'implement', 'review'], description: '子代理角色' },
+          timeoutMs: {
+            type: 'integer',
+            minimum: 100,
+            maximum: 3600000,
+            description: '可选：运行超时毫秒数；默认 600000（10 分钟）'
+          }
         },
         required: ['description']
       }
@@ -42,10 +48,15 @@ export class SubagentTool implements BaseTool {
     const role = ['research', 'implement', 'review'].includes(String(args.role || ''))
       ? String(args.role) as SubagentRole
       : 'research';
+    const timeoutMs = args.timeoutMs === undefined ? undefined : Number(args.timeoutMs);
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 3_600_000)) {
+      return Promise.resolve('错误: timeoutMs 必须是 100 到 3600000 之间的整数。');
+    }
     return this.handler({
       description,
       taskId: typeof args.taskId === 'string' && args.taskId.trim() ? args.taskId.trim() : undefined,
-      role
+      role,
+      timeoutMs
     }, context);
   }
 }

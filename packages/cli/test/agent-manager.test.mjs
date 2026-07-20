@@ -24,14 +24,55 @@ test('manual subagent command supports background, role and Todo linkage', () =>
     background: true,
     role: 'review',
     taskId: 'inspect',
+    timeoutMs: undefined,
     description: '检查当前 diff'
   });
   assert.deepEqual(parseSubagentCommand('research 查找 Provider 重复代码'), {
     background: false,
     role: 'research',
     taskId: undefined,
+    timeoutMs: undefined,
     description: '查找 Provider 重复代码'
   });
+  assert.deepEqual(parseSubagentCommand('research --timeout-ms 45000 检查超时链路'), {
+    background: false,
+    role: 'research',
+    taskId: undefined,
+    timeoutMs: 45000,
+    description: '检查超时链路'
+  });
+  assert.throws(() => parseSubagentCommand('research --timeout-ms 20 太短'), /100 到 3600000/);
+});
+
+test('running agents time out even when their executor ignores abort', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-agent-timeout-'));
+  try {
+    const manager = new AgentManager({ agentsDir: cwd });
+    manager.setScope('session-a');
+    let executionSignal;
+    const startedAt = Date.now();
+    const launch = manager.launch({
+      role: 'research',
+      description: 'never resolves',
+      background: false,
+      access: 'readonly',
+      timeoutMs: 100
+    }, ({ signal }) => {
+      executionSignal = signal;
+      return new Promise(() => {});
+    });
+
+    const finished = await launch.completion;
+    assert.equal(finished.status, 'aborted');
+    assert.equal(finished.timeoutMs, 100);
+    assert.equal(finished.result.status, 'aborted');
+    assert.deepEqual(finished.result.unresolved, ['timeout']);
+    assert.match(finished.result.summary, /超过 100ms.*自动中止/);
+    assert.equal(executionSignal.aborted, true);
+    assert.ok(Date.now() - startedAt < 1000);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('AgentManager runs at most three read-only agents and pumps the queue', async () => {

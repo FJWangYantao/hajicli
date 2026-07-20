@@ -118,7 +118,7 @@ export class ToolsPromptPart implements SystemPromptPart {
       rules.push('- taskfinish：只有完成实际验证后才能结束任务；结束后重新审视剩余计划，全部完成后做总验证。');
     }
     if (activeTools.includes('subagent')) {
-      rules.push('- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。');
+      rules.push('- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可通过 timeoutMs 设置 100ms 到 3600000ms 的运行上限，默认 600000ms。可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。');
     }
     if (activeTools.includes('verifyagent')) {
       rules.push('- verifyagent：子代理完成后，其报告仅是未验证线索。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果未验证时禁止 taskfinish。');

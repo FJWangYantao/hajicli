@@ -15,6 +15,7 @@ export interface SubagentRequest {
   taskId?: string;
   role?: SubagentRole;
   agentId?: string;
+  timeoutMs?: number;
 }
 
 export interface SubagentResult {
@@ -191,13 +192,19 @@ export class SubagentRunner {
       return result;
     } catch (error) {
       const aborted = parentContext.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError');
+      const abortReason = parentContext.abortSignal?.reason;
+      const timedOut = aborted && abortReason instanceof Error && abortReason.name === 'TimeoutError';
       const result: SubagentResult = {
         agentId,
         status: aborted ? 'aborted' : 'failed',
-        summary: aborted ? '子代理已被用户中止。' : `子代理失败：${error instanceof Error ? error.message : String(error)}`,
+        summary: timedOut
+          ? abortReason.message
+          : aborted
+            ? '子代理已被用户中止。'
+            : `子代理失败：${error instanceof Error ? error.message : String(error)}`,
         filesChanged: [],
         verification: [],
-        unresolved: [aborted ? 'aborted' : 'runtime_error']
+        unresolved: [timedOut ? 'timeout' : aborted ? 'aborted' : 'runtime_error']
       };
       this.options.onEvent?.({ type: 'done', agentId, role, taskId: request.taskId, result });
       return result;

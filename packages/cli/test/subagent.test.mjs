@@ -117,8 +117,10 @@ test('subagent tool validates input and forwards execution context', async () =>
     return 'ok';
   });
   assert.match(await tool.execute({}), /^错误:/);
-  assert.equal(await tool.execute({ description: 'review code', role: 'review' }, { abortSignal: controller.signal }), 'ok');
+  assert.match(await tool.execute({ description: 'review code', timeoutMs: 50 }), /timeoutMs/);
+  assert.equal(await tool.execute({ description: 'review code', role: 'review', timeoutMs: 45000 }, { abortSignal: controller.signal }), 'ok');
   assert.equal(received.request.role, 'review');
+  assert.equal(received.request.timeoutMs, 45000);
   assert.equal(received.context.abortSignal, controller.signal);
 });
 
