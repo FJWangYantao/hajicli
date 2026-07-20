@@ -220,6 +220,10 @@ function isRealCtrlU(value: string, key: readline.Key): boolean {
   return value === '\x15' && key.ctrl === true && key.name === 'u';
 }
 
+function isRealCtrlT(value: string, key: readline.Key): boolean {
+  return value === '\x14' && key.ctrl === true && key.name === 't';
+}
+
 export class InputHistoryBuffer {
   private readonly entries: string[] = [];
   private cursor = 0;
@@ -685,6 +689,7 @@ export class TerminalUI {
   private maxTokens = 1000000;
   private taskPanelTitle = '';
   private taskPanelItems: TaskPanelItem[] = [];
+  private taskPanelExpanded = false;
   private agentPanelItems: AgentPanelItem[] = [];
   private agentPanelTimer: NodeJS.Timeout | null = null;
   private activeInput?: ActiveInput;
@@ -738,6 +743,7 @@ export class TerminalUI {
   setTaskPlan(plan: { title: string; tasks: TaskPanelItem[]; completedTasks?: TaskPanelItem[] } | null): void {
     this.taskPanelTitle = plan?.title || '';
     this.taskPanelItems = plan ? [...(plan.completedTasks || []), ...plan.tasks] : [];
+    if (!plan || this.taskPanelItems.length <= 5) this.taskPanelExpanded = false;
     this.scheduleRender();
   }
 
@@ -1322,6 +1328,7 @@ export class TerminalUI {
       this.close();
       process.exit(130);
     }
+    if (this.toggleTaskPanel(value, key)) return;
     if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
       if (this.onShiftTabCallback) {
         this.onShiftTabCallback();
@@ -1555,17 +1562,25 @@ export class TerminalUI {
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
     if (!this.taskPanelTitle || maxRows <= 0) return [];
-    const rows = [`\x1b[1;36m${truncateText(this.taskPanelTitle, width)}\x1b[0m`];
-    for (const task of this.taskPanelItems) {
-      if (rows.length >= maxRows) break;
+    const rows = [`\x1b[1;34m${truncateText('Todo', width)}\x1b[0m`];
+    const visibleTasks = this.taskPanelExpanded
+      ? this.taskPanelItems
+      : this.taskPanelItems.slice(0, 5);
+    const needsFooter = this.taskPanelExpanded || this.taskPanelItems.length > visibleTasks.length;
+    const taskRowLimit = Math.max(1, maxRows - (needsFooter ? 1 : 0));
+    let renderedTaskCount = 0;
+
+    for (const task of visibleTasks) {
+      if (rows.length >= taskRowLimit) break;
       if (task.status === 'completed') {
-        rows.push(`\x1b[9;90m[x] ${truncateText(task.content, Math.max(1, width - 4))}\x1b[0m`);
+        rows.push(`\x1b[32m✓\x1b[0m \x1b[2m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
       } else if (task.status === 'in_progress') {
-        rows.push(`\x1b[1;33m[•] ${truncateText(task.content, Math.max(1, width - 4))}\x1b[0m`);
+        rows.push(`\x1b[1;34m●\x1b[0m \x1b[1m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
       } else {
-        rows.push(`\x1b[90m[ ] ${truncateText(task.content, Math.max(1, width - 4))}\x1b[0m`);
+        rows.push(`\x1b[90m○\x1b[0m ${truncateText(task.content, Math.max(1, width - 2))}`);
       }
-      if (task.agent && rows.length < maxRows) {
+      renderedTaskCount += 1;
+      if (task.agent && rows.length < taskRowLimit) {
         const statusLabel = task.agent.status === 'running'
           ? '运行中'
           : task.agent.status === 'awaiting_verification'
@@ -1585,7 +1600,32 @@ export class TerminalUI {
         rows.push(`${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}\x1b[0m`);
       }
     }
+
+    if (needsFooter && rows.length < maxRows) {
+      const hiddenTasks = this.taskPanelItems.slice(renderedTaskCount);
+      if (hiddenTasks.length > 0) {
+        const doneCount = hiddenTasks.filter(task => task.status === 'completed').length;
+        const activeCount = hiddenTasks.filter(task => task.status === 'in_progress').length;
+        const pendingCount = hiddenTasks.filter(task => task.status === 'pending').length;
+        const statusSummary = [
+          doneCount > 0 ? `${doneCount} done` : '',
+          activeCount > 0 ? `${activeCount} in progress` : '',
+          pendingCount > 0 ? `${pendingCount} pending` : ''
+        ].filter(Boolean).join(' · ');
+        const counts = statusSummary ? ` (${statusSummary})` : '';
+        rows.push(`\x1b[90m${truncateText(`… +${hiddenTasks.length} more${counts} · ctrl+t to ${this.taskPanelExpanded ? 'collapse' : 'expand'}`, width)}\x1b[0m`);
+      } else {
+        rows.push(`\x1b[90m${truncateText('… ctrl+t to collapse', width)}\x1b[0m`);
+      }
+    }
     return rows;
+  }
+
+  private toggleTaskPanel(value: string, key: readline.Key): boolean {
+    if (!isRealCtrlT(value, key) || this.taskPanelItems.length <= 5) return false;
+    this.taskPanelExpanded = !this.taskPanelExpanded;
+    this.scheduleRender();
+    return true;
   }
 
   private buildAgentPanel(width: number, maxRows = 4): string[] {
@@ -1610,7 +1650,11 @@ export class TerminalUI {
       : '';
     const headerRows = header ? wrapAnsi(header, width) : [];
     const agentRows = this.buildAgentPanel(width, Math.max(0, Math.min(4, height - headerRows.length - 8)));
-    const taskRows = this.buildTaskPanel(width, Math.max(0, Math.min(8, height - headerRows.length - agentRows.length - 8)));
+    const availableTaskRows = Math.max(0, height - headerRows.length - agentRows.length - 8);
+    const taskRows = this.buildTaskPanel(
+      width,
+      this.taskPanelExpanded ? availableTaskRows : Math.min(8, availableTaskRows)
+    );
     const topRows = [...headerRows, ...taskRows, ...agentRows];
     const divider = this.options.renderBorder(width);
     let inputLayout: VisibleInputLayout | undefined;
@@ -1814,6 +1858,7 @@ export class TerminalUI {
       this.finishSelection(new TerminalInputCancelledError());
       return;
     }
+    if (this.toggleTaskPanel(value, key)) return;
 
     if (key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
@@ -1858,6 +1903,7 @@ export class TerminalUI {
       this.finishInput(new TerminalInputCancelledError());
       return;
     }
+    if (this.toggleTaskPanel(value, key)) return;
     if (key.name === 'escape') {
       if (this.textSelection.active) {
         this.textSelection.clear();
