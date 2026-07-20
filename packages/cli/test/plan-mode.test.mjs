@@ -36,6 +36,20 @@ test('Plan prompt describes incremental task creation and approval boundary', as
   assert.match(prompt, /最多 12 个字符/);
 });
 
+test('taskfinish prompt keeps orchestration guidance without repeating its schema', async () => {
+  const manager = new SystemPromptManager();
+  const prompt = await manager.generatePrompt({
+    cwd: 'C:/repo',
+    os: 'Windows',
+    tools: ['updatetask', 'taskfinish'],
+    reasoningEffort: 'medium',
+    permissionMode: 'default'
+  });
+
+  assert.match(prompt, /taskfinish：提交该任务的实际验证结果/);
+  assert.doesNotMatch(prompt, /taskfinish：.*updatetask\(in_progress\).*taskfinish/);
+});
+
 test('plan titles are kept concise', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-plan-title-'));
   try {

@@ -1311,6 +1311,8 @@ export class TerminalUI {
   };
 
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
+    if (this.toggleTaskPanel(value, key)) return;
+
     if (this.activeSelection) {
       this.handleSelectionKeypress(value, key);
     } else if (this.activeInput) {
@@ -1328,7 +1330,6 @@ export class TerminalUI {
       this.close();
       process.exit(130);
     }
-    if (this.toggleTaskPanel(value, key)) return;
     if ((key.name === 'tab' && key.shift) || key.name === 'backtab' || value === '\x1b[Z') {
       if (this.onShiftTabCallback) {
         this.onShiftTabCallback();
@@ -1858,8 +1859,6 @@ export class TerminalUI {
       this.finishSelection(new TerminalInputCancelledError());
       return;
     }
-    if (this.toggleTaskPanel(value, key)) return;
-
     if (key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
       return;
@@ -1903,7 +1902,6 @@ export class TerminalUI {
       this.finishInput(new TerminalInputCancelledError());
       return;
     }
-    if (this.toggleTaskPanel(value, key)) return;
     if (key.name === 'escape') {
       if (this.textSelection.active) {
         this.textSelection.clear();

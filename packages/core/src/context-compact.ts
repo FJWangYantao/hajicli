@@ -59,12 +59,22 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(cjkCount * 0.7 + asciiCount * 0.25 + codeSymbolCount * 0.5);
 }
 
+export interface EstimateMessagesTokensOptions {
+  includeSystem?: boolean;
+}
+
 /**
  * 启发式估算消息数组的总 Token 数。
  * 默认不包含系统提示词 (role === 'system') 开销，以便新对话初始显示为 0。
  * 结合文本加权估算与 Message Header 固定开销 (每条消息约 4 Tokens)。
  */
-export function estimateMessagesTokens(messages: ChatMessage[], includeSystem = false): number {
+export function estimateMessagesTokens(
+  messages: ChatMessage[],
+  options: EstimateMessagesTokensOptions | boolean = {}
+): number {
+  const includeSystem = typeof options === 'boolean'
+    ? options
+    : options.includeSystem ?? false;
   let totalTokens = 0;
   for (const m of messages) {
     if (!includeSystem && m.role === 'system') {

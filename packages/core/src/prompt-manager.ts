@@ -115,7 +115,7 @@ export class ToolsPromptPart implements SystemPromptPart {
       rules.push('- updatetask：执行前将任务设为 in_progress，也可根据新证据调整内容或依赖。');
     }
     if (activeTools.includes('taskfinish')) {
-      rules.push('- taskfinish：只有完成实际验证后才能结束任务；结束后重新审视剩余计划，全部完成后做总验证。');
+      rules.push('- taskfinish：提交该任务的实际验证结果；结束后重新审视剩余计划，全部完成后做总验证。');
     }
     if (activeTools.includes('subagent')) {
       rules.push('- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可通过 timeoutMs 设置 100ms 到 3600000ms 的运行上限，默认 600000ms。可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。');

@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START,
+  estimateMessagesTokens,
   repairToolCallPairs,
   runCompactionPipeline,
   snipCompact
@@ -20,6 +21,14 @@ const messages = [
   { role: 'assistant', content: 'second answer' },
   { role: 'user', content: 'latest request', snapshotId: 'snapshot-3' }
 ];
+
+test('message token estimation exposes a named includeSystem option', () => {
+  const withoutSystem = estimateMessagesTokens(messages);
+  const withSystem = estimateMessagesTokens(messages, { includeSystem: true });
+
+  assert.ok(withSystem > withoutSystem);
+  assert.equal(withSystem, estimateMessagesTokens(messages, true));
+});
 
 const toolCall = id => ({
   id,

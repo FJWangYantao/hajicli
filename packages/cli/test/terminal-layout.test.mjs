@@ -83,7 +83,7 @@ test('renders the compact Todo panel and toggles its expanded state with Ctrl+T'
   ]);
   assert.match(collapsed.at(-1), /… \+3 more \(1 done · 2 pending\) · ctrl\+t to expand/);
 
-  assert.equal(ui.toggleTaskPanel('\x14', { ctrl: true, name: 't' }), true);
+  ui.dispatchKeypress('\x14', { ctrl: true, name: 't' });
   const expanded = ui.buildTaskPanel(100, 12).map(stripAnsi);
   assert.ok(expanded.includes('○ 完成验收'));
   assert.equal(expanded.at(-1), '… ctrl+t to collapse');
