@@ -17,21 +17,20 @@ const definition = name => ({
 test('subagent uses fresh context, filters recursive/task tools and returns only final result', async () => {
   const calls = [];
   const provider = {
-    async complete(messages, options) {
+    async *completeStream(messages, options) {
       calls.push({ messages: structuredClone(messages), tools: options.tools.map(tool => tool.function.name) });
       options.onUsage?.({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
       if (calls.length === 1) {
         options.onToolCall([{ id: 'read-1', type: 'function', function: { name: 'read', arguments: '{"path":"a.ts"}' } }]);
-        return '';
+        return;
       }
-      return JSON.stringify({
+      yield JSON.stringify({
         summary: '已完成隔离调研',
         filesChanged: [],
         verification: ['read a.ts'],
         unresolved: []
       });
-    },
-    async *completeStream() {}
+    }
   };
   const tools = ['read', 'write', 'taskfinish', 'subagent'].map(name => ({
     name,
@@ -74,8 +73,7 @@ test('subagent rejects recursive invocation before calling the provider', async 
   const runner = new SubagentRunner({
     cwd: 'C:/repo',
     getProvider: () => ({
-      async complete() { providerCalls += 1; return ''; },
-      async *completeStream() {}
+      async *completeStream() { providerCalls += 1; }
     }),
     getModel: () => 'test-model',
     getReasoningEffort: () => 'low',

@@ -144,7 +144,8 @@ export class SubagentRunner {
         if (parentContext.abortSignal?.aborted) throw abortError();
         let toolCalls: ToolCall[] = [];
         let reasoning = '';
-        const text = await provider.complete(messages, {
+        let text = '';
+        for await (const chunk of provider.completeStream(messages, {
           model,
           reasoningEffort,
           thinking: true,
@@ -154,7 +155,9 @@ export class SubagentRunner {
           onToolCall: calls => { toolCalls = calls; },
           onReasoning: content => { reasoning += content; },
           onUsage: usage => this.options.onEvent?.({ type: 'usage', agentId, role, taskId: request.taskId, usage })
-        });
+        })) {
+          text += chunk;
+        }
         const assistantMessage: ChatMessage = { role: 'assistant', content: text };
         if (reasoning) assistantMessage.reasoning_content = reasoning;
         if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
