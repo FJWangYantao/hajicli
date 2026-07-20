@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { repairToolCallPairs, runCompactionPipeline, snipCompact } from '@hajicli/core';
+import {
+  AGENT_VERIFICATION_CONTEXT_END,
+  AGENT_VERIFICATION_CONTEXT_START,
+  repairToolCallPairs,
+  runCompactionPipeline,
+  snipCompact
+} from '@hajicli/core';
 
 const messages = [
   { role: 'system', content: 'system rules' },
@@ -140,6 +146,49 @@ test('L4 reports fallback mode when the model summary fails', async () => {
 
     assert.equal(result.summaryMode, 'fallback');
     assert.ok(result.layersApplied.includes('L4:本地降级摘要'));
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('L4 preserves current and legacy unverified subagent context across repeated compaction', async () => {
+  const previousCwd = process.cwd();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-agent-compact-'));
+  process.chdir(cwd);
+  try {
+    const pendingContext = [
+      AGENT_VERIFICATION_CONTEXT_START,
+      'Agent sub-current：当前结构化待验证结果',
+      AGENT_VERIFICATION_CONTEXT_END
+    ].join('\n');
+    const history = [
+      {
+        role: 'system',
+        content: `system rules\n\n[Compacted Context Summary]\nold summary\n\n${pendingContext}`
+      },
+      { role: 'user', content: 'first request' },
+      {
+        role: 'system',
+        content: '[系统手动 Agent 结果] sub-legacy completed。该结果尚未验证。'
+      },
+      { role: 'user', content: 'latest request' }
+    ];
+
+    const first = await runCompactionPipeline(history, {
+      forceL4: true,
+      summaryProvider: async () => 'new summary'
+    });
+    const second = await runCompactionPipeline(first.messages, {
+      forceL4: true,
+      summaryProvider: async () => 'newer summary'
+    });
+    const systemContent = second.messages[0].content;
+
+    assert.match(systemContent, /Agent sub-current/);
+    assert.match(systemContent, /sub-legacy completed/);
+    assert.equal(systemContent.split(AGENT_VERIFICATION_CONTEXT_START).length - 1, 1);
+    assert.equal(systemContent.split(AGENT_VERIFICATION_CONTEXT_END).length - 1, 1);
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(cwd, { recursive: true, force: true });

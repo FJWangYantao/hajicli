@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ChatMessage } from './types.js';
+import {
+  AGENT_VERIFICATION_CONTEXT_END,
+  AGENT_VERIFICATION_CONTEXT_START
+} from './agent-manager.js';
 
 export interface CompactionResult {
   messages: ChatMessage[];
@@ -143,6 +147,47 @@ export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
   return changed ? repaired : messages;
 }
 
+function stripAgentVerificationContext(content: string): string {
+  let stripped = content;
+  while (true) {
+    const start = stripped.indexOf(AGENT_VERIFICATION_CONTEXT_START);
+    if (start < 0) return stripped;
+    const end = stripped.indexOf(AGENT_VERIFICATION_CONTEXT_END, start);
+    if (end < 0) return stripped.slice(0, start).trimEnd();
+    const before = stripped.slice(0, start).trimEnd();
+    const after = stripped.slice(end + AGENT_VERIFICATION_CONTEXT_END.length).trimStart();
+    stripped = [before, after].filter(Boolean).join('\n\n');
+  }
+}
+
+function collectAgentVerificationContext(messages: ChatMessage[]): string {
+  const fragments = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'system' || typeof message.content !== 'string') continue;
+    let cursor = 0;
+    while (true) {
+      const start = message.content.indexOf(AGENT_VERIFICATION_CONTEXT_START, cursor);
+      if (start < 0) break;
+      const bodyStart = start + AGENT_VERIFICATION_CONTEXT_START.length;
+      const end = message.content.indexOf(AGENT_VERIFICATION_CONTEXT_END, bodyStart);
+      if (end < 0) break;
+      const body = message.content.slice(bodyStart, end).trim();
+      if (body) fragments.add(body);
+      cursor = end + AGENT_VERIFICATION_CONTEXT_END.length;
+    }
+
+    const legacyAgentResult = /^(?:\[系统手动 Agent 结果\]|\[系统后台 Agent 通知\]|\[强制验证门禁\])/.test(message.content)
+      && /(?:尚未|仍未).*验证/.test(message.content);
+    if (legacyAgentResult) fragments.add(message.content.trim());
+  }
+  if (fragments.size === 0) return '';
+  return [
+    AGENT_VERIFICATION_CONTEXT_START,
+    ...fragments,
+    AGENT_VERIFICATION_CONTEXT_END
+  ].join('\n\n');
+}
+
 /**
  * L1: tool_result_budget（大工具结果落盘 - 0 API）
  * 检查最后一条消息或近几条消息中超大 tool_result（如超 150KB），将文本落盘至 .haji/task_outputs/
@@ -282,15 +327,17 @@ export async function compactHistory(
     role: 'system',
     content: '你是一个高效的 AI 辅助编程助手。'
   };
+  const agentVerificationContext = collectAgentVerificationContext(messages);
   const summaryMarker = '\n\n[Compacted Context Summary]';
-  const markerIndex = originalSystemMsg.content.indexOf(summaryMarker);
+  const cleanSystemContent = stripAgentVerificationContext(originalSystemMsg.content);
+  const markerIndex = cleanSystemContent.indexOf(summaryMarker);
   const baseSystemContent = markerIndex >= 0
-    ? originalSystemMsg.content.slice(0, markerIndex)
-    : originalSystemMsg.content;
+    ? cleanSystemContent.slice(0, markerIndex)
+    : cleanSystemContent;
   const transcriptHint = transcriptPath ? `\n完整压缩前记录：${transcriptPath}` : '';
   const systemMsg: ChatMessage = {
     ...originalSystemMsg,
-    content: `${baseSystemContent}${summaryMarker}\n\n${summaryText}${transcriptHint}`
+    content: `${baseSystemContent}${summaryMarker}\n\n${summaryText}${transcriptHint}${agentVerificationContext ? `\n\n${agentVerificationContext}` : ''}`
   };
   const recentMessages = selectRecentConversation(recentSource, 2);
 
