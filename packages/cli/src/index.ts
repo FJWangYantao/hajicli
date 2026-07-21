@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesChars, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, normalizeSubagentInstructions } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -22,13 +22,15 @@ import {
   TaskFinishTool,
   PLAN_READY_MARKER,
   SubagentTool,
-  VerifyAgentTool
+  VerifyAgentTool,
+  MODEL_REGISTRY
 } from '@hajicli/plugins';
 import { TerminalUI, TerminalInputCancelledError } from './terminal-input.js';
 import { MarkdownRenderThrottle, MarkdownStreamRenderer, shouldShowToolThinkingSummary } from './markdown-renderer.js';
 import { REWIND_CONFIRM_DEFAULT, queueRewindRefill } from './rewind-flow.js';
 import { SharedToolExecutor } from './tool-executor.js';
 import { parseSubagentCommand } from './agent-commands.js';
+import { getModelContextWindowTokens } from './context-policy.js';
 
 // 原生 ANSI 终端转义色彩工具类，保持零外部依赖
 const colors = {
@@ -67,16 +69,8 @@ ${colors.boldPurple('██║  ██║ ██║   ██║   ╚███�
 ${colors.boldPurple('╚═╝  ╚═╝ ╚═╝   ╚═╝    ╚════╝  ╚═══════╝')}
 `;
 
-const DEEPSEEK_MODELS = [
-  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', description: '快速 · 高性价比', provider: 'deepseek' },
-  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: '更强 · 复杂任务', provider: 'deepseek' }
-] as const;
-
-const VOLCENGINE_MODELS = [
-  { value: 'glm-5.2', label: 'GLM 5.2', description: '火山方舟 · 强力通用/代码模型', provider: 'volcengine' },
-  { value: 'doubao-pro-32k', label: 'Doubao Pro 32k', description: '火山方舟 · 豆包大模型', provider: 'volcengine' },
-  { value: 'doubao-lite-32k', label: 'Doubao Lite 32k', description: '火山方舟 · 豆包轻量大模型', provider: 'volcengine' }
-] as const;
+const DEEPSEEK_MODELS = MODEL_REGISTRY.filter(model => model.provider === 'deepseek');
+const VOLCENGINE_MODELS = MODEL_REGISTRY.filter(model => model.provider === 'volcengine');
 
 const EFFORT_OPTIONS = REASONING_EFFORTS.map(value => ({
   value,
@@ -197,6 +191,10 @@ ${colors.bold('快捷命令 (对话内):')}
 ${colors.bold('环境变量配置:')}
   DEEPSEEK_API_KEY    DeepSeek 平台 API Key
   VOLC_API_KEY        火山引擎 API Key (或 ARK_API_KEY)
+  HAJI_PROXY          HTTP/HTTPS 统一代理（也支持 HTTP_PROXY / HTTPS_PROXY）
+  HAJI_HTTP_TIMEOUT_MS  网络连接超时，默认 60000ms
+  HAJI_ALLOW_OUTSIDE_WORKSPACE  设为 1 时允许文件工具访问工作区外（谨慎）
+  HAJI_CONTEXT_WINDOW_TOKENS  可选：覆盖当前模型的上下文 Token 上限
 `);
     process.exit(0);
   }
@@ -220,8 +218,8 @@ ${colors.bold('环境变量配置:')}
 
   // 根据 selectedModel 动态构建 Provider 实例的工厂函数
   const tracker = new SessionTracker();
-  const buildProvider = (modelValue: string): ObservableModelProvider => {
-    const providerName = detectProviderForModel(modelValue);
+  const buildProvider = (modelValue: string, providerOverride?: 'deepseek' | 'volcengine'): ObservableModelProvider => {
+    const providerName = providerOverride || detectProviderForModel(modelValue);
     if (providerName === 'volcengine') {
       if (!volcApiKey) {
         throw new Error('未配置 VOLC_API_KEY 或 ARK_API_KEY，无法使用火山引擎模型。');
@@ -239,7 +237,11 @@ ${colors.bold('环境变量配置:')}
       throw new Error('未配置 DEEPSEEK_API_KEY，无法使用 DeepSeek 模型。');
     }
     return new ObservableModelProvider(
-      new DeepSeekProvider({ apiKey: deepseekApiKey, defaultModel: modelValue }),
+      new DeepSeekProvider({
+        apiKey: deepseekApiKey,
+        baseUrl: process.env.DEEPSEEK_BASE_URL,
+        defaultModel: modelValue
+      }),
       tracker
     );
   };
@@ -276,6 +278,7 @@ ${colors.bold('环境变量配置:')}
 
   const hookEngine = new HookEngine();
   const snapshotEngine = new SnapshotEngine(process.cwd());
+  let autoCompactionArmed = true;
 
   // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
   hookEngine.register('PreToolUse', async (ctx) => {
@@ -331,13 +334,22 @@ ${colors.bold('环境变量配置:')}
 
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
   hookEngine.register('UserPromptSubmit', async (ctx) => {
-    if (ctx.messages && estimateMessagesChars(ctx.messages) > 60_000) {
-      ui.writeLine(colors.gray('🧹 检测到上下文空间消耗较高，已自动触发多层预压缩...'));
+    if (!ctx.messages) return;
+    const thresholds = getContextCompactionThresholds(getModelContextWindowTokens(selectedModel));
+    const usedTokens = estimateMessagesTokens(ctx.messages, { includeSystem: true });
+    if (usedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
+    if (shouldTriggerAutoCompaction(usedTokens, thresholds, autoCompactionArmed)) {
+      autoCompactionArmed = false;
+      ui.writeLine(colors.gray(`🧹 上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`));
       const result = await runCompactionPipeline(ctx.messages, {
         forceL4: false,
+        maxTokensThreshold: thresholds.triggerTokens,
         summaryProvider: summarizeMessagesForCompaction
       });
       ctx.messages = result.messages;
+      if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
+      const layers = result.layersApplied.length > 0 ? result.layersApplied.join(' -> ') : '无需变更';
+      ui.writeLine(colors.gray(`✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`));
       if (result.summaryMode === 'fallback') {
         ui.writeLine(colors.yellow('⚠️ 模型摘要失败，本次使用了本地降级摘要。'));
       }
@@ -452,6 +464,7 @@ ${colors.bold('环境变量配置:')}
   ui.start();
   ui.setPermissionMode(permissionMode);
   let planReadyForReview = false;
+  let planReviewSummaryRequested = false;
 
   const syncTaskPlanUI = (recentlyCompleted?: { id: string; content: string }): void => {
     const plan = taskStore.getPlan();
@@ -475,10 +488,18 @@ ${colors.bold('环境变量配置:')}
       .map(agent => ({
         id: agent.id,
         role: agent.role,
+        model: agent.model,
+        provider: agent.provider,
+        reasoningEffort: agent.reasoningEffort,
         status: agent.status,
         startedAt: agent.startedAt,
         currentTool: agent.currentTool,
-        totalTokens: agent.usage.totalTokens
+        activity: agent.activity,
+        preview: agent.preview,
+        totalTokens: agent.usage.totalTokens,
+        maxTokens: agent.maxTokens,
+        toolCalls: agent.toolCalls,
+        maxToolCalls: agent.maxToolCalls
       })));
   };
   const agentManager = new AgentManager({
@@ -538,9 +559,12 @@ ${colors.bold('环境变量配置:')}
 
   const subagentRunner = new SubagentRunner({
     cwd: process.cwd(),
-    getProvider: () => provider,
-    getModel: () => selectedModel,
-    getReasoningEffort: () => reasoningEffort,
+    getProvider: request => buildProvider(
+      request?.model || selectedModel,
+      request?.provider === 'deepseek' || request?.provider === 'volcengine' ? request.provider : undefined
+    ),
+    getModel: request => request?.model || selectedModel,
+    getReasoningEffort: request => request?.reasoningEffort || reasoningEffort,
     getTools: context => context.agentAccess === 'readonly' || context.permissionMode === 'plan'
       ? tools.filter(tool => permissionEngine.isReadOnlyTool(tool.name))
       : tools.filter(tool => !['subagent', 'verifyagent'].includes(tool.name) && !tool.name.toLowerCase().startsWith('task')),
@@ -567,8 +591,24 @@ ${colors.bold('环境变量配置:')}
         agentManager.updateTool(event.agentId, event.toolName);
         return;
       }
+      if (event.type === 'tool_done') {
+        agentManager.updateProgress(event.agentId, 'thinking', `${event.toolName} ${event.durationMs}ms`);
+        return;
+      }
+      if (event.type === 'reasoning_delta') {
+        agentManager.updateProgress(event.agentId, 'thinking', event.delta);
+        return;
+      }
+      if (event.type === 'text_delta') {
+        agentManager.updateProgress(event.agentId, 'responding', event.delta);
+        return;
+      }
       if (event.type === 'usage') {
         agentManager.addUsage(event.agentId, event.usage);
+        return;
+      }
+      if (event.type === 'warning') {
+        ui.writeLine(colors.yellow(`⚠️ [${event.agentId}] ${event.message}`));
         return;
       }
       if (event.type === 'done') {
@@ -586,20 +626,64 @@ ${colors.bold('环境变量配置:')}
       }
     }
   });
+  const resolveSubagentRequest = (request: SubagentRequest): SubagentRequest => {
+    const explicitModel = Boolean(request.model?.trim());
+    const model = request.model?.trim().toLowerCase() || selectedModel;
+    const descriptor = MODEL_REGISTRY.find(item => item.value === model);
+    if (request.provider && !['deepseek', 'volcengine'].includes(request.provider)) {
+      throw new Error(`不支持的 Provider: ${request.provider}`);
+    }
+    if (!descriptor && explicitModel && !request.provider) {
+      throw new Error(`自定义模型 ${model} 必须同时指定 --provider`);
+    }
+    if (descriptor && request.provider && request.provider !== descriptor.provider) {
+      throw new Error(`Provider ${request.provider} 与模型 ${model} 不匹配，应使用 ${descriptor.provider}`);
+    }
+    const provider = request.provider || descriptor?.provider || (!explicitModel ? currentProviderName : undefined);
+    if (!provider) throw new Error(`无法确定模型 ${model} 的 Provider，请显式指定 Provider`);
+    const instructions = normalizeSubagentInstructions(request.instructions);
+    if (request.instructions && request.instructions.trim().length > MAX_SUBAGENT_INSTRUCTIONS_LENGTH) {
+      throw new Error(`instructions 长度不能超过 ${MAX_SUBAGENT_INSTRUCTIONS_LENGTH} 个字符`);
+    }
+    return {
+      ...request,
+      model,
+      provider,
+      reasoningEffort: request.reasoningEffort || reasoningEffort,
+      instructions
+    };
+  };
   runSubagent = (request, context) => {
-    if (request.taskId && !taskStore.getPlan()?.tasks.some(task => task.id === request.taskId)) {
-      return Promise.resolve(`错误: 活动任务不存在: ${request.taskId}`);
+    let resolvedRequest: SubagentRequest;
+    try {
+      resolvedRequest = resolveSubagentRequest(request);
+    } catch (error) {
+      return Promise.resolve(`错误: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (resolvedRequest.taskId && !taskStore.getPlan()?.tasks.some(task => task.id === resolvedRequest.taskId)) {
+      return Promise.resolve(`错误: 活动任务不存在: ${resolvedRequest.taskId}`);
     }
     const access = context?.permissionMode === 'plan' ? 'readonly' : 'workspace-write';
     const launch = agentManager.launch({
-      role: request.role || 'research',
-      description: request.description,
-      taskId: request.taskId,
+      role: resolvedRequest.role || 'research',
+      description: resolvedRequest.description,
+      taskId: resolvedRequest.taskId,
       background: false,
       access,
-      timeoutMs: request.timeoutMs,
+      model: resolvedRequest.model,
+      provider: resolvedRequest.provider,
+      reasoningEffort: resolvedRequest.reasoningEffort,
+      instructions: resolvedRequest.instructions,
+      timeoutMs: resolvedRequest.timeoutMs,
+      maxTokens: resolvedRequest.maxTokens,
+      maxToolCalls: resolvedRequest.maxToolCalls,
       parentSignal: context?.abortSignal
-    }, ({ agentId, signal }) => subagentRunner.runResult({ ...request, agentId }, {
+    }, ({ agentId, signal, maxTokens, maxToolCalls }) => subagentRunner.runResult({
+      ...resolvedRequest,
+      agentId,
+      maxTokens,
+      maxToolCalls
+    }, {
       ...context,
       abortSignal: signal,
       agentAccess: access
@@ -629,26 +713,38 @@ ${colors.bold('环境变量配置:')}
   };
 
   const launchManualAgent = (request: SubagentRequest, background: boolean) => {
-    if (request.taskId && !taskStore.getPlan()?.tasks.some(task => task.id === request.taskId)) {
-      throw new Error(`活动任务不存在: ${request.taskId}`);
+    const resolvedRequest = resolveSubagentRequest(request);
+    if (resolvedRequest.taskId && !taskStore.getPlan()?.tasks.some(task => task.id === resolvedRequest.taskId)) {
+      throw new Error(`活动任务不存在: ${resolvedRequest.taskId}`);
     }
-    if (background && request.role === 'implement') {
+    if (background && resolvedRequest.role === 'implement') {
       throw new Error('第一版后台 Agent 仅支持只读 research/review，写入型后台 Agent 将在 Worktree 版本实现');
     }
-    const access = background || request.role !== 'implement' || permissionMode === 'plan'
+    const access = background || resolvedRequest.role !== 'implement' || permissionMode === 'plan'
       ? 'readonly'
       : 'workspace-write';
     const anchorSnapshotId = access === 'workspace-write'
       ? snapshotEngine.createAnchor(`before manual subagent ${Date.now()}`) || undefined
       : undefined;
     return agentManager.launch({
-      role: request.role || 'research',
-      description: request.description,
-      taskId: request.taskId,
+      role: resolvedRequest.role || 'research',
+      description: resolvedRequest.description,
+      taskId: resolvedRequest.taskId,
       background,
       access,
-      timeoutMs: request.timeoutMs
-    }, ({ agentId, signal }) => subagentRunner.runResult({ ...request, agentId }, {
+      model: resolvedRequest.model,
+      provider: resolvedRequest.provider,
+      reasoningEffort: resolvedRequest.reasoningEffort,
+      instructions: resolvedRequest.instructions,
+      timeoutMs: resolvedRequest.timeoutMs,
+      maxTokens: resolvedRequest.maxTokens,
+      maxToolCalls: resolvedRequest.maxToolCalls
+    }, ({ agentId, signal, maxTokens, maxToolCalls }) => subagentRunner.runResult({
+      ...resolvedRequest,
+      agentId,
+      maxTokens,
+      maxToolCalls
+    }, {
       abortSignal: signal,
       depth: 0,
       permissionMode,
@@ -661,8 +757,8 @@ ${colors.bold('环境变量配置:')}
 
   const updateStatusUI = () => {
     ui.setModelInfo(selectedModel, reasoningEffort);
-    const tokens = estimateMessagesTokens(messages);
-    ui.setContextUsage(tokens, 1000000);
+    const tokens = estimateMessagesTokens(messages, { includeSystem: true });
+    ui.setContextUsage(tokens, getModelContextWindowTokens(selectedModel));
   };
   updateStatusUI();
 
@@ -670,6 +766,7 @@ ${colors.bold('环境变量配置:')}
     if (nextMode === 'plan' && permissionMode !== 'plan') {
       taskStore.clearTasks();
       planReadyForReview = false;
+      planReviewSummaryRequested = false;
       syncTaskPlanUI();
     }
     permissionMode = nextMode;
@@ -788,6 +885,22 @@ ${colors.bold('环境变量配置:')}
                 ],
                 selectedValue: 'foreground'
               });
+              const modelSelection = await ui.readSelection({
+                title: 'Choose subagent model and effort',
+                items: MODEL_REGISTRY.map(model => ({
+                  value: model.value,
+                  label: model.label,
+                  description: `${model.provider} · ${model.description}`
+                })),
+                selectedValue: MODEL_REGISTRY.some(model => model.value === selectedModel)
+                  ? selectedModel
+                  : MODEL_REGISTRY[0].value,
+                secondary: {
+                  label: 'Effort',
+                  items: EFFORT_OPTIONS,
+                  selectedValue: reasoningEffort
+                }
+              });
               let taskId: string | undefined;
               const activeTasks = taskStore.getPlan()?.tasks || [];
               if (activeTasks.length > 0) {
@@ -802,11 +915,19 @@ ${colors.bold('环境变量配置:')}
                 taskId = taskSelection.value === 'none' ? undefined : taskSelection.value;
               }
               const description = await ui.readInput({ prompt: `${colors.cyan('Subagent task')} › ` });
+              const instructionsInput = await ui.readInput({ prompt: `${colors.gray('Additional instructions (optional)')} › ` });
+              const selectedModelDescriptor = MODEL_REGISTRY.find(item => item.value === modelSelection.value);
               parsed = {
                 role: roleSelection.value as 'research' | 'review' | 'implement',
                 background: modeSelection.value === 'background',
                 taskId,
+                model: modelSelection.value,
+                provider: selectedModelDescriptor?.provider,
+                reasoningEffort: modelSelection.secondaryValue as ReasoningEffort,
+                instructions: instructionsInput.trim() || undefined,
                 timeoutMs: undefined,
+                maxTokens: undefined,
+                maxToolCalls: undefined,
                 description: description.trim()
               };
             }
@@ -818,7 +939,13 @@ ${colors.bold('环境变量配置:')}
               description: parsed.description,
               role: parsed.role,
               taskId: parsed.taskId,
-              timeoutMs: parsed.timeoutMs
+              model: parsed.model,
+              provider: parsed.provider,
+              reasoningEffort: parsed.reasoningEffort,
+              instructions: parsed.instructions,
+              timeoutMs: parsed.timeoutMs,
+              maxTokens: parsed.maxTokens,
+              maxToolCalls: parsed.maxToolCalls
             }, parsed.background);
             ui.writeLine(colors.cyan(`🤖 ${launch.agent.id} ${parsed.background ? '已在后台排队/启动' : '已在前台启动'}。`));
             if (parsed.background) continue;
@@ -871,7 +998,7 @@ ${colors.bold('环境变量配置:')}
               items: agents.map(agent => ({
                 value: agent.id,
                 label: `${agent.id} ${agent.status}`,
-                description: `${agent.role} · ${agent.description}`
+                description: `${agent.role} · ${agent.model || selectedModel}${agent.provider ? ` · ${agent.provider}` : ''} · ${agent.description}`
               })),
               selectedValue: agents[0].id,
               secondary: {
@@ -902,6 +1029,7 @@ ${colors.bold('环境变量配置:')}
           snapshotEngine.setScope(sessionManager.getCurrentSession().id);
           agentManager.setScope(sessionManager.getCurrentSession().id);
           planReadyForReview = false;
+          planReviewSummaryRequested = false;
           syncTaskPlanUI();
           messages = [{ role: 'system', content: systemPrompt }];
           refreshAgentVerificationContext(messages);
@@ -946,6 +1074,7 @@ ${colors.bold('环境变量配置:')}
               snapshotEngine.setScope(loaded.id);
               agentManager.setScope(loaded.id);
               planReadyForReview = false;
+              planReviewSummaryRequested = false;
               syncTaskPlanUI();
               messages = loaded.messages;
               refreshAgentVerificationContext(messages);
@@ -964,7 +1093,7 @@ ${colors.bold('环境变量配置:')}
                   appendHistoryLine();
                 } else if (m.role === 'assistant') {
                   if (m.reasoning_content) {
-                    appendHistoryLine(colors.gray(`💭 深度思考 (${m.reasoning_content.length} 字)`));
+                    appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
                   }
                   if (m.content) {
                     const mdRenderer = new MarkdownStreamRenderer();
@@ -1107,12 +1236,15 @@ ${colors.bold('环境变量配置:')}
             summaryProvider: summarizeMessagesForCompaction
           });
           messages = result.messages;
+          const manualThresholds = getContextCompactionThresholds(getModelContextWindowTokens(selectedModel));
+          autoCompactionArmed = result.compactedTokens <= manualThresholds.rearmTokens;
           refreshAgentVerificationContext(messages);
           sessionManager.saveCurrentSession(messages);
           updateStatusUI();
           const layersStr = result.layersApplied.length > 0 ? result.layersApplied.join(' -> ') : '已处于精简状态';
           ui.writeLine(colors.boldGreen(`✓ 上下文压缩完成！(${layersStr})`));
           ui.writeLine(colors.cyan(`  字符占用: ${result.originalChars.toLocaleString()} ➔ ${result.compactedChars.toLocaleString()} (释放了 ${result.freedPercentage}% 空间)`));
+          ui.writeLine(colors.cyan(`  Token 估算: ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}`));
           if (result.summaryMode === 'fallback') {
             ui.writeLine(colors.yellow('⚠️ 模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。'));
           }
@@ -1229,6 +1361,7 @@ ${colors.bold('环境变量配置:')}
 
           await applyPermissionMode(reqMode);
           planReadyForReview = false;
+          planReviewSummaryRequested = false;
           ui.writeLine(colors.green(`🛡️  系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`));
           if (permissionMode === 'plan') {
             ui.writeLine(colors.gray('Plan 模式只允许只读调研；计划提交后会等待你的批准。'));
@@ -1239,7 +1372,7 @@ ${colors.bold('环境变量配置:')}
           const helpLines = [
             colors.bold('可用斜杠指令：'),
             `  ${colors.purple('/help')}        - 显示帮助手册`,
-            `  ${colors.purple('/subagent')}    - 启动子代理（例：/subagent bg research --timeout-ms 60000 检查权限链）`,
+            `  ${colors.purple('/subagent')}    - 启动子代理（可选 --model / --provider / --effort / --instructions / 资源限制）`,
             `  ${colors.purple('/agents')}      - 查看和管理 Agent（stop <id|all> / clear）`,
             `  ${colors.purple('/permission')}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
             `  ${colors.purple('/effort')}      - 切换思考强度（当前：${reasoningEffort}）`,
@@ -1503,6 +1636,7 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
               toolOutput.includes(PLAN_READY_MARKER)
             ) {
               planReadyForReview = true;
+              planReviewSummaryRequested = false;
             }
 
             // 保存工具输出至上下文
@@ -1517,56 +1651,76 @@ ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助�
           if (isTurnAborted) {
             keepCalling = false;
           } else if (permissionMode === 'plan' && planReadyForReview) {
-            if (ui.isInputActive()) ui.cancelInput();
-            try {
-              const review = await ui.readSelection({
-                title: 'Plan ready — choose how Haji should execute it',
-                items: [
-                  { value: 'auto', label: 'Auto Execute', description: '自动执行安全操作，高风险操作由安全引擎拦截' },
-                  { value: 'manual', label: 'Approve Manually', description: '每个修改型工具都先请求你的批准' },
-                  { value: 'no', label: 'No, Revise Plan', description: '留在 Plan Mode，继续修改计划' }
-                ],
-                selectedValue: 'auto'
+            if (!planReviewSummaryRequested) {
+              messages.push({
+                role: 'user',
+                content: '[系统计划审阅要求] Todo 已创建完成。现在请停止调用工具，单独输出一份供用户审阅的简洁方案正文，说明总体思路、关键改动、风险和验证方式。不要只复述 Todo，不要执行计划。'
               });
-              planReadyForReview = false;
-              if (review.value === 'auto' || review.value === 'manual') {
-                await applyPermissionMode(review.value === 'auto' ? 'auto' : 'default');
-                messages.push({
-                  role: 'user',
-                  content: '[系统工作流通知] 用户已批准当前计划。请先调用 tasklist 读取步骤；逐项用 updatetask 标记 in_progress，实施并验证后调用 taskfinish。每完成一项重新检查剩余任务是否需要更新；全部完成后执行一次总验证，通过后总结改动。'
-                });
-                sessionManager.saveCurrentSession(messages);
-                updateStatusUI();
-                ui.writeLine(colors.green(`✓ 计划已批准，已切换到 [${permissionMode}] 并继续执行。`));
-                keepCalling = true;
-              } else {
-                ui.writeLine(colors.gray('计划未批准，仍处于 Plan Mode；你可以继续要求调整计划。'));
-                keepCalling = false;
-              }
-            } catch (error) {
-              planReadyForReview = false;
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray('计划审批已取消，仍处于 Plan 模式。'));
-                keepCalling = false;
-              } else {
-                throw error;
-              }
+              planReviewSummaryRequested = true;
+              sessionManager.saveCurrentSession(messages);
+              updateStatusUI();
             }
+            keepCalling = true;
           } else {
             keepCalling = true;
           }
         } else {
-          const unverifiedAgents = agentManager.list().filter(agent =>
-            agent.status === 'awaiting_verification' && agent.result
-          );
-          if (unverifiedAgents.length > 0) {
-            const ids = unverifiedAgents.map(agent => agent.id).join(', ');
-            ui.writeLine(colors.yellow(`⚠️ 子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`));
-            refreshAgentVerificationContext(messages);
-            sessionManager.saveCurrentSession(messages);
-            keepCalling = true;
+          if (permissionMode === 'plan' && planReadyForReview) {
+            if (!textContent.trim()) {
+              ui.writeLine(colors.yellow('⚠️ 模型未输出可审阅的方案正文，本次不进入审批。'));
+              keepCalling = false;
+            } else {
+              if (ui.isInputActive()) ui.cancelInput();
+              try {
+                const review = await ui.readSelection({
+                  title: 'Plan ready — choose how Haji should execute it',
+                  items: [
+                    { value: 'auto', label: 'Auto Execute', description: '自动执行安全操作，高风险操作由安全引擎拦截' },
+                    { value: 'manual', label: 'Approve Manually', description: '每个修改型工具都先请求你的批准' },
+                    { value: 'no', label: 'No, Revise Plan', description: '留在 Plan Mode，继续修改计划' }
+                  ],
+                  selectedValue: 'auto'
+                });
+                planReadyForReview = false;
+                planReviewSummaryRequested = false;
+                if (review.value === 'auto' || review.value === 'manual') {
+                  await applyPermissionMode(review.value === 'auto' ? 'auto' : 'default');
+                  messages.push({
+                    role: 'user',
+                    content: '[系统工作流通知] 用户已批准当前计划。必须先调用 tasklist 读取当前真实步骤；每个任务都严格按 updatetask(in_progress) → 实施 → 实际验证 → taskfinish 执行，即使任务看起来已完成也不得跳过 in_progress。每完成一项重新检查剩余任务是否需要更新；全部完成后执行一次总验证，通过后总结改动。'
+                  });
+                  sessionManager.saveCurrentSession(messages);
+                  updateStatusUI();
+                  ui.writeLine(colors.green(`✓ 计划已批准，已切换到 [${permissionMode}] 并继续执行。`));
+                  keepCalling = true;
+                } else {
+                  ui.writeLine(colors.gray('计划未批准，仍处于 Plan Mode；你可以继续要求调整计划。'));
+                  keepCalling = false;
+                }
+              } catch (error) {
+                planReadyForReview = false;
+                planReviewSummaryRequested = false;
+                if (error instanceof TerminalInputCancelledError) {
+                  ui.writeLine(colors.gray('计划审批已取消，仍处于 Plan 模式。'));
+                  keepCalling = false;
+                } else {
+                  throw error;
+                }
+              }
+            }
           } else {
-            keepCalling = false;
+            const unverifiedAgents = agentManager.list().filter(agent =>
+              agent.status === 'awaiting_verification' && agent.result
+            );
+            if (unverifiedAgents.length > 0) {
+              const ids = unverifiedAgents.map(agent => agent.id).join(', ');
+              ui.writeLine(colors.yellow(`⚠️ 子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`));
+              refreshAgentVerificationContext(messages);
+              sessionManager.saveCurrentSession(messages);
+              keepCalling = true;
+            } else {
+              keepCalling = false;
+            }
           }
         }
         sessionManager.saveCurrentSession(messages);

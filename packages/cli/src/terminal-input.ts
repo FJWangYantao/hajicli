@@ -163,10 +163,18 @@ interface TaskPanelItem {
 export interface AgentPanelItem {
   id: string;
   role: string;
+  model?: string;
+  provider?: string;
+  reasoningEffort?: string;
   status: 'queued' | 'running' | 'awaiting_verification' | 'verified' | 'rejected' | 'failed' | 'aborted';
   startedAt?: number;
   currentTool?: string;
+  activity?: 'thinking' | 'responding' | 'tool';
+  preview?: string;
   totalTokens: number;
+  maxTokens?: number;
+  toolCalls?: number;
+  maxToolCalls?: number;
 }
 
 export function formatAgentElapsed(startedAt: number | undefined, now = Date.now()): string {
@@ -193,10 +201,20 @@ export function buildAgentPanelRows(
   for (const agent of items) {
     if (rows.length >= maxRows) break;
     const icon = agent.status === 'running' ? '●' : agent.status === 'queued' ? '○' : agent.status === 'awaiting_verification' ? '✓' : '×';
+    const activity = agent.currentTool || (agent.activity === 'responding' ? 'responding' : 'thinking');
+    const tokenBudget = agent.maxTokens
+      ? `${formatAgentTokens(agent.totalTokens)}/${formatAgentTokens(agent.maxTokens)} tok`
+      : `${formatAgentTokens(agent.totalTokens)} tok`;
+    const toolBudget = agent.maxToolCalls
+      ? ` · ${agent.toolCalls || 0}/${agent.maxToolCalls} tools`
+      : '';
+    const preview = agent.preview ? ` · ${agent.preview}` : '';
     const detail = agent.status === 'running'
-      ? `${agent.currentTool || 'thinking'} · ${formatAgentElapsed(agent.startedAt, now)} · ${formatAgentTokens(agent.totalTokens)} tok`
+      ? `${activity} · ${formatAgentElapsed(agent.startedAt, now)} · ${tokenBudget}${toolBudget}${preview}`
       : agent.status.replaceAll('_', ' ');
-    rows.push(`\x1b[90m${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}`, Math.max(1, width - agent.id.length - 4))}\x1b[0m`);
+    const runtimeConfig = [agent.model, agent.provider, agent.reasoningEffort].filter(Boolean).join(' / ');
+    const configSuffix = runtimeConfig ? ` · ${runtimeConfig}` : '';
+    rows.push(`\x1b[90m${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}${configSuffix}`, Math.max(1, width - agent.id.length - 4))}\x1b[0m`);
   }
   return rows;
 }
@@ -648,6 +666,23 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
   return { rows, document };
 }
 
+/** Returns scroll rows for a drag pointer outside the chat viewport. Positive scrolls upward. */
+export function getSelectionAutoScrollRows(
+  row: number,
+  screenTop: number,
+  visibleRowCount: number
+): number {
+  if (visibleRowCount <= 0) return 0;
+  const screenBottom = screenTop + visibleRowCount - 1;
+  if (row < screenTop) {
+    return Math.min(3, Math.max(1, Math.ceil((screenTop - row) / 2)));
+  }
+  if (row > screenBottom) {
+    return -Math.min(3, Math.max(1, Math.ceil((row - screenBottom) / 2)));
+  }
+  return 0;
+}
+
 function cellAtColumn(row: AnsiLayoutRow, column: number, clampToText = false): TextCell | undefined {
   const targetColumn = Math.max(0, column - 1);
   let visualColumn = 0;
@@ -692,11 +727,13 @@ export class TerminalUI {
   private taskPanelExpanded = false;
   private agentPanelItems: AgentPanelItem[] = [];
   private agentPanelTimer: NodeJS.Timeout | null = null;
+  private selectionAutoScrollTimer: NodeJS.Timeout | null = null;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
   private chatViewport?: ChatViewport;
   private selectionLayout?: AnsiTextLayout;
   private pendingMouseSelection?: PendingMouseSelection;
+  private selectionPointer?: { column: number; row: number };
   private selectionLayoutContent = '';
   private selectionLayoutWidth = 0;
   private originalRawMode = false;
@@ -862,11 +899,13 @@ export class TerminalUI {
       clearInterval(this.agentPanelTimer);
       this.agentPanelTimer = null;
     }
+    this.stopSelectionAutoScroll();
     this.protocolParser.reset();
     this.clipboardWriter.close();
     this.textSelection.clear();
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.renderScheduled = false;
     this.started = false;
   }
@@ -875,8 +914,10 @@ export class TerminalUI {
     this.chatContent = '';
     this.chatScrollOffset = 0;
     this.textSelection.clear();
+    this.stopSelectionAutoScroll();
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.chatViewport = undefined;
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
@@ -993,7 +1034,9 @@ export class TerminalUI {
     this.chatContent = value.length > 200_000 ? value.slice(-160_000) : value;
     this.chatScrollOffset = 0;
     this.textSelection.clear();
+    this.stopSelectionAutoScroll();
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.selectionLayout = undefined;
     this.selectionLayoutContent = '';
     this.selectionLayoutWidth = 0;
@@ -1115,6 +1158,7 @@ export class TerminalUI {
     this.stableWrapPrefixWidth = 0;
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
+    this.stopSelectionAutoScroll();
     this.render();
   };
 
@@ -1217,22 +1261,74 @@ export class TerminalUI {
     this.handleMouseEvent(event);
   }
 
+  private stopSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) {
+      clearInterval(this.selectionAutoScrollTimer);
+      this.selectionAutoScrollTimer = null;
+    }
+  }
+
+  private startSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) return;
+    this.selectionAutoScrollTimer = setInterval(() => {
+      const pointer = this.selectionPointer;
+      const viewport = this.chatViewport;
+      if (!pointer || !this.textSelection.dragging || !viewport) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
+      const rows = getSelectionAutoScrollRows(pointer.row, viewport.screenTop, visibleRowCount);
+      if (rows === 0) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const previousOffset = this.chatScrollOffset;
+      this.scrollChat(rows);
+      if (previousOffset === this.chatScrollOffset) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const cell = this.getChatCellFromMouse(pointer.column, pointer.row, true);
+      if (cell) this.textSelection.update(cell);
+      this.scheduleRender();
+    }, 50);
+    this.selectionAutoScrollTimer.unref?.();
+  }
+
+  private updateMouseSelection(column: number, row: number): void {
+    this.selectionPointer = { column, row };
+    const viewport = this.chatViewport;
+    if (viewport) {
+      const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
+      if (getSelectionAutoScrollRows(row, viewport.screenTop, visibleRowCount) !== 0) {
+        this.startSelectionAutoScroll();
+      } else {
+        this.stopSelectionAutoScroll();
+      }
+    }
+    const cell = this.getChatCellFromMouse(column, row, true);
+    if (cell) this.textSelection.update(cell);
+    this.scheduleRender();
+  }
+
   private handleMouseEvent(event: TerminalMouseEvent): void {
     if (event.action === 'wheel') {
       this.pendingMouseSelection = undefined;
       this.scrollChat(event.wheelRows ?? 0);
       if (this.textSelection.dragging) {
-        const cell = this.getChatCellFromMouse(event.column, event.row, true);
-        if (cell) {
-          this.textSelection.update(cell);
-          this.scheduleRender();
-        }
+        this.updateMouseSelection(event.column, event.row);
       }
       return;
     }
 
     const isLeftButton = (event.button & 3) === 0;
     if (event.action === 'down' && isLeftButton) {
+      this.stopSelectionAutoScroll();
+      this.selectionPointer = undefined;
       const logicalRow = this.getLogicalChatRow(event.row);
       if (logicalRow === undefined) {
         this.pendingMouseSelection = undefined;
@@ -1261,32 +1357,29 @@ export class TerminalUI {
       }
       this.pendingMouseSelection = undefined;
       const anchor = this.getChatCellAtLogicalRow(pending.column, pending.logicalRow);
-      const cell = this.getChatCellFromMouse(event.column, event.row, true);
-      if (anchor && cell) {
+      if (anchor) {
         this.textSelection.begin(anchor);
-        this.textSelection.update(cell);
-        this.scheduleRender();
+        this.updateMouseSelection(event.column, event.row);
       }
       return;
     }
 
     if (event.action === 'move' && isLeftButton && this.textSelection.dragging) {
-      const cell = this.getChatCellFromMouse(event.column, event.row, true);
-      if (cell) {
-        this.textSelection.update(cell);
-        this.scheduleRender();
-      }
+      this.updateMouseSelection(event.column, event.row);
       return;
     }
 
     if (event.action === 'up' && isLeftButton && this.pendingMouseSelection) {
       this.pendingMouseSelection = undefined;
+      this.selectionPointer = undefined;
       this.selectionLayout = undefined;
       return;
     }
 
     if (event.action === 'up' && isLeftButton && this.textSelection.dragging) {
       const cell = this.getChatCellFromMouse(event.column, event.row, true);
+      this.stopSelectionAutoScroll();
+      this.selectionPointer = undefined;
       this.textSelection.finish(cell);
       this.scheduleRender();
     }
