@@ -122,7 +122,9 @@ export class TaskStore {
     const index = plan.tasks.findIndex(item => item.id === taskId);
     if (index < 0) throw new Error(`活动任务不存在: ${taskId}`);
     const task = plan.tasks[index];
-    if (task.status !== 'in_progress') throw new Error('任务必须先更新为 in_progress');
+    if (task.status !== 'in_progress') {
+      throw new Error(`任务必须先更新为 in_progress。请先调用 updatetask({ taskId: "${task.id}", status: "in_progress" })`);
+    }
     if (task.agent && task.agent.status !== 'verified') {
       throw new Error(`关联子代理 ${task.agent.id} 尚未通过父 Agent 独立验证`);
     }

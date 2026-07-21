@@ -5,11 +5,14 @@ import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START
 } from './agent-manager.js';
+import { DEFAULT_COMPACTION_TOKEN_THRESHOLD } from './context-policy.js';
 
 export interface CompactionResult {
   messages: ChatMessage[];
   originalChars: number;
   compactedChars: number;
+  originalTokens: number;
+  compactedTokens: number;
   freedPercentage: number;
   layersApplied: string[];
   summaryMode: 'none' | 'model' | 'fallback';
@@ -384,14 +387,20 @@ export async function runCompactionPipeline(
   messages: ChatMessage[],
   options: {
     forceL4?: boolean;
-    maxCharsThreshold?: number;
+    maxTokensThreshold?: number;
     summaryProvider?: (msgs: ChatMessage[]) => Promise<string>;
   } = {}
 ): Promise<CompactionResult> {
   const originalChars = estimateMessagesChars(messages);
+  const originalTokens = estimateMessagesTokens(messages, { includeSystem: true });
   const layersApplied: string[] = [];
-  let currentMessages = messages;
+  const fullMessages = repairToolCallPairs(messages);
+  let currentMessages = fullMessages;
   let summaryMode: CompactionResult['summaryMode'] = 'none';
+
+  if (fullMessages !== messages) {
+    layersApplied.push('协议:工具调用配对修复');
+  }
 
   // L1: 大结果落盘
   const l1Messages = toolResultBudget(currentMessages);
@@ -400,25 +409,25 @@ export async function runCompactionPipeline(
     currentMessages = l1Messages;
   }
 
-  // L2: 裁切中间旧对话
-  const l2Messages = snipCompact(currentMessages);
-  if (l2Messages !== currentMessages) {
-    layersApplied.push('L2:中间对话裁剪');
-    currentMessages = l2Messages;
-  }
-
-  // L3: 旧工具结果占位
-  const l3Messages = microCompact(currentMessages);
-  if (l3Messages !== currentMessages) {
-    layersApplied.push('L3:旧工具输出占位');
-    currentMessages = l3Messages;
-  }
-
-  const threshold = options.maxCharsThreshold ?? 60_000;
-  const currentChars = estimateMessagesChars(currentMessages);
+  const threshold = Math.max(1, Math.trunc(options.maxTokensThreshold ?? DEFAULT_COMPACTION_TOKEN_THRESHOLD));
+  const currentTokens = estimateMessagesTokens(currentMessages, { includeSystem: true });
 
   // L4: 全量结构化摘要
-  if (options.forceL4 || currentChars > threshold) {
+  if (options.forceL4 || currentTokens > threshold) {
+    // L2/L3 只作为 L4 的“最近对话保留集”预处理。
+    // 完整历史会先落盘并交给摘要模型，不再出现无摘要直接丢弃中间消息。
+    let recentMessages = currentMessages;
+    const l2Messages = snipCompact(recentMessages);
+    if (l2Messages !== recentMessages) {
+      layersApplied.push('L2:中间对话裁剪');
+      recentMessages = l2Messages;
+    }
+    const l3Messages = microCompact(recentMessages);
+    if (l3Messages !== recentMessages) {
+      layersApplied.push('L3:旧工具输出占位');
+      recentMessages = l3Messages;
+    }
+
     let modelSummaryCompleted = false;
     const summaryProvider = options.summaryProvider
       ? async (sourceMessages: ChatMessage[]) => {
@@ -428,7 +437,7 @@ export async function runCompactionPipeline(
           return summary;
         }
       : undefined;
-    currentMessages = await compactHistory(messages, summaryProvider, currentMessages);
+    currentMessages = await compactHistory(fullMessages, summaryProvider, recentMessages);
     summaryMode = modelSummaryCompleted ? 'model' : 'fallback';
     layersApplied.push(modelSummaryCompleted ? 'L4:模型结构化摘要' : 'L4:本地降级摘要');
   }
@@ -439,12 +448,15 @@ export async function runCompactionPipeline(
     currentMessages = pairedMessages;
   }
   const compactedChars = estimateMessagesChars(currentMessages);
+  const compactedTokens = estimateMessagesTokens(currentMessages, { includeSystem: true });
   const freedPercentage = Math.max(0, Math.round(((originalChars - compactedChars) / Math.max(1, originalChars)) * 1000) / 10);
 
   return {
     messages: currentMessages,
     originalChars,
     compactedChars,
+    originalTokens,
+    compactedTokens,
     freedPercentage,
     layersApplied,
     summaryMode

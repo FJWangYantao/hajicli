@@ -1,7 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatSubagentResult, SubagentResult, SubagentRole } from './subagent-runner.js';
+import {
+  DEFAULT_SUBAGENT_MAX_TOKENS,
+  DEFAULT_SUBAGENT_MAX_TOOL_CALLS,
+  formatSubagentResult,
+  normalizeSubagentMaxTokens,
+  normalizeSubagentMaxToolCalls,
+  SubagentResult,
+  SubagentRole,
+  normalizeSubagentInstructions
+} from './subagent-runner.js';
+import { ReasoningEffort } from './types.js';
+import { isAbortError } from './abort.js';
 
 export type AgentStatus =
   | 'queued'
@@ -27,12 +38,21 @@ export interface AgentRecord {
   taskId?: string;
   background: boolean;
   access: AgentAccess;
+  model?: string;
+  provider?: string;
+  reasoningEffort?: ReasoningEffort;
+  instructions?: string;
   status: AgentStatus;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
   currentTool?: string;
+  activity?: 'thinking' | 'responding' | 'tool';
+  preview?: string;
   timeoutMs?: number;
+  maxTokens: number;
+  maxToolCalls: number;
+  toolCalls: number;
   usage: AgentUsage;
   result?: SubagentResult;
   verification?: {
@@ -106,7 +126,14 @@ function isAgentRecord(value: unknown): value is AgentRecord {
     && ['readonly', 'workspace-write'].includes(String(record.access))
     && AGENT_STATUSES.has(record.status as AgentStatus)
     && Number.isFinite(record.createdAt)
+    && (record.model === undefined || typeof record.model === 'string')
+    && (record.provider === undefined || typeof record.provider === 'string')
+    && (record.reasoningEffort === undefined || ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(record.reasoningEffort)))
+    && (record.instructions === undefined || typeof record.instructions === 'string')
     && (record.timeoutMs === undefined || Number.isFinite(record.timeoutMs))
+    && (record.maxTokens === undefined || Number.isFinite(record.maxTokens))
+    && (record.maxToolCalls === undefined || Number.isFinite(record.maxToolCalls))
+    && (record.toolCalls === undefined || Number.isFinite(record.toolCalls))
     && Boolean(usage)
     && Number.isFinite(usage?.promptTokens)
     && Number.isFinite(usage?.completionTokens)
@@ -137,8 +164,14 @@ export interface AgentLaunchRequest {
   taskId?: string;
   background: boolean;
   access: AgentAccess;
+  model?: string;
+  provider?: string;
+  reasoningEffort?: ReasoningEffort;
+  instructions?: string;
   parentSignal?: AbortSignal;
   timeoutMs?: number;
+  maxTokens?: number;
+  maxToolCalls?: number;
 }
 
 export interface AgentLaunch {
@@ -149,6 +182,8 @@ export interface AgentLaunch {
 export interface AgentExecutionContext {
   agentId: string;
   signal: AbortSignal;
+  maxTokens: number;
+  maxToolCalls: number;
 }
 
 type AgentExecutor = (context: AgentExecutionContext) => Promise<SubagentResult>;
@@ -181,6 +216,7 @@ export class AgentManager {
   private readonly parentEvidence: ParentEvidence[] = [];
   private readonly agentsDir: string;
   private readonly maxReadonlyConcurrency: number;
+  private readonly progressEmittedAt = new Map<string, number>();
   private persistenceBlocked = false;
 
   constructor(private readonly options: AgentManagerOptions = {}) {
@@ -230,6 +266,11 @@ export class AgentManager {
         record.finishedAt = Date.now();
         normalizedRuntimeState = true;
       }
+      record.maxTokens = normalizeSubagentMaxTokens(record.maxTokens, DEFAULT_SUBAGENT_MAX_TOKENS);
+      record.maxToolCalls = normalizeSubagentMaxToolCalls(record.maxToolCalls, DEFAULT_SUBAGENT_MAX_TOOL_CALLS);
+      record.toolCalls = Number.isFinite(record.toolCalls) ? Math.max(0, Math.trunc(record.toolCalls)) : 0;
+      record.activity = undefined;
+      record.preview = undefined;
       this.records.set(record.id, record);
     }
     this.parentEvidence.push(...state.parentEvidence.slice(-200));
@@ -240,6 +281,8 @@ export class AgentManager {
   launch(request: AgentLaunchRequest, executor: AgentExecutor): AgentLaunch {
     const id = `sub-${randomUUID().slice(0, 8)}`;
     const timeoutMs = normalizeSubagentTimeoutMs(request.timeoutMs);
+    const maxTokens = normalizeSubagentMaxTokens(request.maxTokens);
+    const maxToolCalls = normalizeSubagentMaxToolCalls(request.maxToolCalls);
     const record: AgentRecord = {
       id,
       role: request.role,
@@ -247,7 +290,14 @@ export class AgentManager {
       taskId: request.taskId,
       background: request.background,
       access: request.access,
+      model: request.model?.trim() || undefined,
+      provider: request.provider?.trim() || undefined,
+      reasoningEffort: request.reasoningEffort,
+      instructions: normalizeSubagentInstructions(request.instructions),
       timeoutMs,
+      maxTokens,
+      maxToolCalls,
+      toolCalls: 0,
       status: 'queued',
       createdAt: Date.now(),
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
@@ -300,7 +350,24 @@ export class AgentManager {
     const record = this.records.get(agentId);
     if (!record || record.status !== 'running') return;
     record.currentTool = toolName;
+    record.activity = 'tool';
+    record.preview = undefined;
+    record.toolCalls += 1;
     this.persistAndEmit();
+  }
+
+  updateProgress(agentId: string, activity: 'thinking' | 'responding', delta: string): void {
+    const record = this.records.get(agentId);
+    if (!record || record.status !== 'running' || !delta) return;
+    record.activity = activity;
+    record.currentTool = undefined;
+    const normalized = `${record.preview || ''}${delta}`.replace(/\s+/g, ' ').trimStart();
+    if (normalized) record.preview = normalized.slice(-160);
+    const now = Date.now();
+    if (now - (this.progressEmittedAt.get(agentId) || 0) >= 100) {
+      this.progressEmittedAt.set(agentId, now);
+      this.emitChange();
+    }
   }
 
   addUsage(agentId: string, usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }): void {
@@ -428,7 +495,12 @@ export class AgentManager {
       };
       this.finishRuntime(record, runtime, 'aborted', result);
     }, runtime.timeoutMs);
-    void runtime.executor({ agentId, signal: runtime.controller.signal })
+    void runtime.executor({
+      agentId,
+      signal: runtime.controller.signal,
+      maxTokens: record.maxTokens,
+      maxToolCalls: record.maxToolCalls
+    })
       .then(result => {
         if (this.runtimes.get(agentId) !== runtime) return;
         const aborted = runtime.controller.signal.aborted || result.status === 'aborted';
@@ -441,7 +513,7 @@ export class AgentManager {
       })
       .catch(error => {
         if (this.runtimes.get(agentId) !== runtime) return;
-        const aborted = runtime.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
+        const aborted = runtime.controller.signal.aborted || isAbortError(error);
         const result: SubagentResult = {
           agentId,
           status: aborted ? 'aborted' : 'failed',
@@ -456,6 +528,9 @@ export class AgentManager {
     record.status = status;
     record.finishedAt = Date.now();
     record.currentTool = undefined;
+    record.activity = undefined;
+    record.preview = undefined;
+    this.progressEmittedAt.delete(record.id);
     if (result) record.result = result;
     if (runtime.timeoutHandle) clearTimeout(runtime.timeoutHandle);
     if (runtime.parentSignal && runtime.parentAbort) runtime.parentSignal.removeEventListener('abort', runtime.parentAbort);
