@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件精准编辑工具（Search and Replace）。
@@ -56,7 +56,7 @@ export class EditFileTool implements BaseTool {
     if (context?.abortSignal?.aborted) return '[文件编辑已中止]';
 
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
+      const resolvedPath = await resolveWorkspacePath(filePath);
       const content = await fs.readFile(resolvedPath, {
         encoding: 'utf-8',
         signal: context?.abortSignal

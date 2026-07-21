@@ -1,4 +1,5 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 /**
  * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
@@ -89,7 +90,7 @@ export class VolcengineProvider implements ModelProvider {
       );
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://ark.cn-beijing.volces.com/api/coding/v3';
+    this.baseUrl = config.baseUrl || process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding/v3';
     this.defaultModel = config.defaultModel || process.env.VOLC_MODEL || process.env.ARK_MODEL || 'glm-5.2';
   }
 
@@ -371,7 +372,7 @@ export class VolcengineProvider implements ModelProvider {
 
     return withExponentialBackoff(async () => {
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithNetworkPolicy(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -399,7 +400,13 @@ export class VolcengineProvider implements ModelProvider {
         if (error instanceof ProviderError) {
           throw error;
         }
-        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        if (options.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          throw reason instanceof Error && reason.name === 'TimeoutError'
+            ? reason
+            : normalizeAbortError(error);
+        }
+        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
         throw new ProviderError(msg, 'volcengine');
       }

@@ -1,5 +1,11 @@
 import {
   BaseTool,
+  MAX_SUBAGENT_MAX_TOKENS,
+  MAX_SUBAGENT_MAX_TOOL_CALLS,
+  MIN_SUBAGENT_MAX_TOKENS,
+  MIN_SUBAGENT_MAX_TOOL_CALLS,
+  MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
+  normalizeSubagentInstructions,
   SubagentRequest,
   SubagentRole,
   ToolDefinition,
@@ -28,11 +34,27 @@ export class SubagentTool implements BaseTool {
           description: { type: 'string', description: '完整、可独立执行的子任务说明和验收标准' },
           taskId: { type: 'string', description: '可选：当前 Todo 中对应的任务 ID' },
           role: { type: 'string', enum: ['research', 'implement', 'review'], description: '子代理角色' },
+          model: { type: 'string', description: '可选：本次子代理使用的模型；不填则继承主 Agent' },
+          provider: { type: 'string', enum: ['deepseek', 'volcengine'], description: '可选：Provider；必须与模型注册信息匹配' },
+          reasoningEffort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: '可选：本次子代理的思考强度' },
+          instructions: { type: 'string', maxLength: MAX_SUBAGENT_INSTRUCTIONS_LENGTH, description: '可选：追加到受保护系统提示词后的任务专属要求' },
           timeoutMs: {
             type: 'integer',
             minimum: 100,
             maximum: 3600000,
             description: '可选：运行超时毫秒数；默认 600000（10 分钟）'
+          },
+          maxTokens: {
+            type: 'integer',
+            minimum: MIN_SUBAGENT_MAX_TOKENS,
+            maximum: MAX_SUBAGENT_MAX_TOKENS,
+            description: '可选：整个子代理累计 Token 上限；默认 100000'
+          },
+          maxToolCalls: {
+            type: 'integer',
+            minimum: MIN_SUBAGENT_MAX_TOOL_CALLS,
+            maximum: MAX_SUBAGENT_MAX_TOOL_CALLS,
+            description: '可选：整个子代理最多执行的工具调用次数；默认 50'
           }
         },
         required: ['description']
@@ -48,15 +70,46 @@ export class SubagentTool implements BaseTool {
     const role = ['research', 'implement', 'review'].includes(String(args.role || ''))
       ? String(args.role) as SubagentRole
       : 'research';
+    const model = typeof args.model === 'string' && args.model.trim() ? args.model.trim() : undefined;
+    const provider = ['deepseek', 'volcengine'].includes(String(args.provider || ''))
+      ? String(args.provider)
+      : undefined;
+    if (args.provider !== undefined && !provider) {
+      return Promise.resolve('错误: provider 必须是 deepseek 或 volcengine。');
+    }
+    const reasoningEffort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(args.reasoningEffort || ''))
+      ? String(args.reasoningEffort) as SubagentRequest['reasoningEffort']
+      : undefined;
+    if (args.reasoningEffort !== undefined && !reasoningEffort) {
+      return Promise.resolve('错误: reasoningEffort 必须是 low、medium、high、xhigh 或 max。');
+    }
+    const instructions = args.instructions === undefined ? undefined : normalizeSubagentInstructions(String(args.instructions));
+    if (typeof args.instructions !== 'undefined' && (!instructions || String(args.instructions).trim().length > MAX_SUBAGENT_INSTRUCTIONS_LENGTH)) {
+      return Promise.resolve(`错误: instructions 长度必须是 1 到 ${MAX_SUBAGENT_INSTRUCTIONS_LENGTH} 个字符。`);
+    }
     const timeoutMs = args.timeoutMs === undefined ? undefined : Number(args.timeoutMs);
     if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 3_600_000)) {
       return Promise.resolve('错误: timeoutMs 必须是 100 到 3600000 之间的整数。');
+    }
+    const maxTokens = args.maxTokens === undefined ? undefined : Number(args.maxTokens);
+    if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < MIN_SUBAGENT_MAX_TOKENS || maxTokens > MAX_SUBAGENT_MAX_TOKENS)) {
+      return Promise.resolve(`错误: maxTokens 必须是 ${MIN_SUBAGENT_MAX_TOKENS} 到 ${MAX_SUBAGENT_MAX_TOKENS} 之间的整数。`);
+    }
+    const maxToolCalls = args.maxToolCalls === undefined ? undefined : Number(args.maxToolCalls);
+    if (maxToolCalls !== undefined && (!Number.isInteger(maxToolCalls) || maxToolCalls < MIN_SUBAGENT_MAX_TOOL_CALLS || maxToolCalls > MAX_SUBAGENT_MAX_TOOL_CALLS)) {
+      return Promise.resolve(`错误: maxToolCalls 必须是 ${MIN_SUBAGENT_MAX_TOOL_CALLS} 到 ${MAX_SUBAGENT_MAX_TOOL_CALLS} 之间的整数。`);
     }
     return this.handler({
       description,
       taskId: typeof args.taskId === 'string' && args.taskId.trim() ? args.taskId.trim() : undefined,
       role,
-      timeoutMs
+      model,
+      provider,
+      reasoningEffort,
+      instructions,
+      timeoutMs,
+      maxTokens,
+      maxToolCalls
     }, context);
   }
 }

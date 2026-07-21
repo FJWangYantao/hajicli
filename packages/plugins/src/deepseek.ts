@@ -1,4 +1,5 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -17,8 +18,8 @@ export class DeepSeekProvider implements ModelProvider {
       throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || 'deepseek-v4-flash';
+    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
   }
 
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
@@ -248,7 +249,7 @@ export class DeepSeekProvider implements ModelProvider {
 
     return withExponentialBackoff(async () => {
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithNetworkPolicy(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -276,7 +277,13 @@ export class DeepSeekProvider implements ModelProvider {
         if (error instanceof ProviderError) {
           throw error;
         }
-        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        if (options.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          throw reason instanceof Error && reason.name === 'TimeoutError'
+            ? reason
+            : normalizeAbortError(error);
+        }
+        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
         throw new ProviderError(msg, 'deepseek');
       }

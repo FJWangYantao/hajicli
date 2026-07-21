@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件写入/覆盖工具。
@@ -48,7 +49,7 @@ export class WriteFileTool implements BaseTool {
     if (context?.abortSignal?.aborted) return '[文件写入已中止]';
 
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
+      const resolvedPath = await resolveWorkspacePath(filePath, { mustExist: false });
       const parentDir = path.dirname(resolvedPath);
       
       // 递归创建不存在的父目录

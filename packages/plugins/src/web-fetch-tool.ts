@@ -1,4 +1,5 @@
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 /**
  * 网页抓取工具（类似 webfetch）。
@@ -34,7 +35,7 @@ export class WebFetchTool implements BaseTool {
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await fetchWithNetworkPolicy(url, {
         signal: context?.abortSignal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'

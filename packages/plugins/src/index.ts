@@ -10,3 +10,6 @@ export * from './web-fetch-tool.js';
 export * from './edit-tool.js';
 export * from './task-tool.js';
 export * from './subagent-tool.js';
+export * from './network.js';
+export * from './workspace-path.js';
+export * from './model-registry.js';

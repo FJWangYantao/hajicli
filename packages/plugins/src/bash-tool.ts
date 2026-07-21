@@ -141,32 +141,32 @@ export class BashTool implements BaseTool {
             "Write-Output ([HajiProcessTree]::Descendants($rootProcessId) -join ',')"
           ].join('; ');
 
+          // 优先调用系统原生 taskkill。只有失败时才启动较慢的进程树枚举，避免 ESC 被 PowerShell 编译阻塞。
           this.fileExecutor(
-            'powershell.exe',
-            ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cleanupScript],
-            { windowsHide: true, timeout: 5000 },
-            (enumerationError, stdout) => {
+            'taskkill.exe',
+            ['/PID', String(rootPid), '/T', '/F'],
+            { windowsHide: true, timeout: 3000 },
+            (taskkillError) => {
               if (settled) return;
-              const descendantIds = enumerationError
-                ? []
-                : String(stdout || '')
-                    .trim()
-                    .split(',')
-                    .map(value => Number(value.trim()))
-                    .filter(value => Number.isInteger(value) && value > 0);
+              if (!taskkillError) {
+                finish('[命令已中止]');
+                return;
+              }
 
+              const taskkillCode = (taskkillError as NodeJS.ErrnoException & { code?: string | number }).code ?? 'unknown';
               this.fileExecutor(
-                'taskkill.exe',
-                ['/PID', String(rootPid), '/T', '/F'],
-                { windowsHide: true, timeout: 3000 },
-                (taskkillError) => {
+                'powershell.exe',
+                ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cleanupScript],
+                { windowsHide: true, timeout: 5000 },
+                (enumerationError, stdout) => {
                   if (settled) return;
-                  if (!taskkillError) {
-                    finish('[命令已中止]');
-                    return;
-                  }
-
-                  const taskkillCode = (taskkillError as NodeJS.ErrnoException & { code?: string | number }).code ?? 'unknown';
+                  const descendantIds = enumerationError
+                    ? []
+                    : String(stdout || '')
+                        .trim()
+                        .split(',')
+                        .map(value => Number(value.trim()))
+                        .filter(value => Number.isInteger(value) && value > 0);
                   const failedIds: number[] = [];
                   for (const descendantId of descendantIds) {
                     try {

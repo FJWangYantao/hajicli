@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件读取工具。
@@ -50,7 +50,7 @@ export class ReadFileTool implements BaseTool {
     if (context?.abortSignal?.aborted) return '[文件读取已中止]';
 
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
+      const resolvedPath = await resolveWorkspacePath(filePath);
       const content = await fs.readFile(resolvedPath, {
         encoding: 'utf-8',
         signal: context?.abortSignal

@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 import { runRipgrep } from './ripgrep.js';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 全局文本检索工具（类似 grep）。
@@ -42,7 +43,6 @@ export class GrepSearchTool implements BaseTool {
 
     const relativePath = (args.path as string) || '';
     const rootDir = process.cwd();
-    const startDir = path.resolve(rootDir, relativePath);
 
     const excludeDirs = new Set(['.git', '.haji', 'node_modules', 'dist', 'build', 'out', '.gemini']);
     const excludeExtensions = new Set([
@@ -58,6 +58,7 @@ export class GrepSearchTool implements BaseTool {
 
     try {
       throwIfAborted();
+      const startDir = await resolveWorkspacePath(relativePath || '.', { cwd: rootDir });
       const matches: { file: string; line: number; content: string }[] = [];
       const maxMatches = 100; // 限制最多匹配 100 条
 

@@ -19,7 +19,7 @@ export class TaskCreateTool extends StoredTaskTool {
     type: 'function',
     function: {
       name: 'taskcreate',
-      description: '逐条创建计划任务。第一条提供简短总标题（优先 4-8 个汉字，最多 12 个字符）；最后一条设置 finalize=true 触发用户审批。',
+      description: '逐条创建计划任务。创建前必须先调用 tasklist 检查当前会话是否已有任务，优先复用或修订，不要创建重复任务。第一条提供简短总标题（优先 4-8 个汉字，最多 12 个字符）；最后一条设置 finalize=true 触发用户审批。',
       parameters: {
         type: 'object',
         properties: {
@@ -99,12 +99,12 @@ export class TaskFinishTool extends StoredTaskTool {
     type: 'function',
     function: {
       name: 'taskfinish',
-      description: '在完成实际验证后结束并移除一条活动任务。所有任务完成后必须进行一次总验证。',
+      description: '仅能结束 status=in_progress 且已完成实际验证的任务。严格顺序：updatetask(in_progress) → 实施 → 验证 → taskfinish；即使任务实际上已完成，也不得跳过 in_progress。所有任务完成后必须进行一次总验证。',
       parameters: {
         type: 'object',
         properties: {
           taskId: { type: 'string' },
-          verification: { type: 'string', description: '已实际执行的验证及结果' }
+          verification: { type: 'string', description: '已实际执行的验证及结果；调用前确认该任务已通过 updatetask 设为 in_progress' }
         },
         required: ['taskId', 'verification']
       }
