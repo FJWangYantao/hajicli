@@ -5,7 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { HookEngine, PermissionEngine, SnapshotEngine, SubagentRunner, TaskStore } from '@hajicli/core';
+import {
+  HookEngine,
+  isAbortError,
+  normalizeAbortError,
+  PermissionEngine,
+  SnapshotEngine,
+  SubagentRunner,
+  TaskStore
+} from '@hajicli/core';
 import { BashTool, SubagentTool } from '@hajicli/plugins';
 import { SharedToolExecutor } from '../dist/tool-executor.js';
 
@@ -19,17 +27,20 @@ test('subagent uses fresh context, filters recursive/task tools and returns only
   const provider = {
     async *completeStream(messages, options) {
       calls.push({ messages: structuredClone(messages), tools: options.tools.map(tool => tool.function.name) });
+      if (calls.length === 1) options.onReasoning?.('正在检查');
       options.onUsage?.({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
       if (calls.length === 1) {
         options.onToolCall([{ id: 'read-1', type: 'function', function: { name: 'read', arguments: '{"path":"a.ts"}' } }]);
         return;
       }
-      yield JSON.stringify({
+      const result = JSON.stringify({
         summary: '已完成隔离调研',
         filesChanged: [],
         verification: ['read a.ts'],
         unresolved: []
       });
+      yield result.slice(0, 12);
+      yield result.slice(12);
     }
   };
   const tools = ['read', 'write', 'taskfinish', 'subagent'].map(name => ({
@@ -65,7 +76,174 @@ test('subagent uses fresh context, filters recursive/task tools and returns only
   assert.equal(executed[0].context.anchorSnapshotId, 'anchor-1');
   assert.match(output, /^\[SUBAGENT_RESULT - UNVERIFIED\]/);
   assert.match(output, /已完成隔离调研/);
-  assert.deepEqual(events.map(event => event.type), ['start', 'usage', 'tool', 'usage', 'done']);
+  assert.deepEqual(events.map(event => event.type), [
+    'start', 'reasoning_delta', 'usage', 'tool', 'tool_done', 'text_delta', 'text_delta', 'usage', 'done'
+  ]);
+});
+
+test('subagent forwards per-agent model, provider, effort and protected instructions', async () => {
+  let providerRequest;
+  let requestedModel;
+  let requestedEffort;
+  let systemPrompt;
+  const provider = {
+    async *completeStream(messages, options) {
+      providerRequest = options;
+      systemPrompt = messages[0].content;
+      yield JSON.stringify({ summary: 'configured', filesChanged: [], verification: [], unresolved: [] });
+    }
+  };
+  const runner = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: request => { requestedModel = request.model; return provider; },
+    getModel: request => { requestedModel = request.model; return request.model || 'fallback'; },
+    getReasoningEffort: request => { requestedEffort = request.reasoningEffort; return request.reasoningEffort || 'low'; },
+    getTools: () => [],
+    executeTool: async () => ''
+  });
+
+  const result = await runner.runResult({
+    description: '按指定配置审查',
+    model: 'glm-5.2',
+    provider: 'volcengine',
+    reasoningEffort: 'high',
+    instructions: '只关注竞态条件'
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(requestedModel, 'glm-5.2');
+  assert.equal(requestedEffort, 'high');
+  assert.equal(providerRequest.model, 'glm-5.2');
+  assert.equal(providerRequest.reasoningEffort, 'high');
+  assert.match(systemPrompt, /只关注竞态条件/);
+  assert.match(systemPrompt, /不得覆盖以上安全约束/);
+});
+
+test('subagent stops after exceeding its cumulative token budget', async () => {
+  let requestedMaxTokens;
+  const events = [];
+  const runner = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => ({
+      async *completeStream(_messages, options) {
+        requestedMaxTokens = options.maxTokens;
+        options.onUsage?.({ prompt_tokens: 900, completion_tokens: 101, total_tokens: 1001 });
+        yield '{"summary":"should not be accepted"}';
+      }
+    }),
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [],
+    executeTool: async () => '',
+    onEvent: event => events.push(event)
+  });
+
+  const result = await runner.runResult({ description: 'bounded research', maxTokens: 1000 });
+  assert.equal(requestedMaxTokens, 1000);
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.unresolved, ['max_tokens_exceeded']);
+  assert.match(result.summary, /1000 Token.*实际 1001/);
+  assert.deepEqual(events.map(event => event.type), ['start', 'text_delta', 'usage', 'done']);
+});
+
+test('subagent estimates usage and warns when a provider omits token statistics', async () => {
+  const events = [];
+  const runner = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => ({
+      async *completeStream() {
+        yield '{"summary":"estimated usage"}';
+      }
+    }),
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [],
+    executeTool: async () => '',
+    onEvent: event => events.push(event)
+  });
+
+  const result = await runner.runResult({ description: 'provider without usage', maxTokens: 1000 });
+  assert.equal(result.status, 'completed');
+  assert.equal(events.filter(event => event.type === 'warning').length, 1);
+  assert.ok(events.find(event => event.type === 'usage').usage.total_tokens > 0);
+  assert.match(events.find(event => event.type === 'warning').message, /估算/);
+});
+
+test('abort helpers normalize DOM and Node abort error shapes without treating timeout as abort', () => {
+  assert.equal(isAbortError(new DOMException('cancelled', 'AbortError')), true);
+  assert.equal(isAbortError({ name: 'Error', code: 'ABORT_ERR' }), true);
+  assert.equal(isAbortError(new Error('timeout')), false);
+  const normalized = normalizeAbortError(new DOMException('cancelled', 'AbortError'));
+  assert.equal(normalized.name, 'AbortError');
+  assert.equal(normalized.code, 'ABORT_ERR');
+});
+
+test('subagent refuses a tool batch that would exceed its tool-call budget', async () => {
+  let executed = 0;
+  const runner = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => ({
+      async *completeStream(_messages, options) {
+        options.onToolCall?.([
+          { id: 'read-1', type: 'function', function: { name: 'read', arguments: '{}' } },
+          { id: 'grep-1', type: 'function', function: { name: 'grep', arguments: '{}' } }
+        ]);
+      }
+    }),
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [],
+    executeTool: async () => { executed += 1; return ''; }
+  });
+
+  const result = await runner.runResult({ description: 'bounded tools', maxToolCalls: 1 });
+  assert.equal(executed, 0);
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.unresolved, ['max_tool_calls_exceeded']);
+});
+
+test('subagent converts provider stream failures and cancellation into stable results', async () => {
+  const failing = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => ({
+      async *completeStream() {
+        yield 'partial';
+        throw new Error('stream disconnected');
+      }
+    }),
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [],
+    executeTool: async () => ''
+  });
+  const failed = await failing.runResult({ description: 'handle stream error' });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.summary, /stream disconnected/);
+  assert.deepEqual(failed.unresolved, ['runtime_error']);
+
+  const controller = new AbortController();
+  const cancelled = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => ({
+      async *completeStream() {
+        yield 'partial';
+        controller.abort();
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        throw error;
+      }
+    }),
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [],
+    executeTool: async () => ''
+  });
+  const aborted = await cancelled.runResult(
+    { description: 'handle cancellation' },
+    { abortSignal: controller.signal }
+  );
+  assert.equal(aborted.status, 'aborted');
+  assert.deepEqual(aborted.unresolved, ['aborted']);
 });
 
 test('subagent rejects recursive invocation before calling the provider', async () => {
@@ -116,10 +294,42 @@ test('subagent tool validates input and forwards execution context', async () =>
   });
   assert.match(await tool.execute({}), /^错误:/);
   assert.match(await tool.execute({ description: 'review code', timeoutMs: 50 }), /timeoutMs/);
-  assert.equal(await tool.execute({ description: 'review code', role: 'review', timeoutMs: 45000 }, { abortSignal: controller.signal }), 'ok');
+  assert.match(await tool.execute({ description: 'review code', maxTokens: 999 }), /maxTokens/);
+  assert.match(await tool.execute({ description: 'review code', maxToolCalls: 0 }), /maxToolCalls/);
+  assert.equal(await tool.execute({
+    description: 'review code',
+    role: 'review',
+    timeoutMs: 45000,
+    maxTokens: 12000,
+    maxToolCalls: 8
+  }, { abortSignal: controller.signal }), 'ok');
   assert.equal(received.request.role, 'review');
   assert.equal(received.request.timeoutMs, 45000);
+  assert.equal(received.request.maxTokens, 12000);
+  assert.equal(received.request.maxToolCalls, 8);
   assert.equal(received.context.abortSignal, controller.signal);
+});
+
+test('subagent tool validates and forwards per-agent runtime configuration', async () => {
+  let received;
+  const tool = new SubagentTool(async request => {
+    received = request;
+    return 'ok';
+  });
+  assert.match(await tool.execute({ description: 'review', provider: 'other' }), /provider/);
+  assert.match(await tool.execute({ description: 'review', reasoningEffort: 'extreme' }), /reasoningEffort/);
+  assert.match(await tool.execute({ description: 'review', instructions: '' }), /instructions/);
+  assert.equal(await tool.execute({
+    description: 'review',
+    model: 'glm-5.2',
+    provider: 'volcengine',
+    reasoningEffort: 'high',
+    instructions: '只关注并发'
+  }), 'ok');
+  assert.equal(received.model, 'glm-5.2');
+  assert.equal(received.provider, 'volcengine');
+  assert.equal(received.reasoningEffort, 'high');
+  assert.equal(received.instructions, '只关注并发');
 });
 
 test('bash tool stops promptly when its abort signal fires', { timeout: 5000 }, async () => {

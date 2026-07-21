@@ -7,11 +7,18 @@ import test from 'node:test';
 import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START,
+  AUTO_COMPACTION_TRIGGER_RATIO,
+  DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
   estimateMessagesTokens,
+  getContextCompactionThresholds,
   repairToolCallPairs,
   runCompactionPipeline,
+  shouldTriggerAutoCompaction,
   snipCompact
 } from '@hajicli/core';
+import { getModelContextWindowTokens } from '../dist/context-policy.js';
+import { MODEL_CONTEXT_WINDOWS, MODEL_REGISTRY } from '@hajicli/plugins';
 
 const messages = [
   { role: 'system', content: 'system rules' },
@@ -101,7 +108,7 @@ test('pipeline repairs an already-broken resumed history before the next provide
     { role: 'assistant', content: '', tool_calls: [toolCall('missing-result')] },
     { role: 'user', content: 'continue after resume' }
   ];
-  const result = await runCompactionPipeline(broken, { maxCharsThreshold: 1_000_000 });
+  const result = await runCompactionPipeline(broken, { maxTokensThreshold: 1_000_000 });
   assert.ok(result.layersApplied.includes('协议:工具调用配对修复'));
   assertValidToolPairs(result.messages);
   assert.equal(result.messages.some(message => message.tool_calls?.length), false);
@@ -205,7 +212,79 @@ test('L4 preserves current and legacy unverified subagent context across repeate
 });
 
 test('inactive local layers are not reported as applied', async () => {
-  const result = await runCompactionPipeline(messages, { maxCharsThreshold: 1_000_000 });
+  const result = await runCompactionPipeline(messages, { maxTokensThreshold: 1_000_000 });
   assert.deepEqual(result.layersApplied, []);
   assert.equal(result.summaryMode, 'none');
+});
+
+test('automatic pipeline never snips unsummarized history below the token threshold', async () => {
+  const history = [{ role: 'system', content: 'rules' }];
+  for (let i = 0; i < 60; i++) {
+    history.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `important-message-${i}` });
+  }
+
+  const result = await runCompactionPipeline(history, { maxTokensThreshold: 1_000_000 });
+  assert.equal(result.summaryMode, 'none');
+  assert.equal(result.layersApplied.includes('L2:中间对话裁剪'), false);
+  assert.equal(result.messages.some(message => message.content === 'important-message-20'), true);
+  assert.equal(result.messages.some(message => /\[已裁切中间/.test(message.content)), false);
+});
+
+test('automatic L4 uses the token threshold and reports token usage', async () => {
+  const history = [
+    { role: 'system', content: '规则' },
+    { role: 'user', content: '旧需求'.repeat(1_000) },
+    { role: 'assistant', content: '旧结论'.repeat(1_000) },
+    { role: 'user', content: '第二个需求' },
+    { role: 'assistant', content: '第二个结论' },
+    { role: 'user', content: '最新需求' }
+  ];
+  const result = await runCompactionPipeline(history, {
+    maxTokensThreshold: 100,
+    summaryProvider: async () => '结构化摘要'
+  });
+
+  assert.equal(result.summaryMode, 'model');
+  assert.ok(result.originalTokens > 100);
+  assert.ok(result.compactedTokens < result.originalTokens);
+});
+
+test('automatic compaction policy uses 70/50 percent hysteresis with a 90 percent emergency', () => {
+  const thresholds = getContextCompactionThresholds(1_000_000);
+  assert.equal(
+    DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+    Math.round(DEFAULT_CONTEXT_WINDOW_TOKENS * AUTO_COMPACTION_TRIGGER_RATIO)
+  );
+  assert.deepEqual(thresholds, {
+    contextWindowTokens: 1_000_000,
+    triggerTokens: 700_000,
+    rearmTokens: 500_000,
+    emergencyTokens: 900_000
+  });
+  assert.equal(shouldTriggerAutoCompaction(699_999, thresholds, true), false);
+  assert.equal(shouldTriggerAutoCompaction(700_000, thresholds, true), true);
+  assert.equal(shouldTriggerAutoCompaction(800_000, thresholds, false), false);
+  assert.equal(shouldTriggerAutoCompaction(900_000, thresholds, false), true);
+});
+
+test('model context window accepts a validated environment override', () => {
+  assert.equal(getModelContextWindowTokens('deepseek-v4-flash', {}), 1_000_000);
+  assert.equal(getModelContextWindowTokens('doubao-pro-32k', {}), 32_768);
+  assert.equal(getModelContextWindowTokens('unknown-model', {}), 128_000);
+  assert.equal(getModelContextWindowTokens('deepseek-v4-flash', {
+    HAJI_CONTEXT_WINDOW_TOKENS: '262144.4'
+  }), 262_144);
+  assert.equal(getModelContextWindowTokens('deepseek-v4-flash', {
+    HAJI_CONTEXT_WINDOW_TOKENS: 'invalid'
+  }), 1_000_000);
+  assert.equal(getModelContextWindowTokens('deepseek-v4-flash', {
+    HAJI_CONTEXT_WINDOW_TOKENS: '999'
+  }), 1_000_000);
+});
+
+test('model context windows come from the shared provider registry', () => {
+  assert.equal(MODEL_REGISTRY.length, 5);
+  assert.equal(MODEL_CONTEXT_WINDOWS['deepseek-v4-flash'], 1_000_000);
+  assert.equal(MODEL_CONTEXT_WINDOWS['doubao-pro-32k'], 32_768);
+  assert.equal(getModelContextWindowTokens('glm-5.2', {}), MODEL_CONTEXT_WINDOWS['glm-5.2']);
 });

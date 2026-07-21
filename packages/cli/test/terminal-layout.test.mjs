@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
-import { layoutAnsiDocument, TerminalUI, wrapAnsi, wrapAnsiWithState } from '../dist/terminal-input.js';
+import {
+  getSelectionAutoScrollRows,
+  layoutAnsiDocument,
+  TerminalUI,
+  wrapAnsi,
+  wrapAnsiWithState
+} from '../dist/terminal-input.js';
 
 const stripAnsi = value => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 
@@ -32,6 +38,15 @@ test('selection layout rows stay aligned with scrolling rows', () => {
   const selectionRows = layoutAnsiDocument(input, width).rows.map(row => row.ansi);
 
   assert.deepEqual(selectionRows, wrapAnsi(input, width));
+});
+
+test('drag selection scrolls toward the pointer when it crosses the chat viewport edge', () => {
+  assert.equal(getSelectionAutoScrollRows(10, 10, 8), 0);
+  assert.equal(getSelectionAutoScrollRows(9, 10, 8), 1);
+  assert.equal(getSelectionAutoScrollRows(5, 10, 8), 3);
+  assert.equal(getSelectionAutoScrollRows(18, 10, 8), -1);
+  assert.equal(getSelectionAutoScrollRows(24, 10, 8), -3);
+  assert.equal(getSelectionAutoScrollRows(10, 10, 0), 0);
 });
 
 test('stable-prefix wrapping is identical to wrapping the complete document', () => {

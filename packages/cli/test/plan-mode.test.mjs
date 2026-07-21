@@ -34,6 +34,9 @@ test('Plan prompt describes incremental task creation and approval boundary', as
   assert.match(prompt, /finalize=true/);
   assert.match(prompt, /优先 4-8 个汉字/);
   assert.match(prompt, /最多 12 个字符/);
+  assert.match(prompt, /单独输出一次面向用户审阅的方案正文/);
+  assert.match(prompt, /此轮不得调用工具/);
+  assert.match(prompt, /创建任务前必须先调用 tasklist/);
 });
 
 test('taskfinish prompt keeps orchestration guidance without repeating its schema', async () => {
@@ -78,6 +81,8 @@ test('task workflow enforces dependencies, verification and removal from active 
     await create.execute({ title: 'Plan mode', id: 'inspect', content: 'inspect flow' });
     const ready = await create.execute({ id: 'implement', content: 'implement flow', blockedBy: ['inspect'], finalize: true });
     assert.match(ready, new RegExp(PLAN_READY_MARKER.replace(/[\[\]]/g, '\\$&')));
+    assert.match(await finish.execute({ taskId: 'inspect', verification: 'tests passed' }), /updatetask.*in_progress/);
+    assert.match(finish.definition.function.description, /updatetask\(in_progress\).*实施.*验证.*taskfinish/);
     assert.match(await update.execute({ taskId: 'implement', status: 'in_progress' }), /^错误:/);
     await update.execute({ taskId: 'inspect', status: 'in_progress' });
     await finish.execute({ taskId: 'inspect', verification: 'tests passed' });
@@ -92,11 +97,14 @@ test('task workflow enforces dependencies, verification and removal from active 
 
 test('approval offers exactly three choices and defaults to Auto Execute', () => {
   const source = fs.readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+  assert.match(source, /\[系统计划审阅要求\].*停止调用工具.*方案正文/);
+  assert.match(source, /permissionMode === 'plan' && planReadyForReview[\s\S]*!textContent\.trim\(\)[\s\S]*本次不进入审批/);
   assert.match(source, /value: 'auto', label: 'Auto Execute'/);
   assert.match(source, /value: 'manual', label: 'Approve Manually'/);
   assert.match(source, /value: 'no', label: 'No, Revise Plan'/);
   assert.match(source, /selectedValue: 'auto'/);
   assert.match(source, /review\.value === 'auto' \? 'auto' : 'default'/);
+  assert.match(source, /每个任务都严格按 updatetask\(in_progress\).*实际验证.*taskfinish/);
 });
 
 test('Plan Mode sends only read-only, planning and isolated subagent tool definitions', () => {

@@ -25,6 +25,8 @@ test('manual subagent command supports background, role and Todo linkage', () =>
     role: 'review',
     taskId: 'inspect',
     timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
     description: '检查当前 diff'
   });
   assert.deepEqual(parseSubagentCommand('research 查找 Provider 重复代码'), {
@@ -32,6 +34,8 @@ test('manual subagent command supports background, role and Todo linkage', () =>
     role: 'research',
     taskId: undefined,
     timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
     description: '查找 Provider 重复代码'
   });
   assert.deepEqual(parseSubagentCommand('research --timeout-ms 45000 检查超时链路'), {
@@ -39,9 +43,44 @@ test('manual subagent command supports background, role and Todo linkage', () =>
     role: 'research',
     taskId: undefined,
     timeoutMs: 45000,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
     description: '检查超时链路'
   });
+  assert.deepEqual(parseSubagentCommand('review --max-tokens 24000 --max-tool-calls=12 检查预算'), {
+    background: false,
+    role: 'review',
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: 24000,
+    maxToolCalls: 12,
+    description: '检查预算'
+  });
   assert.throws(() => parseSubagentCommand('research --timeout-ms 20 太短'), /100 到 3600000/);
+  assert.throws(() => parseSubagentCommand('research --max-tokens 20 太少'), /1000 到 2000000/);
+  assert.throws(() => parseSubagentCommand('research --max-tool-calls 0 太少'), /1 到 500/);
+});
+
+test('manual subagent command supports per-agent model, provider, effort and instructions', () => {
+  assert.deepEqual(parseSubagentCommand('bg review --model glm-5.2 --provider volcengine --effort high --instructions "只检查竞态和资源泄漏" 审查 AgentManager'), {
+    background: true,
+    role: 'review',
+    taskId: undefined,
+    model: 'glm-5.2',
+    provider: 'volcengine',
+    reasoningEffort: 'high',
+    instructions: '只检查竞态和资源泄漏',
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    description: '审查 AgentManager'
+  });
+  assert.throws(() => parseSubagentCommand('research --provider other 调研'), /deepseek 或 volcengine/);
+  assert.throws(() => parseSubagentCommand(`research --instructions "${'x'.repeat(8001)}" 调研`), /长度必须是 1 到 8000/);
+  assert.equal(
+    parseSubagentCommand('research --instructions "说明文字中不要使用 --model 参数" 检查配置').instructions,
+    '说明文字中不要使用 --model 参数'
+  );
 });
 
 test('running agents time out even when their executor ignores abort', async () => {
@@ -70,6 +109,35 @@ test('running agents time out even when their executor ignores abort', async () 
     assert.match(finished.result.summary, /超过 100ms.*自动中止/);
     assert.equal(executionSignal.aborted, true);
     assert.ok(Date.now() - startedAt < 1000);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('AgentManager tracks normalized budgets, tool calls and streaming activity', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-agent-budget-'));
+  try {
+    let finish;
+    const manager = new AgentManager({ agentsDir: cwd });
+    manager.setScope('session-a');
+    const launch = manager.launch({
+      role: 'research',
+      description: 'bounded stream',
+      background: false,
+      access: 'readonly',
+      maxTokens: 12000,
+      maxToolCalls: 8
+    }, ({ agentId }) => new Promise(resolve => { finish = () => resolve(completed(agentId)); }));
+
+    assert.equal(launch.agent.maxTokens, 12000);
+    assert.equal(launch.agent.maxToolCalls, 8);
+    manager.updateProgress(launch.agent.id, 'responding', 'hel');
+    manager.updateProgress(launch.agent.id, 'responding', 'lo');
+    assert.equal(manager.get(launch.agent.id).preview, 'hello');
+    manager.updateTool(launch.agent.id, 'read');
+    assert.equal(manager.get(launch.agent.id).toolCalls, 1);
+    finish();
+    assert.equal((await launch.completion).status, 'awaiting_verification');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -272,12 +340,25 @@ test('agent elapsed formatting is stable for seconds and minutes', () => {
 
 test('agent panel shows concurrency, current tool, elapsed time and token usage', () => {
   const rows = buildAgentPanelRows([
-    { id: 'sub-a1', role: 'research', status: 'running', startedAt: 1000, currentTool: 'grep', totalTokens: 1800 },
+    {
+      id: 'sub-a1', role: 'research', status: 'running', startedAt: 1000, currentTool: 'grep',
+      totalTokens: 1800, maxTokens: 100000, toolCalls: 3, maxToolCalls: 50
+    },
     { id: 'sub-b2', role: 'review', status: 'queued', totalTokens: 0 }
   ], 100, 4, 13_500).map(row => row.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
   assert.equal(rows[0], 'Agents 1 running · 1 queued');
-  assert.match(rows[1], /sub-a1\s+research · grep · 12s · 1\.8k tok/);
+  assert.match(rows[1], /sub-a1\s+research · grep · 12s · 1\.8k\/100k tok · 3\/50 tools/);
   assert.match(rows[2], /sub-b2\s+review · queued/);
+});
+
+test('agent panel includes per-agent runtime configuration when provided', () => {
+  const rows = buildAgentPanelRows([
+    {
+      id: 'sub-c3', role: 'review', status: 'queued', totalTokens: 0,
+      model: 'glm-5.2', provider: 'volcengine', reasoningEffort: 'high'
+    }
+  ], 120, 3).map(row => row.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
+  assert.match(rows[1], /review · queued · glm-5\.2 \/ volcengine \/ high/);
 });
 
 test('CLI registers deterministic subagent and agent management commands', () => {

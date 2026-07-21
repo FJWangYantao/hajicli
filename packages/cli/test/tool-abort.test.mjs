@@ -206,7 +206,7 @@ test('bash reports taskkill failure and attempts a fallback kill', async () => {
 
   assert.match(output, /^\[命令已中止\]/);
   assert.match(output, /taskkill 失败.*进程枚举兜底清理/);
-  assert.deepEqual(cleanupCalls, ['powershell.exe', 'taskkill.exe']);
+  assert.deepEqual(cleanupCalls, ['taskkill.exe', 'powershell.exe']);
   assert.deepEqual(killedPids, [[5002, 'SIGTERM'], [5001, 'SIGTERM']]);
   assert.deepEqual(killSignals, ['SIGTERM']);
 });
