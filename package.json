@@ -2,10 +2,18 @@
   "name": "hajicli-monorepo",
   "version": "1.0.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "A lightweight terminal AI helper CLI tool",
+  "packageManager": "pnpm@10.22.0",
+  "engines": {
+    "node": ">=20.18.1"
+  },
   "scripts": {
     "build": "tsc --build",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean",
+    "test": "pnpm --dir packages/cli test",
+    "check": "pnpm run build && node --test packages/cli/test/*.test.mjs",
+    "pack:check": "pnpm run build && node scripts/verify-packages.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

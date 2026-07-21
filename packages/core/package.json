@@ -1,10 +1,17 @@
 {
   "name": "@hajicli/core",
   "version": "1.0.0",
+  "license": "UNLICENSED",
   "description": "Core library for hajicli providing interfaces and models config",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.18.1"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -12,6 +19,7 @@
     }
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "prepack": "pnpm run build"
   }
 }
