@@ -28,7 +28,16 @@ export interface ToolDefinition {
 export interface BaseTool {
   name: string;
   definition: ToolDefinition;
+  /** 声明工具对工作区的潜在修改范围；未声明时由执行器按权限分类兜底。 */
+  getMutationScope?(args: Record<string, unknown>): ToolMutationScope;
   execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string>;
+}
+
+export type ToolMutationScope = 'none' | 'paths' | 'workspace';
+
+export interface ToolProgressEvent {
+  type: 'status' | 'stdout' | 'stderr';
+  chunk: string;
 }
 
 /** A single tool invocation's runtime context, shared by parent and child agents. */
@@ -43,6 +52,7 @@ export interface ToolExecutionContext {
   riskThreshold?: string;
   anchorSnapshotId?: string;
   agentAccess?: 'readonly' | 'workspace-write';
+  onProgress?: (event: ToolProgressEvent) => void;
 }
 
 /**
@@ -84,6 +94,8 @@ export interface CompletionOptions {
    * 接收大模型本次调用的 token 消耗统计。
    */
   onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
+  /** 接收 Provider 返回的停止原因，例如 stop、tool_calls 或 length。 */
+  onFinish?: (finish: { reason?: string }) => void;
 }
 
 /**
@@ -146,6 +158,7 @@ export interface PromptContext {
   cwd: string;
   os: string;
   tools?: string[];
+  skills?: import('./skill-types.js').SkillCatalogItem[];
   vars?: Record<string, string>;
   reasoningEffort?: ReasoningEffort;
   permissionMode?: string;

@@ -88,7 +88,8 @@ export class PermissionEngine {
       'global_find_files',
       'find_files',
       'web_search',
-      'web_fetch'
+      'web_fetch',
+      'loadskill'
     ];
     return readOnlyTools.includes(toolName.toLowerCase());
   }

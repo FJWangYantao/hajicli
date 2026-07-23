@@ -331,6 +331,7 @@ export class SnapshotEngine {
   }
 
   private isHajiRuntimePath(relativePath: string): boolean {
+    if (relativePath === '.haji/skills' || relativePath.startsWith('.haji/skills/')) return false;
     return relativePath === '.haji' || relativePath.startsWith('.haji/');
   }
 

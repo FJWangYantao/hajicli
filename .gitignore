@@ -1,5 +1,12 @@
 node_modules/
 dist/
-.haji/
+**/.haji/
+!/.haji/
+/.haji/*
+!/.haji/skills/
+!/.haji/skills/**
 *.tsbuildinfo
 scratch/
+.workbuddy/
+.codebuddy/
+diff-*.txt

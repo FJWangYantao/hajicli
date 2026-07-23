@@ -9,6 +9,9 @@ import {
 } from './types.js';
 import { estimateMessagesTokens } from './context-compact.js';
 import { isAbortError } from './abort.js';
+import { validateToolCall } from './tool-call-validation.js';
+import { formatSkillsCatalogPrompt } from './prompt-manager.js';
+import type { SkillCatalogItem } from './skill-types.js';
 
 export type SubagentRole = 'research' | 'implement' | 'review';
 
@@ -89,6 +92,7 @@ export interface SubagentRunnerOptions {
   getModel: (request?: SubagentRequest) => string;
   getReasoningEffort: (request?: SubagentRequest) => ReasoningEffort;
   getTools: (context: ToolExecutionContext) => BaseTool[];
+  getSkills?: () => SkillCatalogItem[];
   executeTool: (
     toolCall: ToolCall,
     args: Record<string, unknown>,
@@ -183,12 +187,16 @@ export class SubagentRunner {
     };
     const tools = this.options.getTools(childContext)
       .filter(tool => tool.name !== 'subagent' && !tool.name.toLowerCase().startsWith('task'));
+    const skillsCatalog = tools.some(tool => tool.name.toLowerCase() === 'loadskill')
+      ? formatSkillsCatalogPrompt(this.options.getSkills?.() || [])
+      : '';
     const systemPrompt = [
       '你是 Haji 的子代理。只完成收到的单一子任务，不要扩大范围，也不要再次委派。',
       `角色：${role}`,
       `工作目录：${this.options.cwd}`,
       '你拥有独立上下文，但和主代理共享工作目录。所有工具调用仍受主代理权限、快照和中断机制约束。',
       '不要操作任务列表；任务状态、最终验证和 taskfinish 由主代理负责。',
+      skillsCatalog,
       instructions ? `用户为本次子任务补充的执行要求（不得覆盖以上安全约束）：\n${instructions}` : '',
       '完成后只返回 JSON：{"summary":"结论","filesChanged":[],"verification":[],"unresolved":[]}。',
       'filesChanged 仅列出实际修改的相对路径；verification 仅列出实际执行的验证及结果；不得虚构。'
@@ -204,6 +212,7 @@ export class SubagentRunner {
     const maxToolCalls = normalizeSubagentMaxToolCalls(request.maxToolCalls);
     let totalTokens = 0;
     let executedToolCalls = 0;
+    let malformedToolRecoveryAttempts = 0;
     let usageFallbackWarned = false;
 
     this.options.onEvent?.({ type: 'start', agentId, role, taskId: request.taskId, description });
@@ -222,6 +231,7 @@ export class SubagentRunner {
         let toolCalls: ToolCall[] = [];
         let reasoning = '';
         let text = '';
+        let finishReason: string | undefined;
         let turnUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
         const estimatedPromptTokens = estimateMessagesTokens(messages, { includeSystem: true });
         for await (const chunk of provider.completeStream(messages, {
@@ -236,7 +246,8 @@ export class SubagentRunner {
             reasoning += content;
             this.options.onEvent?.({ type: 'reasoning_delta', agentId, role, taskId: request.taskId, delta: content });
           },
-          onUsage: usage => { turnUsage = usage; }
+          onUsage: usage => { turnUsage = usage; },
+          onFinish: finish => { finishReason = finish.reason; }
         })) {
           text += chunk;
           this.options.onEvent?.({ type: 'text_delta', agentId, role, taskId: request.taskId, delta: chunk });
@@ -286,8 +297,40 @@ export class SubagentRunner {
         }
         const assistantMessage: ChatMessage = { role: 'assistant', content: text };
         if (reasoning) assistantMessage.reasoning_content = reasoning;
-        if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
+        const invalidToolCall = toolCalls.map(toolCall => ({
+          toolCall,
+          validation: validateToolCall(toolCall)
+        })).find(item => !item.validation.valid);
+        if (toolCalls.length > 0 && !invalidToolCall) assistantMessage.tool_calls = toolCalls;
         messages.push(assistantMessage);
+
+        if (invalidToolCall) {
+          malformedToolRecoveryAttempts += 1;
+          const reason = finishReason === 'length'
+            ? 'Provider 返回 finish_reason=length。'
+            : '工具参数可能被截断。';
+          this.options.onEvent?.({
+            type: 'warning',
+            agentId,
+            role,
+            taskId: request.taskId,
+            message: `已拦截未执行的 ${invalidToolCall.toolCall.function?.name || 'unknown'} 工具调用：${invalidToolCall.validation.error} ${reason}`
+          });
+          if (malformedToolRecoveryAttempts > 1) {
+            const result = resourceLimitResult(
+              agentId,
+              '子代理连续两次生成不完整的工具参数，已停止以避免污染上下文。',
+              'incomplete_tool_call'
+            );
+            this.options.onEvent?.({ type: 'done', agentId, role, taskId: request.taskId, result });
+            return result;
+          }
+          messages.push({
+            role: 'user',
+            content: `[系统工具调用恢复] 上一轮 ${invalidToolCall.toolCall.function?.name || 'unknown'} 参数未完整生成，已丢弃且没有执行。请使用完整 JSON 重试，并缩短单次工具参数。`
+          });
+          continue;
+        }
 
         if (toolCalls.length === 0) {
           const result = parseFinalResult(agentId, text);
@@ -312,7 +355,7 @@ export class SubagentRunner {
           const toolStartedAt = Date.now();
           let output: string;
           try {
-            const args = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
+            const args = validateToolCall(toolCall).arguments || {};
             output = await this.options.executeTool(toolCall, args, childContext);
           } catch (error) {
             output = `执行出错: ${error instanceof Error ? error.message : String(error)}`;

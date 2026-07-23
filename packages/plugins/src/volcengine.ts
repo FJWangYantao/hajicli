@@ -1,4 +1,4 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
 import { fetchWithNetworkPolicy } from './network.js';
 
 /**
@@ -42,6 +42,7 @@ interface StreamChoiceDelta {
 
 interface StreamChoice {
   delta?: StreamChoiceDelta;
+  finish_reason?: string | null;
 }
 
 interface StreamResponseData {
@@ -54,6 +55,7 @@ interface StreamResponseData {
 }
 
 interface NonStreamChoice {
+  finish_reason?: string | null;
   message?: {
     content?: string;
     reasoning_content?: string;
@@ -108,6 +110,7 @@ export class VolcengineProvider implements ModelProvider {
     }
 
     const choice = data.choices?.[0];
+    options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
       options.onToolCall(choice.message.tool_calls);
     }
@@ -148,6 +151,7 @@ export class VolcengineProvider implements ModelProvider {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     const accumulatedToolCalls: ToolCall[] = [];
+    let finishReason: string | undefined;
 
     try {
       while (true) {
@@ -170,6 +174,7 @@ export class VolcengineProvider implements ModelProvider {
             try {
               const data = JSON.parse(dataStr) as StreamResponseData;
               const choice = data.choices?.[0];
+              if (choice?.finish_reason) finishReason = choice.finish_reason;
 
               // 收集流式工具调用
               const deltaToolCalls = choice?.delta?.tool_calls;
@@ -229,6 +234,7 @@ export class VolcengineProvider implements ModelProvider {
           try {
             const data = JSON.parse(trimmed.slice(6)) as StreamResponseData;
             const choice = data.choices?.[0];
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
             const content = choice?.delta?.content || '';
 
             const deltaToolCalls = choice?.delta?.tool_calls;
@@ -278,6 +284,7 @@ export class VolcengineProvider implements ModelProvider {
 
       // 触发工具调用回调
       const finalToolCalls = accumulatedToolCalls.filter(Boolean);
+      options.onFinish?.({ reason: finishReason });
       if (finalToolCalls.length > 0 && options.onToolCall) {
         options.onToolCall(finalToolCalls);
       }
@@ -293,6 +300,14 @@ export class VolcengineProvider implements ModelProvider {
     if (!modelToUse) {
       throw new ProviderError(
         '未指定模型接入点 Endpoint ID。请设置 VOLC_MODEL 环境变量，或在调用 complete/completeStream 时传入 model 参数。',
+        'volcengine'
+      );
+    }
+
+    const invalidToolCall = findInvalidToolCall(messages);
+    if (invalidToolCall) {
+      throw new ProviderError(
+        `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
         'volcengine'
       );
     }

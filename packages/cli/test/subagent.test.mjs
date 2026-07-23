@@ -81,6 +81,42 @@ test('subagent uses fresh context, filters recursive/task tools and returns only
   ]);
 });
 
+test('subagent never executes or persists truncated tool arguments', async () => {
+  const calls = [];
+  let executed = 0;
+  const events = [];
+  const provider = {
+    async *completeStream(messages, options) {
+      calls.push(structuredClone(messages));
+      options.onFinish?.({ reason: 'length' });
+      options.onToolCall?.([{
+        id: `broken-${calls.length}`,
+        type: 'function',
+        function: { name: 'write', arguments: '{"content":"truncated' }
+      }]);
+    }
+  };
+  const runner = new SubagentRunner({
+    cwd: 'C:/repo',
+    getProvider: () => provider,
+    getModel: () => 'test-model',
+    getReasoningEffort: () => 'low',
+    getTools: () => [{ name: 'write', definition: definition('write'), async execute() { return ''; } }],
+    executeTool: async () => { executed += 1; return ''; },
+    onEvent: event => events.push(event)
+  });
+
+  const result = await runner.runResult({ description: 'write a long document' });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.unresolved, ['incomplete_tool_call']);
+  assert.equal(executed, 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].some(message => message.role === 'tool'), false);
+  assert.equal(calls[1].some(message => message.tool_calls?.length), false);
+  assert.match(calls[1].at(-1).content, /系统工具调用恢复/);
+  assert.equal(events.filter(event => event.type === 'warning' && /已拦截未执行/.test(event.message)).length, 2);
+});
+
 test('subagent forwards per-agent model, provider, effort and protected instructions', async () => {
   let providerRequest;
   let requestedModel;

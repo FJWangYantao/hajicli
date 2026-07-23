@@ -9,10 +9,86 @@ import {
   fetchWithNetworkPolicy,
   getHttpTimeoutMs,
   getProxyConfiguration,
+  DeepSeekProvider,
   GrepSearchTool,
   ReadFileTool,
+  VolcengineProvider,
   WriteFileTool
 } from '../../plugins/dist/index.js';
+
+async function consumeStream(stream) {
+  let content = '';
+  for await (const chunk of stream) content += chunk;
+  return content;
+}
+
+test('providers reject malformed historical tool arguments before any network request', async () => {
+  const messages = [{
+    role: 'assistant',
+    content: 'writing',
+    tool_calls: [{
+      id: 'broken-write',
+      type: 'function',
+      function: { name: 'write', arguments: '{"content":"truncated' }
+    }]
+  }];
+  const providers = [
+    new VolcengineProvider({ apiKey: 'test', baseUrl: 'http://127.0.0.1:1', defaultModel: 'test' }),
+    new DeepSeekProvider({ apiKey: 'test', baseUrl: 'http://127.0.0.1:1', defaultModel: 'test' })
+  ];
+
+  for (const provider of providers) {
+    await assert.rejects(
+      consumeStream(provider.completeStream(messages)),
+      /本地拒绝发送损坏的历史工具调用/
+    );
+  }
+});
+
+test('Volcengine streaming exposes finish_reason length', async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end([
+      'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}',
+      '',
+      'data: [DONE]',
+      ''
+    ].join('\n'));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const previousProxy = process.env.HAJI_PROXY;
+  const previousHttpProxy = process.env.HAJI_HTTP_PROXY;
+  const previousHttpsProxy = process.env.HAJI_HTTPS_PROXY;
+  delete process.env.HAJI_PROXY;
+  delete process.env.HAJI_HTTP_PROXY;
+  delete process.env.HAJI_HTTPS_PROXY;
+
+  try {
+    let finishReason;
+    const provider = new VolcengineProvider({
+      apiKey: 'test',
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      defaultModel: 'test'
+    });
+    const content = await consumeStream(provider.completeStream(
+      [{ role: 'user', content: 'test' }],
+      { onFinish: finish => { finishReason = finish.reason; } }
+    ));
+    assert.equal(content, 'partial');
+    assert.equal(finishReason, 'length');
+  } finally {
+    if (previousProxy === undefined) delete process.env.HAJI_PROXY;
+    else process.env.HAJI_PROXY = previousProxy;
+    if (previousHttpProxy === undefined) delete process.env.HAJI_HTTP_PROXY;
+    else process.env.HAJI_HTTP_PROXY = previousHttpProxy;
+    if (previousHttpsProxy === undefined) delete process.env.HAJI_HTTPS_PROXY;
+    else process.env.HAJI_HTTPS_PROXY = previousHttpsProxy;
+    server.closeAllConnections?.();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
 
 test('file tools reject paths outside the current workspace', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'haji-boundary-'));
@@ -35,6 +111,16 @@ test('file tools reject paths outside the current workspace', async () => {
     process.chdir(originalCwd);
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('selector transitions cancel background input and preserve its draft', async () => {
+  const source = await fs.readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+  assert.match(source, /const readSelectionSafely = async/);
+  assert.match(source, /const draft = ui\.cancelInput\(\)/);
+  assert.match(source, /pendingInputs\.push\(draft\)/);
+  assert.doesNotMatch(source, /await ui\.readSelection\(/);
+  assert.match(source, /shouldRestartBackgroundInput\(trimmed\)/);
+  assert.match(source, /ui\.readInput\(\{ slashCommands, initialValue: draft \}\)/);
 });
 
 test('network policy reads dedicated and standard proxy variables deterministically', () => {

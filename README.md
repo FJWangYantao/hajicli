@@ -44,3 +44,41 @@ $env:HAJI_ALLOW_OUTSIDE_WORKSPACE = '1'
 ```
 
 不要在不可信项目中使用 `bypass-permissions`。会话、Trace、快照和计划数据位于 `.haji`，发布包不会包含这些运行时数据。
+
+## Skill 系统
+
+HAJI 使用两级加载：启动时只把精简目录交给模型，任务匹配时再通过只读的 `loadskill` 工具加载完整 `SKILL.md`。
+
+Skill 来源按以下优先级覆盖：
+
+- 用户级：`%USERPROFILE%/.haji/skills/<name>/SKILL.md`
+- 项目级：`<workspace>/.haji/skills/<name>/SKILL.md`
+
+```md
+---
+name: code-review
+description: 审查代码正确性和回归风险
+when_to_use: 用户要求审查代码、Diff 或 PR 时
+user-invocable: true
+---
+
+# Review workflow
+
+检查 Diff，只报告有证据支持的问题。
+```
+
+交互命令：
+
+- `/skills`：查看可用和已加载的 Skill。
+- `/skills reload`：重新扫描两个 Skill 目录。
+- `/skill code-review`：确定性加载 Skill。
+- `/skill code-review 审查当前 diff`：加载后立即继续执行参数中的任务。
+
+`loadskill` 在 Plan Mode 中仍是只读工具。Skill 不能提升权限，也不能覆盖用户指令、`AGENTS.md` 或安全规则。Skill 名称不能是文件路径，`SKILL.md` 最大 64 KiB，并拒绝符号链接逃逸。
+
+## 性能诊断
+
+- `/perf`：查看事件循环、终端渲染、Markdown、工具、快照、Session 和 Trace 的耗时统计。
+- `/perf reset`：读取后清空当前性能采样。
+
+新 Trace 使用小型元数据文件与追加式 JSONL 事件流；会话存盘采用合并延迟写入，并在 `/resume` 与退出前强制刷新。

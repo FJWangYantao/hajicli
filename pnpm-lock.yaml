@@ -24,7 +24,11 @@ importers:
         specifier: workspace:^
         version: link:../plugins
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      yaml:
+        specifier: ^2.8.1
+        version: 2.9.0
 
   packages/plugins:
     dependencies:
@@ -52,6 +56,11 @@ packages:
     resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
     engines: {node: '>=20.18.1'}
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
 snapshots:
 
   '@types/node@20.19.43':
@@ -63,3 +72,5 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici@7.28.0: {}
+
+  yaml@2.9.0: {}

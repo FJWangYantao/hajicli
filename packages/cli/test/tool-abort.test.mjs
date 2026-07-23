@@ -7,6 +7,7 @@ import test from 'node:test';
 import { HookEngine, PermissionEngine, SnapshotEngine, TaskStore } from '@hajicli/core';
 import {
   BashTool,
+  classifyBashMutationScope,
   EditFileTool,
   GlobalFindFilesTool,
   GrepSearchTool,
@@ -209,4 +210,79 @@ test('bash reports taskkill failure and attempts a fallback kill', async () => {
   assert.deepEqual(cleanupCalls, ['taskkill.exe', 'powershell.exe']);
   assert.deepEqual(killedPids, [[5002, 'SIGTERM'], [5001, 'SIGTERM']]);
   assert.deepEqual(killSignals, ['SIGTERM']);
+});
+
+test('bash mutation scope only skips snapshots for strict read-only commands', () => {
+  assert.equal(classifyBashMutationScope('git status --short'), 'none');
+  assert.equal(classifyBashMutationScope('rg -n "needle" packages'), 'none');
+  assert.equal(classifyBashMutationScope('Get-Content package.json'), 'none');
+  assert.equal(classifyBashMutationScope('git diff --output report.patch'), 'workspace');
+  assert.equal(classifyBashMutationScope('rg needle . | Set-Content matches.txt'), 'workspace');
+  assert.equal(classifyBashMutationScope('npm run build'), 'workspace');
+});
+
+test('shared executor skips mutation snapshots for tools declaring none scope', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-readonly-scope-'));
+  let beginCount = 0;
+  const tool = {
+    name: 'bash',
+    definition: definition('bash'),
+    getMutationScope() { return 'none'; },
+    async execute() { return 'clean'; }
+  };
+  const snapshotEngine = {
+    beginMutation() { beginCount += 1; return null; },
+    completeMutation() { throw new Error('unexpected completion'); }
+  };
+  const executor = new SharedToolExecutor({
+    cwd,
+    tools: new Map([['bash', tool]]),
+    hookEngine: new HookEngine(),
+    permissionEngine: new PermissionEngine(),
+    snapshotEngine,
+    taskStore: new TaskStore(path.join(cwd, '.haji', 'tasks'))
+  });
+
+  try {
+    const result = await executor.execute('bash', { command: 'git status' }, {
+      anchorSnapshotId: 'anchor-1',
+      permissionMode: 'bypass-permissions'
+    });
+    assert.equal(result.blocked, false);
+    assert.equal(beginCount, 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('shared executor forwards tool progress without changing final output', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-tool-progress-'));
+  const progressEvents = [];
+  const tool = {
+    name: 'progress',
+    definition: definition('progress'),
+    getMutationScope() { return 'none'; },
+    async execute(_args, context) {
+      context.onProgress?.({ type: 'stdout', chunk: 'building 1/2' });
+      return 'done';
+    }
+  };
+  const executor = new SharedToolExecutor({
+    cwd,
+    tools: new Map([['progress', tool]]),
+    hookEngine: new HookEngine(),
+    permissionEngine: new PermissionEngine(),
+    snapshotEngine: new SnapshotEngine(cwd),
+    taskStore: new TaskStore(path.join(cwd, '.haji', 'tasks')),
+    onToolProgress: event => progressEvents.push(event)
+  });
+
+  try {
+    const result = await executor.execute('progress', {}, {});
+    assert.equal(result.output, 'done');
+    assert.equal(progressEvents.length, 1);
+    assert.equal(progressEvents[0].progress.chunk, 'building 1/2');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

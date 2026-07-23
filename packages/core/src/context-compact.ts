@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { formatSkillActivationContext, stripSkillActivationContext } from './skill-context.js';
 import { ChatMessage } from './types.js';
 import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START
 } from './agent-manager.js';
 import { DEFAULT_COMPACTION_TOKEN_THRESHOLD } from './context-policy.js';
+import { validateToolCall } from './tool-call-validation.js';
 
 export interface CompactionResult {
   messages: ChatMessage[];
@@ -112,6 +114,7 @@ export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
       : [];
 
     if (toolCalls.length > 0) {
+      const callsAreValid = toolCalls.every(call => validateToolCall(call).valid);
       const expectedIds = toolCalls.map(call => call.id).filter(Boolean);
       const expected = new Set(expectedIds);
       const seen = new Set<string>();
@@ -130,7 +133,8 @@ export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
         cursor += 1;
       }
 
-      const complete = expectedIds.length === toolCalls.length
+      const complete = callsAreValid
+        && expectedIds.length === toolCalls.length
         && expected.size === toolCalls.length
         && seen.size === expected.size;
       if (complete) {
@@ -342,15 +346,16 @@ export async function compactHistory(
   };
   const agentVerificationContext = collectAgentVerificationContext(messages);
   const summaryMarker = '\n\n[Compacted Context Summary]';
-  const cleanSystemContent = stripAgentVerificationContext(originalSystemMsg.content);
+  const cleanSystemContent = stripSkillActivationContext(stripAgentVerificationContext(originalSystemMsg.content));
   const markerIndex = cleanSystemContent.indexOf(summaryMarker);
   const baseSystemContent = markerIndex >= 0
     ? cleanSystemContent.slice(0, markerIndex)
     : cleanSystemContent;
   const transcriptHint = transcriptPath ? `\n完整压缩前记录：${transcriptPath}` : '';
+  const skillActivationContext = formatSkillActivationContext(messages);
   const systemMsg: ChatMessage = {
     ...originalSystemMsg,
-    content: `${baseSystemContent}${summaryMarker}\n\n${summaryText}${transcriptHint}${agentVerificationContext ? `\n\n${agentVerificationContext}` : ''}`
+    content: `${baseSystemContent}${summaryMarker}\n\n${summaryText}${transcriptHint}${skillActivationContext ? `\n\n${skillActivationContext}` : ''}${agentVerificationContext ? `\n\n${agentVerificationContext}` : ''}`
   };
   const recentMessages = selectRecentConversation(recentSource, 2);
 

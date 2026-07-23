@@ -1,5 +1,21 @@
 import { exec, execFile, type ChildProcess } from 'node:child_process';
-import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext, ToolMutationScope } from '@hajicli/core';
+
+/**
+ * 只对无法组合其他命令、且没有输出重定向的白名单查询命令跳过工作区快照。
+ * 任何不确定命令都按 workspace 处理，宁可多做一次快照也不漏记修改。
+ */
+export function classifyBashMutationScope(command: string): ToolMutationScope {
+  const normalized = command.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!normalized || /[;&|><`\r\n]/.test(command) || /\$\(/.test(command)) return 'workspace';
+  if (/\s--output(?:=|\s|$)/.test(normalized)) return 'workspace';
+
+  if (/^git (?:status|diff|log|show|rev-parse|ls-files)(?:\s|$)/.test(normalized)) return 'none';
+  if (/^(?:rg|ripgrep)(?:\s|$)/.test(normalized) && !/\s--pre(?:=|\s|$)/.test(normalized)) return 'none';
+  if (/^(?:dir|type|where(?:\.exe)?|findstr)(?:\s|$)/.test(normalized)) return 'none';
+  if (/^(?:get-childitem|get-item|get-content|select-string|test-path|resolve-path)(?:\s|$)/.test(normalized)) return 'none';
+  return 'workspace';
+}
 
 /**
  * 终端命令执行工具。
@@ -31,6 +47,10 @@ export class BashTool implements BaseTool {
       }
     }
   };
+
+  public getMutationScope(args: Record<string, unknown>): ToolMutationScope {
+    return classifyBashMutationScope(typeof args.command === 'string' ? args.command : '');
+  }
 
   /**
    * 执行 Bash 命令。
@@ -83,6 +103,12 @@ export class BashTool implements BaseTool {
         }
 
         finish(result);
+      });
+      child.stdout?.on('data', chunk => {
+        if (!settled) context?.onProgress?.({ type: 'stdout', chunk: String(chunk) });
+      });
+      child.stderr?.on('data', chunk => {
+        if (!settled) context?.onProgress?.({ type: 'stderr', chunk: String(chunk) });
       });
 
       abort = () => {

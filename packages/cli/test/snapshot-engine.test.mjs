@@ -24,6 +24,41 @@ function createRepository() {
   return cwd;
 }
 
+test('project Skill files remain protected by snapshot rewind', () => {
+  const cwd = createRepository();
+  try {
+    fs.writeFileSync(path.join(cwd, '.gitignore'), [
+      '**/.haji/',
+      '!/.haji/',
+      '/.haji/*',
+      '!/.haji/skills/',
+      '!/.haji/skills/**',
+      ''
+    ].join('\n'));
+    const skillPath = path.join(cwd, '.haji', 'skills', 'review', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, 'original skill\n');
+    git(cwd, 'add', '.gitignore', '.haji/skills/review/SKILL.md');
+    git(cwd, 'commit', '-m', 'add skill');
+
+    const engine = new SnapshotEngine(cwd);
+    engine.setScope('session-skill');
+    const anchor = engine.createSnapshot('before skill edit');
+    assert.ok(anchor);
+    const checkpoint = engine.beginMutation(anchor, ['.haji/skills/review/SKILL.md']);
+    assert.ok(checkpoint);
+    fs.writeFileSync(skillPath, 'changed by Haji\n');
+    assert.ok(engine.completeMutation(checkpoint));
+
+    const result = engine.rollbackOwnedChanges(anchor);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.revertedPaths, ['.haji/skills/review/SKILL.md']);
+    assert.equal(fs.readFileSync(skillPath, 'utf8'), 'original skill\n');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('rewind only reverts Haji-owned tool changes and preserves later external edits', () => {
   const cwd = createRepository();
   try {

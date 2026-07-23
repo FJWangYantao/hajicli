@@ -3,6 +3,7 @@ import readlinePromises from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
+import { performanceMonitor } from '@hajicli/core';
 import { TerminalProtocolParser, type TerminalMouseEvent, type TerminalProtocolEvent } from './terminal-protocol.js';
 import { TextSelectionModel, type TextCell } from './text-selection.js';
 
@@ -232,6 +233,11 @@ function isRealCtrlC(value: string, key: readline.Key): boolean {
 
 function isRealCtrlD(value: string, key: readline.Key): boolean {
   return value === '\x04' && key.ctrl === true && key.name === 'd';
+}
+
+/** 斜杠命令可能切换到选择器，提交后应由主循环接管输入状态。 */
+export function shouldRestartBackgroundInput(value: string): boolean {
+  return !value.trim().startsWith('/');
 }
 
 function isRealCtrlU(value: string, key: readline.Key): boolean {
@@ -748,6 +754,7 @@ export class TerminalUI {
   private stableWrapPrefixRows: string[] = [];
   private stableWrapPrefixStyle = '';
   private renderScheduled = false;
+  private scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
   private streamRenderTimer: NodeJS.Timeout | null = null;
   private protocolFlushTimer: NodeJS.Timeout | null = null;
   private startupHeaderVisible = true;
@@ -755,6 +762,8 @@ export class TerminalUI {
   private renderedScreenWidth = 0;
   private renderedScreenHeight = 0;
   private renderedCursorState = '';
+  private stdoutBackpressured = false;
+  private renderPendingAfterDrain = false;
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -829,10 +838,11 @@ export class TerminalUI {
     return Boolean(this.activeInput);
   }
 
-  cancelInput(): void {
-    if (this.activeInput) {
-      this.finishInput(new TerminalInputCancelledError());
-    }
+  cancelInput(): string | undefined {
+    if (!this.activeInput) return undefined;
+    const draft = this.activeInput.graphemes.join('');
+    this.finishInput(new TerminalInputCancelledError());
+    return draft;
   }
 
   start(): void {
@@ -860,10 +870,11 @@ export class TerminalUI {
     // 1002 负责拖动和滚轮，1006 统一为 SGR 坐标；禁用 1007，避免滚轮重复转成方向键。
     stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
+    stdout.on('drain', this.handleStdoutDrain);
     stdin.on('data', this.handleMouseData);
     this.keyInput.on('keypress', this.dispatchKeypress);
     process.on('exit', this.handleProcessExit);
-    this.render();
+    this.scheduleRender(true);
   }
 
   close(): void {
@@ -880,6 +891,7 @@ export class TerminalUI {
 
     if (this.interactive) {
       stdout.off('resize', this.handleResize);
+      stdout.off('drain', this.handleStdoutDrain);
       stdin.off('data', this.handleMouseData);
       this.keyInput.off('keypress', this.dispatchKeypress);
       stdin.setRawMode(this.originalRawMode);
@@ -907,6 +919,9 @@ export class TerminalUI {
     this.pendingMouseSelection = undefined;
     this.selectionPointer = undefined;
     this.renderScheduled = false;
+    this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
+    this.stdoutBackpressured = false;
+    this.renderPendingAfterDrain = false;
     this.started = false;
   }
 
@@ -922,7 +937,7 @@ export class TerminalUI {
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
     this.setStableWrapPrefix('');
-    this.render();
+    this.scheduleRender(true);
   }
 
   /**
@@ -953,23 +968,43 @@ export class TerminalUI {
 
     if (this.stableWrapPrefix && contentWithStatus.startsWith(this.stableWrapPrefix)) {
       if (width !== this.stableWrapPrefixWidth) {
-        const wrappedPrefix = wrapAnsiWithState(this.stableWrapPrefix, width);
+        const wrappedPrefix = performanceMonitor.measureSync(
+          'terminal.wrap.prefix',
+          () => wrapAnsiWithState(this.stableWrapPrefix, width)
+        );
         this.stableWrapPrefixRows = wrappedPrefix.rows.slice(0, -1);
         this.stableWrapPrefixStyle = wrappedPrefix.activeStyle;
         this.stableWrapPrefixWidth = width;
       }
-      const wrappedTail = wrapAnsiWithState(
-        contentWithStatus.slice(this.stableWrapPrefix.length),
-        width,
-        this.stableWrapPrefixStyle
-      ).rows;
+      const wrappedTail = performanceMonitor.measureSync(
+        'terminal.wrap.tail',
+        () => wrapAnsiWithState(
+          contentWithStatus.slice(this.stableWrapPrefix.length),
+          width,
+          this.stableWrapPrefixStyle
+        ).rows
+      );
       this.cachedWrappedChat = [...this.stableWrapPrefixRows, ...wrappedTail];
       this.cachedContentWithStatus = contentWithStatus;
       this.cachedWrappedWidth = width;
       return this.cachedWrappedChat;
     }
 
-    this.cachedWrappedChat = wrapAnsi(contentWithStatus, width);
+    if (!this.status && contentWithStatus === this.chatContent) {
+      const layout = performanceMonitor.measureSync(
+        'terminal.layout.full',
+        () => layoutAnsiDocument(contentWithStatus, width)
+      );
+      this.selectionLayout = layout;
+      this.selectionLayoutContent = this.chatContent;
+      this.selectionLayoutWidth = width;
+      this.cachedWrappedChat = layout.rows.map(row => row.ansi);
+    } else {
+      this.cachedWrappedChat = performanceMonitor.measureSync(
+        'terminal.wrap.full',
+        () => wrapAnsi(contentWithStatus, width)
+      );
+    }
     this.cachedContentWithStatus = contentWithStatus;
     this.cachedWrappedWidth = width;
     return this.cachedWrappedChat;
@@ -978,20 +1013,33 @@ export class TerminalUI {
   /**
    * 流式输出重绘节流调度器（防抖至下一个微任务周期，兼顾平滑度与帧率）。
    */
-  private scheduleRender(): void {
-    if (this.renderScheduled) {
+  private scheduleRender(interactive = false): void {
+    if (this.stdoutBackpressured) {
+      this.renderPendingAfterDrain = true;
       return;
     }
+    const delayMs = interactive ? 0 : 16;
+    if (this.renderScheduled && delayMs >= this.scheduledRenderDelayMs) return;
     this.renderScheduled = true;
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
     }
+    this.scheduledRenderDelayMs = delayMs;
     this.streamRenderTimer = setTimeout(() => {
       this.renderScheduled = false;
+      this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
       this.streamRenderTimer = null;
       this.render();
-    }, 16);
+    }, delayMs);
   }
+
+  private readonly handleStdoutDrain = () => {
+    if (!this.stdoutBackpressured) return;
+    this.stdoutBackpressured = false;
+    if (!this.renderPendingAfterDrain) return;
+    this.renderPendingAfterDrain = false;
+    this.scheduleRender(true);
+  };
 
   writeChat(value: string): void {
     if (!this.interactive) {
@@ -1043,7 +1091,8 @@ export class TerminalUI {
     this.cachedContentWithStatus = '';
     this.cachedWrappedWidth = 0;
     this.cachedWrappedChat = [];
-    this.setStableWrapPrefix(this.chatContent);
+    // 整体替换多见于 /resume。首次布局直接建立可复用的文档索引，避免第一次拖选再扫描全文。
+    this.setStableWrapPrefix('');
     this.scheduleRender();
   }
 
@@ -1106,7 +1155,7 @@ export class TerminalUI {
         reject
       };
 
-      this.render();
+      this.scheduleRender(true);
     });
   }
 
@@ -1148,7 +1197,7 @@ export class TerminalUI {
         reject
       };
 
-      this.render();
+      this.scheduleRender(true);
     });
   }
 
@@ -1159,7 +1208,7 @@ export class TerminalUI {
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
     this.stopSelectionAutoScroll();
-    this.render();
+    this.scheduleRender(true);
   };
 
   private getSelectionLayout(): AnsiTextLayout {
@@ -1169,7 +1218,10 @@ export class TerminalUI {
       || this.selectionLayoutContent !== this.chatContent
       || this.selectionLayoutWidth !== width
     ) {
-      this.selectionLayout = layoutAnsiDocument(this.chatContent, width);
+      this.selectionLayout = performanceMonitor.measureSync(
+        'terminal.layout.selection',
+        () => layoutAnsiDocument(this.chatContent, width)
+      );
       this.selectionLayoutContent = this.chatContent;
       this.selectionLayoutWidth = width;
     }
@@ -1242,7 +1294,7 @@ export class TerminalUI {
       if (!success || this.getSelectedChatText() !== text) return;
       this.textSelection.clear();
       this.selectionLayout = undefined;
-      this.render();
+      this.scheduleRender(true);
     });
     return true;
   }
@@ -1727,13 +1779,22 @@ export class TerminalUI {
   }
 
   private render(): void {
+    performanceMonitor.measureSync('terminal.render', () => this.renderFrame());
+  }
+
+  private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
       this.streamRenderTimer = null;
     }
     this.renderScheduled = false;
+    this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
 
     if (!this.started || !this.interactive) {
+      return;
+    }
+    if (this.stdoutBackpressured) {
+      this.renderPendingAfterDrain = true;
       return;
     }
 
@@ -1818,11 +1879,12 @@ export class TerminalUI {
     if (fullRefresh) frame += '\x1b[2J';
     frame += screenUpdate;
     frame += cursorState;
-    stdout.write(frame);
+    const accepted = stdout.write(frame);
     this.renderedScreenRows = screenRows;
     this.renderedScreenWidth = width;
     this.renderedScreenHeight = height;
     this.renderedCursorState = cursorState;
+    if (!accepted) this.stdoutBackpressured = true;
   }
 
   private finishInput(error?: Error): void {
@@ -1833,7 +1895,7 @@ export class TerminalUI {
 
     const value = activeInput.graphemes.join('');
     this.activeInput = undefined;
-    this.render();
+    this.scheduleRender(true);
 
     if (error) {
       activeInput.reject(error);
@@ -1853,7 +1915,7 @@ export class TerminalUI {
     const selectedSecondary = activeSelection.options.secondary
       ?.items[activeSelection.secondaryIndex];
     this.activeSelection = undefined;
-    this.render();
+    this.scheduleRender(true);
 
     if (error) {
       activeSelection.reject(error);
@@ -1877,7 +1939,7 @@ export class TerminalUI {
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
     activeInput.historyNavigationActive = false;
-    this.render();
+    this.scheduleRender(true);
   }
 
   private moveVertically(direction: -1 | 1): boolean {
@@ -1917,7 +1979,7 @@ export class TerminalUI {
     }
 
     activeInput.cursorIndex = bestIndex;
-    this.render();
+    this.scheduleRender(true);
     return true;
   }
 
@@ -1937,7 +1999,7 @@ export class TerminalUI {
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
     activeInput.historyNavigationActive = this.inputHistory.isBrowsing();
-    this.render();
+    this.scheduleRender(true);
   }
 
   private readonly handleSelectionKeypress = (value: string, key: readline.Key) => {
@@ -1970,7 +2032,7 @@ export class TerminalUI {
       activeSelection.selectedIndex = (
         activeSelection.selectedIndex + direction + itemCount
       ) % itemCount;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
     if ((key.name === 'left' || key.name === 'right') && activeSelection.options.secondary) {
@@ -1979,7 +2041,7 @@ export class TerminalUI {
       activeSelection.secondaryIndex = (
         activeSelection.secondaryIndex + direction + itemCount
       ) % itemCount;
-      this.render();
+      this.scheduleRender(true);
     }
   };
 
@@ -1999,7 +2061,7 @@ export class TerminalUI {
       if (this.textSelection.active) {
         this.textSelection.clear();
         this.selectionLayout = undefined;
-        this.render();
+        this.scheduleRender(true);
       } else if (this.onEscCallback) {
         this.onEscCallback();
       }
@@ -2046,7 +2108,7 @@ export class TerminalUI {
           activeInput.preferredColumn = undefined;
           activeInput.selectedCommandIndex = 0;
           activeInput.historyNavigationActive = false;
-          this.render();
+          this.scheduleRender(true);
         });
       }
       return;
@@ -2059,7 +2121,7 @@ export class TerminalUI {
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
         activeInput.historyNavigationActive = false;
-        this.render();
+        this.scheduleRender(true);
       }
       return;
     }
@@ -2072,7 +2134,7 @@ export class TerminalUI {
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
         activeInput.historyNavigationActive = false;
-        this.render();
+        this.scheduleRender(true);
       }
       return;
     }
@@ -2084,7 +2146,7 @@ export class TerminalUI {
         Math.min(activeInput.graphemes.length, activeInput.cursorIndex + direction)
       );
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -2095,7 +2157,7 @@ export class TerminalUI {
         activeInput.selectedCommandIndex = (
           activeInput.selectedCommandIndex + direction + suggestions.length
         ) % suggestions.length;
-        this.render();
+        this.scheduleRender(true);
         return;
       }
       const direction = key.name === 'up' ? -1 : 1;
@@ -2109,7 +2171,7 @@ export class TerminalUI {
       const previousLineBreak = activeInput.graphemes.lastIndexOf('\n', activeInput.cursorIndex - 1);
       activeInput.cursorIndex = key.ctrl ? 0 : previousLineBreak + 1;
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -2119,7 +2181,7 @@ export class TerminalUI {
         ? activeInput.graphemes.length
         : nextLineBreak;
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -2136,7 +2198,7 @@ export class TerminalUI {
       activeInput.preferredColumn = undefined;
       activeInput.selectedCommandIndex = 0;
       activeInput.historyNavigationActive = false;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 

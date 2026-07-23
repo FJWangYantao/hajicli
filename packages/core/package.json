@@ -21,5 +21,8 @@
   "scripts": {
     "build": "tsc",
     "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
   }
 }

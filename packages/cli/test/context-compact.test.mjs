@@ -15,7 +15,8 @@ import {
   repairToolCallPairs,
   runCompactionPipeline,
   shouldTriggerAutoCompaction,
-  snipCompact
+  snipCompact,
+  validateToolCall
 } from '@hajicli/core';
 import { getModelContextWindowTokens } from '../dist/context-policy.js';
 import { MODEL_CONTEXT_WINDOWS, MODEL_REGISTRY } from '@hajicli/plugins';
@@ -83,6 +84,33 @@ test('tool-pair repair removes incomplete exchanges and preserves valid ones', (
   assert.equal(repaired.some(message => message.role === 'tool'), false);
   assert.equal(repaired.find(message => message.content === 'visible preface')?.tool_calls, undefined);
   assertValidToolPairs(repaired);
+});
+
+test('malformed tool arguments are rejected and removed even when the tool result is paired', () => {
+  const truncatedCall = {
+    id: 'truncated-write',
+    type: 'function',
+    function: {
+      name: 'write',
+      arguments: '{"content":"unfinished document'
+    }
+  };
+  const validation = validateToolCall(truncatedCall);
+  assert.equal(validation.valid, false);
+  assert.match(validation.error, /JSON/);
+
+  const broken = [
+    { role: 'system', content: 'rules' },
+    { role: 'assistant', content: 'writing now', reasoning_content: 'reasoning', tool_calls: [truncatedCall] },
+    { role: 'tool', tool_call_id: 'truncated-write', content: '错误: 缺少 path 参数。' },
+    { role: 'user', content: 'continue' }
+  ];
+  const repaired = repairToolCallPairs(broken);
+
+  assert.equal(repaired.some(message => message.role === 'tool'), false);
+  assert.equal(repaired.some(message => message.tool_calls?.length), false);
+  assert.equal(repaired.find(message => message.content === 'writing now')?.reasoning_content, 'reasoning');
+  assert.equal(repaired.at(-1)?.content, 'continue');
 });
 
 test('L2 never keeps a head tool call after cutting away its result', () => {

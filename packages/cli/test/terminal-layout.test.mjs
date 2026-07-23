@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   getSelectionAutoScrollRows,
   layoutAnsiDocument,
+  shouldRestartBackgroundInput,
   TerminalUI,
   wrapAnsi,
   wrapAnsiWithState
@@ -60,6 +61,13 @@ test('stable-prefix wrapping is identical to wrapping the complete document', ()
   ];
 
   assert.deepEqual(incrementalRows, wrapAnsi(prefix + tail, width));
+});
+
+test('queued slash commands keep the input channel exclusive for selectors', () => {
+  assert.equal(shouldRestartBackgroundInput('next normal message'), true);
+  assert.equal(shouldRestartBackgroundInput('   '), true);
+  assert.equal(shouldRestartBackgroundInput('/model'), false);
+  assert.equal(shouldRestartBackgroundInput('  /permission  '), false);
 });
 
 test('lays out long chat history in linear time', () => {

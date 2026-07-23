@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { ChatMessage } from './types.js';
+import { performanceMonitor } from './performance-monitor.js';
+
+const SESSION_FLUSH_DELAY_MS = 120;
 
 export interface StoredSession {
   id: string;
@@ -11,16 +15,62 @@ export interface StoredSession {
   messages: ChatMessage[];
 }
 
-/**
- * 会话持久化与管理模块。
- * 支持会话存盘、离线读取、降序排列及并行异步标题生成。
- */
+interface PendingSessionWrite {
+  session?: StoredSession;
+  remove?: boolean;
+}
+
+function cloneMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    tool_calls: message.tool_calls?.map(toolCall => ({
+      ...toolCall,
+      function: { ...toolCall.function }
+    }))
+  };
+}
+
+function sameMessages(left: ChatMessage[], right: ChatMessage[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((message, index) => {
+    const candidate = right[index];
+    if (!candidate
+      || message.role !== candidate.role
+      || message.content !== candidate.content
+      || message.reasoning_content !== candidate.reasoning_content
+      || message.snapshotId !== candidate.snapshotId
+      || message.tool_call_id !== candidate.tool_call_id) return false;
+    const leftCalls = message.tool_calls || [];
+    const rightCalls = candidate.tool_calls || [];
+    return leftCalls.length === rightCalls.length && leftCalls.every((toolCall, toolIndex) => {
+      const other = rightCalls[toolIndex];
+      return Boolean(other
+        && toolCall.id === other.id
+        && toolCall.type === other.type
+        && toolCall.function.name === other.function.name
+        && toolCall.function.arguments === other.function.arguments);
+    });
+  });
+}
+
+async function replaceFile(source: string, target: string): Promise<void> {
+  try {
+    await fs.promises.rename(source, target);
+  } catch {
+    await fs.promises.copyFile(source, target);
+    await fs.promises.rm(source, { force: true });
+  }
+}
+
+/** In-memory session state with debounced, atomic background persistence. */
 export class SessionManager {
   private readonly sessionsDir: string;
   private currentSession: StoredSession;
-  private lastSavedMessageRefs: ChatMessage[] = [];
-  private lastSavedTitle = '';
-  private hasPersistedSnapshot = false;
+  private lastQueuedMessages: ChatMessage[] = [];
+  private lastQueuedTitle = '';
+  private readonly pendingWrites = new Map<string, PendingSessionWrite>();
+  private writeChain: Promise<void> = Promise.resolve();
+  private flushTimer: NodeJS.Timeout | null = null;
 
   constructor(sessionsDir = path.join(process.cwd(), '.haji', 'sessions')) {
     this.sessionsDir = sessionsDir;
@@ -36,123 +86,123 @@ export class SessionManager {
   }
 
   private ensureDir(): void {
-    try {
-      fs.mkdirSync(this.sessionsDir, { recursive: true });
-    } catch {}
+    try { fs.mkdirSync(this.sessionsDir, { recursive: true }); } catch {}
   }
 
-  /**
-   * 判断会话中是否包含有效对话消息（包含至少一条 user 或 assistant 消息）
-   */
+  private getSessionPath(id: string): string {
+    return path.join(this.sessionsDir, `session_${id}.json`);
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      void this.flush();
+    }, SESSION_FLUSH_DELAY_MS);
+    this.flushTimer.unref?.();
+  }
+
   public hasEffectiveMessages(messages: ChatMessage[] = []): boolean {
-    return messages.some(m => m.role === 'user' || m.role === 'assistant');
+    return messages.some(message => message.role === 'user' || message.role === 'assistant');
   }
 
-  /**
-   * 获取当前会话信息
-   */
   public getCurrentSession(): StoredSession {
     return this.currentSession;
   }
 
-  /**
-   * 更新并持久化当前会话（仅在包含有效消息时存盘，0 条有效消息时清理磁盘空文件）
-   */
+  /** Updates memory immediately and coalesces disk writes for the same session. */
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
-    if (title) {
-      this.currentSession.title = title;
-    }
+    if (title) this.currentSession.title = title;
 
-    const unchanged = this.hasPersistedSnapshot
-      && this.lastSavedTitle === this.currentSession.title
-      && this.lastSavedMessageRefs.length === messages.length
-      && this.lastSavedMessageRefs.every((message, index) => message === messages[index]);
+    const unchanged = this.lastQueuedTitle === this.currentSession.title
+      && sameMessages(this.lastQueuedMessages, messages);
     if (unchanged) return;
 
     this.currentSession.messages = messages;
     this.currentSession.updatedAt = new Date().toISOString();
+    const filePath = this.getSessionPath(this.currentSession.id);
 
-    const filePath = path.join(this.sessionsDir, `session_${this.currentSession.id}.json`);
-
-    // 若无有效对话内容（0 条用户/模型消息），拦截落盘，并清理可能存在的对应磁盘空文件
     if (!this.hasEffectiveMessages(messages)) {
-      try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+      this.pendingWrites.set(filePath, { remove: true });
+    } else {
+      this.pendingWrites.set(filePath, {
+        session: {
+          ...this.currentSession,
+          messages: messages.map(cloneMessage)
         }
-      } catch {}
-      this.hasPersistedSnapshot = false;
-      this.lastSavedMessageRefs = [];
-      this.lastSavedTitle = this.currentSession.title;
-      return;
+      });
     }
 
-    try {
-      this.ensureDir();
-      fs.writeFileSync(filePath, JSON.stringify(this.currentSession, null, 2), 'utf-8');
-      this.hasPersistedSnapshot = true;
-      this.lastSavedMessageRefs = [...messages];
-      this.lastSavedTitle = this.currentSession.title;
-    } catch {}
+    this.lastQueuedMessages = messages.map(cloneMessage);
+    this.lastQueuedTitle = this.currentSession.title;
+    this.scheduleFlush();
   }
 
-  /**
-   * 恢复并载入指定 ID 的会话
-   */
+  /** Forces all coalesced writes to disk; call before resume/list/exit boundaries. */
+  public async flush(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    const operations = [...this.pendingWrites.entries()];
+    this.pendingWrites.clear();
+    if (operations.length > 0) {
+      this.writeChain = this.writeChain.then(async () => {
+        const startedAt = performance.now();
+        await fs.promises.mkdir(this.sessionsDir, { recursive: true });
+        for (const [filePath, operation] of operations) {
+          if (operation.remove) {
+            await fs.promises.rm(filePath, { force: true });
+            continue;
+          }
+          if (!operation.session) continue;
+          const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+          await fs.promises.writeFile(tempPath, JSON.stringify(operation.session, null, 2), 'utf8');
+          await replaceFile(tempPath, filePath);
+        }
+        performanceMonitor.record('session.flush', performance.now() - startedAt);
+      }).catch(() => {});
+    }
+    await this.writeChain;
+    if (this.pendingWrites.size > 0) await this.flush();
+  }
+
   public loadSession(id: string): StoredSession | null {
     try {
-      const filePath = path.join(this.sessionsDir, `session_${id}.json`);
-      if (!fs.existsSync(filePath)) {
-        return null;
-      }
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const session = JSON.parse(raw) as StoredSession;
+      const filePath = this.getSessionPath(id);
+      if (!fs.existsSync(filePath)) return null;
+      const session = JSON.parse(fs.readFileSync(filePath, 'utf8')) as StoredSession;
       this.currentSession = session;
-      this.hasPersistedSnapshot = true;
-      this.lastSavedMessageRefs = [...session.messages];
-      this.lastSavedTitle = session.title;
+      this.lastQueuedMessages = session.messages.map(cloneMessage);
+      this.lastQueuedTitle = session.title;
       return session;
     } catch {
       return null;
     }
   }
 
-  /**
-   * 获取所有存盘的有效会话列表，按 updatedAt 最近修改时间降序排列。
-   * 自动过滤并清理 0 条有效消息的空会话文件。
-   */
   public listSessions(): StoredSession[] {
     try {
       this.ensureDir();
-      const files = fs.readdirSync(this.sessionsDir).filter(f => f.startsWith('session_') && f.endsWith('.json'));
+      const files = fs.readdirSync(this.sessionsDir).filter(file => file.startsWith('session_') && file.endsWith('.json'));
       const sessions: StoredSession[] = [];
-
       for (const file of files) {
         const filePath = path.join(this.sessionsDir, file);
         try {
-          const raw = fs.readFileSync(filePath, 'utf-8');
-          const session = JSON.parse(raw) as StoredSession;
-          if (session && session.id && this.hasEffectiveMessages(session.messages)) {
+          const session = JSON.parse(fs.readFileSync(filePath, 'utf8')) as StoredSession;
+          if (session?.id && this.hasEffectiveMessages(session.messages)) {
             sessions.push(session);
           } else if (session && (!session.messages || !this.hasEffectiveMessages(session.messages))) {
-            // 自动清理盘面上残留的 0 条消息的空会话文件
-            try {
-              fs.unlinkSync(filePath);
-            } catch {}
+            try { fs.unlinkSync(filePath); } catch {}
           }
         } catch {}
       }
-
-      // 按 updatedAt 倒序排列（最新修改的在最前）
-      return sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      return sessions.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
     } catch {
       return [];
     }
   }
 
-  /**
-   * 切换至一个全新初始化的会话
-   */
   public startNewSession(): StoredSession {
     const now = new Date().toISOString();
     this.currentSession = {
@@ -162,21 +212,16 @@ export class SessionManager {
       updatedAt: now,
       messages: []
     };
-    this.hasPersistedSnapshot = false;
-    this.lastSavedMessageRefs = [];
-    this.lastSavedTitle = '';
+    this.lastQueuedMessages = [];
+    this.lastQueuedTitle = '';
     return this.currentSession;
   }
 
-  /**
-   * 并行后台异步生成简短标题
-   */
   public async generateTitleAsync(
     firstUserMsg: string,
     titleSummarizer?: (prompt: string) => Promise<string>
   ): Promise<string> {
     const defaultTitle = firstUserMsg.length > 25 ? `${firstUserMsg.slice(0, 25)}...` : firstUserMsg;
-
     if (!titleSummarizer) {
       this.currentSession.title = defaultTitle;
       this.saveCurrentSession(this.currentSession.messages);
