@@ -8,12 +8,13 @@ import { SecurityClassifier, RiskLevel, SecurityAssessment } from './security-cl
  * - auto: 分类器结合用户意图与危险阈值自动评估安全性，若不安全则拒绝并输出理由给 Runtime
  * - bypass-permissions: 全信任模式，不做任何审批
  */
-export type PermissionMode = 'default' | 'accept-edit' | 'auto' | 'bypass-permissions';
+export type PermissionMode = 'plan' | 'default' | 'accept-edit' | 'auto' | 'bypass-permissions';
 
 /**
  * 权限模式列表与中文描述。
  */
 export const PERMISSION_MODES: Array<{ value: PermissionMode; label: string; description: string }> = [
+  { value: 'plan', label: 'Plan', description: '只允许调研与制定计划，批准后才进入实施阶段' },
   { value: 'default', label: 'Default', description: '只读命令自动通过，编辑/脚本需要审批' },
   { value: 'accept-edit', label: 'Accept Edit', description: '只读与文件编辑自动通过，bash 脚本需要审批' },
   { value: 'auto', label: 'Auto Classifier', description: 'AI 分类器判定危险等级，不安全命令拒绝并提示修正' },
@@ -87,7 +88,8 @@ export class PermissionEngine {
       'global_find_files',
       'find_files',
       'web_search',
-      'web_fetch'
+      'web_fetch',
+      'loadskill'
     ];
     return readOnlyTools.includes(toolName.toLowerCase());
   }
@@ -106,6 +108,14 @@ export class PermissionEngine {
   public async evaluate(options: PermissionEvaluateOptions): Promise<PermissionCheckResult> {
     const { mode, toolName, args, userIntent = '', riskThreshold = 'medium' } = options;
 
+    // Plan 模式只允许只读调研与计划管理，禁止修改工作区。
+    if (mode === 'plan') {
+      if (this.isReadOnlyTool(toolName) || ['subagent', 'verifyagent'].includes(toolName.toLowerCase()) || ['taskcreate', 'tasklist', 'updatetask'].includes(toolName.toLowerCase())) {
+        return { action: 'allow', riskLevel: 'safe' };
+      }
+      return { action: 'deny', riskLevel: 'medium', reason: 'Plan 模式禁止修改文件或执行脚本，请先提交计划并等待用户批准' };
+    }
+
     // 1. Bypass Permissions 模式：无条件全部允许
     if (mode === 'bypass-permissions') {
       return { action: 'allow', riskLevel: 'safe' };
@@ -113,6 +123,16 @@ export class PermissionEngine {
 
     // 2. 只读型工具：在任何模式下均自动允许
     if (this.isReadOnlyTool(toolName)) {
+      return { action: 'allow', riskLevel: 'safe' };
+    }
+
+    // task* 仅写入 .haji 下的会话计划元数据，在所有模式中均可安全使用。
+    if (['taskcreate', 'tasklist', 'updatetask', 'taskfinish'].includes(toolName.toLowerCase())) {
+      return { action: 'allow', riskLevel: 'safe' };
+    }
+
+    // subagent 只是调度入口；子代理内部的每次真实工具调用仍会单独经过本权限引擎。
+    if (['subagent', 'verifyagent'].includes(toolName.toLowerCase())) {
       return { action: 'allow', riskLevel: 'safe' };
     }
 

@@ -71,11 +71,11 @@ export async function startTraceServer(
           return;
         }
 
-        const filePath = path.join(tracesDir, `session_${sessionId}.json`);
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
+          const session = await SessionTracker.readSession(sessionId, tracesDir);
+          if (!session) throw new Error('Session not found');
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(content);
+          res.end(JSON.stringify(session));
         } catch {
           res.writeHead(404, { 'Content-Type': 'text/plain' });
           res.end('Session not found');

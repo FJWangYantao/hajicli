@@ -4,6 +4,8 @@
  * 纯 TypeScript 实现，零外部依赖。
  */
 
+import { performanceMonitor } from '@hajicli/core';
+
 /** ANSI 样式代码字典 */
 const ANSI = {
   reset: '\x1b[0m',
@@ -38,6 +40,24 @@ const KEYWORDS = new Set([
   'null', 'undefined', 'true', 'false', 'boolean', 'string', 'number'
 ]);
 
+/** Limits expensive full Markdown reparses while model chunks arrive rapidly. */
+export class MarkdownRenderThrottle {
+  private lastRenderAt = Number.NEGATIVE_INFINITY;
+
+  constructor(private readonly intervalMs = 32) {}
+
+  shouldRender(now = Date.now()): boolean {
+    if (now - this.lastRenderAt < this.intervalMs) return false;
+    this.lastRenderAt = now;
+    return true;
+  }
+}
+
+/** Only show the fallback thinking summary when a tool call has no visible assistant text. */
+export function shouldShowToolThinkingSummary(textContent: string, toolCallCount: number): boolean {
+  return toolCallCount > 0 && textContent.trim().length === 0;
+}
+
 /**
  * 流式 Markdown 解析与终端 ANSI 渲染器。
  */
@@ -68,6 +88,13 @@ export class MarkdownStreamRenderer {
    * @param isFinal 是否已结束流式输出
    */
   render(content: string, isFinal = false): string {
+    return performanceMonitor.measureSync(
+      'markdown.render',
+      () => this.renderContent(content, isFinal)
+    );
+  }
+
+  private renderContent(content: string, isFinal: boolean): string {
     // 1. 流式中间态时补充未闭合语法标签
     const processedContent = isFinal ? content : this.autoCloseMarkdown(content);
 

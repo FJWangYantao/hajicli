@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件写入/覆盖工具。
@@ -34,7 +35,7 @@ export class WriteFileTool implements BaseTool {
    * 执行文件写入。
    * @param args 包含路径及内容的参数。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const filePath = args.path as string;
     const content = args.content as string;
     
@@ -45,19 +46,28 @@ export class WriteFileTool implements BaseTool {
       return '错误: 缺少 content 参数。';
     }
 
+    if (context?.abortSignal?.aborted) return '[文件写入已中止]';
+
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
+      const resolvedPath = await resolveWorkspacePath(filePath, { mustExist: false });
       const parentDir = path.dirname(resolvedPath);
       
       // 递归创建不存在的父目录
       await fs.mkdir(parentDir, { recursive: true });
+      if (context?.abortSignal?.aborted) return '[文件写入已中止]';
       
       // 写入文件
-      await fs.writeFile(resolvedPath, content, 'utf-8');
+      await fs.writeFile(resolvedPath, content, {
+        encoding: 'utf-8',
+        signal: context?.abortSignal
+      });
       
       const stats = await fs.stat(resolvedPath);
       return `[文件写入成功]\n路径: ${filePath}\n大小: ${stats.size} 字节`;
     } catch (error) {
+      if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        return '[文件写入已中止]';
+      }
       return `写入文件失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

@@ -1,4 +1,5 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -17,8 +18,8 @@ export class DeepSeekProvider implements ModelProvider {
       throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || 'deepseek-v4-flash';
+    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
   }
 
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
@@ -29,6 +30,7 @@ export class DeepSeekProvider implements ModelProvider {
     }
     
     const choice = data.choices?.[0];
+    options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
       options.onToolCall(choice.message.tool_calls);
     }
@@ -61,6 +63,7 @@ export class DeepSeekProvider implements ModelProvider {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     const accumulatedToolCalls: any[] = [];
+    let finishReason: string | undefined;
 
     try {
       while (true) {
@@ -83,6 +86,7 @@ export class DeepSeekProvider implements ModelProvider {
             try {
               const data = JSON.parse(dataStr);
               const choice = data.choices?.[0];
+              if (choice?.finish_reason) finishReason = String(choice.finish_reason);
               
               // 收集流式工具调用
               const deltaToolCalls = choice?.delta?.tool_calls;
@@ -140,6 +144,7 @@ export class DeepSeekProvider implements ModelProvider {
           try {
             const data = JSON.parse(trimmed.slice(6));
             const choice = data.choices?.[0];
+            if (choice?.finish_reason) finishReason = String(choice.finish_reason);
             const content = choice?.delta?.content || '';
             
             const deltaToolCalls = choice?.delta?.tool_calls;
@@ -189,6 +194,7 @@ export class DeepSeekProvider implements ModelProvider {
 
       // 如果收集到了工具调用，在结束前触发回调
       const finalToolCalls = accumulatedToolCalls.filter(Boolean);
+      options.onFinish?.({ reason: finishReason });
       if (finalToolCalls.length > 0 && options.onToolCall) {
         options.onToolCall(finalToolCalls as ToolCall[]);
       }
@@ -199,6 +205,13 @@ export class DeepSeekProvider implements ModelProvider {
 
   private async request(messages: ChatMessage[], options: CompletionOptions): Promise<Response> {
     const url = `${this.baseUrl}/chat/completions`;
+    const invalidToolCall = findInvalidToolCall(messages);
+    if (invalidToolCall) {
+      throw new ProviderError(
+        `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
+        'deepseek'
+      );
+    }
     
     const requestMessages = messages.map(msg => {
       const payloadMsg: any = {
@@ -248,7 +261,7 @@ export class DeepSeekProvider implements ModelProvider {
 
     return withExponentialBackoff(async () => {
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithNetworkPolicy(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -276,7 +289,13 @@ export class DeepSeekProvider implements ModelProvider {
         if (error instanceof ProviderError) {
           throw error;
         }
-        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        if (options.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          throw reason instanceof Error && reason.name === 'TimeoutError'
+            ? reason
+            : normalizeAbortError(error);
+        }
+        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
         throw new ProviderError(msg, 'deepseek');
       }

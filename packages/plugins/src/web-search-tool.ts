@@ -1,4 +1,5 @@
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 /**
  * 网页搜索工具（类似 websearch）。
@@ -27,7 +28,7 @@ export class WebSearchTool implements BaseTool {
   /**
    * 执行网络检索。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const query = args.query as string;
     if (!query) {
       return '错误: 缺少 query 参数。';
@@ -36,7 +37,8 @@ export class WebSearchTool implements BaseTool {
     try {
       // 使用 GET 请求 DuckDuckGo Lite 版本
       const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
-      const response = await fetch(url, {
+      const response = await fetchWithNetworkPolicy(url, {
+        signal: context?.abortSignal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -106,6 +108,7 @@ export class WebSearchTool implements BaseTool {
 
       return result;
     } catch (error) {
+      if (context?.abortSignal?.aborted) return '[网络搜索已中止]';
       return `网络搜索失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

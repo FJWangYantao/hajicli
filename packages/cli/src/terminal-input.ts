@@ -1,8 +1,9 @@
 import readline from 'node:readline';
 import readlinePromises from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
+import { performanceMonitor } from '@hajicli/core';
 import { TerminalProtocolParser, type TerminalMouseEvent, type TerminalProtocolEvent } from './terminal-protocol.js';
 import { TextSelectionModel, type TextCell } from './text-selection.js';
 
@@ -105,6 +106,7 @@ interface ActiveInput {
   preferredColumn?: number;
   slashCommands: readonly SlashCommand[];
   selectedCommandIndex: number;
+  historyNavigationActive: boolean;
   resolve: (value: string) => void;
   reject: (error: Error) => void;
 }
@@ -147,6 +149,77 @@ interface VisibleInputLayout {
   cursor: CursorPosition;
 }
 
+interface TaskPanelItem {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  agent?: {
+    id: string;
+    role: string;
+    status: 'running' | 'awaiting_verification' | 'verified' | 'rejected' | 'failed' | 'aborted';
+    summary?: string;
+  };
+}
+
+export interface AgentPanelItem {
+  id: string;
+  role: string;
+  model?: string;
+  provider?: string;
+  reasoningEffort?: string;
+  status: 'queued' | 'running' | 'awaiting_verification' | 'verified' | 'rejected' | 'failed' | 'aborted';
+  startedAt?: number;
+  currentTool?: string;
+  activity?: 'thinking' | 'responding' | 'tool';
+  preview?: string;
+  totalTokens: number;
+  maxTokens?: number;
+  toolCalls?: number;
+  maxToolCalls?: number;
+}
+
+export function formatAgentElapsed(startedAt: number | undefined, now = Date.now()): string {
+  if (!startedAt) return '0s';
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+}
+
+function formatAgentTokens(totalTokens: number): string {
+  if (totalTokens < 1000) return String(totalTokens);
+  return `${(totalTokens / 1000).toFixed(totalTokens < 10000 ? 1 : 0)}k`;
+}
+
+export function buildAgentPanelRows(
+  items: readonly AgentPanelItem[],
+  width: number,
+  maxRows = 4,
+  now = Date.now()
+): string[] {
+  if (items.length === 0 || maxRows <= 0) return [];
+  const running = items.filter(item => item.status === 'running').length;
+  const queued = items.filter(item => item.status === 'queued').length;
+  const rows = [`\x1b[1;35mAgents ${running} running${queued ? ` · ${queued} queued` : ''}\x1b[0m`];
+  for (const agent of items) {
+    if (rows.length >= maxRows) break;
+    const icon = agent.status === 'running' ? '●' : agent.status === 'queued' ? '○' : agent.status === 'awaiting_verification' ? '✓' : '×';
+    const activity = agent.currentTool || (agent.activity === 'responding' ? 'responding' : 'thinking');
+    const tokenBudget = agent.maxTokens
+      ? `${formatAgentTokens(agent.totalTokens)}/${formatAgentTokens(agent.maxTokens)} tok`
+      : `${formatAgentTokens(agent.totalTokens)} tok`;
+    const toolBudget = agent.maxToolCalls
+      ? ` · ${agent.toolCalls || 0}/${agent.maxToolCalls} tools`
+      : '';
+    const preview = agent.preview ? ` · ${agent.preview}` : '';
+    const detail = agent.status === 'running'
+      ? `${activity} · ${formatAgentElapsed(agent.startedAt, now)} · ${tokenBudget}${toolBudget}${preview}`
+      : agent.status.replaceAll('_', ' ');
+    const runtimeConfig = [agent.model, agent.provider, agent.reasoningEffort].filter(Boolean).join(' / ');
+    const configSuffix = runtimeConfig ? ` · ${runtimeConfig}` : '';
+    rows.push(`\x1b[90m${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}${configSuffix}`, Math.max(1, width - agent.id.length - 4))}\x1b[0m`);
+  }
+  return rows;
+}
+
 export class TerminalInputCancelledError extends Error {
   constructor() {
     super('Terminal input cancelled');
@@ -160,6 +233,158 @@ function isRealCtrlC(value: string, key: readline.Key): boolean {
 
 function isRealCtrlD(value: string, key: readline.Key): boolean {
   return value === '\x04' && key.ctrl === true && key.name === 'd';
+}
+
+/** 斜杠命令可能切换到选择器，提交后应由主循环接管输入状态。 */
+export function shouldRestartBackgroundInput(value: string): boolean {
+  return !value.trim().startsWith('/');
+}
+
+function isRealCtrlU(value: string, key: readline.Key): boolean {
+  return value === '\x15' && key.ctrl === true && key.name === 'u';
+}
+
+function isRealCtrlT(value: string, key: readline.Key): boolean {
+  return value === '\x14' && key.ctrl === true && key.name === 't';
+}
+
+export class InputHistoryBuffer {
+  private readonly entries: string[] = [];
+  private cursor = 0;
+  private draft = '';
+
+  begin(draft = ''): void {
+    this.cursor = this.entries.length;
+    this.draft = draft;
+  }
+
+  record(value: string): void {
+    if (value.trim()) {
+      this.entries.push(value);
+    }
+    this.begin();
+  }
+
+  move(direction: -1 | 1, currentValue: string): string | undefined {
+    if (this.entries.length === 0) {
+      return undefined;
+    }
+
+    if (direction === -1) {
+      if (this.cursor === this.entries.length) {
+        this.draft = currentValue;
+      }
+      if (this.cursor === 0) {
+        return undefined;
+      }
+      this.cursor -= 1;
+      return this.entries[this.cursor];
+    }
+
+    if (this.cursor >= this.entries.length) {
+      return undefined;
+    }
+    this.cursor += 1;
+    return this.cursor === this.entries.length ? this.draft : this.entries[this.cursor];
+  }
+
+  isBrowsing(): boolean {
+    return this.cursor < this.entries.length;
+  }
+}
+
+class ClipboardWriter {
+  private child?: ReturnType<typeof spawn>;
+  private outputBuffer = '';
+  private readonly pending: Array<(success: boolean) => void> = [];
+
+  start(): void {
+    if (process.platform !== 'win32' || this.child) return;
+
+    const script = [
+      '[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)',
+      '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
+      'while (($line = [Console]::In.ReadLine()) -ne $null) {',
+      '  try {',
+      '    $bytes = [Convert]::FromBase64String($line)',
+      '    $text = [Text.Encoding]::UTF8.GetString($bytes)',
+      '    Set-Clipboard -Value $text',
+      "    [Console]::Out.WriteLine('OK')",
+      '  } catch {',
+      "    [Console]::Out.WriteLine('ERR')",
+      '  }',
+      '}'
+    ].join('; ');
+
+    const child = spawn('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script
+    ], {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+    this.child = child;
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      this.outputBuffer += chunk;
+      let newlineIndex = this.outputBuffer.indexOf('\n');
+      while (newlineIndex >= 0) {
+        const result = this.outputBuffer.slice(0, newlineIndex).trim();
+        this.outputBuffer = this.outputBuffer.slice(newlineIndex + 1);
+        this.pending.shift()?.(result === 'OK');
+        newlineIndex = this.outputBuffer.indexOf('\n');
+      }
+    });
+    const failPending = () => {
+      if (this.child !== child) return;
+      this.child = undefined;
+      this.outputBuffer = '';
+      for (const resolve of this.pending.splice(0)) resolve(false);
+    };
+    child.once('error', failPending);
+    child.once('exit', failPending);
+  }
+
+  write(text: string): Promise<boolean> {
+    if (!text) return Promise.resolve(false);
+    if (process.platform !== 'win32') {
+      stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
+      return Promise.resolve(true);
+    }
+
+    this.start();
+    const child = this.child;
+    if (!child?.stdin?.writable) return Promise.resolve(false);
+    return new Promise<boolean>(resolve => {
+      this.pending.push(resolve);
+      child.stdin!.write(`${Buffer.from(text, 'utf8').toString('base64')}\n`, error => {
+        if (!error) return;
+        const pendingIndex = this.pending.indexOf(resolve);
+        if (pendingIndex >= 0) this.pending.splice(pendingIndex, 1);
+        resolve(false);
+      });
+    });
+  }
+
+  close(): void {
+    const child = this.child;
+    this.child = undefined;
+    this.outputBuffer = '';
+    for (const resolve of this.pending.splice(0)) resolve(false);
+    child?.stdin?.end();
+  }
+}
+
+export function buildScreenUpdate(previousRows: readonly string[], nextRows: readonly string[]): string {
+  let output = '';
+  for (let row = 0; row < nextRows.length; row += 1) {
+    if (previousRows[row] === nextRows[row]) continue;
+    output += `\x1b[${row + 1};1H\x1b[2K${nextRows[row]}`;
+  }
+  return output;
 }
 
 function splitGraphemes(value: string): string[] {
@@ -447,6 +672,23 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
   return { rows, document };
 }
 
+/** Returns scroll rows for a drag pointer outside the chat viewport. Positive scrolls upward. */
+export function getSelectionAutoScrollRows(
+  row: number,
+  screenTop: number,
+  visibleRowCount: number
+): number {
+  if (visibleRowCount <= 0) return 0;
+  const screenBottom = screenTop + visibleRowCount - 1;
+  if (row < screenTop) {
+    return Math.min(3, Math.max(1, Math.ceil((screenTop - row) / 2)));
+  }
+  if (row > screenBottom) {
+    return -Math.min(3, Math.max(1, Math.ceil((row - screenBottom) / 2)));
+  }
+  return 0;
+}
+
 function cellAtColumn(row: AnsiLayoutRow, column: number, clampToText = false): TextCell | undefined {
   const targetColumn = Math.max(0, column - 1);
   let visualColumn = 0;
@@ -472,6 +714,8 @@ export class TerminalUI {
   private readonly keyInput = new PassThrough();
   private readonly protocolParser = new TerminalProtocolParser();
   private readonly textSelection = new TextSelectionModel();
+  private readonly inputHistory = new InputHistoryBuffer();
+  private readonly clipboardWriter = new ClipboardWriter();
   private readonly interactive = Boolean(stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === 'function');
   private started = false;
   private chatContent = '';
@@ -484,11 +728,18 @@ export class TerminalUI {
   private reasoningEffort = '';
   private usedTokens = 0;
   private maxTokens = 1000000;
+  private taskPanelTitle = '';
+  private taskPanelItems: TaskPanelItem[] = [];
+  private taskPanelExpanded = false;
+  private agentPanelItems: AgentPanelItem[] = [];
+  private agentPanelTimer: NodeJS.Timeout | null = null;
+  private selectionAutoScrollTimer: NodeJS.Timeout | null = null;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
   private chatViewport?: ChatViewport;
   private selectionLayout?: AnsiTextLayout;
   private pendingMouseSelection?: PendingMouseSelection;
+  private selectionPointer?: { column: number; row: number };
   private selectionLayoutContent = '';
   private selectionLayoutWidth = 0;
   private originalRawMode = false;
@@ -503,8 +754,16 @@ export class TerminalUI {
   private stableWrapPrefixRows: string[] = [];
   private stableWrapPrefixStyle = '';
   private renderScheduled = false;
+  private scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
   private streamRenderTimer: NodeJS.Timeout | null = null;
   private protocolFlushTimer: NodeJS.Timeout | null = null;
+  private startupHeaderVisible = true;
+  private renderedScreenRows: string[] = [];
+  private renderedScreenWidth = 0;
+  private renderedScreenHeight = 0;
+  private renderedCursorState = '';
+  private stdoutBackpressured = false;
+  private renderPendingAfterDrain = false;
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -524,6 +783,35 @@ export class TerminalUI {
   setContextUsage(usedTokens: number, maxTokens = 1000000): void {
     this.usedTokens = Math.max(0, usedTokens);
     this.maxTokens = Math.max(1, maxTokens);
+    this.scheduleRender();
+  }
+
+  setTaskPlan(plan: { title: string; tasks: TaskPanelItem[]; completedTasks?: TaskPanelItem[] } | null): void {
+    this.taskPanelTitle = plan?.title || '';
+    this.taskPanelItems = plan ? [...(plan.completedTasks || []), ...plan.tasks] : [];
+    if (!plan || this.taskPanelItems.length <= 5) this.taskPanelExpanded = false;
+    this.scheduleRender();
+  }
+
+  setAgentPanel(items: AgentPanelItem[]): void {
+    this.agentPanelItems = items.slice(0, 20);
+    const hasRunning = items.some(item => item.status === 'running');
+    if (hasRunning && !this.agentPanelTimer) {
+      this.agentPanelTimer = setInterval(() => this.scheduleRender(), 1000);
+      this.agentPanelTimer.unref?.();
+    } else if (!hasRunning && this.agentPanelTimer) {
+      clearInterval(this.agentPanelTimer);
+      this.agentPanelTimer = null;
+    }
+    this.scheduleRender();
+  }
+
+  /** 用户提交第一条普通消息后隐藏启动 Logo，并立即释放页眉空间。 */
+  dismissStartupHeader(): void {
+    if (!this.startupHeaderVisible) return;
+    this.startupHeaderVisible = false;
+    this.cachedContentWithStatus = '';
+    this.cachedWrappedWidth = 0;
     this.scheduleRender();
   }
 
@@ -550,10 +838,11 @@ export class TerminalUI {
     return Boolean(this.activeInput);
   }
 
-  cancelInput(): void {
-    if (this.activeInput) {
-      this.finishInput(new TerminalInputCancelledError());
-    }
+  cancelInput(): string | undefined {
+    if (!this.activeInput) return undefined;
+    const draft = this.activeInput.graphemes.join('');
+    this.finishInput(new TerminalInputCancelledError());
+    return draft;
   }
 
   start(): void {
@@ -561,9 +850,14 @@ export class TerminalUI {
       return;
     }
     this.started = true;
+    this.startupHeaderVisible = true;
+    this.renderedScreenRows = [];
+    this.renderedScreenWidth = 0;
+    this.renderedScreenHeight = 0;
+    this.renderedCursorState = '';
 
     if (!this.interactive) {
-      stdout.write(`${this.options.compactHeader}\n`);
+      if (this.options.compactHeader) stdout.write(`${this.options.compactHeader}\n`);
       return;
     }
 
@@ -572,13 +866,15 @@ export class TerminalUI {
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
+    this.clipboardWriter.start();
     // 1002 负责拖动和滚轮，1006 统一为 SGR 坐标；禁用 1007，避免滚轮重复转成方向键。
     stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
+    stdout.on('drain', this.handleStdoutDrain);
     stdin.on('data', this.handleMouseData);
     this.keyInput.on('keypress', this.dispatchKeypress);
     process.on('exit', this.handleProcessExit);
-    this.render();
+    this.scheduleRender(true);
   }
 
   close(): void {
@@ -595,6 +891,7 @@ export class TerminalUI {
 
     if (this.interactive) {
       stdout.off('resize', this.handleResize);
+      stdout.off('drain', this.handleStdoutDrain);
       stdin.off('data', this.handleMouseData);
       this.keyInput.off('keypress', this.dispatchKeypress);
       stdin.setRawMode(this.originalRawMode);
@@ -610,11 +907,21 @@ export class TerminalUI {
       clearTimeout(this.protocolFlushTimer);
       this.protocolFlushTimer = null;
     }
+    if (this.agentPanelTimer) {
+      clearInterval(this.agentPanelTimer);
+      this.agentPanelTimer = null;
+    }
+    this.stopSelectionAutoScroll();
     this.protocolParser.reset();
+    this.clipboardWriter.close();
     this.textSelection.clear();
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.renderScheduled = false;
+    this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
+    this.stdoutBackpressured = false;
+    this.renderPendingAfterDrain = false;
     this.started = false;
   }
 
@@ -622,13 +929,15 @@ export class TerminalUI {
     this.chatContent = '';
     this.chatScrollOffset = 0;
     this.textSelection.clear();
+    this.stopSelectionAutoScroll();
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.chatViewport = undefined;
     this.cachedContentWithStatus = '';
     this.cachedWrappedChat = [];
     this.setStableWrapPrefix('');
-    this.render();
+    this.scheduleRender(true);
   }
 
   /**
@@ -659,23 +968,43 @@ export class TerminalUI {
 
     if (this.stableWrapPrefix && contentWithStatus.startsWith(this.stableWrapPrefix)) {
       if (width !== this.stableWrapPrefixWidth) {
-        const wrappedPrefix = wrapAnsiWithState(this.stableWrapPrefix, width);
+        const wrappedPrefix = performanceMonitor.measureSync(
+          'terminal.wrap.prefix',
+          () => wrapAnsiWithState(this.stableWrapPrefix, width)
+        );
         this.stableWrapPrefixRows = wrappedPrefix.rows.slice(0, -1);
         this.stableWrapPrefixStyle = wrappedPrefix.activeStyle;
         this.stableWrapPrefixWidth = width;
       }
-      const wrappedTail = wrapAnsiWithState(
-        contentWithStatus.slice(this.stableWrapPrefix.length),
-        width,
-        this.stableWrapPrefixStyle
-      ).rows;
+      const wrappedTail = performanceMonitor.measureSync(
+        'terminal.wrap.tail',
+        () => wrapAnsiWithState(
+          contentWithStatus.slice(this.stableWrapPrefix.length),
+          width,
+          this.stableWrapPrefixStyle
+        ).rows
+      );
       this.cachedWrappedChat = [...this.stableWrapPrefixRows, ...wrappedTail];
       this.cachedContentWithStatus = contentWithStatus;
       this.cachedWrappedWidth = width;
       return this.cachedWrappedChat;
     }
 
-    this.cachedWrappedChat = wrapAnsi(contentWithStatus, width);
+    if (!this.status && contentWithStatus === this.chatContent) {
+      const layout = performanceMonitor.measureSync(
+        'terminal.layout.full',
+        () => layoutAnsiDocument(contentWithStatus, width)
+      );
+      this.selectionLayout = layout;
+      this.selectionLayoutContent = this.chatContent;
+      this.selectionLayoutWidth = width;
+      this.cachedWrappedChat = layout.rows.map(row => row.ansi);
+    } else {
+      this.cachedWrappedChat = performanceMonitor.measureSync(
+        'terminal.wrap.full',
+        () => wrapAnsi(contentWithStatus, width)
+      );
+    }
     this.cachedContentWithStatus = contentWithStatus;
     this.cachedWrappedWidth = width;
     return this.cachedWrappedChat;
@@ -684,20 +1013,33 @@ export class TerminalUI {
   /**
    * 流式输出重绘节流调度器（防抖至下一个微任务周期，兼顾平滑度与帧率）。
    */
-  private scheduleRender(): void {
-    if (this.renderScheduled) {
+  private scheduleRender(interactive = false): void {
+    if (this.stdoutBackpressured) {
+      this.renderPendingAfterDrain = true;
       return;
     }
+    const delayMs = interactive ? 0 : 16;
+    if (this.renderScheduled && delayMs >= this.scheduledRenderDelayMs) return;
     this.renderScheduled = true;
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
     }
+    this.scheduledRenderDelayMs = delayMs;
     this.streamRenderTimer = setTimeout(() => {
       this.renderScheduled = false;
+      this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
       this.streamRenderTimer = null;
       this.render();
-    }, 16);
+    }, delayMs);
   }
+
+  private readonly handleStdoutDrain = () => {
+    if (!this.stdoutBackpressured) return;
+    this.stdoutBackpressured = false;
+    if (!this.renderPendingAfterDrain) return;
+    this.renderPendingAfterDrain = false;
+    this.scheduleRender(true);
+  };
 
   writeChat(value: string): void {
     if (!this.interactive) {
@@ -740,14 +1082,17 @@ export class TerminalUI {
     this.chatContent = value.length > 200_000 ? value.slice(-160_000) : value;
     this.chatScrollOffset = 0;
     this.textSelection.clear();
+    this.stopSelectionAutoScroll();
     this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
     this.selectionLayout = undefined;
     this.selectionLayoutContent = '';
     this.selectionLayoutWidth = 0;
     this.cachedContentWithStatus = '';
     this.cachedWrappedWidth = 0;
     this.cachedWrappedChat = [];
-    this.setStableWrapPrefix(this.chatContent);
+    // 整体替换多见于 /resume。首次布局直接建立可复用的文档索引，避免第一次拖选再扫描全文。
+    this.setStableWrapPrefix('');
     this.scheduleRender();
   }
 
@@ -796,6 +1141,7 @@ export class TerminalUI {
     }
 
     const initialGraphemes = options.initialValue ? splitGraphemes(options.initialValue) : [];
+    this.inputHistory.begin(options.initialValue ?? '');
     return new Promise<string>((resolve, reject) => {
       this.activeInput = {
         prompt,
@@ -804,11 +1150,12 @@ export class TerminalUI {
         cursorIndex: initialGraphemes.length,
         slashCommands: options.slashCommands ?? [],
         selectedCommandIndex: 0,
+        historyNavigationActive: false,
         resolve,
         reject
       };
 
-      this.render();
+      this.scheduleRender(true);
     });
   }
 
@@ -850,7 +1197,7 @@ export class TerminalUI {
         reject
       };
 
-      this.render();
+      this.scheduleRender(true);
     });
   }
 
@@ -860,7 +1207,8 @@ export class TerminalUI {
     this.stableWrapPrefixWidth = 0;
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
-    this.render();
+    this.stopSelectionAutoScroll();
+    this.scheduleRender(true);
   };
 
   private getSelectionLayout(): AnsiTextLayout {
@@ -870,7 +1218,10 @@ export class TerminalUI {
       || this.selectionLayoutContent !== this.chatContent
       || this.selectionLayoutWidth !== width
     ) {
-      this.selectionLayout = layoutAnsiDocument(this.chatContent, width);
+      this.selectionLayout = performanceMonitor.measureSync(
+        'terminal.layout.selection',
+        () => layoutAnsiDocument(this.chatContent, width)
+      );
       this.selectionLayoutContent = this.chatContent;
       this.selectionLayoutWidth = width;
     }
@@ -939,27 +1290,12 @@ export class TerminalUI {
       return false;
     }
 
-    if (process.platform === 'win32') {
-      const script = '[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())';
-      const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-        input: text,
-        encoding: 'utf8',
-        windowsHide: true,
-        stdio: ['pipe', 'ignore', 'ignore']
-      });
-      if (result.status === 0) {
-        this.textSelection.clear();
-        this.selectionLayout = undefined;
-        this.render();
-        return true;
-      }
-      return false;
-    }
-
-    stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
-    this.textSelection.clear();
-    this.selectionLayout = undefined;
-    this.render();
+    void this.clipboardWriter.write(text).then(success => {
+      if (!success || this.getSelectedChatText() !== text) return;
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
+      this.scheduleRender(true);
+    });
     return true;
   }
 
@@ -977,22 +1313,74 @@ export class TerminalUI {
     this.handleMouseEvent(event);
   }
 
+  private stopSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) {
+      clearInterval(this.selectionAutoScrollTimer);
+      this.selectionAutoScrollTimer = null;
+    }
+  }
+
+  private startSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) return;
+    this.selectionAutoScrollTimer = setInterval(() => {
+      const pointer = this.selectionPointer;
+      const viewport = this.chatViewport;
+      if (!pointer || !this.textSelection.dragging || !viewport) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
+      const rows = getSelectionAutoScrollRows(pointer.row, viewport.screenTop, visibleRowCount);
+      if (rows === 0) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const previousOffset = this.chatScrollOffset;
+      this.scrollChat(rows);
+      if (previousOffset === this.chatScrollOffset) {
+        this.stopSelectionAutoScroll();
+        return;
+      }
+
+      const cell = this.getChatCellFromMouse(pointer.column, pointer.row, true);
+      if (cell) this.textSelection.update(cell);
+      this.scheduleRender();
+    }, 50);
+    this.selectionAutoScrollTimer.unref?.();
+  }
+
+  private updateMouseSelection(column: number, row: number): void {
+    this.selectionPointer = { column, row };
+    const viewport = this.chatViewport;
+    if (viewport) {
+      const visibleRowCount = viewport.visibleEnd - viewport.visibleStart;
+      if (getSelectionAutoScrollRows(row, viewport.screenTop, visibleRowCount) !== 0) {
+        this.startSelectionAutoScroll();
+      } else {
+        this.stopSelectionAutoScroll();
+      }
+    }
+    const cell = this.getChatCellFromMouse(column, row, true);
+    if (cell) this.textSelection.update(cell);
+    this.scheduleRender();
+  }
+
   private handleMouseEvent(event: TerminalMouseEvent): void {
     if (event.action === 'wheel') {
       this.pendingMouseSelection = undefined;
       this.scrollChat(event.wheelRows ?? 0);
       if (this.textSelection.dragging) {
-        const cell = this.getChatCellFromMouse(event.column, event.row, true);
-        if (cell) {
-          this.textSelection.update(cell);
-          this.scheduleRender();
-        }
+        this.updateMouseSelection(event.column, event.row);
       }
       return;
     }
 
     const isLeftButton = (event.button & 3) === 0;
     if (event.action === 'down' && isLeftButton) {
+      this.stopSelectionAutoScroll();
+      this.selectionPointer = undefined;
       const logicalRow = this.getLogicalChatRow(event.row);
       if (logicalRow === undefined) {
         this.pendingMouseSelection = undefined;
@@ -1021,32 +1409,29 @@ export class TerminalUI {
       }
       this.pendingMouseSelection = undefined;
       const anchor = this.getChatCellAtLogicalRow(pending.column, pending.logicalRow);
-      const cell = this.getChatCellFromMouse(event.column, event.row, true);
-      if (anchor && cell) {
+      if (anchor) {
         this.textSelection.begin(anchor);
-        this.textSelection.update(cell);
-        this.scheduleRender();
+        this.updateMouseSelection(event.column, event.row);
       }
       return;
     }
 
     if (event.action === 'move' && isLeftButton && this.textSelection.dragging) {
-      const cell = this.getChatCellFromMouse(event.column, event.row, true);
-      if (cell) {
-        this.textSelection.update(cell);
-        this.scheduleRender();
-      }
+      this.updateMouseSelection(event.column, event.row);
       return;
     }
 
     if (event.action === 'up' && isLeftButton && this.pendingMouseSelection) {
       this.pendingMouseSelection = undefined;
+      this.selectionPointer = undefined;
       this.selectionLayout = undefined;
       return;
     }
 
     if (event.action === 'up' && isLeftButton && this.textSelection.dragging) {
       const cell = this.getChatCellFromMouse(event.column, event.row, true);
+      this.stopSelectionAutoScroll();
+      this.selectionPointer = undefined;
       this.textSelection.finish(cell);
       this.scheduleRender();
     }
@@ -1071,6 +1456,8 @@ export class TerminalUI {
   };
 
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
+    if (this.toggleTaskPanel(value, key)) return;
+
     if (this.activeSelection) {
       this.handleSelectionKeypress(value, key);
     } else if (this.activeInput) {
@@ -1145,6 +1532,9 @@ export class TerminalUI {
   }
 
   private getCommandSuggestions(activeInput: ActiveInput): readonly SlashCommand[] {
+    if (activeInput.historyNavigationActive) {
+      return [];
+    }
     const value = activeInput.graphemes.join('');
     if (!/^\/[^\s]*$/u.test(value)) {
       return [];
@@ -1259,8 +1649,17 @@ export class TerminalUI {
   }
 
   private buildStatusBar(width: number): string {
-    const permText = this.permissionMode ? `[${this.permissionMode.replace('-', ' ')}]` : '';
-    const permAnsi = permText ? `\x1b[90m${permText}\x1b[0m` : '';
+    const modeLabel = this.permissionMode === 'plan' ? 'Plan Mode' : this.permissionMode.replace('-', ' ');
+    const permText = this.permissionMode ? `[${modeLabel}]` : '';
+    const permColorMap: Record<string, string> = {
+      plan: '\x1b[36m',
+      default: '\x1b[32m',
+      'accept-edit': '\x1b[33m',
+      auto: '\x1b[35m',
+      'bypass-permissions': '\x1b[1;31m',
+    };
+    const permColor = permText ? (permColorMap[this.permissionMode] || '\x1b[90m') : '';
+    const permAnsi = permText ? `${permColor}${permText}\x1b[0m` : '';
 
     let modelStr = '';
     if (this.modelName) {
@@ -1307,21 +1706,111 @@ export class TerminalUI {
     return truncateText(`${leftAnsi} ${rightAnsi}`, width);
   }
 
+  private buildTaskPanel(width: number, maxRows = 8): string[] {
+    if (!this.taskPanelTitle || maxRows <= 0) return [];
+    const rows = [`\x1b[1;34m${truncateText('Todo', width)}\x1b[0m`];
+    const visibleTasks = this.taskPanelExpanded
+      ? this.taskPanelItems
+      : this.taskPanelItems.slice(0, 5);
+    const needsFooter = this.taskPanelExpanded || this.taskPanelItems.length > visibleTasks.length;
+    const taskRowLimit = Math.max(1, maxRows - (needsFooter ? 1 : 0));
+    let renderedTaskCount = 0;
+
+    for (const task of visibleTasks) {
+      if (rows.length >= taskRowLimit) break;
+      if (task.status === 'completed') {
+        rows.push(`\x1b[32m✓\x1b[0m \x1b[2m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
+      } else if (task.status === 'in_progress') {
+        rows.push(`\x1b[1;34m●\x1b[0m \x1b[1m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
+      } else {
+        rows.push(`\x1b[90m○\x1b[0m ${truncateText(task.content, Math.max(1, width - 2))}`);
+      }
+      renderedTaskCount += 1;
+      if (task.agent && rows.length < taskRowLimit) {
+        const statusLabel = task.agent.status === 'running'
+          ? '运行中'
+          : task.agent.status === 'awaiting_verification'
+            ? '待验证'
+            : task.agent.status === 'verified'
+              ? '已验证'
+            : task.agent.status === 'aborted'
+              ? '已中止'
+              : '失败';
+        const color = task.agent.status === 'running'
+          ? '\x1b[36m'
+          : task.agent.status === 'verified'
+            ? '\x1b[32m'
+            : task.agent.status === 'awaiting_verification'
+              ? '\x1b[33m'
+              : '\x1b[31m';
+        rows.push(`${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}\x1b[0m`);
+      }
+    }
+
+    if (needsFooter && rows.length < maxRows) {
+      const hiddenTasks = this.taskPanelItems.slice(renderedTaskCount);
+      if (hiddenTasks.length > 0) {
+        const doneCount = hiddenTasks.filter(task => task.status === 'completed').length;
+        const activeCount = hiddenTasks.filter(task => task.status === 'in_progress').length;
+        const pendingCount = hiddenTasks.filter(task => task.status === 'pending').length;
+        const statusSummary = [
+          doneCount > 0 ? `${doneCount} done` : '',
+          activeCount > 0 ? `${activeCount} in progress` : '',
+          pendingCount > 0 ? `${pendingCount} pending` : ''
+        ].filter(Boolean).join(' · ');
+        const counts = statusSummary ? ` (${statusSummary})` : '';
+        rows.push(`\x1b[90m${truncateText(`… +${hiddenTasks.length} more${counts} · ctrl+t to ${this.taskPanelExpanded ? 'collapse' : 'expand'}`, width)}\x1b[0m`);
+      } else {
+        rows.push(`\x1b[90m${truncateText('… ctrl+t to collapse', width)}\x1b[0m`);
+      }
+    }
+    return rows;
+  }
+
+  private toggleTaskPanel(value: string, key: readline.Key): boolean {
+    if (!isRealCtrlT(value, key) || this.taskPanelItems.length <= 5) return false;
+    this.taskPanelExpanded = !this.taskPanelExpanded;
+    this.scheduleRender();
+    return true;
+  }
+
+  private buildAgentPanel(width: number, maxRows = 4): string[] {
+    return buildAgentPanelRows(this.agentPanelItems, width, maxRows);
+  }
+
   private render(): void {
+    performanceMonitor.measureSync('terminal.render', () => this.renderFrame());
+  }
+
+  private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
       this.streamRenderTimer = null;
     }
     this.renderScheduled = false;
+    this.scheduledRenderDelayMs = Number.POSITIVE_INFINITY;
 
     if (!this.started || !this.interactive) {
+      return;
+    }
+    if (this.stdoutBackpressured) {
+      this.renderPendingAfterDrain = true;
       return;
     }
 
     const width = Math.max(20, (stdout.columns || 80) - 1);
     const height = Math.max(8, stdout.rows || 24);
-    const header = height >= 22 ? this.options.header : this.options.compactHeader;
-    const headerRows = wrapAnsi(header, width);
+    const header = this.startupHeaderVisible
+      ? (height >= 22 ? this.options.header : this.options.compactHeader)
+      : '';
+    const headerRows = header ? wrapAnsi(header, width) : [];
+    const agentRows = this.buildAgentPanel(width, Math.max(0, Math.min(4, height - headerRows.length - 8)));
+    const availableTaskRows = Math.max(0, height - headerRows.length - agentRows.length - 8);
+    const taskRows = this.buildTaskPanel(
+      width,
+      this.taskPanelExpanded ? availableTaskRows : Math.min(8, availableTaskRows)
+    );
+    const topRows = [...headerRows, ...taskRows, ...agentRows];
     const divider = this.options.renderBorder(width);
     let inputLayout: VisibleInputLayout | undefined;
     let inputBlock: string[];
@@ -1329,20 +1818,20 @@ export class TerminalUI {
     const statusBar = this.buildStatusBar(width);
 
     if (this.activeSelection) {
-      const maxSelectionRows = Math.max(1, height - headerRows.length - 5);
+      const maxSelectionRows = Math.max(1, height - topRows.length - 5);
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
       inputBlock = [divider, ...selectionRows, divider, statusBar];
     } else {
-      const maxSuggestionRows = Math.max(0, height - headerRows.length - 6);
+      const maxSuggestionRows = Math.max(0, height - topRows.length - 6);
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
-      const maxInputRows = Math.max(1, height - headerRows.length - 5 - suggestionRows.length);
+      const maxInputRows = Math.max(1, height - topRows.length - 5 - suggestionRows.length);
       inputLayout = this.getInputLayout(width, maxInputRows);
       inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, statusBar];
     }
     if (this.queueText) {
       inputBlock.unshift(this.queueText);
     }
-    const chatHeight = Math.max(1, height - headerRows.length - 1 - inputBlock.length);
+    const chatHeight = Math.max(1, height - topRows.length - 1 - inputBlock.length);
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
@@ -1361,7 +1850,7 @@ export class TerminalUI {
     const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
     const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
     this.chatViewport = {
-      screenTop: headerRows.length + 2,
+      screenTop: topRows.length + 2,
       visibleStart,
       visibleEnd,
       width
@@ -1370,20 +1859,32 @@ export class TerminalUI {
       .slice(visibleStart, visibleEnd)
       .map((row, index) => this.highlightChatRow(row, visibleStart + index));
     const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
-    const screenRows = [...headerRows, divider, ...chatRows, ...inputBlock];
-
-    let frame = '\x1b[?25l\x1b[H';
-    for (let row = 0; row < height; row += 1) {
-      frame += `\x1b[2K${screenRows[row] ?? ''}${row < height - 1 ? '\r\n' : ''}`;
-    }
-
+    const screenRows = [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
+    while (screenRows.length < height) screenRows.push('');
+    const fullRefresh = width !== this.renderedScreenWidth
+      || height !== this.renderedScreenHeight
+      || this.renderedScreenRows.length !== height;
+    const screenUpdate = buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+    let cursorState = '';
     if (this.activeInput && inputLayout) {
-      const inputTop = headerRows.length + 1 + chatHeight;
+      const inputTop = topRows.length + 1 + chatHeight;
       const cursorColumn = Math.min(inputLayout.cursor.column, width) + 1;
       const cursorRow = inputTop + inputLayout.cursor.row + 2 + (this.queueText ? 1 : 0);
-      frame += `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
+      cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }
-    stdout.write(frame);
+
+    if (!fullRefresh && !screenUpdate && cursorState === this.renderedCursorState) return;
+
+    let frame = '\x1b[?25l';
+    if (fullRefresh) frame += '\x1b[2J';
+    frame += screenUpdate;
+    frame += cursorState;
+    const accepted = stdout.write(frame);
+    this.renderedScreenRows = screenRows;
+    this.renderedScreenWidth = width;
+    this.renderedScreenHeight = height;
+    this.renderedCursorState = cursorState;
+    if (!accepted) this.stdoutBackpressured = true;
   }
 
   private finishInput(error?: Error): void {
@@ -1394,11 +1895,12 @@ export class TerminalUI {
 
     const value = activeInput.graphemes.join('');
     this.activeInput = undefined;
-    this.render();
+    this.scheduleRender(true);
 
     if (error) {
       activeInput.reject(error);
     } else {
+      this.inputHistory.record(value);
       activeInput.resolve(value);
     }
   }
@@ -1413,7 +1915,7 @@ export class TerminalUI {
     const selectedSecondary = activeSelection.options.secondary
       ?.items[activeSelection.secondaryIndex];
     this.activeSelection = undefined;
-    this.render();
+    this.scheduleRender(true);
 
     if (error) {
       activeSelection.reject(error);
@@ -1436,13 +1938,14 @@ export class TerminalUI {
     activeInput.cursorIndex += inserted.length;
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
-    this.render();
+    activeInput.historyNavigationActive = false;
+    this.scheduleRender(true);
   }
 
-  private moveVertically(direction: -1 | 1): void {
+  private moveVertically(direction: -1 | 1): boolean {
     const activeInput = this.activeInput;
     if (!activeInput) {
-      return;
+      return false;
     }
 
     const width = Math.max(20, (stdout.columns || 80) - 1);
@@ -1455,7 +1958,7 @@ export class TerminalUI {
     const current = layout.positions[activeInput.cursorIndex];
     const targetRow = current.row + direction;
     if (targetRow < 0 || targetRow >= layout.rows.length) {
-      return;
+      return false;
     }
 
     activeInput.preferredColumn ??= current.column;
@@ -1476,7 +1979,27 @@ export class TerminalUI {
     }
 
     activeInput.cursorIndex = bestIndex;
-    this.render();
+    this.scheduleRender(true);
+    return true;
+  }
+
+  private navigateInputHistory(direction: -1 | 1): void {
+    const activeInput = this.activeInput;
+    if (!activeInput) {
+      return;
+    }
+
+    const value = this.inputHistory.move(direction, activeInput.graphemes.join(''));
+    if (value === undefined) {
+      return;
+    }
+
+    activeInput.graphemes = splitGraphemes(value);
+    activeInput.cursorIndex = activeInput.graphemes.length;
+    activeInput.preferredColumn = undefined;
+    activeInput.selectedCommandIndex = 0;
+    activeInput.historyNavigationActive = this.inputHistory.isBrowsing();
+    this.scheduleRender(true);
   }
 
   private readonly handleSelectionKeypress = (value: string, key: readline.Key) => {
@@ -1491,7 +2014,6 @@ export class TerminalUI {
       this.finishSelection(new TerminalInputCancelledError());
       return;
     }
-
     if (key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
       return;
@@ -1510,7 +2032,7 @@ export class TerminalUI {
       activeSelection.selectedIndex = (
         activeSelection.selectedIndex + direction + itemCount
       ) % itemCount;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
     if ((key.name === 'left' || key.name === 'right') && activeSelection.options.secondary) {
@@ -1519,7 +2041,7 @@ export class TerminalUI {
       activeSelection.secondaryIndex = (
         activeSelection.secondaryIndex + direction + itemCount
       ) % itemCount;
-      this.render();
+      this.scheduleRender(true);
     }
   };
 
@@ -1539,7 +2061,7 @@ export class TerminalUI {
       if (this.textSelection.active) {
         this.textSelection.clear();
         this.selectionLayout = undefined;
-        this.render();
+        this.scheduleRender(true);
       } else if (this.onEscCallback) {
         this.onEscCallback();
       }
@@ -1576,13 +2098,30 @@ export class TerminalUI {
       return;
     }
 
+    if (isRealCtrlU(value, key)) {
+      const inputText = activeInput.graphemes.join('');
+      if (inputText) {
+        void this.clipboardWriter.write(inputText).then(success => {
+          if (!success || this.activeInput !== activeInput || activeInput.graphemes.join('') !== inputText) return;
+          activeInput.graphemes = [];
+          activeInput.cursorIndex = 0;
+          activeInput.preferredColumn = undefined;
+          activeInput.selectedCommandIndex = 0;
+          activeInput.historyNavigationActive = false;
+          this.scheduleRender(true);
+        });
+      }
+      return;
+    }
+
     if (key.name === 'backspace') {
       if (activeInput.cursorIndex > 0) {
         activeInput.graphemes.splice(activeInput.cursorIndex - 1, 1);
         activeInput.cursorIndex -= 1;
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
-        this.render();
+        activeInput.historyNavigationActive = false;
+        this.scheduleRender(true);
       }
       return;
     }
@@ -1594,7 +2133,8 @@ export class TerminalUI {
         activeInput.graphemes.splice(activeInput.cursorIndex, 1);
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
-        this.render();
+        activeInput.historyNavigationActive = false;
+        this.scheduleRender(true);
       }
       return;
     }
@@ -1606,7 +2146,7 @@ export class TerminalUI {
         Math.min(activeInput.graphemes.length, activeInput.cursorIndex + direction)
       );
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -1617,10 +2157,13 @@ export class TerminalUI {
         activeInput.selectedCommandIndex = (
           activeInput.selectedCommandIndex + direction + suggestions.length
         ) % suggestions.length;
-        this.render();
+        this.scheduleRender(true);
         return;
       }
-      this.moveVertically(key.name === 'up' ? -1 : 1);
+      const direction = key.name === 'up' ? -1 : 1;
+      if (!this.moveVertically(direction)) {
+        this.navigateInputHistory(direction);
+      }
       return;
     }
 
@@ -1628,7 +2171,7 @@ export class TerminalUI {
       const previousLineBreak = activeInput.graphemes.lastIndexOf('\n', activeInput.cursorIndex - 1);
       activeInput.cursorIndex = key.ctrl ? 0 : previousLineBreak + 1;
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -1638,7 +2181,7 @@ export class TerminalUI {
         ? activeInput.graphemes.length
         : nextLineBreak;
       activeInput.preferredColumn = undefined;
-      this.render();
+      this.scheduleRender(true);
       return;
     }
 
@@ -1654,7 +2197,8 @@ export class TerminalUI {
       activeInput.cursorIndex = deleteFrom;
       activeInput.preferredColumn = undefined;
       activeInput.selectedCommandIndex = 0;
-      this.render();
+      activeInput.historyNavigationActive = false;
+      this.scheduleRender(true);
       return;
     }
 

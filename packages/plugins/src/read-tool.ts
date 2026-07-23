@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件读取工具。
@@ -38,7 +38,7 @@ export class ReadFileTool implements BaseTool {
    * 执行文件读取。
    * @param args 包含路径及可选行范围的参数。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const filePath = args.path as string;
     if (!filePath) {
       return '错误: 缺少 path 参数。';
@@ -47,9 +47,15 @@ export class ReadFileTool implements BaseTool {
     const startLine = args.startLine ? Number(args.startLine) : undefined;
     const endLine = args.endLine ? Number(args.endLine) : undefined;
 
+    if (context?.abortSignal?.aborted) return '[文件读取已中止]';
+
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
-      const content = await fs.readFile(resolvedPath, 'utf-8');
+      const resolvedPath = await resolveWorkspacePath(filePath);
+      const content = await fs.readFile(resolvedPath, {
+        encoding: 'utf-8',
+        signal: context?.abortSignal
+      });
+      if (context?.abortSignal?.aborted) return '[文件读取已中止]';
       
       const lines = content.split(/\r?\n/);
       let outputLines = lines;
@@ -78,6 +84,9 @@ export class ReadFileTool implements BaseTool {
 
       return result;
     } catch (error) {
+      if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        return '[文件读取已中止]';
+      }
       return `读取文件失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

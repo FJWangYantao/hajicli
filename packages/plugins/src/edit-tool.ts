@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { BaseTool, ToolDefinition } from '@hajicli/core';
+import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
+import { resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件精准编辑工具（Search and Replace）。
@@ -38,7 +38,7 @@ export class EditFileTool implements BaseTool {
    * 执行精准编辑。
    * @param args - 包含 path, oldText 和 newText 参数的对象。
    */
-  public async execute(args: Record<string, unknown>): Promise<string> {
+  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
     const filePath = args.path as string;
     const oldText = args.oldText as string;
     const newText = args.newText as string;
@@ -53,9 +53,15 @@ export class EditFileTool implements BaseTool {
       return '错误: 缺少 newText 参数。';
     }
 
+    if (context?.abortSignal?.aborted) return '[文件编辑已中止]';
+
     try {
-      const resolvedPath = path.resolve(process.cwd(), filePath);
-      const content = await fs.readFile(resolvedPath, 'utf-8');
+      const resolvedPath = await resolveWorkspacePath(filePath);
+      const content = await fs.readFile(resolvedPath, {
+        encoding: 'utf-8',
+        signal: context?.abortSignal
+      });
+      if (context?.abortSignal?.aborted) return '[文件编辑已中止]';
 
       // 统计匹配次数
       const firstIndex = content.indexOf(oldText);
@@ -70,10 +76,17 @@ export class EditFileTool implements BaseTool {
 
       // 执行替换并写回
       const newContent = content.substring(0, firstIndex) + newText + content.substring(firstIndex + oldText.length);
-      await fs.writeFile(resolvedPath, newContent, 'utf-8');
+      if (context?.abortSignal?.aborted) return '[文件编辑已中止]';
+      await fs.writeFile(resolvedPath, newContent, {
+        encoding: 'utf-8',
+        signal: context?.abortSignal
+      });
 
       return `[文件精准编辑成功]\n路径: ${filePath}\n替换成功。`;
     } catch (error) {
+      if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        return '[文件编辑已中止]';
+      }
       return `精准编辑文件失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

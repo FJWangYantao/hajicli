@@ -1,4 +1,5 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
+import { fetchWithNetworkPolicy } from './network.js';
 
 /**
  * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
@@ -41,6 +42,7 @@ interface StreamChoiceDelta {
 
 interface StreamChoice {
   delta?: StreamChoiceDelta;
+  finish_reason?: string | null;
 }
 
 interface StreamResponseData {
@@ -53,6 +55,7 @@ interface StreamResponseData {
 }
 
 interface NonStreamChoice {
+  finish_reason?: string | null;
   message?: {
     content?: string;
     reasoning_content?: string;
@@ -89,7 +92,7 @@ export class VolcengineProvider implements ModelProvider {
       );
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://ark.cn-beijing.volces.com/api/coding/v3';
+    this.baseUrl = config.baseUrl || process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding/v3';
     this.defaultModel = config.defaultModel || process.env.VOLC_MODEL || process.env.ARK_MODEL || 'glm-5.2';
   }
 
@@ -107,6 +110,7 @@ export class VolcengineProvider implements ModelProvider {
     }
 
     const choice = data.choices?.[0];
+    options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
       options.onToolCall(choice.message.tool_calls);
     }
@@ -147,6 +151,7 @@ export class VolcengineProvider implements ModelProvider {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     const accumulatedToolCalls: ToolCall[] = [];
+    let finishReason: string | undefined;
 
     try {
       while (true) {
@@ -169,6 +174,7 @@ export class VolcengineProvider implements ModelProvider {
             try {
               const data = JSON.parse(dataStr) as StreamResponseData;
               const choice = data.choices?.[0];
+              if (choice?.finish_reason) finishReason = choice.finish_reason;
 
               // 收集流式工具调用
               const deltaToolCalls = choice?.delta?.tool_calls;
@@ -228,6 +234,7 @@ export class VolcengineProvider implements ModelProvider {
           try {
             const data = JSON.parse(trimmed.slice(6)) as StreamResponseData;
             const choice = data.choices?.[0];
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
             const content = choice?.delta?.content || '';
 
             const deltaToolCalls = choice?.delta?.tool_calls;
@@ -277,6 +284,7 @@ export class VolcengineProvider implements ModelProvider {
 
       // 触发工具调用回调
       const finalToolCalls = accumulatedToolCalls.filter(Boolean);
+      options.onFinish?.({ reason: finishReason });
       if (finalToolCalls.length > 0 && options.onToolCall) {
         options.onToolCall(finalToolCalls);
       }
@@ -292,6 +300,14 @@ export class VolcengineProvider implements ModelProvider {
     if (!modelToUse) {
       throw new ProviderError(
         '未指定模型接入点 Endpoint ID。请设置 VOLC_MODEL 环境变量，或在调用 complete/completeStream 时传入 model 参数。',
+        'volcengine'
+      );
+    }
+
+    const invalidToolCall = findInvalidToolCall(messages);
+    if (invalidToolCall) {
+      throw new ProviderError(
+        `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
         'volcengine'
       );
     }
@@ -371,7 +387,7 @@ export class VolcengineProvider implements ModelProvider {
 
     return withExponentialBackoff(async () => {
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithNetworkPolicy(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -399,7 +415,13 @@ export class VolcengineProvider implements ModelProvider {
         if (error instanceof ProviderError) {
           throw error;
         }
-        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        if (options.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          throw reason instanceof Error && reason.name === 'TimeoutError'
+            ? reason
+            : normalizeAbortError(error);
+        }
+        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
         throw new ProviderError(msg, 'volcengine');
       }

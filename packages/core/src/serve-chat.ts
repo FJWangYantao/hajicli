@@ -6,6 +6,7 @@ import { exec } from 'node:child_process';
 import { ModelProvider, BaseTool, ChatMessage, ToolCall } from './types.js';
 import { SessionTracker } from './trace-logger.js';
 import { ObservableModelProvider } from './observable-provider.js';
+import { validateToolCall } from './tool-call-validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,12 +127,16 @@ export async function startChatServer(
         while (keepCalling) {
           let currentToolCalls: ToolCall[] | null = null;
           let textContent = '';
+          let finishReason: string | undefined;
 
           // 流式生成回复
           const stream = sessionProvider.completeStream(session.messages, {
             tools: toolDefinitions,
             onToolCall: (tcs) => {
               currentToolCalls = tcs;
+            },
+            onFinish: finish => {
+              finishReason = finish.reason;
             }
           });
 
@@ -144,10 +149,23 @@ export async function startChatServer(
           // 保存 AI 文本回复
           const assistantMessage: ChatMessage = { role: 'assistant', content: textContent };
           const toolCalls = currentToolCalls as ToolCall[] | null;
-          if (toolCalls && toolCalls.length > 0) {
+          const invalidToolCall = toolCalls?.map(toolCall => ({
+            toolCall,
+            validation: validateToolCall(toolCall)
+          })).find(item => !item.validation.valid);
+          if (toolCalls && toolCalls.length > 0 && !invalidToolCall) {
             assistantMessage.tool_calls = toolCalls;
           }
           session.messages.push(assistantMessage);
+
+          if (invalidToolCall) {
+            res.write(JSON.stringify({
+              type: 'error',
+              content: `已拦截未执行的不完整工具调用：${invalidToolCall.validation.error}${finishReason === 'length' ? '（输出达到长度上限）' : ''}`
+            }) + '\n');
+            keepCalling = false;
+            continue;
+          }
 
           // 处理工具调用
           if (toolCalls && toolCalls.length > 0) {
@@ -155,10 +173,7 @@ export async function startChatServer(
               const toolName = tc.function.name;
               const targetTool = toolsMap.get(toolName);
 
-              let args: Record<string, unknown> = {};
-              try {
-                args = JSON.parse(tc.function.arguments);
-              } catch (e) {}
+              const args = validateToolCall(tc).arguments || {};
 
               // 实时通知前端：工具执行开始
               res.write(JSON.stringify({ type: 'tool_start', name: toolName, arguments: args }) + '\n');
