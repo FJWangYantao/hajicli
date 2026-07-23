@@ -71,10 +71,13 @@ user-invocable: true
 
 - `/skills`：查看可用和已加载的 Skill。
 - `/skills reload`：重新扫描两个 Skill 目录。
+- `/skills validate`：校验 Skill 清单、附属资源、大小限制和路径安全。
 - `/skill code-review`：确定性加载 Skill。
 - `/skill code-review 审查当前 diff`：加载后立即继续执行参数中的任务。
 
-`loadskill` 在 Plan Mode 中仍是只读工具。Skill 不能提升权限，也不能覆盖用户指令、`AGENTS.md` 或安全规则。Skill 名称不能是文件路径，`SKILL.md` 最大 64 KiB，并拒绝符号链接逃逸。
+Skill 可以在自身目录中提供 `references/`、`scripts/`、`assets/` 等附属资源。模型必须先调用 `loadskill`，再使用只读的 `listskillresources` 和 `readskillresource` 按相对路径访问；普通文本资源最大 256 KiB，Asset 最大 10 MiB，单个 Skill 最多枚举 256 个资源。二进制 Asset 只能被枚举，不能作为文本注入上下文。
+
+上述三个 Skill 工具在 Plan Mode 中仍是只读工具。Skill 不能提升权限，也不能覆盖用户指令、`AGENTS.md` 或安全规则。Skill 名称不能是文件路径，`SKILL.md` 最大 64 KiB，并拒绝路径穿越和符号链接资源。`scripts/` 中的脚本只会作为文本读取，不会由 Skill 工具直接执行。
 
 ## 性能诊断
 

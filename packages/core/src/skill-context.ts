@@ -49,6 +49,7 @@ export function extractSkillActivations(messages: ChatMessage[]): Array<SkillAct
         cursor = end + SKILL_CONTEXT_END.length;
       }
     }
+    // ALREADY_LOADED 只表示当时注册表认为正文仍驻留，不能在恢复或压缩后充当正文存在的证据。
     if (message.role === 'tool' && message.content.startsWith(`${SKILL_LOAD_MARKER} `)) {
       const firstLine = message.content.split(/\r?\n/, 1)[0];
       const activation = parseActivation(firstLine.slice(SKILL_LOAD_MARKER.length).trim());

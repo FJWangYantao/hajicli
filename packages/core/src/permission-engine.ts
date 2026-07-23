@@ -89,7 +89,9 @@ export class PermissionEngine {
       'find_files',
       'web_search',
       'web_fetch',
-      'loadskill'
+      'loadskill',
+      'listskillresources',
+      'readskillresource'
     ];
     return readOnlyTools.includes(toolName.toLowerCase());
   }

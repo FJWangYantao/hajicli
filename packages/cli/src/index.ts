@@ -25,6 +25,8 @@ import {
   SubagentTool,
   VerifyAgentTool,
   LoadSkillTool,
+  ListSkillResourcesTool,
+  ReadSkillResourceTool,
   MODEL_REGISTRY
 } from '@hajicli/plugins';
 import { TerminalUI, TerminalInputCancelledError, shouldRestartBackgroundInput } from './terminal-input.js';
@@ -183,7 +185,7 @@ ${colors.bold('快捷命令 (对话内):')}
   /help               显示内部帮助
   /subagent           确定性启动前台或后台子代理
   /agents             查看、管理和中止子代理
-  /skills             查看 Skill，或使用 /skills reload 重新扫描
+  /skills             查看 Skill；支持 reload 与 validate
   /skill <name>       确定性加载 Skill，可在名称后追加任务参数
   /permission         切换权限模式 (plan, default, accept-edit, auto, bypass-permissions)
   /effort             切换思考强度 (low, medium, high, xhigh, max)
@@ -418,6 +420,8 @@ ${colors.bold('环境变量配置:')}
     new WebSearchTool(),
     new WebFetchTool(),
     new LoadSkillTool(skillRegistry),
+    new ListSkillResourcesTool(skillRegistry),
+    new ReadSkillResourceTool(skillRegistry),
     new TaskCreateTool(taskStore),
     new TaskListTool(taskStore),
     new UpdateTaskTool(taskStore),
@@ -473,7 +477,7 @@ ${colors.bold('环境变量配置:')}
     { command: '/rewind', description: '历史节点撤销与代码回退' },
     { command: '/subagent', description: '确定性启动前台或后台子代理' },
     { command: '/agents', description: '查看、管理和中止子代理' },
-    { command: '/skills', description: '查看或重新扫描 Skill' },
+    { command: '/skills', description: '查看、重新扫描或校验 Skill' },
     { command: '/skill', description: '按名称确定性加载 Skill' },
     { command: '/compact', description: '多层上下文压缩' },
     { command: '/permission', description: '切换权限档次与安全阈值' },
@@ -903,6 +907,24 @@ ${colors.bold('环境变量配置:')}
           break;
         }
         if (command === 'skills') {
+          if (parts[1]?.toLowerCase() === 'validate') {
+            await skillRegistry.scan();
+            const result = await skillRegistry.validate();
+            await refreshSystemPromptPreservingContext();
+            sessionManager.saveCurrentSession(messages);
+            const summary = `${result.checkedSkills} 个 Skill，${result.checkedResources} 个资源`;
+            ui.writeLine(result.valid
+              ? colors.green(`✓ Skill 校验通过：${summary}。`)
+              : colors.red(`✕ Skill 校验失败：${summary}。`));
+            for (const issue of result.issues) {
+              const prefix = issue.severity === 'error' ? '✕' : '⚠️';
+              const scope = issue.skill ? `[${issue.skill}] ` : '';
+              ui.writeLine(issue.severity === 'error'
+                ? colors.red(`${prefix} ${scope}${issue.message}`)
+                : colors.yellow(`${prefix} ${scope}${issue.message}`));
+            }
+            continue;
+          }
           if (parts[1]?.toLowerCase() === 'reload') {
             const result = await skillRegistry.scan();
             await refreshSystemPromptPreservingContext();
