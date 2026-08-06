@@ -46,6 +46,18 @@ test('streaming Markdown rendering is capped to one pass per frame window', () =
   assert.equal(throttle.shouldRender(132), true);
 });
 
+test('streaming Markdown rendering slows adaptively for long accumulated replies', () => {
+  const medium = new MarkdownRenderThrottle(32);
+  assert.equal(medium.shouldRender(100, 24_000), true);
+  assert.equal(medium.shouldRender(140, 24_000), false);
+  assert.equal(medium.shouldRender(148, 24_000), true);
+
+  const large = new MarkdownRenderThrottle(32);
+  assert.equal(large.shouldRender(100, 64_000), true);
+  assert.equal(large.shouldRender(150, 64_000), false);
+  assert.equal(large.shouldRender(164, 64_000), true);
+});
+
 test('tool thinking summary is hidden when the model already emitted visible text', () => {
   assert.equal(shouldShowToolThinkingSummary('', 1), true);
   assert.equal(shouldShowToolThinkingSummary('  \n', 2), true);

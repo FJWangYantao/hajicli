@@ -6,6 +6,7 @@ dist/
 !/.haji/skills/
 !/.haji/skills/**
 *.tsbuildinfo
+**/target/
 scratch/
 .workbuddy/
 .codebuddy/

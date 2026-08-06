@@ -46,8 +46,17 @@ export class MarkdownRenderThrottle {
 
   constructor(private readonly intervalMs = 32) {}
 
-  shouldRender(now = Date.now()): boolean {
-    if (now - this.lastRenderAt < this.intervalMs) return false;
+  /**
+   * Longer accumulated replies cost more to reparse, so reduce their refresh
+   * rate while preserving the final, unthrottled render performed by the caller.
+   */
+  shouldRender(now = Date.now(), contentLength = 0): boolean {
+    const adaptiveInterval = contentLength >= 64_000
+      ? Math.max(this.intervalMs, 64)
+      : contentLength >= 24_000
+        ? Math.max(this.intervalMs, 48)
+        : this.intervalMs;
+    if (now - this.lastRenderAt < adaptiveInterval) return false;
     this.lastRenderAt = now;
     return true;
   }

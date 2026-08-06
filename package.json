@@ -10,9 +10,12 @@
   },
   "scripts": {
     "build": "tsc --build",
+    "build:native": "node scripts/build-native.mjs",
+    "build:full": "pnpm run build && pnpm run build:native",
+    "bench:native": "node scripts/benchmark-terminal-engine.mjs",
     "clean": "tsc --build --clean",
-    "test": "pnpm --dir packages/cli test",
-    "check": "pnpm run build && node --test packages/cli/test/*.test.mjs",
+    "test": "pnpm run build && node --test packages/cli/test/*.test.mjs",
+    "check": "pnpm test",
     "pack:check": "pnpm run build && node scripts/verify-packages.mjs"
   },
   "devDependencies": {

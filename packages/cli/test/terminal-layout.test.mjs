@@ -63,6 +63,10 @@ test('stable-prefix wrapping is identical to wrapping the complete document', ()
   assert.deepEqual(incrementalRows, wrapAnsi(prefix + tail, width));
 });
 
+test('malformed escape sequences cannot stall the TypeScript wrapping fallback', () => {
+  assert.deepEqual(wrapAnsiWithState('\x1bX', 80).rows, ['\x1bX\x1b[0m']);
+});
+
 test('queued slash commands keep the input channel exclusive for selectors', () => {
   assert.equal(shouldRestartBackgroundInput('next normal message'), true);
   assert.equal(shouldRestartBackgroundInput('   '), true);

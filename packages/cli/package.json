@@ -23,8 +23,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "pnpm run build && node --test test/*.test.mjs",
-    "prepack": "pnpm run build"
+    "build:native": "node ../../scripts/build-native.mjs",
+    "build:full": "pnpm run build && pnpm run build:native",
+    "test": "tsc --build ../.. && node --test test/*.test.mjs",
+    "prepack": "pnpm run build:full"
   },
   "dependencies": {
     "@hajicli/core": "workspace:^",

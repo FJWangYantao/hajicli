@@ -32,6 +32,12 @@ try {
     if (forbidden.length > 0) {
       throw new Error(`${relativeDir} 发布包包含禁止文件: ${forbidden.join(', ')}`);
     }
+    if (
+      relativeDir === 'packages/cli'
+      && !entries.some(entry => /\/dist\/haji_terminal_engine\.[^/]+\.node$/.test(entry))
+    ) {
+      throw new Error('packages/cli 发布包缺少当前平台的原生终端渲染模块');
+    }
 
     const { stdout: manifestText } = await execFileAsync(tar, ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' });
     const manifest = JSON.parse(manifestText);

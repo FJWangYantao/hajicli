@@ -6,10 +6,16 @@ import { PassThrough } from 'node:stream';
 import { performanceMonitor } from '@hajicli/core';
 import { TerminalProtocolParser, type TerminalMouseEvent, type TerminalProtocolEvent } from './terminal-protocol.js';
 import { TextSelectionModel, type TextCell } from './text-selection.js';
+import {
+  tryNativeLayoutAnsiDocument,
+  tryNativeWrapAnsi
+} from './native-terminal-engine.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
 const ANSI_RESET = '\x1b[0m';
+const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
+const NATIVE_LAYOUT_MIN_LENGTH = 1024;
 const graphemeSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
 function enableWindowsVirtualTerminalInput(): boolean {
@@ -388,6 +394,9 @@ export function buildScreenUpdate(previousRows: readonly string[], nextRows: rea
 }
 
 function splitGraphemes(value: string): string[] {
+  // Most source code and terminal chrome is ASCII. Avoid the considerably
+  // heavier Intl.Segmenter path when every UTF-16 code unit is one grapheme.
+  if (ASCII_ONLY_PATTERN.test(value)) return value.split('');
   return Array.from(graphemeSegmenter.segment(value), part => part.segment);
 }
 
@@ -421,6 +430,11 @@ function isWide(codePoint: number): boolean {
 }
 
 function measureGrapheme(grapheme: string): number {
+  if (grapheme.length === 1) {
+    const codePoint = grapheme.charCodeAt(0);
+    if (isZeroWidth(codePoint)) return 0;
+    return isWide(codePoint) ? 2 : 1;
+  }
   const codePoints = Array.from(grapheme, character => character.codePointAt(0) ?? 0);
   if (codePoints.every(isZeroWidth)) {
     return 0;
@@ -536,7 +550,7 @@ interface WrappedAnsiResult {
   activeStyle: string;
 }
 
-export function wrapAnsiWithState(value: string, width: number, initialStyle = ''): WrappedAnsiResult {
+export function wrapAnsiWithStateFallback(value: string, width: number, initialStyle = ''): WrappedAnsiResult {
   const rows: string[] = [];
   let row = initialStyle;
   let rowWidth = 0;
@@ -568,6 +582,17 @@ export function wrapAnsiWithState(value: string, width: number, initialStyle = '
 
     const nextAnsi = value.indexOf('\x1b', offset);
     const textEnd = nextAnsi === -1 ? value.length : nextAnsi;
+    if (textEnd === offset) {
+      const grapheme = value[offset];
+      const graphemeWidth = measureGrapheme(grapheme);
+      if (rowWidth + graphemeWidth > width && rowWidth > 0) {
+        pushRow();
+      }
+      row += grapheme;
+      rowWidth += graphemeWidth;
+      offset += 1;
+      continue;
+    }
     const text = value.slice(offset, textEnd).replace(/\r/g, '');
 
     for (const grapheme of splitGraphemes(text)) {
@@ -590,11 +615,19 @@ export function wrapAnsiWithState(value: string, width: number, initialStyle = '
   return { rows, activeStyle };
 }
 
+export function wrapAnsiWithState(value: string, width: number, initialStyle = ''): WrappedAnsiResult {
+  if (value.length >= NATIVE_LAYOUT_MIN_LENGTH) {
+    const nativeResult = tryNativeWrapAnsi(value, width, initialStyle);
+    if (nativeResult) return nativeResult;
+  }
+  return wrapAnsiWithStateFallback(value, width, initialStyle);
+}
+
 export function wrapAnsi(value: string, width: number): string[] {
   return wrapAnsiWithState(value, width).rows;
 }
 
-export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
+export function layoutAnsiDocumentFallback(value: string, width: number): AnsiTextLayout {
   const rows: AnsiLayoutRow[] = [];
   let rowAnsi = '';
   let rowPlain = '';
@@ -662,7 +695,10 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
       offset += 1;
       continue;
     }
-    for (const grapheme of splitGraphemes(value.slice(offset, textEnd))) {
+    // Normalize CR before segmentation. Intl.Segmenter can otherwise group
+    // CRLF differently from the ASCII fast path and corrupt selection offsets.
+    const text = value.slice(offset, textEnd).replace(/\r/g, '');
+    for (const grapheme of splitGraphemes(text)) {
       appendGrapheme(grapheme);
     }
     offset = textEnd;
@@ -670,6 +706,14 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
 
   pushRow();
   return { rows, document };
+}
+
+export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout {
+  if (value.length >= NATIVE_LAYOUT_MIN_LENGTH) {
+    const nativeResult = tryNativeLayoutAnsiDocument(value, width);
+    if (nativeResult) return nativeResult;
+  }
+  return layoutAnsiDocumentFallback(value, width);
 }
 
 /** Returns scroll rows for a drag pointer outside the chat viewport. Positive scrolls upward. */
@@ -1011,14 +1055,15 @@ export class TerminalUI {
   }
 
   /**
-   * 流式输出重绘节流调度器（防抖至下一个微任务周期，兼顾平滑度与帧率）。
+   * 统一合并流式与交互重绘。交互帧保留较低延迟，同时避免鼠标拖动、
+   * 连续按键等高频事件直接触发无上限的终端写入。
    */
   private scheduleRender(interactive = false): void {
     if (this.stdoutBackpressured) {
       this.renderPendingAfterDrain = true;
       return;
     }
-    const delayMs = interactive ? 0 : 16;
+    const delayMs = interactive ? 8 : 16;
     if (this.renderScheduled && delayMs >= this.scheduledRenderDelayMs) return;
     this.renderScheduled = true;
     if (this.streamRenderTimer) {
@@ -1059,6 +1104,21 @@ export class TerminalUI {
 
   writeLine(value: string = ''): void {
     this.writeChat(`${value}\n`);
+  }
+  /**
+   * 写入恰好一个空行。
+   * 当前内容未以换行结尾时先结束当前行（正文经 updateChatFrom 写入时不以换行结尾，
+   * 直接 writeLine 只会补齐行尾而不会产生空行）。
+   */
+  writeBlankLine(): void {
+    if (!this.interactive) {
+      stdout.write('\n');
+      return;
+    }
+    if (this.chatContent && !this.chatContent.endsWith('\n')) {
+      this.writeLine();
+    }
+    this.writeLine();
   }
 
   /**
