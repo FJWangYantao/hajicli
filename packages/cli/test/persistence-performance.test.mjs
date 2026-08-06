@@ -34,6 +34,30 @@ test('session persistence skips duplicate snapshots but saves new messages', asy
   }
 });
 
+test('session persistence reports failures and retries retained writes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-session-retry-'));
+  const blocker = path.join(root, 'blocked');
+  const sessionsDir = path.join(blocker, 'sessions');
+  fs.writeFileSync(blocker, 'not a directory', 'utf8');
+  const warnings = [];
+
+  try {
+    const manager = new SessionManager(sessionsDir);
+    manager.setWarningHandler(warning => warnings.push(warning));
+    manager.saveCurrentSession([{ role: 'user', content: 'retain me' }]);
+    await manager.flush();
+    assert.match(warnings.join('\n'), /会话.*失败/);
+
+    fs.rmSync(blocker, { force: true });
+    fs.mkdirSync(blocker);
+    await manager.flush();
+    const file = path.join(sessionsDir, `session_${manager.getCurrentSession().id}.json`);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).messages[0].content, 'retain me');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('trace writes are serialized and final save contains every queued event', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-trace-perf-'));
   try {
@@ -49,6 +73,31 @@ test('trace writes are serialized and final save contains every queued event', a
     assert.equal(fs.readFileSync(eventsFile, 'utf8').trim().split('\n').length, 20);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('trace persistence reports failures and retries events that were not appended', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-trace-retry-'));
+  const blocker = path.join(root, 'blocked');
+  const tracesDir = path.join(blocker, 'traces');
+  fs.writeFileSync(blocker, 'not a directory', 'utf8');
+  const warnings = [];
+
+  try {
+    const tracker = new SessionTracker(tracesDir);
+    tracker.setWarningHandler(warning => warnings.push(warning));
+    tracker.recordUserInput('retain trace');
+    await tracker.flush();
+    assert.match(warnings.join('\n'), /Trace.*失败/);
+
+    fs.rmSync(blocker, { force: true });
+    fs.mkdirSync(blocker);
+    const file = await tracker.save();
+    assert.match(file, /\.meta\.json$/);
+    const trace = await SessionTracker.readSession(tracker.getSessionId(), tracesDir);
+    assert.equal(trace.events[0].content, 'retain trace');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

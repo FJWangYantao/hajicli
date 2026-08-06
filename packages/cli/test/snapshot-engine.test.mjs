@@ -24,6 +24,25 @@ function createRepository() {
   return cwd;
 }
 
+test('snapshot creation reports storage failures instead of silently disabling rewind', () => {
+  const cwd = createRepository();
+  const blocker = path.join(cwd, 'blocked');
+  const warnings = [];
+  fs.writeFileSync(blocker, 'not a directory', 'utf8');
+
+  try {
+    const engine = new SnapshotEngine(
+      cwd,
+      path.join(blocker, 'snapshots'),
+      warning => warnings.push(warning)
+    );
+    assert.equal(engine.createSnapshot('expected failure'), null);
+    assert.match(warnings.join('\n'), /快照创建失败.*rewind/);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('project Skill files remain protected by snapshot rewind', () => {
   const cwd = createRepository();
   try {
@@ -85,6 +104,35 @@ test('rewind only reverts Haji-owned tool changes and preserves later external e
     assert.equal(fs.readFileSync(path.join(cwd, 'tracked.txt'), 'utf8'), 'changed later by external editor\n');
     assert.equal(fs.readFileSync(path.join(cwd, 'external.txt'), 'utf8'), 'user dirty before turn\n');
     assert.equal(git(cwd, 'rev-list', '--count', 'HEAD'), '1');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('rewind applies multiple owned mutations in reverse order', () => {
+  const cwd = createRepository();
+  try {
+    const engine = new SnapshotEngine(cwd);
+    engine.setScope('session-multiple');
+    const anchor = engine.createSnapshot('before user message');
+    assert.ok(anchor);
+
+    const first = engine.beginMutation(anchor, ['tracked.txt']);
+    assert.ok(first);
+    fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'first tool change\n');
+    assert.ok(engine.completeMutation(first));
+
+    const second = engine.beginMutation(anchor, ['tracked.txt', 'created.txt']);
+    assert.ok(second);
+    fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'second tool change\n');
+    fs.writeFileSync(path.join(cwd, 'created.txt'), 'created by second tool\n');
+    assert.ok(engine.completeMutation(second));
+
+    const result = engine.rollbackOwnedChanges(anchor);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.revertedPaths, ['created.txt', 'tracked.txt']);
+    assert.equal(fs.readFileSync(path.join(cwd, 'tracked.txt'), 'utf8'), 'committed\n');
+    assert.equal(fs.existsSync(path.join(cwd, 'created.txt')), false);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

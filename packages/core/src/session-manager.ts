@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { ChatMessage } from './types.js';
 import { performanceMonitor } from './performance-monitor.js';
+import { replaceFileAtomically } from './atomic-file.js';
 
 const SESSION_FLUSH_DELAY_MS = 120;
 
@@ -53,15 +54,6 @@ function sameMessages(left: ChatMessage[], right: ChatMessage[]): boolean {
   });
 }
 
-async function replaceFile(source: string, target: string): Promise<void> {
-  try {
-    await fs.promises.rename(source, target);
-  } catch {
-    await fs.promises.copyFile(source, target);
-    await fs.promises.rm(source, { force: true });
-  }
-}
-
 /** In-memory session state with debounced, atomic background persistence. */
 export class SessionManager {
   private readonly sessionsDir: string;
@@ -71,9 +63,15 @@ export class SessionManager {
   private readonly pendingWrites = new Map<string, PendingSessionWrite>();
   private writeChain: Promise<void> = Promise.resolve();
   private flushTimer: NodeJS.Timeout | null = null;
+  private warningHandler?: (message: string) => void;
+  private readonly pendingWarnings: string[] = [];
 
-  constructor(sessionsDir = path.join(process.cwd(), '.haji', 'sessions')) {
+  constructor(
+    sessionsDir = path.join(process.cwd(), '.haji', 'sessions'),
+    onWarning?: (message: string) => void
+  ) {
     this.sessionsDir = sessionsDir;
+    this.warningHandler = onWarning;
     const now = new Date().toISOString();
     this.currentSession = {
       id: crypto.randomUUID(),
@@ -85,8 +83,24 @@ export class SessionManager {
     this.ensureDir();
   }
 
+  public setWarningHandler(handler: (message: string) => void): void {
+    this.warningHandler = handler;
+    for (const warning of this.pendingWarnings.splice(0)) handler(warning);
+  }
+
+  private warn(operation: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const warning = `${operation}：${detail}`;
+    if (this.warningHandler) this.warningHandler(warning);
+    else this.pendingWarnings.push(warning);
+  }
+
   private ensureDir(): void {
-    try { fs.mkdirSync(this.sessionsDir, { recursive: true }); } catch {}
+    try {
+      fs.mkdirSync(this.sessionsDir, { recursive: true });
+    } catch (error) {
+      this.warn('会话目录创建失败', error);
+    }
   }
 
   private getSessionPath(id: string): string {
@@ -121,6 +135,9 @@ export class SessionManager {
     this.currentSession.messages = messages;
     this.currentSession.updatedAt = new Date().toISOString();
     const filePath = this.getSessionPath(this.currentSession.id);
+    // Keep one immutable snapshot for both duplicate detection and the
+    // pending write. Cloning twice noticeably stalls long conversations.
+    const snapshot = messages.map(cloneMessage);
 
     if (!this.hasEffectiveMessages(messages)) {
       this.pendingWrites.set(filePath, { remove: true });
@@ -128,12 +145,12 @@ export class SessionManager {
       this.pendingWrites.set(filePath, {
         session: {
           ...this.currentSession,
-          messages: messages.map(cloneMessage)
+          messages: snapshot
         }
       });
     }
 
-    this.lastQueuedMessages = messages.map(cloneMessage);
+    this.lastQueuedMessages = snapshot;
     this.lastQueuedTitle = this.currentSession.title;
     this.scheduleFlush();
   }
@@ -146,6 +163,7 @@ export class SessionManager {
     }
     const operations = [...this.pendingWrites.entries()];
     this.pendingWrites.clear();
+    let writeFailed = false;
     if (operations.length > 0) {
       this.writeChain = this.writeChain.then(async () => {
         const startedAt = performance.now();
@@ -158,13 +176,19 @@ export class SessionManager {
           if (!operation.session) continue;
           const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
           await fs.promises.writeFile(tempPath, JSON.stringify(operation.session, null, 2), 'utf8');
-          await replaceFile(tempPath, filePath);
+          await replaceFileAtomically(tempPath, filePath);
         }
         performanceMonitor.record('session.flush', performance.now() - startedAt);
-      }).catch(() => {});
+      }).catch(error => {
+        writeFailed = true;
+        for (const [filePath, operation] of operations) {
+          if (!this.pendingWrites.has(filePath)) this.pendingWrites.set(filePath, operation);
+        }
+        this.warn('会话持久化失败，数据已保留并将在下次保存时重试', error);
+      });
     }
     await this.writeChain;
-    if (this.pendingWrites.size > 0) await this.flush();
+    if (!writeFailed && this.pendingWrites.size > 0) await this.flush();
   }
 
   public loadSession(id: string): StoredSession | null {

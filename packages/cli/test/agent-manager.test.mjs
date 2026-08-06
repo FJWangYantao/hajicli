@@ -75,7 +75,7 @@ test('manual subagent command supports per-agent model, provider, effort and ins
     maxToolCalls: undefined,
     description: '审查 AgentManager'
   });
-  assert.throws(() => parseSubagentCommand('research --provider other 调研'), /deepseek 或 volcengine/);
+  assert.throws(() => parseSubagentCommand('research --provider "" 调研'), /--provider 不能为空/);
   assert.throws(() => parseSubagentCommand(`research --instructions "${'x'.repeat(8001)}" 调研`), /长度必须是 1 到 8000/);
   assert.equal(
     parseSubagentCommand('research --instructions "说明文字中不要使用 --model 参数" 检查配置').instructions,
@@ -258,6 +258,70 @@ test('verification evidence and consumption survive scope reloads', async () => 
       /已被 Agent .* 使用/
     );
   } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('Agent persistence retries transient rename failures and warns when locked', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-agent-replace-'));
+  const originalRenameSync = fs.renameSync;
+  const warnings = [];
+
+  try {
+    // 场景一：短暂锁定后重试成功，数据落盘且不告警
+    const manager = new AgentManager({ agentsDir: cwd, onWarning: warning => warnings.push(warning) });
+    manager.setScope('session-a');
+    let attempts = 0;
+    fs.renameSync = (source, target) => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error('simulated Windows file lock');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return originalRenameSync(source, target);
+    };
+
+    manager.recordParentEvidence('read-parent-retry', 'read', Date.now());
+
+    fs.renameSync = originalRenameSync;
+    assert.equal(attempts >= 2, true);
+    assert.equal(warnings.length, 0);
+    assert.match(
+      fs.readFileSync(path.join(cwd, 'session-a.json'), 'utf8'),
+      /read-parent-retry/
+    );
+    assert.equal(
+      fs.readdirSync(cwd).some(name => name.endsWith('.tmp')),
+      false
+    );
+
+    // 场景二：持续锁定（所有重试均失败）→ 告警、临时文件清理、原文件不被覆盖
+    const manager2 = new AgentManager({ agentsDir: cwd, onWarning: warning => warnings.push(warning) });
+    manager2.setScope('session-a');
+    const originalContent = fs.readFileSync(path.join(cwd, 'session-a.json'), 'utf8');
+    fs.renameSync = () => {
+      const error = new Error('simulated persistent Windows file lock');
+      error.code = 'EPERM';
+      throw error;
+    };
+
+    manager2.recordParentEvidence('read-parent-blocked', 'read', Date.now());
+
+    fs.renameSync = originalRenameSync;
+    assert.match(warnings.join('\n'), /验证证据持久化失败/);
+    assert.equal(
+      fs.readFileSync(path.join(cwd, 'session-a.json'), 'utf8'),
+      originalContent,
+      'rename 持续失败时原文件保持未被覆盖'
+    );
+    assert.equal(
+      fs.readdirSync(cwd).some(name => name.endsWith('.tmp')),
+      false,
+      '失败后临时文件已清理'
+    );
+  } finally {
+    fs.renameSync = originalRenameSync;
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

@@ -206,6 +206,36 @@ export interface AgentManagerOptions {
   onWarning?: (message: string) => void;
 }
 
+const TRANSIENT_REPLACE_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const REPLACE_RETRY_DELAYS_MS = [0, 10, 25, 50] as const;
+
+function delaySync(milliseconds: number): void {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) { /* 忙等实现同步重试间隔 */ }
+}
+
+/**
+ * 同步原子替换：rename 失败仅对瞬时错误（EACCES/EBUSY/EPERM）重试，
+ * 与 atomic-file.ts 的 replaceFileAtomically 策略一致，不回退到非原子的
+ * copy 覆盖；最终失败时清理临时文件并抛错，由调用方决定重试或告警。
+ * AgentManager 持久化是同步路径，无法复用 async 版，因此用忙等实现重试间隔。
+ */
+function replaceFileSync(source: string, target: string): void {
+  let lastError: unknown;
+  for (const retryDelay of REPLACE_RETRY_DELAYS_MS) {
+    if (retryDelay > 0) delaySync(retryDelay);
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!TRANSIENT_REPLACE_ERRORS.has((error as NodeJS.ErrnoException).code || '')) break;
+    }
+  }
+  try { fs.unlinkSync(source); } catch {}
+  throw lastError;
+}
+
 /** Owns child-agent lifecycle, read-only concurrency and verification evidence. */
 export class AgentManager {
   private scope = 'default';
@@ -587,7 +617,7 @@ export class AgentManager {
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
-      fs.renameSync(tempPath, targetPath);
+      replaceFileSync(tempPath, targetPath);
     } catch (error) {
       if (fd !== undefined) {
         try { fs.closeSync(fd); } catch {}

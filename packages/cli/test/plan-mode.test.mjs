@@ -95,6 +95,22 @@ test('task workflow enforces dependencies, verification and removal from active 
   }
 });
 
+test('TaskStore keeps plans isolated by session scope', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-plan-scope-'));
+  try {
+    const store = new TaskStore(cwd);
+    store.setTaskScope('session-a');
+    store.createTask({ title: '计划A', id: 'task-a', content: 'first session' });
+    store.setTaskScope('session-b');
+    assert.equal(store.getPlan(), null);
+    store.createTask({ title: '计划B', id: 'task-b', content: 'second session' });
+    store.setTaskScope('session-a');
+    assert.deepEqual(store.getPlan().tasks.map(task => task.id), ['task-a']);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('approval offers exactly three choices and defaults to Auto Execute', () => {
   const source = fs.readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
   assert.match(source, /\[系统计划审阅要求\].*停止调用工具.*方案正文/);

@@ -70,13 +70,32 @@ export class SnapshotEngine {
   private readonly blobsDir: string;
   private readonly journalsDir: string;
   private scope = 'default';
+  private warningHandler?: (message: string) => void;
+  private readonly pendingWarnings: string[] = [];
 
-  constructor(cwd: string = process.cwd(), snapshotRoot = path.join(cwd, '.haji', 'snapshots')) {
+  constructor(
+    cwd: string = process.cwd(),
+    snapshotRoot = path.join(cwd, '.haji', 'snapshots'),
+    onWarning?: (message: string) => void
+  ) {
     this.cwd = path.resolve(cwd);
     this.snapshotRoot = path.resolve(snapshotRoot);
     this.manifestsDir = path.join(this.snapshotRoot, 'manifests');
     this.blobsDir = path.join(this.snapshotRoot, 'blobs');
     this.journalsDir = path.join(this.snapshotRoot, 'journals');
+    this.warningHandler = onWarning;
+  }
+
+  setWarningHandler(handler: (message: string) => void): void {
+    this.warningHandler = handler;
+    for (const warning of this.pendingWarnings.splice(0)) handler(warning);
+  }
+
+  private warn(operation: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const warning = `${operation}：${detail}`;
+    if (this.warningHandler) this.warningHandler(warning);
+    else this.pendingWarnings.push(warning);
   }
 
   setScope(scope: string): void {
@@ -151,7 +170,8 @@ export class SnapshotEngine {
       };
       fs.writeFileSync(this.getManifestPath(id), JSON.stringify(manifest, null, 2), 'utf8');
       return id;
-    } catch {
+    } catch (error) {
+      this.warn('工作区快照创建失败，本次修改可能无法通过 /rewind 自动回退', error);
       return null;
     }
   }

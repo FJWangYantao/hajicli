@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { ChatMessage, ToolCall } from './types.js';
 import { performanceMonitor } from './performance-monitor.js';
+import { replaceFileAtomically } from './atomic-file.js';
 
 const TRACE_FLUSH_DELAY_MS = 40;
 const TRACE_MESSAGE_LIMIT = 12;
@@ -145,15 +146,6 @@ function compactEvent(event: TraceEvent): TraceEvent {
   };
 }
 
-async function replaceFile(source: string, target: string): Promise<void> {
-  try {
-    await fs.rename(source, target);
-  } catch {
-    await fs.copyFile(source, target);
-    await fs.rm(source, { force: true });
-  }
-}
-
 /** Append-only trace writer. New sessions use a small meta file plus JSONL events. */
 export class SessionTracker {
   private readonly tracesDir: string;
@@ -163,9 +155,15 @@ export class SessionTracker {
   private pendingLines: string[] = [];
   private writeChain: Promise<void>;
   private flushTimer: NodeJS.Timeout | null = null;
+  private warningHandler?: (message: string) => void;
+  private readonly pendingWarnings: string[] = [];
 
-  constructor(tracesDir: string = path.join(process.cwd(), '.haji', 'traces')) {
+  constructor(
+    tracesDir: string = path.join(process.cwd(), '.haji', 'traces'),
+    onWarning?: (message: string) => void
+  ) {
     this.tracesDir = tracesDir;
+    this.warningHandler = onWarning;
     const id = crypto.randomUUID();
     this.meta = {
       version: 2,
@@ -176,7 +174,21 @@ export class SessionTracker {
     };
     this.metaPath = path.join(tracesDir, `session_${id}.meta.json`);
     this.eventsPath = path.join(tracesDir, `session_${id}.events.jsonl`);
-    this.writeChain = this.initialize();
+    this.writeChain = this.initialize().catch(error => {
+      this.warn('Trace 初始化失败', error);
+    });
+  }
+
+  public setWarningHandler(handler: (message: string) => void): void {
+    this.warningHandler = handler;
+    for (const warning of this.pendingWarnings.splice(0)) handler(warning);
+  }
+
+  private warn(operation: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const warning = `${operation}：${detail}`;
+    if (this.warningHandler) this.warningHandler(warning);
+    else this.pendingWarnings.push(warning);
   }
 
   private async initialize(): Promise<void> {
@@ -187,7 +199,7 @@ export class SessionTracker {
   private async writeMeta(): Promise<void> {
     const tempPath = `${this.metaPath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tempPath, JSON.stringify(this.meta), 'utf8');
-    await replaceFile(tempPath, this.metaPath);
+    await replaceFileAtomically(tempPath, this.metaPath);
   }
 
   private append(event: TraceEvent): void {
@@ -217,16 +229,29 @@ export class SessionTracker {
       this.flushTimer = null;
     }
     const lines = this.pendingLines.splice(0);
+    let writeFailed = false;
+    let eventsAppended = false;
     if (lines.length > 0) {
       this.writeChain = this.writeChain.then(async () => {
         const startedAt = performance.now();
+        await fs.mkdir(this.tracesDir, { recursive: true });
         await fs.appendFile(this.eventsPath, lines.join(''), 'utf8');
+        eventsAppended = true;
         await this.writeMeta();
         performanceMonitor.record('trace.flush', performance.now() - startedAt);
-      }).catch(() => {});
+      }).catch(error => {
+        writeFailed = true;
+        if (!eventsAppended) this.pendingLines.unshift(...lines);
+        this.warn(
+          eventsAppended
+            ? 'Trace 元数据持久化失败，事件数据已保存'
+            : 'Trace 事件持久化失败，数据已保留并将在下次保存时重试',
+          error
+        );
+      });
     }
     await this.writeChain;
-    if (this.pendingLines.length > 0) await this.flush();
+    if (!writeFailed && this.pendingLines.length > 0) await this.flush();
   }
 
   public getSessionId(): string {
