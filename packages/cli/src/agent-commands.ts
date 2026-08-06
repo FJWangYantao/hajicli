@@ -14,7 +14,7 @@ export interface ParsedSubagentCommand {
   role: SubagentRole;
   taskId?: string;
   model?: string;
-  provider?: 'deepseek' | 'volcengine';
+  provider?: string;
   reasoningEffort?: ReasoningEffort;
   instructions?: string;
   timeoutMs?: number;
@@ -72,7 +72,7 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
   let role: SubagentRole = 'research';
   let taskId: string | undefined;
   let model: string | undefined;
-  let provider: 'deepseek' | 'volcengine' | undefined;
+  let provider: string | undefined;
   let reasoningEffort: ReasoningEffort | undefined;
   let instructions: string | undefined;
   let timeoutMs: number | undefined;
@@ -105,11 +105,11 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
   const providerOption = extractOption(remaining, 'provider');
   remaining = providerOption.source;
   if (providerOption.value !== undefined) {
-    const value = providerOption.value.trim().toLowerCase();
-    if (!['deepseek', 'volcengine'].includes(value)) {
-      throw new Error('--provider 必须是 deepseek 或 volcengine');
+    const value = providerOption.value.trim();
+    if (!value) {
+      throw new Error('--provider 不能为空');
     }
-    provider = value as 'deepseek' | 'volcengine';
+    provider = value;
   }
 
   const effortOption = extractOption(remaining, 'effort');

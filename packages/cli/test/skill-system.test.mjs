@@ -321,6 +321,7 @@ test('CLI exposes deterministic Skill commands and preserves tool-call pairing',
   assert.match(source, /new ReadSkillResourceTool\(skillRegistry\)/);
   assert.match(source, /if \(!entry\) \{\s*ui\.writeLine\(colors\.red\(`未找到 Skill/);
   assert.match(source, /manual-skill-\$\{randomUUID\(\)\}/);
-  assert.match(source, /role: 'assistant', content: '', tool_calls: \[manualSkillExchange\.toolCall\]/);
+  assert.match(source, /role: 'assistant', content: '', reasoning_content: '', tool_calls: \[manualSkillExchange\.toolCall\]/);
+  assert.match(source, /role: 'assistant', content: '', reasoning_content: '', tool_calls: \[toolCall\]/);
   assert.match(source, /role: 'tool', content: manualSkillExchange\.output, tool_call_id: manualSkillExchange\.toolCall\.id/);
 });

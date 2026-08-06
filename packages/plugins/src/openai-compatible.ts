@@ -2,34 +2,55 @@ import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExpon
 import { fetchWithNetworkPolicy } from './network.js';
 import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
 
-export interface DeepSeekConfig {
-  apiKey?: string;
-  baseUrl?: string;
-  defaultModel?: string;
+/**
+ * 通用 OpenAI 兼容提供商配置。
+ * 用于用户通过 /provider add 添加的自定义端点（任何实现
+ * POST {baseUrl}/chat/completions 的 OpenAI 兼容服务）。
+ */
+export interface OpenAICompatibleConfig {
+  /** API Key（必填）。 */
+  apiKey: string;
+  /** 基础服务地址，例如 https://api.openai.com/v1。 */
+  baseUrl: string;
+  /** 默认模型名。 */
+  defaultModel: string;
+  /** 提供商显示名，用于错误信息与遥测；默认 'custom'。 */
+  providerName?: string;
 }
 
-export class DeepSeekProvider implements ModelProvider {
+/**
+ * 通用 OpenAI 兼容大模型提供商实现。
+ * DeepSeek / 火山引擎均为 OpenAI 兼容协议，自定义 provider 走此实现。
+ */
+export class OpenAICompatibleProvider implements ModelProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultModel: string;
+  private readonly providerName: string;
 
-  constructor(config: DeepSeekConfig = {}) {
-    const apiKey = config.apiKey || process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) {
-      throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
+  constructor(config: OpenAICompatibleConfig) {
+    if (!config.apiKey) {
+      throw new ProviderError(`未配置 ${config.providerName || '自定义'} API Key。`, config.providerName || 'custom');
     }
-    this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+    if (!config.baseUrl) {
+      throw new ProviderError(`未配置 ${config.providerName || '自定义'} Base URL。`, config.providerName || 'custom');
+    }
+    if (!config.defaultModel) {
+      throw new ProviderError(`未配置 ${config.providerName || '自定义'} 默认模型。`, config.providerName || 'custom');
+    }
+    this.apiKey = config.apiKey;
+    this.baseUrl = config.baseUrl.replace(/\/+$/, '');
+    this.defaultModel = config.defaultModel;
+    this.providerName = config.providerName || 'custom';
   }
 
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
     const response = await this.request(messages, { ...options, stream: false });
     const data = await response.json() as OpenAICompatibleResponseData;
     if (data.error) {
-      throw new ProviderError(data.error.message || 'API error', 'deepseek', response.status);
+      throw new ProviderError(data.error.message || 'API error', this.providerName, response.status);
     }
-    
+
     const choice = data.choices?.[0];
     options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
@@ -49,14 +70,14 @@ export class DeepSeekProvider implements ModelProvider {
         total_tokens: data.usage.total_tokens
       });
     }
-    
+
     return choice?.message?.content || '';
   }
 
   async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
     const response = await this.request(messages, { ...options, stream: true });
     yield* parseOpenAICompatibleStream(response, {
-      provider: 'deepseek',
+      provider: this.providerName,
       emptyBodyMessage: 'Response body is empty',
       completion: options
     });
@@ -68,10 +89,10 @@ export class DeepSeekProvider implements ModelProvider {
     if (invalidToolCall) {
       throw new ProviderError(
         `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
-        'deepseek'
+        this.providerName
       );
     }
-    
+
     const requestMessages = messages.map(msg => {
       const payloadMsg: any = {
         role: msg.role,
@@ -143,7 +164,7 @@ export class DeepSeekProvider implements ModelProvider {
           } catch {
             // 忽略解析错误
           }
-          throw new ProviderError(errorMsg, 'deepseek', response.status);
+          throw new ProviderError(errorMsg, this.providerName, response.status);
         }
 
         return response;
@@ -158,9 +179,9 @@ export class DeepSeekProvider implements ModelProvider {
             : normalizeAbortError(error);
         }
         const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-        const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
-        throw new ProviderError(msg, 'deepseek');
+        const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
+        throw new ProviderError(msg, this.providerName);
       }
-    }, { maxRetries: 3, initialDelayMs: 1000, providerName: 'deepseek' });
+    }, { maxRetries: 3, initialDelayMs: 1000, providerName: this.providerName });
   }
 }
