@@ -14,6 +14,33 @@ export class WorkspacePathError extends Error {
   }
 }
 
+/** Returns a model-safe filesystem error without resolved host paths. */
+export function formatWorkspaceError(error: unknown, inputPath: string): string {
+  if (error instanceof WorkspacePathError) return error.message;
+  const candidate = error as NodeJS.ErrnoException;
+  const displayPath = inputPath || '.';
+  switch (candidate?.code) {
+    case 'ENOENT':
+      return `路径不存在: ${displayPath}`;
+    case 'EACCES':
+    case 'EPERM':
+      return `没有权限访问: ${displayPath}`;
+    case 'EISDIR':
+      return `目标是目录而不是文件: ${displayPath}`;
+    case 'ENOTDIR':
+      return `路径中的某一部分不是目录: ${displayPath}`;
+    case 'EEXIST':
+      return `目标已经存在: ${displayPath}`;
+    case 'ENOSPC':
+      return `磁盘空间不足，无法处理: ${displayPath}`;
+    case 'EMFILE':
+    case 'ENFILE':
+      return `打开的文件过多，请稍后重试: ${displayPath}`;
+    default:
+      return `文件系统操作失败${candidate?.code ? ` (${candidate.code})` : ''}: ${displayPath}`;
+  }
+}
+
 function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));

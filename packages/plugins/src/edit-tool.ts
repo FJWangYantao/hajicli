@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
-import { resolveWorkspacePath } from './workspace-path.js';
+import { formatWorkspaceError, resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件精准编辑工具（Search and Replace）。
@@ -87,7 +87,7 @@ export class EditFileTool implements BaseTool {
       if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return '[文件编辑已中止]';
       }
-      return `精准编辑文件失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `精准编辑文件失败: ${formatWorkspaceError(error, filePath)}`;
     }
   }
 }

@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 import { runRipgrep } from './ripgrep.js';
-import { resolveWorkspacePath } from './workspace-path.js';
+import { formatWorkspaceError, resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 全局文本检索工具（类似 grep）。
@@ -173,7 +173,7 @@ export class GrepSearchTool implements BaseTool {
       if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return '[Grep 搜索已中止]';
       }
-      return `Grep 搜索失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `Grep 搜索失败: ${formatWorkspaceError(error, relativePath || '.')}`;
     }
   }
 }

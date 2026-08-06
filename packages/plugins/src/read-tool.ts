@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
-import { resolveWorkspacePath } from './workspace-path.js';
+import { formatWorkspaceError, resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件读取工具。
@@ -87,7 +87,7 @@ export class ReadFileTool implements BaseTool {
       if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return '[文件读取已中止]';
       }
-      return `读取文件失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `读取文件失败: ${formatWorkspaceError(error, filePath)}`;
     }
   }
 }

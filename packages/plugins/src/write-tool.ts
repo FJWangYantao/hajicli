@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
-import { resolveWorkspacePath } from './workspace-path.js';
+import { formatWorkspaceError, resolveWorkspacePath } from './workspace-path.js';
 
 /**
  * 文件写入/覆盖工具。
@@ -68,7 +68,7 @@ export class WriteFileTool implements BaseTool {
       if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return '[文件写入已中止]';
       }
-      return `写入文件失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `写入文件失败: ${formatWorkspaceError(error, filePath)}`;
     }
   }
 }

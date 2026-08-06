@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 import { runRipgrep } from './ripgrep.js';
+import { formatWorkspaceError } from './workspace-path.js';
 
 /**
  * 全局文件查找工具（类似 global）。
@@ -101,7 +102,7 @@ export class GlobalFindFilesTool implements BaseTool {
       if (context?.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return '[文件查找已中止]';
       }
-      return `文件检索失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `文件检索失败: ${formatWorkspaceError(error, '.')}`;
     }
   }
 }
