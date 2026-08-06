@@ -26,6 +26,18 @@ $env:DEEPSEEK_API_KEY = '...'
 $env:VOLC_API_KEY = '...'
 ```
 
+也可以在 haji 会话内用 `/provider` 指令快速配置，无需设置环境变量：
+
+- `/provider`：查看全部提供商（内置 + 自定义）的配置状态与当前使用的模型
+- `/provider add`：**引导添加自定义提供商**——依次输入 Provider 名称、Base URL、API Key、模型名称（多个用分号分隔，如 `gpt-4o;gpt-4o-mini`），输入完成后自动发起连通性测试（最小请求验证 Base URL + API Key + 模型三者有效）；测试失败会显示原因，输入 `r` 重新进入引导流程或 `c` 取消。添加成功后即可用 `/provider <name>` 切换使用
+- `/provider <name>`：立即切换到指定提供商（内置 `deepseek` / `volcengine` 或自定义名称）
+- `/provider set <name> [API Key]`：快速配置 API Key、Base URL、默认模型与模型列表（内联传入 API Key 可跳过交互输入；留空保留现有值），保存后立即生效
+- `/provider unset <name>`：清除本地配置
+
+自定义提供商需提供 OpenAI 兼容的 `POST {baseUrl}/chat/completions` 端点（如 OpenAI、Moonshot、本地 vLLM/Ollama 网关等）；`/subagent` 的 `--provider` 也支持自定义名称。
+
+配置保存到 `.haji/config.json`（项目级）与 `~/.haji/config.json`（用户级，跨项目共用），项目级覆盖用户级；环境变量优先级始终最高（环境变量 > 配置文件 > 内置默认值）。API Key 为明文存储，`.haji/` 已被 git 忽略，请勿共享该文件。
+
 ## 网络代理与超时
 
 HAJI 支持标准的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，也支持以下专用变量：

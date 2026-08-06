@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 import os from 'node:os';
-import fs from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
 import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
+  OpenAICompatibleProvider,
   BashTool,
   ReadFileTool,
   WriteFileTool,
@@ -31,10 +29,27 @@ import {
 } from '@hajicli/plugins';
 import { TerminalUI, TerminalInputCancelledError, shouldRestartBackgroundInput } from './terminal-input.js';
 import { MarkdownRenderThrottle, MarkdownStreamRenderer, shouldShowToolThinkingSummary } from './markdown-renderer.js';
+import { getNativeTerminalEngineStatus } from './native-terminal-engine.js';
 import { REWIND_CONFIRM_DEFAULT, queueRewindRefill } from './rewind-flow.js';
 import { SharedToolExecutor } from './tool-executor.js';
 import { parseSubagentCommand } from './agent-commands.js';
 import { getModelContextWindowTokens } from './context-policy.js';
+import { formatToolArgs, getCliVersion, loadPreference, savePreference } from './cli-runtime.js';
+import {
+  loadProviderConfig,
+  saveProviderConfig,
+  unsetProviderConfig,
+  resolveProviderSetting,
+  parseModelList,
+  validateProviderName,
+  normalizeBaseUrl,
+  testProviderConnection,
+  isBuiltinProvider,
+  PROVIDER_NAMES,
+  projectProviderConfigPath,
+  type ProviderName,
+  type ProviderConfig
+} from './provider-config.js';
 
 // 原生 ANSI 终端转义色彩工具类，保持零外部依赖
 const colors = {
@@ -89,79 +104,39 @@ const EFFORT_OPTIONS = REASONING_EFFORTS.map(value => ({
 }));
 
 /**
- * 判断给定 model value 属于哪个 provider。
+ * 判断给定 model value 属于哪个 provider：
+ * 先查内置模型注册表，再查自定义 provider 声明的模型列表，最后回退 deepseek。
  */
-function detectProviderForModel(modelValue: string): 'deepseek' | 'volcengine' {
+function detectProviderForModel(modelValue: string, config?: ProviderConfig): string {
   if (DEEPSEEK_MODELS.some(m => m.value === modelValue)) return 'deepseek';
-  return 'volcengine';
-}
-
-/** 偏好文件路径：.haji/preferences.json */
-const PREFERENCES_PATH = path.join(process.cwd(), '.haji', 'preferences.json');
-
-/** 用户偏好结构 */
-interface Preferences {
-  model: string;
-  reasoningEffort: string;
-  permissionMode?: string;
-  riskThreshold?: string;
-}
-
-/** 读取上次保存的用户偏好，若文件不存在或解析失败则返回 null */
-function loadPreference(): Preferences | null {
-  try {
-    const raw = fs.readFileSync(PREFERENCES_PATH, 'utf-8');
-    return JSON.parse(raw) as Preferences;
-  } catch {
-    return null;
+  if (VOLCENGINE_MODELS.some(m => m.value === modelValue)) return 'volcengine';
+  if (config) {
+    for (const [name, entry] of Object.entries(config.providers)) {
+      if (entry?.models?.includes(modelValue)) return name;
+    }
   }
+  return 'deepseek';
 }
 
-/** 将用户偏好持久化到 .haji/preferences.json */
-function savePreference(pref: Preferences): void {
-  try {
-    fs.mkdirSync(path.dirname(PREFERENCES_PATH), { recursive: true });
-    fs.writeFileSync(PREFERENCES_PATH, JSON.stringify(pref, null, 2), 'utf-8');
-  } catch {
-    // 保存失败时静默忽略，不影响主流程
-  }
-}
-
-/**
- * 将工具参数格式化为单行摘要字符串（超长自动截断）。
- */
-function formatToolArgs(args: Record<string, any>, maxLen = 45): string {
-  const keys = Object.keys(args);
-  if (keys.length === 0) return '';
-  const formatted = keys.map(k => {
-    const val = typeof args[k] === 'string' ? args[k] : JSON.stringify(args[k]);
-    const singleLineVal = String(val).replace(/\r?\n/g, ' ');
-    return `${k}: "${singleLineVal}"`;
-  }).join(', ');
-
-  if (formatted.length > maxLen) {
-    return formatted.slice(0, maxLen - 3) + '...';
-  }
-  return formatted;
-}
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * 动态获取当前 package.json 中的版本号。
- */
-function getCliVersion(): string {
-  try {
-    const pkgPath = path.join(__dirname, '..', 'package.json');
-    const raw = fs.readFileSync(pkgPath, 'utf-8');
-    const pkg = JSON.parse(raw);
-    return pkg.version || '1.0.0';
-  } catch {
-    return '1.0.0';
-  }
+/** 提供商显示名：内置带图标，自定义显示名称。 */
+function providerLabel(name: string): string {
+  if (name === 'deepseek') return '🔵 DeepSeek';
+  if (name === 'volcengine') return '🌋 火山引擎';
+  return `⚙️ ${name}`;
 }
 
 async function main() {
+  // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
+  // 供 scripts/profile-startup.mjs 采集启动各阶段耗时；正常运行时零输出。
+  const startupProfileEnabled = process.env.HAJI_STARTUP_PROFILE === '1';
+  const startupProfileT0 = typeof (globalThis as { __hajiPreloadT0?: number }).__hajiPreloadT0 === 'number'
+    ? (globalThis as { __hajiPreloadT0?: number }).__hajiPreloadT0!
+    : performance.now();
+  const markStartupStage = (stage: string): void => {
+    if (!startupProfileEnabled) return;
+    process.stderr.write(`[startup] ${stage} ${(performance.now() - startupProfileT0).toFixed(1)}ms\n`);
+  };
+  markStartupStage('node_boot');
   const cliArgs = process.argv.slice(2);
   const version = getCliVersion();
 
@@ -190,6 +165,7 @@ ${colors.bold('快捷命令 (对话内):')}
   /permission         切换权限模式 (plan, default, accept-edit, auto, bypass-permissions)
   /effort             切换思考强度 (low, medium, high, xhigh, max)
   /model              选择大模型与思考强度
+  /provider          查看 / 切换 / 添加 / 配置提供商（add|set|unset|<name>）
   /clear              清空聊天历史与上下文
   /perf               查看性能指标，/perf reset 可清空采样
   /viewer             打开 Trace 观测中心
@@ -206,11 +182,14 @@ ${colors.bold('环境变量配置:')}
     process.exit(0);
   }
 
-  const volcApiKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
-  const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
+  const providerConfig = loadProviderConfig();
+  let volcApiKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY || providerConfig.providers.volcengine?.apiKey;
+  let deepseekApiKey = process.env.DEEPSEEK_API_KEY || providerConfig.providers.deepseek?.apiKey;
 
-  if (!volcApiKey && !deepseekApiKey) {
-    console.error(colors.boldRed('错误: 请在运行前配置 DEEPSEEK_API_KEY 或 火山引擎 API Key (VOLC_API_KEY / ARK_API_KEY)。'));
+  const hasCustomProviderKey = Object.entries(providerConfig.providers)
+    .some(([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey));
+  if (!volcApiKey && !deepseekApiKey && !hasCustomProviderKey) {
+    console.error(colors.boldRed('错误: 请配置 DEEPSEEK_API_KEY / VOLC_API_KEY，或启动后使用 /provider add 添加自定义提供商。'));
     process.exit(1);
   }
 
@@ -222,53 +201,91 @@ ${colors.bold('环境变量配置:')}
 
   // 读取上次保存的偏好（模型 + 思考强度）
   const savedPreference = loadPreference();
+  markStartupStage('preference');
 
   // 根据 selectedModel 动态构建 Provider 实例的工厂函数
   performanceMonitor.start();
+  markStartupStage('perf_monitor');
+  const startupWarnings: string[] = [];
   const tracker = new SessionTracker();
-  const buildProvider = (modelValue: string, providerOverride?: 'deepseek' | 'volcengine'): ObservableModelProvider => {
-    const providerName = providerOverride || detectProviderForModel(modelValue);
+  const buildProvider = (modelValue: string, providerOverride?: string): ObservableModelProvider => {
+    const providerName = providerOverride || detectProviderForModel(modelValue, providerConfig);
     if (providerName === 'volcengine') {
       if (!volcApiKey) {
-        throw new Error('未配置 VOLC_API_KEY 或 ARK_API_KEY，无法使用火山引擎模型。');
+        throw new Error('未配置火山引擎 API Key（环境变量或 /provider set volcengine）。');
       }
       return new ObservableModelProvider(
         new VolcengineProvider({
           apiKey: volcApiKey,
-          baseUrl: process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          baseUrl: resolveProviderSetting('volcengine', 'baseUrl', process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL, 'https://ark.cn-beijing.volces.com/api/coding/v3', providerConfig),
           defaultModel: modelValue
         }),
         tracker
       );
     }
-    if (!deepseekApiKey) {
-      throw new Error('未配置 DEEPSEEK_API_KEY，无法使用 DeepSeek 模型。');
+    if (providerName === 'deepseek') {
+      if (!deepseekApiKey) {
+        throw new Error('未配置 DeepSeek API Key（环境变量或 /provider set deepseek）。');
+      }
+      return new ObservableModelProvider(
+        new DeepSeekProvider({
+          apiKey: deepseekApiKey,
+          baseUrl: resolveProviderSetting('deepseek', 'baseUrl', process.env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com/v1', providerConfig),
+          defaultModel: modelValue
+        }),
+        tracker
+      );
+    }
+    // 自定义 provider：OpenAI 兼容端点
+    const customEntry = providerConfig.providers[providerName];
+    if (!customEntry?.apiKey) {
+      throw new Error(`未配置 ${providerName} API Key（使用 /provider add 配置）。`);
+    }
+    if (!customEntry.baseUrl) {
+      throw new Error(`未配置 ${providerName} Base URL（使用 /provider add 配置）。`);
+    }
+    const customDefaultModel = customEntry.model || customEntry.models?.[0];
+    if (!customDefaultModel) {
+      throw new Error(`未配置 ${providerName} 模型（使用 /provider add 配置）。`);
     }
     return new ObservableModelProvider(
-      new DeepSeekProvider({
-        apiKey: deepseekApiKey,
-        baseUrl: process.env.DEEPSEEK_BASE_URL,
-        defaultModel: modelValue
+      new OpenAICompatibleProvider({
+        apiKey: customEntry.apiKey,
+        baseUrl: normalizeBaseUrl(customEntry.baseUrl).url,
+        defaultModel: customDefaultModel,
+        providerName
       }),
       tracker
     );
   };
 
-  // 构建所有可用的模型选项（仅包含有对应 API Key 的 Provider 的模型）
-  const availableModels = [
+  // 构建可用模型列表：内置注册表（有 key）+ 自定义 provider 声明的模型
+  const buildAvailableModels = () => [
     ...(deepseekApiKey ? DEEPSEEK_MODELS : []),
-    ...(volcApiKey ? VOLCENGINE_MODELS : [])
+    ...(volcApiKey ? VOLCENGINE_MODELS : []),
+    ...Object.entries(providerConfig.providers)
+      .filter(([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey))
+      .flatMap(([name, entry]) => (entry?.models || []).map(model => ({
+        value: model,
+        label: model,
+        description: `自定义 · ${name}`,
+        provider: name,
+        contextWindowTokens: 128_000
+      })))
   ];
+
+  // 构建所有可用的模型选项（仅包含有对应 API Key 的 Provider 的模型）
+  let availableModels = buildAvailableModels();
 
   // 确定初始模型：优先顺序 = 环境变量 > 上次保存偏好 > 硬编码默认值（deepseek-v4-flash）
   const envModel = (deepseekApiKey
-    ? process.env.DEEPSEEK_MODEL
-    : process.env.VOLC_MODEL || process.env.ARK_MODEL)?.trim().toLowerCase();
+    ? resolveProviderSetting('deepseek', 'model', process.env.DEEPSEEK_MODEL, undefined, providerConfig)
+    : resolveProviderSetting('volcengine', 'model', process.env.VOLC_MODEL || process.env.ARK_MODEL, undefined, providerConfig))?.trim().toLowerCase();
   let selectedModel: string = envModel
     || (savedPreference?.model && availableModels.some(m => m.value === savedPreference!.model)
       ? savedPreference!.model
-      : 'deepseek-v4-flash');
-  let currentProviderName: 'volcengine' | 'deepseek' = detectProviderForModel(selectedModel);
+      : availableModels[0]?.value || 'deepseek-v4-flash');
+  let currentProviderName: string = detectProviderForModel(selectedModel, providerConfig);
 
   // 确定初始思考强度：优先顺序 = 环境变量 > 上次保存偏好 > 默认 medium
   const configuredEffort = process.env.HAJI_REASONING_EFFORT?.trim().toLowerCase();
@@ -396,8 +413,13 @@ ${colors.bold('环境变量配置:')}
   const systemPromptManager = new SystemPromptManager();
   const skillRegistry = new SkillRegistry({ cwd: process.cwd() });
   const initialSkillScan = await skillRegistry.scan();
+  markStartupStage('skill_scan');
   // 在进入全屏 TUI 前启动服务，避免后台日志破坏固定布局。
-  await startTraceServer(3000, false, false).catch(() => { });
+  await startTraceServer(3000, false, false).catch(error => {
+    const detail = error instanceof Error ? error.message : String(error);
+    startupWarnings.push(`Trace 观测服务器启动失败：${detail}`);
+  });
+  markStartupStage('trace_server');
 
   // 注册并实例化所有已实现的系统工具
   const taskStore = new TaskStore();
@@ -431,6 +453,7 @@ ${colors.bold('环境变量配置:')}
   ];
 
   const toolsMap = new Map(tools.map(t => [t.name, t]));
+  markStartupStage('tools');
   const activeTools = () => permissionMode === 'plan'
     ? tools.filter(tool => permissionEngine.isReadOnlyTool(tool.name) || ['subagent', 'verifyagent'].includes(tool.name) || ['taskcreate', 'tasklist', 'updatetask'].includes(tool.name))
     : tools;
@@ -445,6 +468,7 @@ ${colors.bold('环境变量配置:')}
     permissionMode
   });
   let systemPrompt = await createSystemPrompt();
+  markStartupStage('system_prompt');
 
   const sessionManager = new SessionManager();
   taskStore.setTaskScope(sessionManager.getCurrentSession().id);
@@ -462,6 +486,7 @@ ${colors.bold('环境变量配置:')}
     messages[0] = { role: 'system', content: `${refreshedPrompt}${compactedSuffix}` };
   };
   sessionManager.saveCurrentSession(messages);
+  markStartupStage('session_saved');
 
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
@@ -471,6 +496,7 @@ ${colors.bold('环境变量配置:')}
     continuationPrompt: '',
     renderBorder: width => colors.gray('─'.repeat(width))
   });
+  markStartupStage('ui_ctor');
   const slashCommands = [
     { command: '/help', description: '显示帮助' },
     { command: '/resume', description: '历史对话查看与热切换' },
@@ -483,12 +509,21 @@ ${colors.bold('环境变量配置:')}
     { command: '/permission', description: '切换权限档次与安全阈值' },
     { command: '/effort', description: '切换思考强度' },
     { command: '/model', description: '选择模型与思考强度' },
+    { command: '/provider', description: '查看 / 切换 / 添加 / 配置模型提供商' },
     { command: '/clear', description: '清空聊天与上下文' },
     { command: '/perf', description: '查看或重置性能指标' },
     { command: '/viewer', description: '打开 Trace 观测中心' },
     { command: '/exit', description: '退出 haji' }
   ];
   ui.start();
+  markStartupStage('ui_started');
+  const showRuntimeWarning = (warning: string): void => {
+    ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+  };
+  tracker.setWarningHandler(showRuntimeWarning);
+  sessionManager.setWarningHandler(showRuntimeWarning);
+  snapshotEngine.setWarningHandler(showRuntimeWarning);
+  for (const warning of startupWarnings) showRuntimeWarning(warning);
   for (const warning of initialSkillScan.warnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
   ui.setPermissionMode(permissionMode);
   let planReadyForReview = false;
@@ -541,6 +576,7 @@ ${colors.bold('环境变量配置:')}
     }
   });
   agentManager.setScope(sessionManager.getCurrentSession().id);
+  markStartupStage('agent_manager');
 
   const refreshAgentVerificationContext = (targetMessages: ChatMessage[]): boolean => {
     const systemMessage = targetMessages.find(message => message.role === 'system');
@@ -593,11 +629,12 @@ ${colors.bold('环境变量配置:')}
     }
   });
 
+  markStartupStage('tool_executor');
   const subagentRunner = new SubagentRunner({
     cwd: process.cwd(),
     getProvider: request => buildProvider(
       request?.model || selectedModel,
-      request?.provider === 'deepseek' || request?.provider === 'volcengine' ? request.provider : undefined
+      request?.provider || undefined
     ),
     getModel: request => request?.model || selectedModel,
     getReasoningEffort: request => request?.reasoningEffort || reasoningEffort,
@@ -663,12 +700,13 @@ ${colors.bold('环境变量配置:')}
       }
     }
   });
+  markStartupStage('subagent_runner');
   const resolveSubagentRequest = (request: SubagentRequest): SubagentRequest => {
     const explicitModel = Boolean(request.model?.trim());
     const model = request.model?.trim().toLowerCase() || selectedModel;
     const descriptor = MODEL_REGISTRY.find(item => item.value === model);
-    if (request.provider && !['deepseek', 'volcengine'].includes(request.provider)) {
-      throw new Error(`不支持的 Provider: ${request.provider}`);
+    if (request.provider && !isBuiltinProvider(request.provider) && !providerConfig.providers[request.provider]?.apiKey) {
+      throw new Error(`不支持的 Provider: ${request.provider}（使用 /provider add 配置）`);
     }
     if (!descriptor && explicitModel && !request.provider) {
       throw new Error(`自定义模型 ${model} 必须同时指定 --provider`);
@@ -808,7 +846,10 @@ ${colors.bold('环境变量配置:')}
     }
     permissionMode = nextMode;
     await refreshSystemPromptPreservingContext();
-    savePreference({ model: selectedModel, reasoningEffort, permissionMode, riskThreshold });
+    savePreference(
+      { model: selectedModel, reasoningEffort, permissionMode, riskThreshold },
+      showRuntimeWarning
+    );
     sessionManager.saveCurrentSession(messages);
     ui.setPermissionMode(permissionMode);
     updateStatusUI();
@@ -868,6 +909,7 @@ ${colors.bold('环境变量配置:')}
   };
 
   try {
+    markStartupStage('ready');
     mainLoop: while (true) {
       injectAgentNotifications();
       let userInput: string;
@@ -988,7 +1030,7 @@ ${colors.bold('环境变量配置:')}
           } else {
             messages.push(
               { role: 'user', content: `/skill ${name}` },
-              { role: 'assistant', content: '', tool_calls: [toolCall] },
+              { role: 'assistant', content: '', reasoning_content: '', tool_calls: [toolCall] },
               { role: 'tool', content: result.output, tool_call_id: toolCall.id }
             );
             sessionManager.saveCurrentSession(messages);
@@ -1436,7 +1478,7 @@ ${colors.bold('环境变量配置:')}
               throw new Error('模型选择器返回了无效配置');
             }
             const newModel = selection.value;
-            const newProviderName = detectProviderForModel(newModel);
+            const newProviderName = detectProviderForModel(newModel, providerConfig);
             // 如果切换了模型，重建 Provider 实例
             if (newModel !== selectedModel || newProviderName !== currentProviderName) {
               provider = buildProvider(newModel);
@@ -1446,10 +1488,12 @@ ${colors.bold('环境变量配置:')}
             reasoningEffort = selection.secondaryValue;
             await refreshSystemPromptPreservingContext();
             // 持久化用户偏好到本地
-            savePreference({ model: selectedModel, reasoningEffort });
+            savePreference(
+              { model: selectedModel, reasoningEffort },
+              showRuntimeWarning
+            );
             updateStatusUI();
-            const providerLabel = currentProviderName === 'volcengine' ? '🌋 火山引擎' : '🔵 DeepSeek';
-            ui.writeLine(colors.green(`模型：${selectedModel} · 思考强度：${reasoningEffort} · 提供商：${providerLabel}`));
+            ui.writeLine(colors.green(`模型：${selectedModel} · 思考强度：${reasoningEffort} · 提供商：${providerLabel(currentProviderName)}`));
           } catch (error) {
             if (error instanceof TerminalInputCancelledError) {
               ui.writeLine(colors.gray('已取消模型选择。'));
@@ -1457,6 +1501,258 @@ ${colors.bold('环境变量配置:')}
             }
             throw error;
           }
+          continue;
+        }
+        if (command === 'provider' || command === 'providers') {
+          const action = parts[1]?.toLowerCase();
+          const target = parts[2]?.toLowerCase();
+
+          // 快速切换：/provider <name>（内置或自定义）
+          if (action && action !== 'add' && action !== 'set' && action !== 'unset') {
+            const targetName = action;
+            const targetKey = isBuiltinProvider(targetName)
+              ? (targetName === 'deepseek' ? deepseekApiKey : volcApiKey)
+              : providerConfig.providers[targetName]?.apiKey;
+            if (!targetKey) {
+              ui.writeLine(colors.red(`未配置 ${providerLabel(targetName)} API Key。使用 /provider add 引导配置。`));
+              continue;
+            }
+            const targetModel = availableModels.find(m => m.value === selectedModel && m.provider === targetName)?.value
+              || (targetName === 'deepseek' ? DEEPSEEK_MODELS[0].value
+                : targetName === 'volcengine' ? VOLCENGINE_MODELS[0].value
+                  : providerConfig.providers[targetName]?.model || providerConfig.providers[targetName]?.models?.[0] || '');
+            if (!targetModel) {
+              ui.writeLine(colors.red(`${providerLabel(targetName)} 未配置任何模型。使用 /provider add 补充模型列表。`));
+              continue;
+            }
+            provider = buildProvider(targetModel, targetName);
+            currentProviderName = targetName;
+            selectedModel = targetModel;
+            await refreshSystemPromptPreservingContext();
+            savePreference({ model: selectedModel, reasoningEffort }, showRuntimeWarning);
+            updateStatusUI();
+            ui.writeLine(colors.green(`已切换到 ${providerLabel(targetName)}，模型：${selectedModel}。`));
+            continue;
+          }
+
+          // 引导添加：/provider add（名称 → URL → Key → 模型列表 → 连通性测试）
+          if (action === 'add') {
+            try {
+              while (true) {
+                const nameInput = (await ui.readInput({ prompt: 'Provider 名称（如 openai、moonshot；留空取消）' })).trim();
+                if (!nameInput) {
+                  ui.writeLine(colors.gray('已取消添加 provider。'));
+                  break;
+                }
+                const nameError = validateProviderName(nameInput);
+                if (nameError) {
+                  ui.writeLine(colors.red(`✗ ${nameError}，请重新输入。`));
+                  continue;
+                }
+                const lowerName = nameInput.toLowerCase();
+                if (providerConfig.providers[lowerName]?.apiKey) {
+                  ui.writeLine(colors.yellow(`已存在 ${providerLabel(lowerName)} 的配置，继续输入将覆盖。`));
+                }
+                const baseUrl = (await ui.readInput({ prompt: 'Base URL（OpenAI 兼容端点，如 https://api.openai.com/v1；留空取消）' })).trim();
+                if (!baseUrl) {
+                  ui.writeLine(colors.gray('已取消添加 provider。'));
+                  break;
+                }
+                const normalizedUrl = normalizeBaseUrl(baseUrl);
+                if (normalizedUrl.note) {
+                  ui.writeLine(colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`));
+                }
+                if (!/^https?:\/\//i.test(normalizedUrl.url)) {
+                  ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrl}），请重新输入。`));
+                  continue;
+                }
+                const apiKey = (await ui.readInput({ prompt: 'API Key（留空取消）' })).trim();
+                if (!apiKey) {
+                  ui.writeLine(colors.gray('已取消添加 provider。'));
+                  break;
+                }
+                const modelListInput = (await ui.readInput({ prompt: '模型名称（多个用分号分隔，如 gpt-4o;gpt-4o-mini；留空取消）' })).trim();
+                const models = parseModelList(modelListInput);
+                if (models.length === 0) {
+                  ui.writeLine(colors.red('✗ 至少需要输入一个模型名称，请重新输入。'));
+                  continue;
+                }
+                // 连通性测试：用第一个模型发最小请求
+                ui.writeLine(colors.cyan(`正在测试连通性（${normalizedUrl.url} · ${models[0]}）…`));
+                const result = await testProviderConnection(normalizedUrl.url, apiKey, models[0]);
+                if (!result.ok) {
+                  ui.writeLine(colors.red(`✗ 连通性测试失败：${result.error}${result.ms !== undefined ? `（${result.ms}ms）` : ''}`));
+                  if (result.normalizedNote) {
+                    ui.writeLine(colors.yellow(`提示：${result.normalizedNote}（实际请求 ${result.usedUrl}）`));
+                  }
+                  const retry = (await ui.readInput({ prompt: '输入 r 重新配置，输入 c 取消' })).trim().toLowerCase();
+                  if (retry === 'c' || retry === '') {
+                    ui.writeLine(colors.gray('已取消添加 provider。'));
+                    break;
+                  }
+                  continue; // 重新进入引导流程
+                }
+                const ok = saveProviderConfig(lowerName, {
+                  apiKey,
+                  baseUrl: normalizedUrl.url,
+                  model: models[0],
+                  models
+                });
+                if (!ok) {
+                  ui.writeLine(colors.red('保存配置失败，请检查磁盘权限。'));
+                  break;
+                }
+                // 同步内存状态，使配置立即生效
+                const refreshed = loadProviderConfig();
+                providerConfig.providers[lowerName] = refreshed.providers[lowerName];
+                availableModels = buildAvailableModels();
+                updateStatusUI();
+                ui.writeLine(colors.green(`✓ 已添加 ${providerLabel(lowerName)}（连通性测试通过，${result.ms}ms）。`));
+                ui.writeLine(colors.gray(`模型：${models.join('、')}。输入 /provider ${lowerName} 切换到该提供商。`));
+                ui.writeLine(colors.gray('注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。'));
+                break;
+              }
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) {
+                ui.writeLine(colors.gray('已取消添加 provider。'));
+                continue;
+              }
+              throw error;
+            }
+            continue;
+          }
+
+          // 配置：/provider set <name> [API Key]
+          if (action === 'set') {
+            if (!target || validateProviderName(target)) {
+              ui.writeLine(colors.red('用法: /provider set <name> [API Key]'));
+              continue;
+            }
+            const name = target.toLowerCase();
+            const label = providerLabel(name);
+            try {
+              const inlineKey = parts.slice(3).join(' ').trim();
+              const apiKey = inlineKey || (await ui.readInput({ prompt: `输入 ${label} API Key（留空保留现有配置）` })).trim();
+              const current = providerConfig.providers[name] || {};
+              const baseUrlInput = (await ui.readInput({ prompt: `Base URL（当前: ${current.baseUrl || '未设置'}，留空保留）` })).trim();
+              let baseUrlToSave = baseUrlInput || undefined;
+              if (baseUrlToSave) {
+                const normalizedUrl = normalizeBaseUrl(baseUrlToSave);
+                if (normalizedUrl.note) {
+                  ui.writeLine(colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`));
+                }
+                if (!/^https?:\/\//i.test(normalizedUrl.url)) {
+                  ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrlToSave}），已跳过保存。`));
+                  baseUrlToSave = undefined;
+                } else {
+                  baseUrlToSave = normalizedUrl.url;
+                }
+              }
+              const modelInput = (await ui.readInput({ prompt: `默认模型（当前: ${current.model || '未设置'}，留空保留）` })).trim();
+              const modelsInput = (await ui.readInput({ prompt: `模型列表（当前: ${current.models?.join('、') || '未设置'}，多个用分号分隔，留空保留）` })).trim();
+              const models = modelsInput ? parseModelList(modelsInput) : undefined;
+              const ok = saveProviderConfig(name, {
+                apiKey: apiKey || undefined,
+                baseUrl: baseUrlToSave,
+                model: modelInput || undefined,
+                models
+              });
+              if (!ok) {
+                ui.writeLine(colors.red(`保存 ${label} 配置失败，请检查磁盘权限。`));
+                continue;
+              }
+              // 同步内存状态，使配置立即生效
+              const refreshed = loadProviderConfig();
+              providerConfig.providers[name] = refreshed.providers[name];
+              if (name === 'deepseek') {
+                deepseekApiKey = apiKey || deepseekApiKey;
+              } else if (name === 'volcengine') {
+                volcApiKey = apiKey || volcApiKey;
+              }
+              availableModels = buildAvailableModels();
+              // 若当前正使用该 provider，则重建实例并同步模型
+              if (currentProviderName === name) {
+                const newModel = modelInput || selectedModel;
+                provider = buildProvider(newModel, name);
+                currentProviderName = name;
+                if (modelInput) {
+                  selectedModel = modelInput;
+                  await refreshSystemPromptPreservingContext();
+                  savePreference({ model: selectedModel, reasoningEffort }, showRuntimeWarning);
+                }
+                updateStatusUI();
+              }
+              ui.writeLine(colors.green(`✓ 已保存 ${label} 配置（${projectProviderConfigPath()}）。`));
+              ui.writeLine(colors.gray('注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。'));
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) {
+                ui.writeLine(colors.gray('已取消配置。'));
+                continue;
+              }
+              throw error;
+            }
+            continue;
+          }
+
+          // 清除：/provider unset <name>
+          if (action === 'unset') {
+            if (!target) {
+              ui.writeLine(colors.red('用法: /provider unset <name>'));
+              continue;
+            }
+            const name = target.toLowerCase();
+            const label = providerLabel(name);
+            if (!unsetProviderConfig(name)) {
+              ui.writeLine(colors.red(`清除 ${label} 配置失败。`));
+              continue;
+            }
+            const refreshed = loadProviderConfig();
+            providerConfig.providers[name] = refreshed.providers[name];
+            if (name === 'deepseek') {
+              deepseekApiKey = process.env.DEEPSEEK_API_KEY || providerConfig.providers.deepseek?.apiKey;
+            } else if (name === 'volcengine') {
+              volcApiKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY || providerConfig.providers.volcengine?.apiKey;
+            }
+            availableModels = buildAvailableModels();
+            updateStatusUI();
+            ui.writeLine(colors.green(`✓ 已清除 ${label} 的本地配置。`));
+            const keyAfter = isBuiltinProvider(name)
+              ? (name === 'deepseek' ? deepseekApiKey : volcApiKey)
+              : providerConfig.providers[name]?.apiKey;
+            if (currentProviderName === name && !keyAfter) {
+              ui.writeLine(colors.yellow(`当前正在使用 ${label}，但已无可用 API Key。建议 /provider add 重新配置或切换提供商。`));
+            }
+            continue;
+          }
+
+          // 状态查看：/provider
+          const rows = [colors.bold('模型提供商状态：')];
+          const allNames = [...PROVIDER_NAMES, ...Object.keys(providerConfig.providers).filter(n => !PROVIDER_NAMES.includes(n))];
+          for (const name of allNames) {
+            const label = providerLabel(name);
+            const entry = providerConfig.providers[name] || {};
+            let key: string | undefined;
+            let envKey: string | undefined;
+            if (name === 'deepseek') {
+              key = deepseekApiKey;
+              envKey = process.env.DEEPSEEK_API_KEY;
+            } else if (name === 'volcengine') {
+              key = volcApiKey;
+              envKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
+            } else {
+              key = entry.apiKey;
+            }
+            const masked = key ? `${key.slice(0, 6)}***（共 ${key.length} 位）` : '未配置';
+            const source = key && key === envKey ? '环境变量' : '配置文件';
+            rows.push(`  ${label}${currentProviderName === name ? colors.green('（当前）') : ''}`);
+            rows.push(`    API Key: ${key ? colors.green(masked) + colors.gray(` [${source}]`) : colors.red('未配置')}`);
+            rows.push(`    Base URL: ${entry.baseUrl || '默认'}`);
+            const modelLabel = entry.models?.length ? entry.models.join('、') : (entry.model || '默认');
+            rows.push(`    模型: ${modelLabel}`);
+          }
+          rows.push(colors.gray(`当前模型：${selectedModel} · 提供商：${providerLabel(currentProviderName)}`));
+          rows.push(colors.gray('/provider add 引导添加；/provider set <name> [API Key] 快速配置；/provider unset <name> 清除；/provider <name> 切换。'));
+          ui.writeChat(rows.join('\n'));
           continue;
         }
         if (command === 'permission' || command === 'perm') {
@@ -1508,6 +1804,7 @@ ${colors.bold('环境变量配置:')}
         if (command === 'perf') {
           const reset = parts[1]?.toLowerCase() === 'reset';
           const snapshot = performanceMonitor.snapshot(reset);
+          const nativeRenderer = getNativeTerminalEngineStatus();
           const metricRows = Object.entries(snapshot.metrics)
             .sort((left, right) => right[1].p95Ms - left[1].p95Ms)
             .map(([name, metric]) =>
@@ -1515,6 +1812,7 @@ ${colors.bold('环境变量配置:')}
             );
           ui.writeChat([
             colors.bold(`性能指标${reset ? '（已在读取后重置）' : ''}`),
+            `  Render Engine           ${nativeRenderer.available ? 'Rust native' : 'TypeScript fallback'} (${nativeRenderer.mode})`,
             `  Event Loop              avg ${snapshot.eventLoop.meanMs.toFixed(1).padStart(7)}ms  p95 ${snapshot.eventLoop.p95Ms.toFixed(1).padStart(7)}ms  max ${snapshot.eventLoop.maxMs.toFixed(1).padStart(7)}ms`,
             ...(metricRows.length > 0 ? metricRows : [colors.gray('  暂无操作采样。')]),
             '',
@@ -1533,6 +1831,7 @@ ${colors.bold('环境变量配置:')}
             `  ${colors.purple('/permission')}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
             `  ${colors.purple('/effort')}      - 切换思考强度（当前：${reasoningEffort}）`,
             `  ${colors.purple('/model')}       - 选择模型（当前：${selectedModel}）`,
+            `  ${colors.purple('/provider')}    - 查看状态 / 切换 / 添加 / 配置提供商 (add|set|unset)`,
             `  ${colors.purple('/clear')}       - 清空聊天区与上下文`,
             `  ${colors.purple('/perf')}        - 查看性能指标（reset 可清空采样）`,
             `  ${colors.purple('/viewer')}      - 打开 Trace 观测中心`,
@@ -1568,7 +1867,7 @@ ${colors.bold('环境变量配置:')}
       messages.push({ role: 'user', content: promptInput, snapshotId: snapshotId || undefined });
       if (manualSkillExchange) {
         messages.push(
-          { role: 'assistant', content: '', tool_calls: [manualSkillExchange.toolCall] },
+          { role: 'assistant', content: '', reasoning_content: '', tool_calls: [manualSkillExchange.toolCall] },
           { role: 'tool', content: manualSkillExchange.output, tool_call_id: manualSkillExchange.toolCall.id }
         );
       }
@@ -1588,7 +1887,10 @@ ${colors.bold('环境变量配置:')}
             fullTitleText += chunk;
           }
           return fullTitleText;
-        }).catch(() => {});
+        }).catch(error => {
+          const detail = error instanceof Error ? error.message : String(error);
+          showRuntimeWarning(`会话标题生成失败，已保留默认标题：${detail}`);
+        });
       } else {
         sessionManager.saveCurrentSession(messages);
       }
@@ -1632,7 +1934,7 @@ ${colors.bold('环境变量配置:')}
             ui.setStatus(`${spinnerChars[spinIdx]} ${colors.gray(statusLabel)}`);
             spinIdx = (spinIdx + 1) % spinnerChars.length;
           }
-        }, 80);
+        }, 100);
 
         let textContent = '';
         let reasoningContent = '';
@@ -1664,9 +1966,8 @@ ${colors.bold('环境变量配置:')}
           },
           onReasoning: (content: string) => {
             reasoningContent += content;
-            if (isThinking) {
-              ui.setStatus(`${spinnerChars[spinIdx]} ${colors.gray(`深度思考中... (${reasoningContent.length} 字)`)}`);
-            }
+            // Spinner samples the latest length at a bounded rate. Rendering on
+            // every provider delta can otherwise saturate Windows Terminal.
           },
           onUsage: usage => {
             completionTokens = usage.completion_tokens;
@@ -1685,7 +1986,7 @@ ${colors.bold('环境变量配置:')}
 
             textContent += chunk;
             // Reparse at most once per frame; the final pass below always renders the complete answer.
-            if (markdownRenderThrottle.shouldRender()) {
+            if (markdownRenderThrottle.shouldRender(Date.now(), textContent.length)) {
               const renderedMarkdown = mdStreamRenderer.render(textContent, false);
               ui.updateChatFrom(streamStartOffset, renderedMarkdown);
             }
@@ -1734,7 +2035,9 @@ ${colors.bold('环境变量配置:')}
             ? 'token usage unavailable'
             : `${completionTokens.toLocaleString('en-US')} tokens consumed`;
           ui.writeLine(colors.gray(`Think ${thinkingSeconds} s, ${tokenSummary}.`));
-        } else {
+        } else if (!toolCalls || toolCalls.length === 0 || invalidToolCall) {
+          // 无工具调用（或工具调用无效）时正文后补一个空行；
+          // 有工具调用时由下方工具调用块前后的空行负责分隔，避免产生连续空行。
           ui.writeLine();
         }
 
@@ -1780,6 +2083,8 @@ ${colors.bold('环境变量配置:')}
 
         // 处理工具调用逻辑
         if (toolCalls && toolCalls.length > 0) {
+          // 工具调用块前空一行：与上方思考/正文分隔；工具调用相互之间不空行
+          ui.writeBlankLine();
           for (const tc of toolCalls) {
             // 用户按 ESC 中断后跳过后续工具执行
             if (isTurnAborted) {
@@ -1850,6 +2155,8 @@ ${colors.bold('环境变量配置:')}
             sessionManager.saveCurrentSession(messages);
             updateStatusUI();
           }
+          // 工具调用块后空一行：与下方思考/正文分隔
+          ui.writeLine();
           if (isTurnAborted) {
             keepCalling = false;
           } else if (permissionMode === 'plan' && planReadyForReview) {
