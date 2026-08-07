@@ -2,6 +2,8 @@
 
 HAJI CLI 是一个面向本地代码工作的终端 AI 助手，支持流式对话、Plan Mode、可中止工具、会话恢复、Rewind 和最多三个并行只读子代理。
 
+运行中按 `Esc` 会立即停止 spinner 和新 token 渲染，并在后台完成网络或工具进程清理；已经生成的部分回复会保留。若承载本轮 prompt 的主 Provider 请求尚未真正发出，本轮 prompt 不会写入会话，而是自动收回输入框供修改后重发；自动压缩也不会提前提交它。
+
 ## 环境要求
 
 - Node.js 20.18.1 或更高版本
@@ -28,15 +30,15 @@ $env:VOLC_API_KEY = '...'
 
 也可以在 haji 会话内用 `/provider` 指令快速配置，无需设置环境变量：
 
-- `/provider`：查看全部提供商（内置 + 自定义）的配置状态与当前使用的模型
-- `/provider add`：**引导添加自定义提供商**——依次输入 Provider 名称、Base URL、API Key、模型名称（多个用分号分隔，如 `gpt-4o;gpt-4o-mini`），输入完成后自动发起连通性测试（最小请求验证 Base URL + API Key + 模型三者有效）；测试失败会显示原因，输入 `r` 重新进入引导流程或 `c` 取消。添加成功后即可用 `/provider <name>` 切换使用
+- `/provider`：查看全部提供商（内置 + 自定义）的配置状态、当前模型及各字段来源（环境变量 / 全局 / 项目级）
+- `/provider add [--project]`：**引导添加自定义提供商**——依次输入 Provider 名称、Base URL、API Key、模型名称（多个用分号分隔，如 `gpt-4o;gpt-4o-mini`），输入完成后自动发起连通性测试（最小请求验证 Base URL + API Key + 模型三者有效）；测试失败会显示原因，输入 `r` 重新进入引导流程或 `c` 取消。默认保存到用户全局配置，附加 `--project` 时仅保存到当前项目
 - `/provider <name>`：立即切换到指定提供商（内置 `deepseek` / `volcengine` 或自定义名称）
-- `/provider set <name> [API Key]`：快速配置 API Key、Base URL、默认模型与模型列表（内联传入 API Key 可跳过交互输入；留空保留现有值），保存后立即生效
-- `/provider unset <name>`：清除本地配置
+- `/provider set <name> [--project]`：通过遮罩输入框安全配置 API Key，再设置 Base URL、默认模型与模型列表；默认保存到用户全局配置，附加 `--project` 时保存到当前项目
+- `/provider unset <name> [--project]`：默认清除用户全局配置，附加 `--project` 时仅清除当前项目配置
 
 自定义提供商需提供 OpenAI 兼容的 `POST {baseUrl}/chat/completions` 端点（如 OpenAI、Moonshot、本地 vLLM/Ollama 网关等）；`/subagent` 的 `--provider` 也支持自定义名称。
 
-配置保存到 `.haji/config.json`（项目级）与 `~/.haji/config.json`（用户级，跨项目共用），项目级覆盖用户级；环境变量优先级始终最高（环境变量 > 配置文件 > 内置默认值）。API Key 为明文存储，`.haji/` 已被 git 忽略，请勿共享该文件。
+配置默认保存到 `~/.haji/config.json`（用户全局，跨项目共用），使用 `--project` 时保存到 `.haji/config.json`（项目级）。项目级覆盖用户全局；环境变量优先级始终最高（环境变量 > 项目级 > 用户全局 > 内置默认值）。API Key 为明文存储，`.haji/` 已被 git 忽略，请勿共享该文件。
 
 ## 网络代理与超时
 
@@ -53,7 +55,7 @@ HAJI 支持标准的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，也支持以下
 
 ## 界面主题
 
-HAJI 的 TUI 界面（背景、前景、边框、Logo 与 Markdown 配色）默认使用内置深色主题，不再跟随终端模拟器的配色与字体设置——颜色全部以 24-bit 真彩色输出，像素风 Logo 由块字符绘制，不依赖终端字体。退出界面时自动恢复终端默认外观。
+HAJI 的 TUI 界面（背景、前景、边框、Logo 与 Markdown 配色）默认使用内置深色主题。输出会按终端能力自动降级为 24-bit 真彩色、256 色、16 色或无色；设置 `NO_COLOR`、使用 `TERM=dumb`、或将输出重定向到非 TTY 时会采用无色文本。像素风 Logo 由块字符绘制，退出界面时自动恢复终端默认外观。
 
 主题支持两级配置，项目级覆盖用户级同名字段：
 
@@ -62,20 +64,21 @@ HAJI 的 TUI 界面（背景、前景、边框、Logo 与 Markdown 配色）默�
 
 ```json
 {
-  "background": "#0d1117",
-  "foreground": "#c9d1d9",
-  "accent": "#a371f7",
-  "muted": "#6e7681",
-  "red": "#ff7b72",
-  "green": "#7ee787",
-  "yellow": "#f2cc60",
-  "blue": "#79c0ff",
-  "magenta": "#d2a8ff",
-  "cyan": "#56d4dd",
-  "brightGreen": "#56d364",
-  "brightYellow": "#e3b341",
-  "brightBlue": "#6cb6ff",
-  "brightCyan": "#39c5cf"
+  "background": "#101318",
+  "userMsgBg": "#171b22",
+  "foreground": "#d9dee7",
+  "accent": "#a995d6",
+  "muted": "#8f98a5",
+  "red": "#e07a7a",
+  "green": "#78b892",
+  "yellow": "#d6a85f",
+  "blue": "#82aadd",
+  "magenta": "#b8a1df",
+  "cyan": "#7dcfff",
+  "brightGreen": "#91c7a6",
+  "brightYellow": "#e2bb78",
+  "brightBlue": "#9ab8e6",
+  "brightCyan": "#9edcff"
 }
 ```
 

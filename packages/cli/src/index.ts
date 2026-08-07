@@ -62,11 +62,15 @@ import {
   testProviderConnection,
   isBuiltinProvider,
   PROVIDER_NAMES,
-  projectProviderConfigPath,
+  loadProviderConfigScope,
+  providerConfigPath,
   type ProviderName,
-  type ProviderConfig
+  type ProviderConfig,
+  type ProviderConfigScope
 } from './provider-config.js';
 import { paint } from './theme.js';
+import { redactSensitiveCommand, sanitizeTerminalText } from './terminal-sanitize.js';
+import { splitPendingUserTurn } from './turn-lifecycle.js';
 
 // 主题化色彩工具：颜色取自当前主题（24-bit 真彩色），独立于终端调色板。
 // purple/boldPurple/gray 保留为旧名别名，便于全文既有调用点无缝兼容。
@@ -175,7 +179,7 @@ ${colors.bold('快捷命令 (对话内):')}
   /permission         切换权限模式 (plan, default, accept-edit, auto, bypass-permissions)
   /effort             切换思考强度 (low, medium, high, xhigh, max)
   /model              选择大模型与思考强度
-  /provider          查看 / 切换 / 添加 / 配置提供商（add|set|unset|<name>）
+  /provider          查看 / 切换 / 添加 / 配置提供商（默认全局，可加 --project）
   /clear              清空聊天历史与上下文
   /perf               查看性能指标，/perf reset 可清空采样
   /viewer             打开 Trace 观测中心
@@ -404,15 +408,21 @@ ${colors.bold('环境变量配置:')}
     const usedTokens = estimateMessagesTokens(ctx.messages, { includeSystem: true });
     if (usedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
     if (shouldTriggerAutoCompaction(usedTokens, thresholds, autoCompactionArmed)) {
+      const { history, pendingTurn } = splitPendingUserTurn(ctx.messages);
+      if (history.length === 0) return;
       autoCompactionArmed = false;
       ui.writeLine(colors.gray(`🧹 上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`));
-      const result = await runCompactionPipeline(ctx.messages, {
+      const result = await runCompactionPipeline(history, {
         forceL4: false,
         maxTokensThreshold: thresholds.triggerTokens,
         summaryProvider: summarizeMessagesForCompaction
       });
-      ctx.messages = result.messages;
-      skillRegistry.restoreScopeFromMessages('main', result.messages);
+      if (foregroundAbortSignal?.aborted) {
+        autoCompactionArmed = true;
+        return;
+      }
+      ctx.messages = [...result.messages, ...pendingTurn];
+      skillRegistry.restoreScopeFromMessages('main', ctx.messages);
       if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
       const layers = result.layersApplied.length > 0 ? result.layersApplied.join(' -> ') : '无需变更';
       ui.writeLine(colors.gray(`✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`));
@@ -423,6 +433,7 @@ ${colors.bold('环境变量配置:')}
   });
 
   let provider = buildProvider(selectedModel, undefined, currentProviderName);
+  let foregroundAbortSignal: AbortSignal | undefined;
   async function summarizeMessagesForCompaction(sourceMessages: ChatMessage[]): Promise<string> {
     const transcript = sourceMessages.map((message, index) => JSON.stringify({ index, ...message })).join('\n');
     const summaryInstruction = [
@@ -442,12 +453,13 @@ ${colors.bold('环境变量配置:')}
         model: selectedModel,
         reasoningEffort: 'low',
         thinking: false,
-        maxTokens: 6000
+        maxTokens: 6000,
+        abortSignal: foregroundAbortSignal
       });
       if (!summary.trim()) throw new Error('摘要模型返回了空内容');
       return summary.trim();
     } finally {
-      ui.setStatus();
+      if (!foregroundAbortSignal?.aborted) ui.setStatus();
     }
   }
   const systemPromptManager = new SystemPromptManager();
@@ -543,8 +555,8 @@ ${colors.bold('环境变量配置:')}
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: LOGO.trim(),
     compactHeader: colors.boldPurple('HAJI'),
-    inputPrompt: '',
-    continuationPrompt: '',
+    inputPrompt: colors.boldAccent('› '),
+    continuationPrompt: colors.muted('│ '),
     renderBorder: width => colors.gray('─'.repeat(width))
   });
   markStartupStage('ui_ctor');
@@ -571,6 +583,8 @@ ${colors.bold('环境变量配置:')}
   ];
   ui.start();
   markStartupStage('ui_started');
+  // 状态栏展示当前工作目录（模型名称右侧）。
+  ui.setCurrentPath(process.cwd());
   // Logo 下方的启动信息行：provider · model · effort + 引导提示。
   // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
   ui.setHeaderInfo([
@@ -1055,7 +1069,7 @@ ${colors.bold('环境变量配置:')}
     onNotification: notification => {
       if (!notification.background) return;
       const mark = notification.type === 'completed' ? colors.boldGreen('✓') : colors.boldYellow('!');
-      ui.writeLine(`${mark} ${colors.gray(`[${notification.agentId}] ${notification.message}`)}`);
+      ui.writeLine(`${mark} ${colors.gray(`[${notification.agentId}] ${sanitizeTerminalText(notification.message)}`)}`);
     }
   });
   agentManager.setScope(sessionManager.getCurrentSession().id);
@@ -1095,7 +1109,7 @@ ${colors.bold('环境变量配置:')}
     setStatus: status => ui.setStatus(status ? `${colors.blue('⚙')} ${colors.gray(status)}` : undefined),
     onToolProgress: ({ toolName, progress, context }) => {
       if (context.agentId) return;
-      const plain = progress.chunk.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim();
+      const plain = sanitizeTerminalText(progress.chunk).trim();
       const lastLine = plain.split(/\r?\n/).filter(Boolean).at(-1);
       if (!lastLine) return;
       const preview = lastLine.length > 120 ? `${lastLine.slice(0, 117)}...` : lastLine;
@@ -1315,7 +1329,8 @@ ${colors.bold('环境变量配置:')}
   };
 
   const updateStatusUI = () => {
-    ui.setModelInfo(selectedModel, reasoningEffort);
+    ui.setModelInfo(selectedModel, reasoningEffort, providerLabel(currentProviderName));
+    ui.setSessionTitle(sessionManager.getCurrentSession().title);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
     ui.setContextUsage(tokens, getModelContextWindowTokens(selectedModel));
   };
@@ -1351,6 +1366,7 @@ ${colors.bold('环境变量配置:')}
 
   // 待处理并发消息队列
   const pendingInputs: string[] = [];
+  const deferredInputDrafts: string[] = [];
 
   const readSelectionSafely = async (
     options: Parameters<TerminalUI['readSelection']>[0]
@@ -1397,7 +1413,11 @@ ${colors.bold('环境变量配置:')}
     mainLoop: while (true) {
       injectAgentNotifications();
       let userInput: string;
-      if (pendingInputs.length > 0) {
+      if (deferredInputDrafts.length > 0) {
+        const draft = deferredInputDrafts.shift()!;
+        ui.cancelInput();
+        userInput = await ui.readInput({ slashCommands, initialValue: draft });
+      } else if (pendingInputs.length > 0) {
         userInput = pendingInputs.shift()!;
         ui.setQueue(pendingInputs);
       } else {
@@ -1417,8 +1437,9 @@ ${colors.bold('环境变量配置:')}
         ui.dismissStartupHeader();
       }
 
+      const promptDisplayStartOffset = ui.getChatLength();
       ui.writeLine();
-      ui.writeLine(colors.userMsg(trimmedInput));
+      ui.writeLine(colors.userMsg(redactSensitiveCommand(sanitizeTerminalText(trimmedInput))));
       ui.writeLine();
 
       // 解析斜杠内置命令
@@ -1615,7 +1636,7 @@ ${colors.bold('环境变量配置:')}
             if (parsed.background) continue;
             ui.onEsc(() => { agentManager.abort(launch.agent.id); });
             const finished = await launch.completion;
-            ui.onEsc(() => {});
+            ui.onEsc();
             if (finished.result) {
               ui.writeLine(finished.result.summary);
               ui.writeLine(colors.yellow(`结果状态：${finished.status}，需要父 Agent 独立验证。`));
@@ -1911,14 +1932,14 @@ ${colors.bold('环境变量配置:')}
 
                 if (m.role === 'user' && typeof m.content === 'string') {
                   appendHistoryLine();
-                  appendHistoryLine(colors.userMsg(m.content));
+                  appendHistoryLine(colors.userMsg(sanitizeTerminalText(m.content)));
                   appendHistoryLine();
                 } else if (m.role === 'assistant') {
                   if (m.reasoning_content) {
                     appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
                   }
                   if (m.content) {
-                    const mdRenderer = new MarkdownStreamRenderer();
+                    const mdRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
                     const rendered = mdRenderer.render(m.content, true);
                     appendHistoryLine(rendered);
                   }
@@ -2149,6 +2170,14 @@ ${colors.bold('环境变量配置:')}
         if (command === 'provider' || command === 'providers') {
           const action = parts[1]?.toLowerCase();
           const target = parts[2]?.toLowerCase();
+          const hasProjectScope = parts.some(part => part.toLowerCase() === '--project');
+          const hasUserScope = parts.some(part => part.toLowerCase() === '--global' || part.toLowerCase() === '--user');
+          if (hasProjectScope && hasUserScope) {
+            ui.writeLine(colors.red('不能同时指定 --project 与 --global。'));
+            continue;
+          }
+          const configScope: ProviderConfigScope = hasProjectScope ? 'project' : 'user';
+          const configScopeLabel = configScope === 'project' ? '项目级' : '用户全局';
 
           // 快速切换：/provider <name>（内置或自定义）
           if (action && action !== 'add' && action !== 'set' && action !== 'unset') {
@@ -2178,7 +2207,7 @@ ${colors.bold('环境变量配置:')}
             continue;
           }
 
-          // 引导添加：/provider add（名称 → URL → Key → 模型列表 → 连通性测试）
+          // 引导添加：/provider add [--project]（名称 → URL → Key → 模型列表 → 连通性测试）
           if (action === 'add') {
             try {
               while (true) {
@@ -2209,7 +2238,10 @@ ${colors.bold('环境变量配置:')}
                   ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrl}），请重新输入。`));
                   continue;
                 }
-                const apiKey = (await ui.readInput({ prompt: 'API Key（留空取消）' })).trim();
+                const apiKey = (await ui.readInput({
+                  prompt: 'API Key（留空取消）',
+                  sensitive: true
+                })).trim();
                 if (!apiKey) {
                   ui.writeLine(colors.gray('已取消添加 provider。'));
                   break;
@@ -2240,7 +2272,7 @@ ${colors.bold('环境变量配置:')}
                   baseUrl: normalizedUrl.url,
                   model: models[0],
                   models
-                });
+                }, configScope);
                 if (!ok) {
                   ui.writeLine(colors.red('保存配置失败，请检查磁盘权限。'));
                   break;
@@ -2250,7 +2282,8 @@ ${colors.bold('环境变量配置:')}
                 providerConfig.providers[lowerName] = refreshed.providers[lowerName];
                 availableModels = buildAvailableModels();
                 updateStatusUI();
-                ui.writeLine(colors.green(`✓ 已添加 ${providerLabel(lowerName)}（连通性测试通过，${result.ms}ms）。`));
+                ui.writeLine(colors.green(`✓ 已添加 ${providerLabel(lowerName)}（${configScopeLabel}，连通性测试通过，${result.ms}ms）。`));
+                ui.writeLine(colors.gray(`配置文件：${providerConfigPath(configScope)}`));
                 ui.writeLine(colors.gray(`模型：${models.join('、')}。输入 /provider ${lowerName} 切换到该提供商。`));
                 ui.writeLine(colors.gray('注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。'));
                 break;
@@ -2265,17 +2298,25 @@ ${colors.bold('环境变量配置:')}
             continue;
           }
 
-          // 配置：/provider set <name> [API Key]
+          // 配置：/provider set <name> [--project]（API Key 通过安全输入框录入）
           if (action === 'set') {
             if (!target || validateProviderName(target)) {
-              ui.writeLine(colors.red('用法: /provider set <name> [API Key]'));
+              ui.writeLine(colors.red('用法: /provider set <name> [--project]'));
               continue;
             }
             const name = target.toLowerCase();
             const label = providerLabel(name);
             try {
-              const inlineKey = parts.slice(3).join(' ').trim();
-              const apiKey = inlineKey || (await ui.readInput({ prompt: `输入 ${label} API Key（留空保留现有配置）` })).trim();
+              const inlineArguments = parts.slice(3)
+                .filter(part => !['--project', '--global', '--user'].includes(part.toLowerCase()))
+              if (inlineArguments.length > 0) {
+                ui.writeLine(colors.red('API Key 不再支持内联传入；请使用掩码输入框。'));
+                continue;
+              }
+              const apiKey = (await ui.readInput({
+                prompt: `输入 ${label} API Key（留空保留现有配置）`,
+                sensitive: true
+              })).trim();
               const current = providerConfig.providers[name] || {};
               const baseUrlInput = (await ui.readInput({ prompt: `Base URL（当前: ${current.baseUrl || '未设置'}，留空保留）` })).trim();
               let baseUrlToSave = baseUrlInput || undefined;
@@ -2299,7 +2340,7 @@ ${colors.bold('环境变量配置:')}
                 baseUrl: baseUrlToSave,
                 model: modelInput || undefined,
                 models
-              });
+              }, configScope);
               if (!ok) {
                 ui.writeLine(colors.red(`保存 ${label} 配置失败，请检查磁盘权限。`));
                 continue;
@@ -2325,7 +2366,10 @@ ${colors.bold('环境变量配置:')}
                 }
                 updateStatusUI();
               }
-              ui.writeLine(colors.green(`✓ 已保存 ${label} 配置（${projectProviderConfigPath()}）。`));
+              ui.writeLine(colors.green(`✓ 已保存 ${label} 的${configScopeLabel}配置（${providerConfigPath(configScope)}）。`));
+              if (configScope === 'user' && Object.keys(loadProviderConfigScope('project').providers[name] || {}).length > 0) {
+                ui.writeLine(colors.yellow('当前项目仍有同名项目级配置，会继续覆盖对应的全局字段。'));
+              }
               ui.writeLine(colors.gray('注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。'));
             } catch (error) {
               if (error instanceof TerminalInputCancelledError) {
@@ -2337,16 +2381,16 @@ ${colors.bold('环境变量配置:')}
             continue;
           }
 
-          // 清除：/provider unset <name>
+          // 清除：/provider unset <name> [--project]
           if (action === 'unset') {
             if (!target) {
-              ui.writeLine(colors.red('用法: /provider unset <name>'));
+              ui.writeLine(colors.red('用法: /provider unset <name> [--project]'));
               continue;
             }
             const name = target.toLowerCase();
             const label = providerLabel(name);
-            if (!unsetProviderConfig(name)) {
-              ui.writeLine(colors.red(`清除 ${label} 配置失败。`));
+            if (!unsetProviderConfig(name, configScope)) {
+              ui.writeLine(colors.red(`清除 ${label} 的${configScopeLabel}配置失败。`));
               continue;
             }
             const refreshed = loadProviderConfig();
@@ -2358,7 +2402,7 @@ ${colors.bold('环境变量配置:')}
             }
             availableModels = buildAvailableModels();
             updateStatusUI();
-            ui.writeLine(colors.green(`✓ 已清除 ${label} 的本地配置。`));
+            ui.writeLine(colors.green(`✓ 已清除 ${label} 的${configScopeLabel}配置。`));
             const keyAfter = isBuiltinProvider(name)
               ? (name === 'deepseek' ? deepseekApiKey : volcApiKey)
               : providerConfig.providers[name]?.apiKey;
@@ -2370,6 +2414,13 @@ ${colors.bold('环境变量配置:')}
 
           // 状态查看：/provider
           const rows = [colors.bold('模型提供商状态：')];
+          const userConfig = loadProviderConfigScope('user');
+          const projectConfig = loadProviderConfigScope('project');
+          const sourceFor = (name: string, fields: Array<keyof ProviderConfig['providers'][string]>): string => {
+            if (fields.some(field => projectConfig.providers[name]?.[field] !== undefined)) return '项目级';
+            if (fields.some(field => userConfig.providers[name]?.[field] !== undefined)) return '全局';
+            return '默认';
+          };
           const allNames = [...PROVIDER_NAMES, ...Object.keys(providerConfig.providers).filter(n => !PROVIDER_NAMES.includes(n))];
           for (const name of allNames) {
             const label = providerLabel(name);
@@ -2386,15 +2437,15 @@ ${colors.bold('环境变量配置:')}
               key = entry.apiKey;
             }
             const masked = key ? `${key.slice(0, 6)}***（共 ${key.length} 位）` : '未配置';
-            const source = key && key === envKey ? '环境变量' : '配置文件';
+            const source = key && key === envKey ? '环境变量' : sourceFor(name, ['apiKey']);
             rows.push(`  ${label}${currentProviderName === name ? colors.green('（当前）') : ''}`);
             rows.push(`    API Key: ${key ? colors.green(masked) + colors.gray(` [${source}]`) : colors.red('未配置')}`);
-            rows.push(`    Base URL: ${entry.baseUrl || '默认'}`);
+            rows.push(`    Base URL: ${entry.baseUrl || '默认'} ${colors.gray(`[${sourceFor(name, ['baseUrl'])}]`)}`);
             const modelLabel = entry.models?.length ? entry.models.join('、') : (entry.model || '默认');
-            rows.push(`    模型: ${modelLabel}`);
+            rows.push(`    模型: ${modelLabel} ${colors.gray(`[${sourceFor(name, ['models', 'model'])}]`)}`);
           }
           rows.push(colors.gray(`当前模型：${selectedModel} · 提供商：${providerLabel(currentProviderName)}`));
-          rows.push(colors.gray('/provider add 引导添加；/provider set <name> [API Key] 快速配置；/provider unset <name> 清除；/provider <name> 切换。'));
+          rows.push(colors.gray('/provider add 引导添加；set/unset 默认全局，附加 --project 操作当前项目；/provider <name> 切换。'));
           ui.writeChat(rows.join('\n'));
           continue;
         }
@@ -2477,7 +2528,7 @@ ${colors.bold('环境变量配置:')}
             `  ${colors.purple('/permission')}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
             `  ${colors.purple('/effort')}      - 切换思考强度（当前：${reasoningEffort}）`,
             `  ${colors.purple('/model')}       - 选择模型（当前：${selectedModel}）`,
-            `  ${colors.purple('/provider')}    - 查看状态 / 切换 / 添加 / 配置提供商 (add|set|unset)`,
+            `  ${colors.purple('/provider')}    - 查看状态 / 切换 / 添加 / 配置提供商（默认全局，可加 --project）`,
             `  ${colors.purple('/clear')}       - 清空聊天区与上下文`,
             `  ${colors.purple('/perf')}        - 查看性能指标（reset 可清空采样）`,
             `  ${colors.purple('/viewer')}      - 打开 Trace 观测中心`,
@@ -2506,11 +2557,11 @@ ${colors.bold('环境变量配置:')}
         }
       }
 
-      // 记录用户消息到 Trace 与上下文
+      // 先把 prompt 放入本轮内存上下文；只有 Provider 真正开始请求时才写入
+      // Trace、快照和会话。这样 ESC 可以在请求发出前无痕收回 prompt。
       const promptInput = forwardedPrompt || trimmedInput;
-      tracker.recordUserInput(promptInput);
-      const snapshotId = snapshotEngine.createAnchor(`before user message ${messages.length}`);
-      messages.push({ role: 'user', content: promptInput, snapshotId: snapshotId || undefined });
+      const messagesBeforePrompt = [...messages];
+      messages.push({ role: 'user', content: promptInput });
       if (manualSkillExchange) {
         messages.push(
           { role: 'assistant', content: '', reasoning_content: '', tool_calls: [manualSkillExchange.toolCall] },
@@ -2519,35 +2570,115 @@ ${colors.bold('环境变量配置:')}
       }
       updateStatusUI();
 
-      // 首条用户消息触发后台并行生成标题与存盘
       const isFirstUserMsg = messages.filter(m => m.role === 'user').length === 1;
-      if (isFirstUserMsg) {
+      const requestAbortController = new AbortController();
+      const canReclaimPrompt = !trimmedInput.startsWith('/') && !manualSkillExchange;
+      let requestStarted = false;
+      let promptCommitted = false;
+      let promptReclaimed = false;
+      let isTurnAborted = false;
+      let abortNoticeShown = false;
+      let stopActiveTurnVisuals: () => void = () => {};
+
+      const commitPromptForRequest = () => {
+        requestStarted = true;
+        if (promptCommitted) return;
+        promptCommitted = true;
+        tracker.recordUserInput(promptInput);
+        const snapshotId = snapshotEngine.createAnchor(`before user message ${messagesBeforePrompt.length}`);
+        const latestUserMessage = [...messages].reverse().find(message =>
+          message.role === 'user' && message.content === promptInput && !message.snapshotId
+        );
+        if (latestUserMessage && snapshotId) latestUserMessage.snapshotId = snapshotId;
         sessionManager.saveCurrentSession(messages);
-        sessionManager.generateTitleAsync(promptInput, async (prompt) => {
-          let fullTitleText = '';
-          const titleStream = provider.completeStream([{ role: 'user', content: prompt }], {
-            model: selectedModel,
-            reasoningEffort: 'low'
+        if (isFirstUserMsg) {
+          sessionManager.generateTitleAsync(promptInput, async (prompt) => {
+            let fullTitleText = '';
+            const titleStream = provider.completeStream([{ role: 'user', content: prompt }], {
+              model: selectedModel,
+              reasoningEffort: 'low'
+            });
+            for await (const chunk of titleStream) fullTitleText += chunk;
+            return fullTitleText;
+          }).then(() => {
+            updateStatusUI();
+          }).catch(error => {
+            const detail = error instanceof Error ? error.message : String(error);
+            showRuntimeWarning(`会话标题生成失败，已保留默认标题：${detail}`);
           });
-          for await (const chunk of titleStream) {
-            fullTitleText += chunk;
-          }
-          return fullTitleText;
-        }).catch(error => {
-          const detail = error instanceof Error ? error.message : String(error);
-          showRuntimeWarning(`会话标题生成失败，已保留默认标题：${detail}`);
-        });
-      } else {
+        }
+      };
+
+      const showAbortNotice = () => {
+        stopActiveTurnVisuals();
+        ui.setStatus();
+        if (abortNoticeShown) return;
+        abortNoticeShown = true;
+        ui.writeLine();
+        ui.writeLine(colors.boldYellow('🛑 已终止。'));
+      };
+
+      const reclaimPrompt = () => {
+        promptReclaimed = true;
+        isTurnAborted = true;
+        stopActiveTurnVisuals();
+        requestAbortController.abort();
+        const concurrentDraft = ui.cancelInput();
+        if (concurrentDraft?.trim()) deferredInputDrafts.unshift(concurrentDraft);
+        deferredInputDrafts.unshift(trimmedInput);
+        messages = messagesBeforePrompt;
+        skillRegistry.restoreScopeFromMessages('main', messages);
         sessionManager.saveCurrentSession(messages);
-      }
+        ui.updateChatFrom(promptDisplayStartOffset, '');
+        ui.setStatus();
+        ui.writeLine(colors.gray('↩ 请求尚未发出，prompt 已收回到输入框。'));
+        ui.setQueue(pendingInputs);
+        ui.onEsc();
+        updateStatusUI();
+      };
+
+      foregroundAbortSignal = requestAbortController.signal;
+      ui.onEsc(() => {
+        if (isTurnAborted) return;
+        if (!requestStarted && canReclaimPrompt) {
+          reclaimPrompt();
+          return;
+        }
+        if (!requestStarted) commitPromptForRequest();
+        isTurnAborted = true;
+        stopActiveTurnVisuals();
+        const interruptedDraft = ui.cancelInput();
+        if (interruptedDraft?.trim()) {
+          deferredInputDrafts.unshift(interruptedDraft);
+        }
+        ui.setStatus(`⏹ ${colors.gray('正在终止...')}`, true);
+        requestAbortController.abort();
+      });
+      startBackgroundInput();
 
       const promptHookContext = { messages };
       await hookEngine.trigger('UserPromptSubmit', promptHookContext);
+      if (promptReclaimed) {
+        foregroundAbortSignal = undefined;
+        continue mainLoop;
+      }
       if (promptHookContext.messages !== messages) {
         messages = promptHookContext.messages;
         skillRegistry.restoreScopeFromMessages('main', messages);
-        sessionManager.saveCurrentSession(messages);
+        if (promptCommitted) sessionManager.saveCurrentSession(messages);
         updateStatusUI();
+      }
+      // 给刚提交后的 ESC 一个事件循环机会；真正的网络请求仍由 onRequestStart 划界。
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (promptReclaimed) {
+        foregroundAbortSignal = undefined;
+        continue mainLoop;
+      }
+      if (isTurnAborted) {
+        showAbortNotice();
+        ui.onEsc();
+        foregroundAbortSignal = undefined;
+        continue mainLoop;
       }
 
       let keepCalling = true;
@@ -2566,6 +2697,9 @@ ${colors.bold('环境变量配置:')}
         let finishReason: string | undefined;
         const thinkingStartedAt = Date.now();
 
+        let textContent = '';
+        let reasoningContent = '';
+
         // 启动异步 Spinner 加载动画（TTFT 思考期）
         let isThinking = true;
         const spinnerChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -2581,37 +2715,29 @@ ${colors.bold('环境变量配置:')}
             spinIdx = (spinIdx + 1) % spinnerChars.length;
           }
         }, 100);
-
-        let textContent = '';
-        let reasoningContent = '';
-        let isTurnAborted = false;
-        let currentAbortController: AbortController | null = null;
-        const mdStreamRenderer = new MarkdownStreamRenderer();
+        stopActiveTurnVisuals = () => {
+          isThinking = false;
+          clearInterval(spinnerInterval);
+        };
+        const mdStreamRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
         const markdownRenderThrottle = new MarkdownRenderThrottle();
         const streamStartOffset = ui.getChatLength();
         ui.markStableChatPrefix(streamStartOffset);
 
-        ui.onEsc(() => {
-          isTurnAborted = true;
-          if (currentAbortController) {
-            try {
-              currentAbortController.abort();
-            } catch {}
-          }
-        });
-
-        currentAbortController = new AbortController();
         const stream = provider.completeStream(messages, {
           model: selectedModel,
           reasoningEffort,
           thinking: true,
           maxTokens: getModelMaxOutputTokens(selectedModel),
           tools: activeTools().map(tool => tool.definition),
-          abortSignal: currentAbortController.signal,
+          abortSignal: requestAbortController.signal,
+          onRequestStart: commitPromptForRequest,
           onToolCall: (tcs: ToolCall[]) => {
+            if (isTurnAborted) return;
             currentToolCalls = tcs;
           },
           onReasoning: (content: string) => {
+            if (isTurnAborted) return;
             reasoningContent += content;
             // Spinner samples the latest length at a bounded rate. Rendering on
             // every provider delta can otherwise saturate Windows Terminal.
@@ -2626,6 +2752,7 @@ ${colors.bold('环境变量配置:')}
 
         try {
           for await (const chunk of stream) {
+            if (isTurnAborted) continue;
             if (isThinking) {
               isThinking = false;
               ui.setStatus();
@@ -2639,22 +2766,39 @@ ${colors.bold('环境变量配置:')}
             }
           }
 
+          if (isTurnAborted) {
+            const abortError = new Error('Turn aborted');
+            abortError.name = 'AbortError';
+            throw abortError;
+          }
+
           // 结束流式输出，做最终渲染
           if (textContent) {
             const finalRenderedMarkdown = mdStreamRenderer.render(textContent, true);
             ui.updateChatFrom(streamStartOffset, finalRenderedMarkdown);
           }
         } catch (streamError) {
-          clearInterval(spinnerInterval);
-          ui.setStatus();
+          stopActiveTurnVisuals();
           if (isTurnAborted) {
-            // 用户按 ESC 主动中断，显示专门的对话已终止提示
-            ui.writeLine();
-            ui.writeLine(colors.boldYellow('🛑 对话已终止。'));
-            ui.writeLine();
+            // 最后一帧可能尚未经过节流渲染；终止时补齐并保存已生成的部分内容。
+            if (textContent) {
+              ui.updateChatFrom(streamStartOffset, mdStreamRenderer.render(textContent, true));
+            }
+            if (textContent || reasoningContent) {
+              const partialMessage: ChatMessage = { role: 'assistant', content: textContent };
+              if (reasoningContent) partialMessage.reasoning_content = reasoningContent;
+              messages.push(partialMessage);
+              sessionManager.saveCurrentSession(messages);
+              updateStatusUI();
+            }
+            showAbortNotice();
           } else {
+            commitPromptForRequest();
+            ui.setStatus();
             // 捕获 Provider 调用错误，展示友好提示而非崩溃
-            const errMsg = streamError instanceof Error ? streamError.message : String(streamError);
+            const errMsg = sanitizeTerminalText(
+              streamError instanceof Error ? streamError.message : String(streamError)
+            );
             ui.writeLine();
             ui.writeLine(colors.boldRed(`❌ 模型调用出错: ${errMsg}`));
             ui.writeLine(colors.gray('提示: 请检查模型名称、API Key 是否正确，或使用 /model 切换其他模型。'));
@@ -2663,8 +2807,8 @@ ${colors.bold('环境变量配置:')}
           keepCalling = false;
           continue;
         } finally {
-          clearInterval(spinnerInterval);
-          ui.setStatus();
+          stopActiveTurnVisuals();
+          if (!isTurnAborted) ui.setStatus();
         }
 
         if (isThinking) {
@@ -2739,7 +2883,6 @@ ${colors.bold('环境变量配置:')}
           for (const tc of toolCalls) {
             // 用户按 ESC 中断后跳过后续工具执行
             if (isTurnAborted) {
-              ui.writeLine(colors.boldYellow('🛑 对话已终止，跳过剩余工具调用。'));
               messages.push({
                 role: 'tool',
                 tool_call_id: tc.id,
@@ -2769,20 +2912,32 @@ ${colors.bold('环境变量配置:')}
             const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
             const anchorSnapshotId = [...messages].reverse()
               .find(message => message.role === 'user' && message.snapshotId)?.snapshotId;
-            const execution = await toolExecutor.execute(toolName, args, {
-              toolCallId: tc.id,
-              abortSignal: currentAbortController.signal,
-              depth: 0,
-              userIntent: lastUserMsg,
-              permissionMode,
-              riskThreshold,
-              anchorSnapshotId
-            });
+            let execution: Awaited<ReturnType<typeof toolExecutor.execute>>;
+            try {
+              execution = await toolExecutor.execute(toolName, args, {
+                toolCallId: tc.id,
+                abortSignal: requestAbortController.signal,
+                depth: 0,
+                userIntent: lastUserMsg,
+                permissionMode,
+                riskThreshold,
+                anchorSnapshotId
+              });
+            } catch (error) {
+              if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: '[工具调用已跳过：用户中止了当前工作流]'
+              });
+              continue;
+            }
             const toolOutput = execution.output;
-            const argsSummary = formatToolArgs(args);
+            const safeToolOutput = sanitizeTerminalText(toolOutput);
+            const argsSummary = sanitizeTerminalText(formatToolArgs(args));
             const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
             if (execution.blocked || toolOutput.startsWith('执行出错:')) {
-              ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${toolOutput})`)}`);
+              ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${safeToolOutput})`)}`);
             } else {
               ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${execution.duration}ms)`)}`);
             }
@@ -2809,6 +2964,7 @@ ${colors.bold('环境变量配置:')}
           // 工具调用块后空一行：与下方思考/正文分隔
           ui.writeLine();
           if (isTurnAborted) {
+            showAbortNotice();
             keepCalling = false;
           } else if (permissionMode === 'plan' && planReadyForReview) {
             if (!planReviewSummaryRequested) {
@@ -2884,6 +3040,9 @@ ${colors.bold('环境变量配置:')}
         }
         sessionManager.saveCurrentSession(messages);
       }
+      stopActiveTurnVisuals();
+      ui.onEsc();
+      foregroundAbortSignal = undefined;
     }
   } catch (error) {
     if (error instanceof TerminalInputCancelledError) {
