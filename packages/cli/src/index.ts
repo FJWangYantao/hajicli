@@ -2,7 +2,7 @@
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS, MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor, SubagentRole, ExperienceStore, ExperiencesPromptPart, isFailedToolOutput } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -32,9 +32,24 @@ import { MarkdownRenderThrottle, MarkdownStreamRenderer, shouldShowToolThinkingS
 import { getNativeTerminalEngineStatus } from './native-terminal-engine.js';
 import { REWIND_CONFIRM_DEFAULT, queueRewindRefill } from './rewind-flow.js';
 import { SharedToolExecutor } from './tool-executor.js';
-import { parseSubagentCommand } from './agent-commands.js';
-import { getModelContextWindowTokens } from './context-policy.js';
+import { parsePresetCommand, parseSubagentCommand, type ParsedSubagentCommand } from './agent-commands.js';
+import { getModelContextWindowTokens, getModelMaxOutputTokens } from './context-policy.js';
 import { formatToolArgs, getCliVersion, loadPreference, savePreference } from './cli-runtime.js';
+import {
+  budgetPrompt,
+  textPrompt,
+  parseOptionalInteger,
+  validateDescription,
+  validateInstructionsInput
+} from './agent-wizard.js';
+import {
+  loadSubagentPresets,
+  saveSubagentPresets,
+  findSubagentPreset,
+  updateSubagentPreset,
+  applySubagentPreset,
+  type SubagentPreset
+} from './subagent-presets.js';
 import {
   loadProviderConfig,
   saveProviderConfig,
@@ -50,32 +65,15 @@ import {
   type ProviderName,
   type ProviderConfig
 } from './provider-config.js';
+import { paint } from './theme.js';
 
-// 原生 ANSI 终端转义色彩工具类，保持零外部依赖
+// 主题化色彩工具：颜色取自当前主题（24-bit 真彩色），独立于终端调色板。
+// purple/boldPurple/gray 保留为旧名别名，便于全文既有调用点无缝兼容。
 const colors = {
-  purple: (text: string) => `\x1b[35m${text}\x1b[0m`,
-  boldPurple: (text: string) => `\x1b[1m\x1b[35m${text}\x1b[0m`,
-  green: (text: string) => `\x1b[32m${text}\x1b[0m`,
-  boldGreen: (text: string) => `\x1b[1m\x1b[32m${text}\x1b[0m`,
-  yellow: (text: string) => `\x1b[33m${text}\x1b[0m`,
-  boldYellow: (text: string) => `\x1b[1m\x1b[33m${text}\x1b[0m`,
-  red: (text: string) => `\x1b[31m${text}\x1b[0m`,
-  boldRed: (text: string) => `\x1b[1m\x1b[31m${text}\x1b[0m`,
-  blue: (text: string) => `\x1b[34m${text}\x1b[0m`,
-  boldBlue: (text: string) => `\x1b[1m\x1b[34m${text}\x1b[0m`,
-  gray: (text: string) => `\x1b[90m${text}\x1b[0m`,
-  cyan: (text: string) => `\x1b[36m${text}\x1b[0m`,
-  bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
-  userMsg: (text: string) => {
-    const prefix = '\x1b[1;35m ❯ \x1b[0m';
-    const lines = text.split('\n');
-    return lines.map((line, idx) => {
-      if (idx === 0) {
-        return `${prefix}${line}`;
-      }
-      return `   ${line}`;
-    }).join('\n');
-  }
+  ...paint,
+  purple: paint.accent,
+  boldPurple: paint.boldAccent,
+  gray: paint.muted
 };
 
 // 像素画风格的大写 HAJI 启动 Logo
@@ -107,7 +105,16 @@ const EFFORT_OPTIONS = REASONING_EFFORTS.map(value => ({
  * 判断给定 model value 属于哪个 provider：
  * 先查内置模型注册表，再查自定义 provider 声明的模型列表，最后回退 deepseek。
  */
-function detectProviderForModel(modelValue: string, config?: ProviderConfig): string {
+function detectProviderForModel(modelValue: string, config?: ProviderConfig, preferProvider?: string): string {
+  // 同名模型可能同时被内置与自定义 provider 声明（例如 opencode 也提供 deepseek-v4-flash）。
+  // 此时若已知用户当前/上次使用的 provider，应优先尊重它，避免静默回退到内置 provider，
+  // 导致请求发往官方端点而扣费。
+  if (preferProvider) {
+    const declaredByPrefer = isBuiltinProvider(preferProvider)
+      ? (preferProvider === 'deepseek' ? DEEPSEEK_MODELS : VOLCENGINE_MODELS).some(m => m.value === modelValue)
+      : Boolean(config?.providers[preferProvider]?.models?.includes(modelValue));
+    if (declaredByPrefer) return preferProvider;
+  }
   if (DEEPSEEK_MODELS.some(m => m.value === modelValue)) return 'deepseek';
   if (VOLCENGINE_MODELS.some(m => m.value === modelValue)) return 'volcengine';
   if (config) {
@@ -208,8 +215,8 @@ ${colors.bold('环境变量配置:')}
   markStartupStage('perf_monitor');
   const startupWarnings: string[] = [];
   const tracker = new SessionTracker();
-  const buildProvider = (modelValue: string, providerOverride?: string): ObservableModelProvider => {
-    const providerName = providerOverride || detectProviderForModel(modelValue, providerConfig);
+  const buildProvider = (modelValue: string, providerOverride?: string, preferProvider?: string): ObservableModelProvider => {
+    const providerName = providerOverride || detectProviderForModel(modelValue, providerConfig, preferProvider);
     if (providerName === 'volcengine') {
       if (!volcApiKey) {
         throw new Error('未配置火山引擎 API Key（环境变量或 /provider set volcengine）。');
@@ -270,7 +277,8 @@ ${colors.bold('环境变量配置:')}
         label: model,
         description: `自定义 · ${name}`,
         provider: name,
-        contextWindowTokens: 128_000
+        contextWindowTokens: 128_000,
+        maxOutputTokens: 8_192
       })))
   ];
 
@@ -285,7 +293,26 @@ ${colors.bold('环境变量配置:')}
     || (savedPreference?.model && availableModels.some(m => m.value === savedPreference!.model)
       ? savedPreference!.model
       : availableModels[0]?.value || 'deepseek-v4-flash');
-  let currentProviderName: string = detectProviderForModel(selectedModel, providerConfig);
+  // 确定初始 provider：优先沿用上次保存的 provider（API Key 可用且与模型归属不矛盾时），
+  // 否则回退到按模型反推。这样自定义 provider 在重启后也能被正确记住，
+  // 而不是因模型反推失败而静默回退到 deepseek。
+  const savedProvider = savedPreference?.provider;
+  const detectedProviderName = detectProviderForModel(selectedModel, providerConfig);
+  const providerHasApiKey = (name: string): boolean =>
+    name === 'deepseek' ? Boolean(deepseekApiKey)
+      : name === 'volcengine' ? Boolean(volcApiKey)
+        : Boolean(providerConfig.providers[name]?.apiKey);
+  const modelInBuiltinRegistry = DEEPSEEK_MODELS.some(m => m.value === selectedModel)
+    || VOLCENGINE_MODELS.some(m => m.value === selectedModel);
+  // 同名模型可能同时被自定义 provider 声明（例如 opencode 也提供 deepseek-v4-flash），
+  // 此时不能认为模型“明确属于”内置 provider，应尊重用户上次保存的 provider。
+  const modelDeclaredByCustomProvider = Object.entries(providerConfig.providers)
+    .some(([name, entry]) => !isBuiltinProvider(name) && entry?.models?.includes(selectedModel));
+  const modelOwnedByBuiltinOnly = modelInBuiltinRegistry && !modelDeclaredByCustomProvider;
+  let currentProviderName: string = (savedProvider && providerHasApiKey(savedProvider)
+    && !(modelOwnedByBuiltinOnly && detectedProviderName !== savedProvider))
+    ? savedProvider
+    : detectedProviderName;
 
   // 确定初始思考强度：优先顺序 = 环境变量 > 上次保存偏好 > 默认 medium
   const configuredEffort = process.env.HAJI_REASONING_EFFORT?.trim().toLowerCase();
@@ -354,7 +381,17 @@ ${colors.bold('环境变量配置:')}
       isApproved,
       ctx.toolOutput || ''
     );
-
+    // 经验系统：采集所有工具调用（含失败样本），供会话结束时提炼
+    experienceStore.appendObservation({
+      ts: new Date().toISOString(),
+      sessionId: sessionManager.getCurrentSession().id,
+      toolName: ctx.toolName || '',
+      args: ctx.args || {},
+      output: ctx.toolOutput || '',
+      failed: isFailedToolOutput(ctx.toolOutput || ''),
+      agentId: ctx.agentId,
+      depth: ctx.depth
+    });
   });
 
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
@@ -382,7 +419,7 @@ ${colors.bold('环境变量配置:')}
     }
   });
 
-  let provider = buildProvider(selectedModel);
+  let provider = buildProvider(selectedModel, undefined, currentProviderName);
   async function summarizeMessagesForCompaction(sourceMessages: ChatMessage[]): Promise<string> {
     const transcript = sourceMessages.map((message, index) => JSON.stringify({ index, ...message })).join('\n');
     const summaryInstruction = [
@@ -411,6 +448,8 @@ ${colors.bold('环境变量配置:')}
     }
   }
   const systemPromptManager = new SystemPromptManager();
+  const experienceStore = new ExperienceStore({ cwd: process.cwd() });
+  systemPromptManager.registerPart(new ExperiencesPromptPart(experienceStore));
   const skillRegistry = new SkillRegistry({ cwd: process.cwd() });
   const initialSkillScan = await skillRegistry.scan();
   markStartupStage('skill_scan');
@@ -502,6 +541,7 @@ ${colors.bold('环境变量配置:')}
     { command: '/resume', description: '历史对话查看与热切换' },
     { command: '/rewind', description: '历史节点撤销与代码回退' },
     { command: '/subagent', description: '确定性启动前台或后台子代理' },
+    { command: '/preset', description: '查看 / 管理 subagent 预设（模型、强度、token 预算）' },
     { command: '/agents', description: '查看、管理和中止子代理' },
     { command: '/skills', description: '查看、重新扫描或校验 Skill' },
     { command: '/skill', description: '按名称确定性加载 Skill' },
@@ -525,6 +565,429 @@ ${colors.bold('环境变量配置:')}
   snapshotEngine.setWarningHandler(showRuntimeWarning);
   for (const warning of startupWarnings) showRuntimeWarning(warning);
   for (const warning of initialSkillScan.warnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+
+  // ---- subagent 预设辅助函数 ----
+  const formatPresetSummary = (preset: SubagentPreset): string => {
+    const parts = [
+      preset.role || 'research',
+      preset.model || '默认模型',
+      preset.reasoningEffort ? `effort:${preset.reasoningEffort}` : '',
+      preset.maxTokens !== undefined ? `max-tokens:${preset.maxTokens}` : '',
+      preset.maxToolCalls !== undefined ? `max-tool-calls:${preset.maxToolCalls}` : '',
+      preset.timeoutMs !== undefined ? `timeout:${Math.round(preset.timeoutMs / 1000)}s` : ''
+    ].filter(Boolean);
+    return parts.join(' · ');
+  };
+  const formatPresetDetail = (preset: SubagentPreset): string => {
+    const rows: string[] = [colors.bold(`预设：${preset.name}`)];
+    const label = (key: string, value: string | undefined, fallback = '默认'): string =>
+      `  ${colors.gray(key.padEnd(14))}${value ?? fallback}`;
+    rows.push(label('role', preset.role));
+    rows.push(label('model', preset.model));
+    rows.push(label('provider', preset.provider));
+    rows.push(label('effort', preset.reasoningEffort));
+    rows.push(label('instructions', preset.instructions, '（无）'));
+    rows.push(label('timeout-ms', preset.timeoutMs !== undefined ? String(preset.timeoutMs) : undefined));
+    rows.push(label('max-tokens', preset.maxTokens !== undefined ? String(preset.maxTokens) : undefined));
+    rows.push(label('max-tool-calls', preset.maxToolCalls !== undefined ? String(preset.maxToolCalls) : undefined));
+    return rows.join('\n');
+  };
+  const persistPreset = (preset: SubagentPreset): boolean => {
+    const current = loadSubagentPresets();
+    const existing = findSubagentPreset(current, preset.name);
+    const next = existing
+      ? current.map(item => item.name.toLowerCase() === preset.name.toLowerCase() ? preset : item)
+      : [...current, preset];
+    return saveSubagentPresets(next);
+  };
+  const buildPresetFromParsed = (name: string, parsed: Pick<ParsedSubagentCommand,
+    'role' | 'model' | 'provider' | 'reasoningEffort' | 'instructions' | 'timeoutMs' | 'maxTokens' | 'maxToolCalls'>): SubagentPreset => ({
+    name,
+    ...(parsed.role ? { role: parsed.role } : {}),
+    ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.provider ? { provider: parsed.provider } : {}),
+    ...(parsed.reasoningEffort ? { reasoningEffort: parsed.reasoningEffort } : {}),
+    ...(parsed.instructions ? { instructions: parsed.instructions } : {}),
+    ...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+    ...(parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {}),
+    ...(parsed.maxToolCalls !== undefined ? { maxToolCalls: parsed.maxToolCalls } : {})
+  });
+  // ---- 可导航配置向导（支持上一步 / 容错重问 / 确认页）----
+  const WIZARD_BACK = '__wizard_back__';
+  const WIZARD_RESTART = '__wizard_restart__';
+  const isBackInput = (input: string): boolean => {
+    const lower = input.trim().toLowerCase();
+    return lower === 'b' || lower === 'back';
+  };
+  const withBackItem = (items: { value: string; label: string; description: string }[]): { value: string; label: string; description: string }[] => [
+    ...items,
+    { value: WIZARD_BACK, label: '← 上一步', description: '返回上一步重新选择' }
+  ];
+  type WizardStepResult<T> = { kind: 'next'; value: T } | { kind: 'back' };
+
+  /** 单选步骤（选择器 + 末尾 Back 项）。返回 next(value) 或 back。 */
+  const askSelectionStep = async <T extends string>(
+    title: string,
+    items: { value: string; label: string; description: string }[],
+    selectedValue: string
+  ): Promise<WizardStepResult<T>> => {
+    const selection = await readSelectionSafely({
+      title,
+      items: withBackItem(items),
+      selectedValue
+    });
+    if (selection.value === WIZARD_BACK) return { kind: 'back' };
+    return { kind: 'next', value: selection.value as T };
+  };
+
+  /** 模型 + 思考强度选择步骤（secondary 联动；extraModels 用于保留不在注册表里的自定义当前值）。 */
+  const askModelEffortStep = async (
+    title: string,
+    currentModel: string | undefined,
+    currentEffort: ReasoningEffort | undefined,
+    extraModels: string[] = []
+  ): Promise<WizardStepResult<{ model: string; provider?: string; reasoningEffort: ReasoningEffort }>> => {
+    const items: { value: string; label: string; description: string }[] = MODEL_REGISTRY.map(item => ({
+      value: item.value,
+      label: item.label,
+      description: `${item.provider} · ${item.description}`
+    }));
+    for (const extra of extraModels) {
+      if (extra && !items.some(item => item.value === extra)) {
+        items.push({ value: extra, label: extra, description: '自定义模型（当前值）' });
+      }
+    }
+    const selection = await readSelectionSafely({
+      title,
+      items: withBackItem(items),
+      selectedValue: currentModel && items.some(item => item.value === currentModel)
+        ? currentModel
+        : MODEL_REGISTRY[0].value,
+      secondary: {
+        label: 'Effort',
+        items: EFFORT_OPTIONS,
+        selectedValue: currentEffort || reasoningEffort
+      }
+    });
+    if (selection.value === WIZARD_BACK) return { kind: 'back' };
+    const descriptor = MODEL_REGISTRY.find(item => item.value === selection.value);
+    return {
+      kind: 'next',
+      value: {
+        model: selection.value,
+        provider: descriptor?.provider,
+        reasoningEffort: selection.secondaryValue as ReasoningEffort
+      }
+    };
+  };
+
+  /** token 预算三步输入：非法重问、b 返回上一子步/上一配置步、回车跳过。返回是否完成（false=中途返回）。 */
+  const askBudgetFlow = async (
+    state: { maxTokens?: number; maxToolCalls?: number; timeoutMs?: number },
+    onFirstBack: () => void
+  ): Promise<boolean> => {
+    const fields = [
+      { key: 'maxTokens' as const, label: 'max-tokens', min: MIN_SUBAGENT_MAX_TOKENS, max: MAX_SUBAGENT_MAX_TOKENS },
+      { key: 'maxToolCalls' as const, label: 'max-tool-calls', min: MIN_SUBAGENT_MAX_TOOL_CALLS, max: MAX_SUBAGENT_MAX_TOOL_CALLS },
+      { key: 'timeoutMs' as const, label: 'timeout-ms', min: 100, max: 3_600_000 }
+    ];
+    let index = 0;
+    while (index < fields.length) {
+      const field = fields[index];
+      const input = (await ui.readInput({
+        prompt: budgetPrompt(field.label, state[field.key], field.min, field.max)
+      })).trim();
+      if (isBackInput(input)) {
+        if (index > 0) {
+          index -= 1;
+        } else {
+          onFirstBack();
+          return false;
+        }
+        continue;
+      }
+      const result = parseOptionalInteger(input, field.min, field.max);
+      if (!result.ok) {
+        ui.writeLine(colors.red(`✗ ${result.message}，请重新输入。`));
+        continue;
+      }
+      // 留空（undefined）时保持当前值：add 向导初始为空 → undefined；edit 向导初始为现值 → 保持
+      state[field.key] = result.value ?? state[field.key];
+      index += 1;
+    }
+    return true;
+  };
+
+  /** 文本输入步骤：非法重问、b 返回。 */
+  const askTextFlow = async (
+    prompt: string,
+    validate: (input: string) => string | null,
+    onBack: () => void
+  ): Promise<string | undefined> => {
+    while (true) {
+      const input = (await ui.readInput({ prompt })).trim();
+      if (isBackInput(input)) {
+        onBack();
+        return undefined;
+      }
+      const error = validate(input);
+      if (error) {
+        ui.writeLine(colors.red(`✗ ${error}，请重新输入（输入 b 返回上一步）。`));
+        continue;
+      }
+      return input;
+    }
+  };
+
+  interface SubagentWizardState {
+    preset?: SubagentPreset;
+    background: boolean;
+    role?: SubagentRole;
+    model?: string;
+    provider?: string;
+    reasoningEffort?: ReasoningEffort;
+    maxTokens?: number;
+    maxToolCalls?: number;
+    timeoutMs?: number;
+    taskId?: string;
+    description?: string;
+    instructions?: string;
+  }
+  type SubagentWizardStep = 'preset' | 'mode' | 'role' | 'model' | 'budget' | 'task' | 'description' | 'instructions' | 'confirm';
+
+  /** /subagent 交互式向导：支持上一步、容错重问与最终确认页。取消时抛 TerminalInputCancelledError。 */
+  const runSubagentWizard = async (presets: SubagentPreset[], initialPresetName?: string): Promise<SubagentWizardState> => {
+    const state: SubagentWizardState = { background: false };
+    let step: SubagentWizardStep = 'preset';
+    while (true) {
+      if (step === 'preset') {
+        if (presets.length === 0) {
+          step = 'mode';
+          continue;
+        }
+        const result = await askSelectionStep<'custom' | 'preset'>(
+          'Use preset or customize',
+          [
+            { value: 'custom', label: 'Customize', description: '手动配置所有参数' },
+            ...presets.map(preset => ({
+              value: preset.name,
+              label: preset.name,
+              description: formatPresetSummary(preset)
+            }))
+          ],
+          state.preset?.name || initialPresetName || 'custom'
+        );
+        if (result.kind === 'back') continue; // 第一步无上一步
+        state.preset = result.value === 'custom'
+          ? undefined
+          : findSubagentPreset(presets, result.value);
+        step = 'mode';
+        continue;
+      }
+      if (step === 'mode') {
+        const result = await askSelectionStep<'foreground' | 'background'>(
+          'Choose execution mode',
+          [
+            { value: 'foreground', label: 'Foreground', description: '等待该 Agent 完成后再继续' },
+            { value: 'background', label: 'Background', description: '后台只读运行，完成后通知' }
+          ],
+          state.background ? 'background' : 'foreground'
+        );
+        if (result.kind === 'back') { step = 'preset'; continue; }
+        state.background = result.value === 'background';
+        step = state.preset ? 'task' : 'role';
+        continue;
+      }
+      if (step === 'role') {
+        const result = await askSelectionStep<'research' | 'review' | 'implement'>(
+          'Choose subagent role',
+          [
+            { value: 'research', label: 'Research', description: '只读调研、定位调用链和收集证据' },
+            { value: 'review', label: 'Review', description: '只读审查代码、差异和风险' },
+            { value: 'implement', label: 'Implement', description: '前台执行；按当前权限修改和验证' }
+          ],
+          state.role || 'research'
+        );
+        if (result.kind === 'back') { step = 'mode'; continue; }
+        state.role = result.value;
+        step = 'model';
+        continue;
+      }
+      if (step === 'model') {
+        const result = await askModelEffortStep('Choose subagent model and effort', state.model, state.reasoningEffort);
+        if (result.kind === 'back') { step = 'role'; continue; }
+        state.model = result.value.model;
+        state.provider = result.value.provider;
+        state.reasoningEffort = result.value.reasoningEffort;
+        step = 'budget';
+        continue;
+      }
+      if (step === 'budget') {
+        ui.writeLine(colors.gray('— token 预算（回车跳过 = 使用默认，输入 b 返回上一步）—'));
+        const completed = await askBudgetFlow(state, () => { step = 'model'; });
+        if (!completed) continue;
+        step = 'task';
+        continue;
+      }
+      if (step === 'task') {
+        const activeTasks = taskStore.getPlan()?.tasks || [];
+        if (activeTasks.length === 0) {
+          step = 'description';
+          continue;
+        }
+        const result = await askSelectionStep<'none' | 'task'>(
+          'Link to Todo',
+          [
+            { value: 'none', label: 'No Todo', description: '不关联任务' },
+            ...activeTasks.map(task => ({ value: task.id, label: task.id, description: task.content }))
+          ],
+          state.taskId || 'none'
+        );
+        if (result.kind === 'back') { step = state.preset ? 'mode' : 'budget'; continue; }
+        state.taskId = result.value === 'none' ? undefined : result.value;
+        step = 'description';
+        continue;
+      }
+      if (step === 'description') {
+        const description = await askTextFlow(
+          textPrompt('任务描述', '必填'),
+          validateDescription,
+          () => { step = 'task'; }
+        );
+        if (description === undefined) continue;
+        state.description = description;
+        step = state.preset?.instructions || state.instructions ? 'confirm' : 'instructions';
+        continue;
+      }
+      if (step === 'instructions') {
+        const instructions = await askTextFlow(
+          textPrompt('附加指令', '可留空'),
+          input => validateInstructionsInput(input, MAX_SUBAGENT_INSTRUCTIONS_LENGTH),
+          () => { step = 'description'; }
+        );
+        if (instructions === undefined) continue;
+        state.instructions = instructions || undefined;
+        step = 'confirm';
+        continue;
+      }
+      if (step === 'confirm') {
+        const role = state.role ?? state.preset?.role ?? 'research';
+        const model = state.model ?? state.preset?.model ?? '默认模型';
+        const effort = state.reasoningEffort ?? state.preset?.reasoningEffort ?? reasoningEffort;
+        const finalMaxTokens = state.maxTokens ?? state.preset?.maxTokens;
+        const finalMaxToolCalls = state.maxToolCalls ?? state.preset?.maxToolCalls;
+        const finalTimeoutMs = state.timeoutMs ?? state.preset?.timeoutMs;
+        const budgetParts = [
+          finalMaxTokens !== undefined ? `max-tokens:${finalMaxTokens}` : '',
+          finalMaxToolCalls !== undefined ? `max-tool-calls:${finalMaxToolCalls}` : '',
+          finalTimeoutMs !== undefined ? `timeout:${Math.round(finalTimeoutMs / 1000)}s` : ''
+        ].filter(Boolean).join(' ') || '默认预算';
+        ui.writeLine(colors.gray(
+          `配置摘要：${state.preset ? `预设 ${state.preset.name} · ` : ''}${role} · ${model} · effort:${effort} · ${budgetParts}${state.taskId ? ` · todo:${state.taskId}` : ''}`
+        ));
+        const result = await askSelectionStep<'confirm' | typeof WIZARD_RESTART>(
+          '确认配置',
+          [
+            { value: 'confirm', label: '✓ 确认启动', description: '按当前配置启动子代理' },
+            { value: WIZARD_RESTART, label: '↺ 重新配置', description: '从头开始配置' }
+          ],
+          'confirm'
+        );
+        if (result.kind === 'back') { step = state.preset?.instructions || state.instructions ? 'instructions' : 'description'; continue; }
+        if (result.value === WIZARD_RESTART) { step = 'preset'; continue; }
+        return state;
+      }
+    }
+  };
+
+  interface PresetWizardState {
+    role?: SubagentRole;
+    model?: string;
+    provider?: string;
+    reasoningEffort?: ReasoningEffort;
+    maxTokens?: number;
+    maxToolCalls?: number;
+    timeoutMs?: number;
+    instructions?: string;
+  }
+  type PresetWizardStep = 'role' | 'model' | 'budget' | 'instructions' | 'confirm';
+
+  /**
+   * /preset add / edit 交互式向导。initial 为现有预设值（edit 模式），
+   * 留空/回车保持当前值；支持上一步、容错重问与确认页。
+   */
+  const runPresetWizard = async (initial: Partial<PresetWizardState>): Promise<PresetWizardState> => {
+    const state: PresetWizardState = { ...initial };
+    let step: PresetWizardStep = 'role';
+    while (true) {
+      if (step === 'role') {
+        const result = await askSelectionStep<'research' | 'review' | 'implement'>(
+          'Preset role',
+          [
+            { value: 'research', label: 'Research', description: '只读调研、定位调用链和收集证据' },
+            { value: 'review', label: 'Review', description: '只读审查代码、差异和风险' },
+            { value: 'implement', label: 'Implement', description: '前台执行；按当前权限修改和验证' }
+          ],
+          state.role || 'research'
+        );
+        if (result.kind === 'back') continue; // 第一步无上一步
+        state.role = result.value;
+        step = 'model';
+        continue;
+      }
+      if (step === 'model') {
+        const result = await askModelEffortStep('Preset model and effort', state.model, state.reasoningEffort, state.model ? [state.model] : []);
+        if (result.kind === 'back') { step = 'role'; continue; }
+        state.model = result.value.model;
+        state.provider = result.value.provider;
+        state.reasoningEffort = result.value.reasoningEffort;
+        step = 'budget';
+        continue;
+      }
+      if (step === 'budget') {
+        ui.writeLine(colors.gray('— token 预算（回车跳过 = 使用默认，输入 b 返回上一步）—'));
+        const completed = await askBudgetFlow(state, () => { step = 'model'; });
+        if (!completed) continue;
+        step = 'instructions';
+        continue;
+      }
+      if (step === 'instructions') {
+        const instructions = await askTextFlow(
+          textPrompt('附加指令', '可留空'),
+          input => validateInstructionsInput(input, MAX_SUBAGENT_INSTRUCTIONS_LENGTH),
+          () => { step = 'budget'; }
+        );
+        if (instructions === undefined) continue;
+        state.instructions = instructions || state.instructions;
+        step = 'confirm';
+        continue;
+      }
+      if (step === 'confirm') {
+        const finalMaxTokens = state.maxTokens;
+        const finalMaxToolCalls = state.maxToolCalls;
+        const finalTimeoutMs = state.timeoutMs;
+        const budgetParts = [
+          finalMaxTokens !== undefined ? `max-tokens:${finalMaxTokens}` : '',
+          finalMaxToolCalls !== undefined ? `max-tool-calls:${finalMaxToolCalls}` : '',
+          finalTimeoutMs !== undefined ? `timeout:${Math.round(finalTimeoutMs / 1000)}s` : ''
+        ].filter(Boolean).join(' ') || '默认预算';
+        ui.writeLine(colors.gray(
+          `配置摘要：${state.role || 'research'} · ${state.model || '默认模型'} · effort:${state.reasoningEffort || reasoningEffort} · ${budgetParts}${state.instructions ? ' · 含附加指令' : ''}`
+        ));
+        const result = await askSelectionStep<'confirm' | typeof WIZARD_RESTART>(
+          '确认配置',
+          [
+            { value: 'confirm', label: '✓ 确认保存', description: '保存该预设' },
+            { value: WIZARD_RESTART, label: '↺ 重新配置', description: '从头开始配置' }
+          ],
+          'confirm'
+        );
+        if (result.kind === 'back') { step = 'instructions'; continue; }
+        if (result.value === WIZARD_RESTART) { step = 'role'; continue; }
+        return state;
+      }
+    }
+  };
   ui.setPermissionMode(permissionMode);
   let planReadyForReview = false;
   let planReviewSummaryRequested = false;
@@ -634,7 +1097,8 @@ ${colors.bold('环境变量配置:')}
     cwd: process.cwd(),
     getProvider: request => buildProvider(
       request?.model || selectedModel,
-      request?.provider || undefined
+      request?.provider || undefined,
+      currentProviderName
     ),
     getModel: request => request?.model || selectedModel,
     getReasoningEffort: request => request?.reasoningEffort || reasoningEffort,
@@ -847,7 +1311,7 @@ ${colors.bold('环境变量配置:')}
     permissionMode = nextMode;
     await refreshSystemPromptPreservingContext();
     savePreference(
-      { model: selectedModel, reasoningEffort, permissionMode, riskThreshold },
+      { model: selectedModel, reasoningEffort, provider: currentProviderName, permissionMode, riskThreshold },
       showRuntimeWarning
     );
     sessionManager.saveCurrentSession(messages);
@@ -1043,68 +1507,49 @@ ${colors.bold('环境变量配置:')}
           try {
             let parsed = parseSubagentCommand(trimmedInput.slice('/subagent'.length));
             if (!parsed.description) {
-              const roleSelection = await readSelectionSafely({
-                title: 'Choose subagent role',
-                items: [
-                  { value: 'research', label: 'Research', description: '只读调研、定位调用链和收集证据' },
-                  { value: 'review', label: 'Review', description: '只读审查代码、差异和风险' },
-                  { value: 'implement', label: 'Implement', description: '前台执行；按当前权限修改和验证' }
-                ],
-                selectedValue: 'research'
-              });
-              const modeSelection = await readSelectionSafely({
-                title: 'Choose execution mode',
-                items: [
-                  { value: 'foreground', label: 'Foreground', description: '等待该 Agent 完成后再继续' },
-                  { value: 'background', label: 'Background', description: '后台只读运行，完成后通知' }
-                ],
-                selectedValue: 'foreground'
-              });
-              const modelSelection = await readSelectionSafely({
-                title: 'Choose subagent model and effort',
-                items: MODEL_REGISTRY.map(model => ({
-                  value: model.value,
-                  label: model.label,
-                  description: `${model.provider} · ${model.description}`
-                })),
-                selectedValue: MODEL_REGISTRY.some(model => model.value === selectedModel)
-                  ? selectedModel
-                  : MODEL_REGISTRY[0].value,
-                secondary: {
-                  label: 'Effort',
-                  items: EFFORT_OPTIONS,
-                  selectedValue: reasoningEffort
+              // ---- 交互式向导：预设选择 → 模式 → 角色/模型/预算 → Todo → 描述 → 确认 ----
+              const presets = loadSubagentPresets();
+              let initialPresetName: string | undefined;
+              if (parsed.preset) {
+                const found = findSubagentPreset(presets, parsed.preset);
+                if (!found) {
+                  ui.writeLine(colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
+                  continue;
                 }
-              });
-              let taskId: string | undefined;
-              const activeTasks = taskStore.getPlan()?.tasks || [];
-              if (activeTasks.length > 0) {
-                const taskSelection = await readSelectionSafely({
-                  title: 'Link to Todo',
-                  items: [
-                    { value: 'none', label: 'No Todo', description: '不关联任务' },
-                    ...activeTasks.map(task => ({ value: task.id, label: task.id, description: task.content }))
-                  ],
-                  selectedValue: 'none'
-                });
-                taskId = taskSelection.value === 'none' ? undefined : taskSelection.value;
+                initialPresetName = found.name;
               }
-              const description = await ui.readInput({ prompt: `${colors.cyan('Subagent task')} › ` });
-              const instructionsInput = await ui.readInput({ prompt: `${colors.gray('Additional instructions (optional)')} › ` });
-              const selectedModelDescriptor = MODEL_REGISTRY.find(item => item.value === modelSelection.value);
+              const wizardState = await runSubagentWizard(presets, initialPresetName);
               parsed = {
-                role: roleSelection.value as 'research' | 'review' | 'implement',
-                background: modeSelection.value === 'background',
-                taskId,
-                model: modelSelection.value,
-                provider: selectedModelDescriptor?.provider,
-                reasoningEffort: modelSelection.secondaryValue as ReasoningEffort,
-                instructions: instructionsInput.trim() || undefined,
-                timeoutMs: undefined,
-                maxTokens: undefined,
-                maxToolCalls: undefined,
-                description: description.trim()
+                background: wizardState.background,
+                taskId: wizardState.taskId,
+                role: wizardState.role ?? wizardState.preset?.role,
+                model: wizardState.model ?? wizardState.preset?.model,
+                provider: wizardState.provider ?? wizardState.preset?.provider,
+                reasoningEffort: wizardState.reasoningEffort ?? wizardState.preset?.reasoningEffort,
+                instructions: wizardState.instructions ?? wizardState.preset?.instructions,
+                timeoutMs: wizardState.timeoutMs ?? wizardState.preset?.timeoutMs,
+                maxTokens: wizardState.maxTokens ?? wizardState.preset?.maxTokens,
+                maxToolCalls: wizardState.maxToolCalls ?? wizardState.preset?.maxToolCalls,
+                description: wizardState.description!
               };
+              // ---- 保存为预设（可选）----
+              const saveName = (await ui.readInput({ prompt: `${colors.gray('保存为预设 (输入名称或回车跳过)')} › ` })).trim();
+              if (saveName) {
+                if (persistPreset(buildPresetFromParsed(saveName, parsed))) {
+                  ui.writeLine(colors.green(`✓ 已保存预设：${saveName}（下次可用 /subagent preset:${saveName} 复用）`));
+                } else {
+                  ui.writeLine(colors.yellow('⚠️ 预设保存失败（请检查磁盘权限）。'));
+                }
+              }
+            } else if (parsed.preset) {
+              // ---- 非交互式：应用预设（命令行显式参数优先）----
+              const preset = findSubagentPreset(loadSubagentPresets(), parsed.preset);
+              if (!preset) {
+                ui.writeLine(colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
+                continue;
+              }
+              parsed = applySubagentPreset(parsed, preset);
+              ui.writeLine(colors.gray(`已应用预设：${preset.name}（${formatPresetSummary(preset)}）`));
             }
             if (!parsed.description) {
               ui.writeLine(colors.red('子代理任务描述不能为空。'));
@@ -1141,6 +1586,160 @@ ${colors.bold('环境变量配置:')}
               ui.writeLine(colors.red(`启动子代理失败: ${error instanceof Error ? error.message : String(error)}`));
             }
           }
+          continue;
+        }
+        if (command === 'preset' || command === 'presets') {
+          const action = parts[1]?.toLowerCase();
+          const presets = loadSubagentPresets();
+          if (!action || action === 'list') {
+            if (presets.length === 0) {
+              ui.writeLine(colors.gray('暂无 subagent 预设。使用 /preset add 添加，或在 /subagent 交互式流程中保存。'));
+            } else {
+              ui.writeLine(colors.bold(`Subagent 预设 (${presets.length})`));
+              for (const preset of presets) {
+                ui.writeLine(`  ${colors.purple(preset.name)} ${colors.gray(formatPresetSummary(preset))}`);
+              }
+            }
+            continue;
+          }
+          if (action === 'show') {
+            const name = parts[2];
+            if (!name) {
+              ui.writeLine(colors.red('用法: /preset show <name>'));
+              continue;
+            }
+            const preset = findSubagentPreset(presets, name);
+            if (!preset) {
+              ui.writeLine(colors.red(`预设不存在: ${name}`));
+              continue;
+            }
+            ui.writeLine(formatPresetDetail(preset));
+            continue;
+          }
+          if (action === 'edit' || action === 'update') {
+            const rawArgs = trimmedInput.replace(/^\/presets?\s+edit\s*/i, '');
+            if (!rawArgs) {
+              ui.writeLine(colors.red('用法: /preset edit <name> [--effort ...] [--max-tokens ...] ...（不带选项时交互式修改）'));
+              continue;
+            }
+            try {
+              const parsedPreset = parsePresetCommand(rawArgs);
+              const target = findSubagentPreset(presets, parsedPreset.name);
+              if (!target) {
+                ui.writeLine(colors.red(`预设不存在: ${parsedPreset.name}`));
+                continue;
+              }
+              const patch: Partial<Omit<SubagentPreset, 'name'>> = {
+                ...(parsedPreset.role ? { role: parsedPreset.role } : {}),
+                ...(parsedPreset.model ? { model: parsedPreset.model } : {}),
+                ...(parsedPreset.provider ? { provider: parsedPreset.provider } : {}),
+                ...(parsedPreset.reasoningEffort ? { reasoningEffort: parsedPreset.reasoningEffort } : {}),
+                ...(parsedPreset.instructions !== undefined ? { instructions: parsedPreset.instructions } : {}),
+                ...(parsedPreset.timeoutMs !== undefined ? { timeoutMs: parsedPreset.timeoutMs } : {}),
+                ...(parsedPreset.maxTokens !== undefined ? { maxTokens: parsedPreset.maxTokens } : {}),
+                ...(parsedPreset.maxToolCalls !== undefined ? { maxToolCalls: parsedPreset.maxToolCalls } : {})
+              };
+              if (parsedPreset.model && parsedPreset.model !== target.model) {
+                const descriptor = MODEL_REGISTRY.find(item => item.value === parsedPreset.model);
+                if (descriptor) patch.provider = descriptor.provider;
+              }
+              if (Object.keys(patch).length === 0) {
+                // 未指定任何字段 → 交互式修改（现有值作为初始默认，留空/回车保持原值）
+                const wizardState = await runPresetWizard({
+                  role: target.role,
+                  model: target.model,
+                  provider: target.provider,
+                  reasoningEffort: target.reasoningEffort,
+                  instructions: target.instructions,
+                  maxTokens: target.maxTokens,
+                  maxToolCalls: target.maxToolCalls,
+                  timeoutMs: target.timeoutMs
+                });
+                patch.role = wizardState.role;
+                patch.model = wizardState.model;
+                patch.provider = wizardState.provider;
+                patch.reasoningEffort = wizardState.reasoningEffort;
+                if (wizardState.instructions !== undefined) patch.instructions = wizardState.instructions;
+                patch.maxTokens = wizardState.maxTokens;
+                patch.maxToolCalls = wizardState.maxToolCalls;
+                patch.timeoutMs = wizardState.timeoutMs;
+              }
+              if (saveSubagentPresets(updateSubagentPreset(presets, target.name, patch))) {
+                ui.writeLine(colors.green(`✓ 已更新预设：${target.name}（/preset show ${target.name} 查看详情）`));
+              } else {
+                ui.writeLine(colors.yellow('⚠️ 预设保存失败（请检查磁盘权限）。'));
+              }
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) {
+                ui.writeLine(colors.gray('已取消编辑预设。'));
+              } else {
+                ui.writeLine(colors.red(`编辑预设失败: ${error instanceof Error ? error.message : String(error)}`));
+              }
+            }
+            continue;
+          }
+          if (action === 'remove' || action === 'rm' || action === 'delete') {
+            const name = parts[2];
+            if (!name) {
+              ui.writeLine(colors.red('用法: /preset remove <name>'));
+              continue;
+            }
+            const existing = findSubagentPreset(presets, name);
+            if (!existing) {
+              ui.writeLine(colors.red(`预设不存在: ${name}`));
+              continue;
+            }
+            const next = presets.filter(item => item.name.toLowerCase() !== existing.name.toLowerCase());
+            if (saveSubagentPresets(next)) {
+              ui.writeLine(colors.green(`✓ 已删除预设：${existing.name}`));
+            } else {
+              ui.writeLine(colors.yellow('⚠️ 删除失败（请检查磁盘权限）。'));
+            }
+            continue;
+          }
+          if (action === 'add') {
+            const rawArgs = trimmedInput.replace(/^\/presets?\s+add\s*/i, '');
+            try {
+              let presetToAdd: SubagentPreset | undefined;
+              if (rawArgs) {
+                // 参数模式：/preset add <name> [--role ...] [--model ...] [--effort ...] [token 预算...]
+                const parsedPreset = parsePresetCommand(rawArgs);
+                presetToAdd = buildPresetFromParsed(parsedPreset.name, parsedPreset);
+              } else {
+                // 交互式引导（可导航向导：支持上一步 / 容错 / 确认页）
+                const nameInput = (await ui.readInput({ prompt: '预设名称（留空取消）' })).trim();
+                if (!nameInput) {
+                  ui.writeLine(colors.gray('已取消添加预设。'));
+                  continue;
+                }
+                const wizardState = await runPresetWizard({});
+                presetToAdd = buildPresetFromParsed(nameInput, {
+                  role: wizardState.role,
+                  model: wizardState.model,
+                  provider: wizardState.provider,
+                  reasoningEffort: wizardState.reasoningEffort,
+                  instructions: wizardState.instructions,
+                  timeoutMs: wizardState.timeoutMs,
+                  maxTokens: wizardState.maxTokens,
+                  maxToolCalls: wizardState.maxToolCalls
+                });
+              }
+              if (!presetToAdd) continue;
+              if (persistPreset(presetToAdd)) {
+                ui.writeLine(colors.green(`✓ 已保存预设：${presetToAdd.name}（/preset show ${presetToAdd.name} 查看详情）`));
+              } else {
+                ui.writeLine(colors.yellow('⚠️ 预设保存失败（请检查磁盘权限）。'));
+              }
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) {
+                ui.writeLine(colors.gray('已取消添加预设。'));
+              } else {
+                ui.writeLine(colors.red(`添加预设失败: ${error instanceof Error ? error.message : String(error)}`));
+              }
+            }
+            continue;
+          }
+          ui.writeLine(colors.red(`未知操作: ${action}。支持 list / show / add / remove。`));
           continue;
         }
         if (command === 'agents') {
@@ -1478,10 +2077,10 @@ ${colors.bold('环境变量配置:')}
               throw new Error('模型选择器返回了无效配置');
             }
             const newModel = selection.value;
-            const newProviderName = detectProviderForModel(newModel, providerConfig);
+            const newProviderName = detectProviderForModel(newModel, providerConfig, currentProviderName);
             // 如果切换了模型，重建 Provider 实例
             if (newModel !== selectedModel || newProviderName !== currentProviderName) {
-              provider = buildProvider(newModel);
+              provider = buildProvider(newModel, undefined, currentProviderName);
               currentProviderName = newProviderName;
             }
             selectedModel = newModel;
@@ -1489,7 +2088,7 @@ ${colors.bold('环境变量配置:')}
             await refreshSystemPromptPreservingContext();
             // 持久化用户偏好到本地
             savePreference(
-              { model: selectedModel, reasoningEffort },
+              { model: selectedModel, reasoningEffort, provider: currentProviderName },
               showRuntimeWarning
             );
             updateStatusUI();
@@ -1529,7 +2128,7 @@ ${colors.bold('环境变量配置:')}
             currentProviderName = targetName;
             selectedModel = targetModel;
             await refreshSystemPromptPreservingContext();
-            savePreference({ model: selectedModel, reasoningEffort }, showRuntimeWarning);
+            savePreference({ model: selectedModel, reasoningEffort, provider: currentProviderName }, showRuntimeWarning);
             updateStatusUI();
             ui.writeLine(colors.green(`已切换到 ${providerLabel(targetName)}，模型：${selectedModel}。`));
             continue;
@@ -1678,7 +2277,7 @@ ${colors.bold('环境变量配置:')}
                 if (modelInput) {
                   selectedModel = modelInput;
                   await refreshSystemPromptPreservingContext();
-                  savePreference({ model: selectedModel, reasoningEffort }, showRuntimeWarning);
+                  savePreference({ model: selectedModel, reasoningEffort, provider: currentProviderName }, showRuntimeWarning);
                 }
                 updateStatusUI();
               }
@@ -1824,7 +2423,8 @@ ${colors.bold('环境变量配置:')}
           const helpLines = [
             colors.bold('可用斜杠指令：'),
             `  ${colors.purple('/help')}        - 显示帮助手册`,
-            `  ${colors.purple('/subagent')}    - 启动子代理（可选 --model / --provider / --effort / --instructions / 资源限制）`,
+            `  ${colors.purple('/subagent')}    - 启动子代理（可选 --model / --provider / --effort / --instructions / 资源限制）
+  ${colors.purple('/preset')}      - 查看 / 管理 subagent 预设（模型、强度、token 预算）`,
             `  ${colors.purple('/agents')}      - 查看和管理 Agent（stop <id|all> / clear）`,
             `  ${colors.purple('/skills')}      - 查看 Skill（reload 可重新扫描）`,
             `  ${colors.purple('/skill')}       - 按名称加载 Skill，可追加任务参数`,
@@ -1959,6 +2559,7 @@ ${colors.bold('环境变量配置:')}
           model: selectedModel,
           reasoningEffort,
           thinking: true,
+          maxTokens: getModelMaxOutputTokens(selectedModel),
           tools: activeTools().map(tool => tool.definition),
           abortSignal: currentAbortController.signal,
           onToolCall: (tcs: ToolCall[]) => {
@@ -2078,7 +2679,11 @@ ${colors.bold('环境变量配置:')}
         }
 
         if (finishReason === 'length') {
-          ui.writeLine(colors.yellow('⚠️ 模型输出达到长度上限，本轮内容可能不完整。'));
+          const outputMax = getModelMaxOutputTokens(selectedModel);
+          const usedText = completionTokens !== undefined
+            ? `${completionTokens.toLocaleString('en-US')} / ${outputMax.toLocaleString('en-US')}`
+            : `${outputMax.toLocaleString('en-US')}`;
+          ui.writeLine(colors.yellow(`⚠️ 模型输出达到单次长度上限（${usedText} tokens，非上下文窗口），本轮内容可能不完整。可设置 HAJI_MAX_TOKENS 调高。`));
         }
 
         // 处理工具调用逻辑
@@ -2243,6 +2848,8 @@ ${colors.bold('环境变量配置:')}
   } finally {
     ui.close();
     try {
+      // 经验系统：flush 会话内累积的观测样本（提炼逻辑在提交 3 接入）
+      await experienceStore.flushObservations();
       await sessionManager.flush();
       const tracePath = await tracker.save();
       console.log(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
