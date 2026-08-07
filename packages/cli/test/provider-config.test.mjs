@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   loadProviderConfig,
+  loadProviderConfigScope,
   saveProviderConfig,
   unsetProviderConfig,
   resolveProviderSetting,
@@ -14,6 +15,7 @@ import {
   validateProviderName,
   normalizeBaseUrl,
   testProviderConnection,
+  providerConfigPath,
   userProviderConfigPath,
   projectProviderConfigPath
 } from '../dist/provider-config.js';
@@ -57,11 +59,13 @@ test('provider config starts empty', () => {
   });
 });
 
-test('save writes to project config and merges fields', () => {
+test('save defaults to user config and merges fields', () => {
   withIsolatedPaths(() => {
     assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-a', baseUrl: 'https://gw.example.com/v1' }), true);
-    assert.equal(fs.existsSync(projectProviderConfigPath()), true);
-    assert.equal(fs.existsSync(userProviderConfigPath()), false, 'save 只写项目级');
+    assert.equal(fs.existsSync(userProviderConfigPath()), true);
+    assert.equal(fs.existsSync(projectProviderConfigPath()), false, '默认保存不创建项目级配置');
+    assert.equal(providerConfigPath('user'), userProviderConfigPath());
+    assert.equal(providerConfigPath('project'), projectProviderConfigPath());
 
     assert.equal(saveProviderConfig('deepseek', { model: 'deepseek-v4-pro' }), true);
     const config = loadProviderConfig();
@@ -71,7 +75,7 @@ test('save writes to project config and merges fields', () => {
   });
 });
 
-test('project config overrides user config field by field', () => {
+test('explicit project config overrides user config field by field', () => {
   withIsolatedPaths(({ home }) => {
     const userFile = path.join(home, '.haji', 'config.json');
     fs.mkdirSync(path.dirname(userFile), { recursive: true });
@@ -82,7 +86,7 @@ test('project config overrides user config field by field', () => {
       }
     }));
 
-    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project', baseUrl: 'https://inner.example.com/v1' }), true);
+    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project', baseUrl: 'https://inner.example.com/v1' }, 'project'), true);
     const config = loadProviderConfig();
     assert.equal(config.providers.deepseek.apiKey, 'sk-project', '项目级覆盖用户级 apiKey');
     assert.equal(config.providers.deepseek.model, 'deepseek-v4-pro', '用户级 model 保留');
@@ -115,24 +119,26 @@ test('empty string fields are cleared and fall back to user config', () => {
     fs.mkdirSync(path.dirname(userFile), { recursive: true });
     fs.writeFileSync(userFile, JSON.stringify({ providers: { deepseek: { apiKey: 'sk-user' } } }));
 
-    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project', baseUrl: 'https://inner.example.com/v1' }), true);
-    assert.equal(saveProviderConfig('deepseek', { apiKey: '' }), true);
+    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project', baseUrl: 'https://inner.example.com/v1' }, 'project'), true);
+    assert.equal(saveProviderConfig('deepseek', { apiKey: '' }, 'project'), true);
     const config = loadProviderConfig();
     assert.equal(config.providers.deepseek.apiKey, 'sk-user', '项目级 apiKey 清空后回落用户级');
     assert.equal(config.providers.deepseek.baseUrl, 'https://inner.example.com/v1', '未清除的字段保留');
   });
 });
 
-test('unset removes the provider entry from project config', () => {
+test('unset defaults to user config and can explicitly remove project config', () => {
   withIsolatedPaths(({ home }) => {
     const userFile = path.join(home, '.haji', 'config.json');
     fs.mkdirSync(path.dirname(userFile), { recursive: true });
     fs.writeFileSync(userFile, JSON.stringify({ providers: { deepseek: { apiKey: 'sk-user' } } }));
-    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project' }), true);
+    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-project' }, 'project'), true);
 
-    assert.equal(unsetProviderConfig('deepseek'), true);
+    assert.equal(unsetProviderConfig('deepseek', 'project'), true);
     const config = loadProviderConfig();
     assert.equal(config.providers.deepseek.apiKey, 'sk-user', 'unset 后只剩用户级');
+    assert.equal(unsetProviderConfig('deepseek'), true);
+    assert.deepEqual(loadProviderConfigScope('user').providers, {}, '默认 unset 清除用户全局配置');
   });
 });
 
@@ -149,12 +155,15 @@ test('corrupt config files are treated as empty', () => {
   });
 });
 
-test('save reports failure when project config path cannot be written', () => {
-  withIsolatedPaths(() => {
-    // 把 .haji 目录位置占位成普通文件，mkdirSync 将失败
+test('save reports failure when target config path cannot be written', () => {
+  withIsolatedPaths(({ home }) => {
+    // 把两级 .haji 目录位置占位成普通文件，mkdirSync 将失败
+    fs.writeFileSync(path.join(home, '.haji'), 'not a directory', 'utf8');
     fs.writeFileSync(path.join(process.cwd(), '.haji'), 'not a directory', 'utf8');
     assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-a' }), false);
     assert.equal(unsetProviderConfig('deepseek'), false);
+    assert.equal(saveProviderConfig('deepseek', { apiKey: 'sk-a' }, 'project'), false);
+    assert.equal(unsetProviderConfig('deepseek', 'project'), false);
   });
 });
 
@@ -219,7 +228,7 @@ test('custom provider merges user and project config levels', () => {
       }
     }));
 
-    assert.equal(saveProviderConfig('moonshot', { models: ['moonshot-v1-32k'] }), true);
+    assert.equal(saveProviderConfig('moonshot', { models: ['moonshot-v1-32k'] }, 'project'), true);
     const config = loadProviderConfig();
     assert.equal(config.providers.moonshot.apiKey, 'sk-user', '用户级 apiKey 保留');
     assert.deepEqual(config.providers.moonshot.models, ['moonshot-v1-32k'], '项目级 models 覆盖用户级');

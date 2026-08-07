@@ -10,7 +10,8 @@ import { fetchWithNetworkPolicy } from '@hajicli/plugins';
  * 无需依赖环境变量。配置分两级：
  *   - 用户级：~/.haji/config.json       （API Key 跨项目共用）
  *   - 项目级：<cwd>/.haji/config.json   （baseUrl/模型等团队或项目设置）
- * 读取时两级合并，项目级覆盖用户级同名字段；写入只落盘项目级。
+ * 读取时两级合并，项目级覆盖用户级同名字段；写入默认落盘用户级，
+ * 调用方可显式指定项目级。
  *
  * provider 名称支持内置（deepseek/volcengine）与用户自定义名称
  * （通过 /provider add 引导添加）。自定义 provider 同样存储在上述文件中。
@@ -20,6 +21,7 @@ import { fetchWithNetworkPolicy } from '@hajicli/plugins';
  */
 
 export type ProviderName = string;
+export type ProviderConfigScope = 'user' | 'project';
 
 export interface ProviderEntry {
   apiKey?: string;
@@ -65,6 +67,10 @@ export function projectProviderConfigPath(): string {
   return path.join(process.cwd(), '.haji', 'config.json');
 }
 
+export function providerConfigPath(scope: ProviderConfigScope): string {
+  return scope === 'project' ? projectProviderConfigPath() : userProviderConfigPath();
+}
+
 function readConfigFile(filePath: string): ProviderConfig {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as ProviderConfig;
@@ -76,6 +82,11 @@ function readConfigFile(filePath: string): ProviderConfig {
     // 文件不存在、损坏或结构非法时一律按空配置处理
     return { providers: {} };
   }
+}
+
+/** 读取单一作用域的原始配置，不与另一层合并。 */
+export function loadProviderConfigScope(scope: ProviderConfigScope): ProviderConfig {
+  return readConfigFile(providerConfigPath(scope));
 }
 
 /**
@@ -93,13 +104,14 @@ export function loadProviderConfig(): ProviderConfig {
   return { providers };
 }
 
-function writeProjectConfig(config: ProviderConfig): boolean {
+function writeConfig(config: ProviderConfig, scope: ProviderConfigScope): boolean {
+  const filePath = providerConfigPath(scope);
   try {
-    fs.mkdirSync(path.dirname(projectProviderConfigPath()), { recursive: true });
-    fs.writeFileSync(projectProviderConfigPath(), JSON.stringify(config, null, 2), 'utf8');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf8');
     // 尽量收紧文件权限；Windows 上可能无效，忽略失败
     try {
-      fs.chmodSync(projectProviderConfigPath(), 0o600);
+      fs.chmodSync(filePath, 0o600);
     } catch {
       // 忽略权限设置失败
     }
@@ -111,12 +123,16 @@ function writeProjectConfig(config: ProviderConfig): boolean {
 
 /**
  * 合并更新指定 provider 的配置（保留未被本次传入的字段），
- * 写入项目级配置文件；空字符串字段会被清除，models 数组保留非空项。
+ * 默认写入用户级配置文件；空字符串字段会被清除，models 数组保留非空项。
  * 成功返回 true。
  */
-export function saveProviderConfig(provider: ProviderName, entry: ProviderEntry): boolean {
-  const project = readConfigFile(projectProviderConfigPath());
-  const merged: ProviderEntry = { ...project.providers[provider], ...entry };
+export function saveProviderConfig(
+  provider: ProviderName,
+  entry: ProviderEntry,
+  scope: ProviderConfigScope = 'user'
+): boolean {
+  const config = readConfigFile(providerConfigPath(scope));
+  const merged: ProviderEntry = { ...config.providers[provider], ...entry };
   const cleaned: ProviderEntry = {};
   const out = cleaned as Record<string, unknown>;
   for (const [key, value] of Object.entries(merged)) {
@@ -127,17 +143,20 @@ export function saveProviderConfig(provider: ProviderName, entry: ProviderEntry)
       out[key] = value;
     }
   }
-  project.providers[provider] = cleaned;
-  return writeProjectConfig(project);
+  config.providers[provider] = cleaned;
+  return writeConfig(config, scope);
 }
 
 /**
- * 删除指定 provider 在项目级配置中的全部条目。成功返回 true。
+ * 删除指定 provider 在目标作用域中的全部条目。默认清除用户级配置。
  */
-export function unsetProviderConfig(provider: ProviderName): boolean {
-  const project = readConfigFile(projectProviderConfigPath());
-  delete project.providers[provider];
-  return writeProjectConfig(project);
+export function unsetProviderConfig(
+  provider: ProviderName,
+  scope: ProviderConfigScope = 'user'
+): boolean {
+  const config = readConfigFile(providerConfigPath(scope));
+  delete config.providers[provider];
+  return writeConfig(config, scope);
 }
 
 /**
