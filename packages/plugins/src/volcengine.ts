@@ -193,6 +193,7 @@ export class VolcengineProvider implements ModelProvider {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
+    options.onRequestStart?.();
     return withExponentialBackoff(async () => {
       try {
         const response = await fetchWithNetworkPolicy(url, {

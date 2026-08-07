@@ -85,6 +85,8 @@ export interface CompletionOptions {
   thinking?: boolean;
   tools?: ToolDefinition[];
   abortSignal?: AbortSignal;
+  /** Provider 即将发起首次网络请求时触发，用于区分可撤回的本地草稿与已发送消息。 */
+  onRequestStart?: () => void;
   onToolCall?: (toolCalls: ToolCall[]) => void;
   /**
    * 接收大模型流式或非流式输出中的思考过程（如推理内容）。

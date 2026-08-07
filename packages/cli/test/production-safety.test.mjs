@@ -38,10 +38,12 @@ test('providers reject malformed historical tool arguments before any network re
   ];
 
   for (const provider of providers) {
+    let requestStarts = 0;
     await assert.rejects(
-      consumeStream(provider.completeStream(messages)),
+      consumeStream(provider.completeStream(messages, { onRequestStart: () => { requestStarts += 1; } })),
       /本地拒绝发送损坏的历史工具调用/
     );
+    assert.equal(requestStarts, 0, '本地校验失败时请求尚未发出');
   }
 });
 
@@ -149,6 +151,7 @@ test('OpenAI-compatible providers share split SSE parsing for text, reasoning, t
       new VolcengineProvider({ apiKey: 'test', baseUrl, defaultModel: 'test' })
     ];
     for (const provider of providers) {
+      let requestStarts = 0;
       let finishReason;
       let reasoning = '';
       let toolCalls;
@@ -156,12 +159,14 @@ test('OpenAI-compatible providers share split SSE parsing for text, reasoning, t
       const content = await consumeStream(provider.completeStream(
         [{ role: 'user', content: 'test' }],
         {
+          onRequestStart: () => { requestStarts += 1; },
           onFinish: finish => { finishReason = finish.reason; },
           onReasoning: delta => { reasoning += delta; },
           onToolCall: calls => { toolCalls = calls; },
           onUsage: value => { usage = value; }
         }
       ));
+      assert.equal(requestStarts, 1, '每次真实网络调用只触发一次请求边界');
       assert.equal(content, 'partial');
       assert.equal(reasoning, 'think');
       assert.equal(finishReason, 'length');
