@@ -45,7 +45,41 @@ HAJI 支持标准的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，也支持以下
 - `HAJI_PROXY`：同时用于 HTTP 和 HTTPS
 - `HAJI_HTTP_PROXY` / `HAJI_HTTPS_PROXY`：分别配置代理
 - `HAJI_NO_PROXY`：配置不走代理的主机
-- `HAJI_HTTP_TIMEOUT_MS`：模型或网页完整请求的超时，默认 60000，允许 1000 至 600000
+- `HAJI_HTTP_TIMEOUT_MS`：网页请求（搜索、抓取、连通性测试等）的完整超时，默认 60000，允许 1000 至 600000
+- `HAJI_MODEL_TIMEOUT_MS`：模型请求（chat/completions）的完整超时，默认 300000（5 分钟），允许 1000 至 600000；reasoning 模型长生成时需要比网页请求更宽松的超时
+- `HAJI_CONNECT_TIMEOUT_MS`：连接建立阶段超时，默认 20000；代理未运行或上游不可达时快速失败，而不是干等完整超时
+
+连接失败（代理未运行、DNS 解析失败等）会立即报出可操作的错误（如"无法连接目标服务（ECONNREFUSED）"），响应头未在时限内返回时则报告"请求在 Xms 内未完成"。
+
+## 界面主题
+
+HAJI 的 TUI 界面（背景、前景、边框、Logo 与 Markdown 配色）默认使用内置深色主题，不再跟随终端模拟器的配色与字体设置——颜色全部以 24-bit 真彩色输出，像素风 Logo 由块字符绘制，不依赖终端字体。退出界面时自动恢复终端默认外观。
+
+主题支持两级配置，项目级覆盖用户级同名字段：
+
+- 用户级：`%USERPROFILE%\.haji\theme.json`
+- 项目级：`<workspace>\.haji\theme.json`
+
+```json
+{
+  "background": "#0d1117",
+  "foreground": "#c9d1d9",
+  "accent": "#a371f7",
+  "muted": "#6e7681",
+  "red": "#ff7b72",
+  "green": "#7ee787",
+  "yellow": "#f2cc60",
+  "blue": "#79c0ff",
+  "magenta": "#d2a8ff",
+  "cyan": "#56d4dd",
+  "brightGreen": "#56d364",
+  "brightYellow": "#e3b341",
+  "brightBlue": "#6cb6ff",
+  "brightCyan": "#39c5cf"
+}
+```
+
+所有字段均为 `#RRGGBB` 格式，缺省字段回退到内置默认值；非法值会被忽略。`.haji/` 已被 git 忽略，主题文件不会进入版本库。
 
 ## 安全边界
 
@@ -90,6 +124,39 @@ user-invocable: true
 Skill 可以在自身目录中提供 `references/`、`scripts/`、`assets/` 等附属资源。模型必须先调用 `loadskill`，再使用只读的 `listskillresources` 和 `readskillresource` 按相对路径访问；普通文本资源最大 256 KiB，Asset 最大 10 MiB，单个 Skill 最多枚举 256 个资源。二进制 Asset 只能被枚举，不能作为文本注入上下文。
 
 上述三个 Skill 工具在 Plan Mode 中仍是只读工具。Skill 不能提升权限，也不能覆盖用户指令、`AGENTS.md` 或安全规则。Skill 名称不能是文件路径，`SKILL.md` 最大 64 KiB，并拒绝路径穿越和符号链接资源。`scripts/` 中的脚本只会作为文本读取，不会由 Skill 工具直接执行。
+
+## 经验系统（自学习记忆）
+
+HAJI 内置一套跨会话的自学习闭环，在日常使用中观察工具调用、提炼行为规则、积累项目知识，下次会话自动应用，目标是降低重复出错率。该系统由三部分组成，全部在内核运行，不依赖外部脚本或服务：
+
+- **行为观测层**：`PostToolUse` Hook 捕获每次工具调用（含失败样本），追加到 `.haji/observations.jsonl`；主客观测与子代理观测都会被记录。
+- **模式提炼层**：会话结束时自动运行双路径提炼——
+  - *统计路径*（零 token）：检测高频模式，如「Edit 前缺 Read」「同命令失败后重试」「同 tool 同错误聚集≥3次」等 6 类。
+  - *LLM 路径*（智能触发）：仅当本会话出现过失败调用或新增观测≥20 条时，才调用当前 provider 做语义分析，产出更深层规则与记忆候选。
+- **记忆注入层**：高置信度规则与已确认记忆作为 system prompt 常驻分片（priority 46），每轮对话自动注入。
+
+存储布局（两级，项目级覆盖用户级同名条目）：
+
+- `.haji/observations.jsonl`：观测流，超 5MB/8000 行按月归档，主文件保留 30 天
+- `.haji/instincts/<domain>__<id>.md`：行为规则，frontmatter 含 confidence/domain/source/observedAt
+- `.haji/memory/active/<type>__<id>.md`：已确认记忆
+- `.haji/memory/staging/<type>__<id>.md`：LLM 提取的记忆候选，需用户确认后转为 active
+- 用户级目录：`%USERPROFILE%/.haji/instincts/`、`%USERPROFILE%/.haji/memory/`
+
+置信度演化：规则首现时 confidence=0.5，重复观测 +0.05（上限 0.9），90 天未触发 -0.05，低于 0.55 标记 deprecated。只有 confidence ≥ 0.7 的规则才会被注入。
+
+交互命令：
+
+- `/memory`：列出 active 与 staging 记忆
+- `/memory confirm <id>`：确认 staging 记忆为 active
+- `/memory add <user|project|feedback> <内容>`：手工添加记忆
+- `/memory forget <id>`：删除记忆
+- `/instinct`：列出所有规则（按 confidence 排序）
+- `/instinct distill`：用本会话观测手动触发提炼（不必等会话结束）
+- `/instinct forget <id>`：删除规则
+- `/instinct stats`：查看规则/记忆数量与领域分布
+
+经验文件默认不入版本库（`.haji/` 已被 gitignore）。LLM 提炼在你的本地 provider 上完成，记忆内容不会上传第三方服务。Ctrl+C 退出时会尽力 flush 已累积的观测样本。
 
 ## 性能诊断
 

@@ -33,6 +33,7 @@ import { getNativeTerminalEngineStatus } from './native-terminal-engine.js';
 import { REWIND_CONFIRM_DEFAULT, queueRewindRefill } from './rewind-flow.js';
 import { SharedToolExecutor } from './tool-executor.js';
 import { parsePresetCommand, parseSubagentCommand, type ParsedSubagentCommand } from './agent-commands.js';
+import { handleMemoryCommand, handleInstinctCommand } from './experience-commands.js';
 import { getModelContextWindowTokens, getModelMaxOutputTokens } from './context-policy.js';
 import { formatToolArgs, getCliVersion, loadPreference, savePreference } from './cli-runtime.js';
 import {
@@ -169,6 +170,8 @@ ${colors.bold('快捷命令 (对话内):')}
   /agents             查看、管理和中止子代理
   /skills             查看 Skill；支持 reload 与 validate
   /skill <name>       确定性加载 Skill，可在名称后追加任务参数
+  /memory             查看、确认、添加或删除记忆（confirm/add/forget）
+  /instinct           查看、手动提炼或删除行为规则（distill/stats）
   /permission         切换权限模式 (plan, default, accept-edit, auto, bypass-permissions)
   /effort             切换思考强度 (low, medium, high, xhigh, max)
   /model              选择大模型与思考强度
@@ -554,6 +557,8 @@ ${colors.bold('环境变量配置:')}
     { command: '/agents', description: '查看、管理和中止子代理' },
     { command: '/skills', description: '查看、重新扫描或校验 Skill' },
     { command: '/skill', description: '按名称确定性加载 Skill' },
+    { command: '/memory', description: '查看、确认、添加或删除记忆（项目知识、偏好）' },
+    { command: '/instinct', description: '查看、手动提炼或删除行为规则（经验积累）' },
     { command: '/compact', description: '多层上下文压缩' },
     { command: '/permission', description: '切换权限档次与安全阈值' },
     { command: '/effort', description: '切换思考强度' },
@@ -1512,6 +1517,30 @@ ${colors.bold('环境变量配置:')}
             continue;
           }
         }
+        if (command === 'memory') {
+          const expCtx = {
+            store: experienceStore,
+            provider: () => provider,
+            model: () => selectedModel,
+            pendingObservations: () => experienceStore.getPendingObservations(),
+            writeLine: (line: string) => ui.writeLine(line),
+            writeChat: (content: string) => ui.writeChat(content)
+          };
+          await handleMemoryCommand(parts.slice(1), expCtx, colors);
+          continue;
+        }
+        if (command === 'instinct') {
+          const expCtx = {
+            store: experienceStore,
+            provider: () => provider,
+            model: () => selectedModel,
+            pendingObservations: () => experienceStore.getPendingObservations(),
+            writeLine: (line: string) => ui.writeLine(line),
+            writeChat: (content: string) => ui.writeChat(content)
+          };
+          await handleInstinctCommand(parts.slice(1), expCtx, colors);
+          continue;
+        }
         if (command === 'subagent') {
           try {
             let parsed = parseSubagentCommand(trimmedInput.slice('/subagent'.length));
@@ -2437,6 +2466,8 @@ ${colors.bold('环境变量配置:')}
             `  ${colors.purple('/agents')}      - 查看和管理 Agent（stop <id|all> / clear）`,
             `  ${colors.purple('/skills')}      - 查看 Skill（reload 可重新扫描）`,
             `  ${colors.purple('/skill')}       - 按名称加载 Skill，可追加任务参数`,
+            `  ${colors.purple('/memory')}      - 查看/确认/添加记忆（confirm <id> / add / forget）`,
+            `  ${colors.purple('/instinct')}    - 查看/提炼行为规则（distill / forget / stats）`,
             `  ${colors.purple('/permission')}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
             `  ${colors.purple('/effort')}      - 切换思考强度（当前：${reasoningEffort}）`,
             `  ${colors.purple('/model')}       - 选择模型（当前：${selectedModel}）`,
