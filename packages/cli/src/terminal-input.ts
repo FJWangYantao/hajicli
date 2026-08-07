@@ -10,12 +10,35 @@ import {
   tryNativeLayoutAnsiDocument,
   tryNativeWrapAnsi
 } from './native-terminal-engine.js';
+import { getTheme, fgSeq, bgSeq, themeReset, themeEnter, themeBg, fillUserMsgRowEol } from './theme.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
 const ANSI_RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const THEME = getTheme();
+/** 主题色序列：TUI 界面所有硬编码 ANSI 颜色的统一出口。 */
+const SEQ = {
+  accent: fgSeq(THEME.accent),
+  muted: fgSeq(THEME.muted),
+  green: fgSeq(THEME.green),
+  yellow: fgSeq(THEME.yellow),
+  red: fgSeq(THEME.red),
+  blue: fgSeq(THEME.blue),
+  cyan: fgSeq(THEME.cyan),
+  magenta: fgSeq(THEME.magenta),
+  bold: BOLD,
+  dim: '\x1b[2m',
+  boldAccent: BOLD + fgSeq(THEME.accent),
+  boldRed: BOLD + fgSeq(THEME.red),
+  boldYellow: BOLD + fgSeq(THEME.yellow),
+  reset: themeReset(),
+  bg: bgSeq(THEME.background)
+};
 const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
 const NATIVE_LAYOUT_MIN_LENGTH = 1024;
+/** 对话区左右内边距（字符数），为 chat 内容留出阅读呼吸感。 */
+const CHAT_PADDING = 3;
 const graphemeSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
 function enableWindowsVirtualTerminalInput(): boolean {
@@ -204,7 +227,7 @@ export function buildAgentPanelRows(
   if (items.length === 0 || maxRows <= 0) return [];
   const running = items.filter(item => item.status === 'running').length;
   const queued = items.filter(item => item.status === 'queued').length;
-  const rows = [`\x1b[1;35mAgents ${running} running${queued ? ` · ${queued} queued` : ''}\x1b[0m`];
+  const rows = [`${SEQ.boldAccent}Agents ${running} running${queued ? ` · ${queued} queued` : ''}${SEQ.reset}`];
   for (const agent of items) {
     if (rows.length >= maxRows) break;
     const icon = agent.status === 'running' ? '●' : agent.status === 'queued' ? '○' : agent.status === 'awaiting_verification' ? '✓' : '×';
@@ -221,7 +244,7 @@ export function buildAgentPanelRows(
       : agent.status.replaceAll('_', ' ');
     const runtimeConfig = [agent.model, agent.provider, agent.reasoningEffort].filter(Boolean).join(' / ');
     const configSuffix = runtimeConfig ? ` · ${runtimeConfig}` : '';
-    rows.push(`\x1b[90m${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}${configSuffix}`, Math.max(1, width - agent.id.length - 4))}\x1b[0m`);
+    rows.push(`${SEQ.muted}${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}${configSuffix}`, Math.max(1, width - agent.id.length - 4))}${SEQ.reset}`);
   }
   return rows;
 }
@@ -388,7 +411,8 @@ export function buildScreenUpdate(previousRows: readonly string[], nextRows: rea
   let output = '';
   for (let row = 0; row < nextRows.length; row += 1) {
     if (previousRows[row] === nextRows[row]) continue;
-    output += `\x1b[${row + 1};1H\x1b[2K${nextRows[row]}`;
+    // 写行前注入主题背景：`\x1b[2K` 清出的区域即为主题背景色
+    output += `\x1b[${row + 1};1H${themeBg()}\x1b[2K${nextRows[row]}`;
   }
   return output;
 }
@@ -802,6 +826,8 @@ export class TerminalUI {
   private streamRenderTimer: NodeJS.Timeout | null = null;
   private protocolFlushTimer: NodeJS.Timeout | null = null;
   private startupHeaderVisible = true;
+  /** Logo 下方附加的启动信息行（provider/model/effort + 引导提示）。 */
+  private headerInfo: string[] = [];
   private renderedScreenRows: string[] = [];
   private renderedScreenWidth = 0;
   private renderedScreenHeight = 0;
@@ -821,6 +847,12 @@ export class TerminalUI {
   setModelInfo(model: string, effort?: string): void {
     this.modelName = model;
     this.reasoningEffort = effort || '';
+    this.scheduleRender();
+  }
+
+  /** 设置 Logo 下方的启动信息行（provider/model/effort + 引导提示等）。 */
+  setHeaderInfo(lines: string[]): void {
+    this.headerInfo = lines;
     this.scheduleRender();
   }
 
@@ -873,7 +905,7 @@ export class TerminalUI {
     } else {
       const formatted = items.map((msg, idx) => `[${idx + 1}] ${msg}`).join('  ');
       const maxLen = Math.max(10, (stdout.columns || 80) - 26);
-      this.queueText = ` \x1b[1;33m⏳ 待处理队列 (${items.length} 条):\x1b[0m \x1b[36m${truncateText(formatted, maxLen)}\x1b[0m`;
+      this.queueText = ` ${SEQ.boldYellow}⏳ 待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${truncateText(formatted, maxLen)}${SEQ.reset}`;
     }
     this.scheduleRender();
   }
@@ -912,7 +944,7 @@ export class TerminalUI {
     stdin.resume();
     this.clipboardWriter.start();
     // 1002 负责拖动和滚轮，1006 统一为 SGR 坐标；禁用 1007，避免滚轮重复转成方向键。
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h');
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h' + themeEnter() + '\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h');
     stdout.on('resize', this.handleResize);
     stdout.on('drain', this.handleStdoutDrain);
     stdin.on('data', this.handleMouseData);
@@ -941,7 +973,7 @@ export class TerminalUI {
       stdin.setRawMode(this.originalRawMode);
       stdin.pause();
       process.off('exit', this.handleProcessExit);
-      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
+      stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[2J\x1b[?1049l');
     }
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
@@ -1303,7 +1335,10 @@ export class TerminalUI {
   private getChatCellAtLogicalRow(column: number, logicalRow: number, clampToText = false): TextCell | undefined {
     const layout = this.getSelectionLayout();
     const layoutRow = layout.rows[logicalRow];
-    return layoutRow ? cellAtColumn(layoutRow, column, clampToText) : undefined;
+    if (!layoutRow) return undefined;
+    // chat 区有 CHAT_PADDING 的左内边距：把 1-based 物理列还原成内容列。
+    // cellAtColumn 内部会再做 column-1，故这里直接减 padding。
+    return cellAtColumn(layoutRow, column - CHAT_PADDING, clampToText);
   }
 
   private getLogicalChatRow(row: number): number | undefined {
@@ -1564,7 +1599,7 @@ export class TerminalUI {
 
   private readonly handleProcessExit = () => {
     stdin.setRawMode(this.originalRawMode);
-    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l');
+    stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[2J\x1b[?1049l');
   };
 
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
@@ -1623,8 +1658,8 @@ export class TerminalUI {
     return suggestions.map((item, index) => {
       const label = truncateText(`${item.command}  ${item.description}`, Math.max(1, width - 2));
       return index === activeInput.selectedCommandIndex
-        ? `\x1b[1;35m› ${label}\x1b[0m`
-        : `\x1b[90m  ${label}\x1b[0m`;
+        ? `${SEQ.boldAccent}› ${label}${SEQ.reset}`
+        : `${SEQ.muted}  ${label}${SEQ.reset}`;
     });
   }
 
@@ -1639,7 +1674,7 @@ export class TerminalUI {
       ? '↑↓ 模型 · ←→ 强度 · Enter 确认'
       : '↑↓ 选择 · Enter 确认';
     const rows = [
-      `\x1b[1m${truncateText(options.title, width)}\x1b[0m  \x1b[90m${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}\x1b[0m`
+      `${SEQ.bold}${truncateText(options.title, width)}${SEQ.reset}  ${SEQ.muted}${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}${SEQ.reset}`
     ];
 
     if (options.secondary) {
@@ -1651,13 +1686,13 @@ export class TerminalUI {
       if (terminalWidth(fullSecondaryText) <= width) {
         const styledEfforts = options.secondary.items.map((item, index) => (
           index === activeSelection.secondaryIndex
-            ? `\x1b[1;35m‹${item.label}›\x1b[0m`
-            : `\x1b[90m${item.label}\x1b[0m`
+            ? `${SEQ.boldAccent}‹${item.label}›${SEQ.reset}`
+            : `${SEQ.muted}${item.label}${SEQ.reset}`
         ));
-        rows.push(`\x1b[90m${options.secondary.label}\x1b[0m  ${styledEfforts.join('  ')}`);
+        rows.push(`${SEQ.muted}${options.secondary.label}${SEQ.reset}  ${styledEfforts.join('  ')}`);
       } else {
         const secondaryText = `${options.secondary.label}  ‹ ${selectedSecondary.label} ›`;
-        rows.push(`\x1b[1;35m${truncateText(secondaryText, width)}\x1b[0m`);
+        rows.push(`${SEQ.boldAccent}${truncateText(secondaryText, width)}${SEQ.reset}`);
       }
     }
 
@@ -1679,8 +1714,8 @@ export class TerminalUI {
         Math.max(1, width - 2)
       );
       rows.push(itemIndex === activeSelection.selectedIndex
-        ? `\x1b[1;35m› ${label}\x1b[0m`
-        : `\x1b[90m  ${label}\x1b[0m`);
+        ? `${SEQ.boldAccent}› ${label}${SEQ.reset}`
+        : `${SEQ.muted}  ${label}${SEQ.reset}`);
     }
 
     return rows.slice(0, maxRows);
@@ -1712,14 +1747,14 @@ export class TerminalUI {
     const modeLabel = this.permissionMode === 'plan' ? 'Plan Mode' : this.permissionMode.replace('-', ' ');
     const permText = this.permissionMode ? `[${modeLabel}]` : '';
     const permColorMap: Record<string, string> = {
-      plan: '\x1b[36m',
-      default: '\x1b[32m',
-      'accept-edit': '\x1b[33m',
-      auto: '\x1b[35m',
-      'bypass-permissions': '\x1b[1;31m',
+      plan: SEQ.cyan,
+      default: SEQ.green,
+      'accept-edit': SEQ.yellow,
+      auto: SEQ.accent,
+      'bypass-permissions': SEQ.boldRed,
     };
-    const permColor = permText ? (permColorMap[this.permissionMode] || '\x1b[90m') : '';
-    const permAnsi = permText ? `${permColor}${permText}\x1b[0m` : '';
+    const permColor = permText ? (permColorMap[this.permissionMode] || SEQ.muted) : '';
+    const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : '';
 
     let modelStr = '';
     if (this.modelName) {
@@ -1727,7 +1762,7 @@ export class TerminalUI {
         ? `${this.modelName}(${this.reasoningEffort})`
         : this.modelName;
     }
-    const modelAnsi = modelStr ? `\x1b[1;36m${modelStr}\x1b[0m` : '';
+    const modelAnsi = modelStr ? `${SEQ.bold}${SEQ.cyan}${modelStr}${SEQ.reset}` : '';
 
     const leftAnsi = [permAnsi, modelAnsi].filter(Boolean).join('  ');
     const leftWidth = terminalWidth(leftAnsi);
@@ -1736,26 +1771,27 @@ export class TerminalUI {
     const max = this.maxTokens;
     const ratio = Math.min(1, Math.max(0, used / max));
 
-    let colorCode = '\x1b[36m';
+    let colorCode = SEQ.cyan;
     if (ratio >= 0.85) {
-      colorCode = '\x1b[1;31m';
+      colorCode = SEQ.boldRed;
     } else if (ratio >= 0.6) {
-      colorCode = '\x1b[33m';
+      colorCode = SEQ.yellow;
     }
 
     const numText = `${used} / ${max}`;
+    const ctxLabel = 'ctx';
     let barCapacity = 10;
-    const minRightWidth = barCapacity + 1 + numText.length;
+    const minRightWidth = barCapacity + 1 + ctxLabel.length + 1 + numText.length;
 
     if (leftWidth + minRightWidth + 1 > width) {
-      barCapacity = Math.max(3, width - leftWidth - numText.length - 2);
+      barCapacity = Math.max(3, width - leftWidth - ctxLabel.length - 1 - numText.length - 2);
     }
 
     const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
     const emptyCount = Math.max(0, barCapacity - filledCount);
     const barStr = `${'█'.repeat(filledCount)}${'░'.repeat(emptyCount)}`;
 
-    const rightAnsi = `${colorCode}${barStr} ${numText}\x1b[0m`;
+    const rightAnsi = `${colorCode}${barStr}${SEQ.reset} ${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${numText}${SEQ.reset}`;
     const rightWidth = terminalWidth(rightAnsi);
 
     if (leftWidth + rightWidth + 1 <= width) {
@@ -1768,7 +1804,7 @@ export class TerminalUI {
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
     if (!this.taskPanelTitle || maxRows <= 0) return [];
-    const rows = [`\x1b[1;34m${truncateText('Todo', width)}\x1b[0m`];
+    const rows = [`${SEQ.bold}${SEQ.blue}${truncateText('Todo', width)}${SEQ.reset}`];
     const visibleTasks = this.taskPanelExpanded
       ? this.taskPanelItems
       : this.taskPanelItems.slice(0, 5);
@@ -1779,11 +1815,11 @@ export class TerminalUI {
     for (const task of visibleTasks) {
       if (rows.length >= taskRowLimit) break;
       if (task.status === 'completed') {
-        rows.push(`\x1b[32m✓\x1b[0m \x1b[2m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
+        rows.push(`${SEQ.green}✓${SEQ.reset} ${SEQ.dim}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`);
       } else if (task.status === 'in_progress') {
-        rows.push(`\x1b[1;34m●\x1b[0m \x1b[1m${truncateText(task.content, Math.max(1, width - 2))}\x1b[0m`);
+        rows.push(`${SEQ.bold}${SEQ.blue}●${SEQ.reset} ${SEQ.bold}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`);
       } else {
-        rows.push(`\x1b[90m○\x1b[0m ${truncateText(task.content, Math.max(1, width - 2))}`);
+        rows.push(`${SEQ.muted}○${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`);
       }
       renderedTaskCount += 1;
       if (task.agent && rows.length < taskRowLimit) {
@@ -1797,13 +1833,13 @@ export class TerminalUI {
               ? '已中止'
               : '失败';
         const color = task.agent.status === 'running'
-          ? '\x1b[36m'
+          ? SEQ.cyan
           : task.agent.status === 'verified'
-            ? '\x1b[32m'
+            ? SEQ.green
             : task.agent.status === 'awaiting_verification'
-              ? '\x1b[33m'
-              : '\x1b[31m';
-        rows.push(`${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}\x1b[0m`);
+              ? SEQ.yellow
+              : SEQ.red;
+        rows.push(`${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}${SEQ.reset}`);
       }
     }
 
@@ -1819,9 +1855,9 @@ export class TerminalUI {
           pendingCount > 0 ? `${pendingCount} pending` : ''
         ].filter(Boolean).join(' · ');
         const counts = statusSummary ? ` (${statusSummary})` : '';
-        rows.push(`\x1b[90m${truncateText(`… +${hiddenTasks.length} more${counts} · ctrl+t to ${this.taskPanelExpanded ? 'collapse' : 'expand'}`, width)}\x1b[0m`);
+        rows.push(`${SEQ.muted}${truncateText(`… +${hiddenTasks.length} more${counts} · ctrl+t to ${this.taskPanelExpanded ? 'collapse' : 'expand'}`, width)}${SEQ.reset}`);
       } else {
-        rows.push(`\x1b[90m${truncateText('… ctrl+t to collapse', width)}\x1b[0m`);
+        rows.push(`${SEQ.muted}${truncateText('… ctrl+t to collapse', width)}${SEQ.reset}`);
       }
     }
     return rows;
@@ -1863,7 +1899,9 @@ export class TerminalUI {
     const header = this.startupHeaderVisible
       ? (height >= 22 ? this.options.header : this.options.compactHeader)
       : '';
-    const headerRows = header ? wrapAnsi(header, width) : [];
+    const headerRows = header
+      ? [...wrapAnsi(header, width), ...(this.headerInfo.length ? ['', ...this.headerInfo.flatMap(l => wrapAnsi(l, width))] : [])]
+      : [];
     const agentRows = this.buildAgentPanel(width, Math.max(0, Math.min(4, height - headerRows.length - 8)));
     const availableTaskRows = Math.max(0, height - headerRows.length - agentRows.length - 8);
     const taskRows = this.buildTaskPanel(
@@ -1895,9 +1933,12 @@ export class TerminalUI {
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
-    const contentChanged = contentWithStatus !== this.cachedContentWithStatus || width !== this.cachedWrappedWidth;
+    // 对话区左右各留 CHAT_PADDING 内边距：内容按收窄后的宽度换行，
+    // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
+    const chatWidth = Math.max(20, width - CHAT_PADDING * 2);
+    const contentChanged = contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
     const previousWrappedCount = this.cachedWrappedChat.length;
-    const wrappedChat = this.getWrappedChat(contentWithStatus, width);
+    const wrappedChat = this.getWrappedChat(contentWithStatus, chatWidth);
     const wrappedRowDelta = wrappedChat.length - previousWrappedCount;
     if (contentChanged && this.chatScrollOffset > 0 && wrappedRowDelta !== 0) {
       this.chatScrollOffset = Math.max(0, this.chatScrollOffset + wrappedRowDelta);
@@ -1913,11 +1954,14 @@ export class TerminalUI {
       screenTop: topRows.length + 2,
       visibleStart,
       visibleEnd,
-      width
+      width: chatWidth
     };
+    const chatPrefix = ' '.repeat(CHAT_PADDING);
     const visibleChat = wrappedChat
       .slice(visibleStart, visibleEnd)
-      .map((row, index) => this.highlightChatRow(row, visibleStart + index));
+      // 顺序：先补全用户消息行的行尾背景（软换行中间行缺 \x1b[K），
+      // 再做选区高亮（列基于内容，无 padding），最后补左 padding。
+      .map((row, index) => chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index));
     const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
     const screenRows = [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
     while (screenRows.length < height) screenRows.push('');
@@ -1936,7 +1980,7 @@ export class TerminalUI {
     if (!fullRefresh && !screenUpdate && cursorState === this.renderedCursorState) return;
 
     let frame = '\x1b[?25l';
-    if (fullRefresh) frame += '\x1b[2J';
+    if (fullRefresh) frame += themeEnter() + '\x1b[2J';
     frame += screenUpdate;
     frame += cursorState;
     const accepted = stdout.write(frame);

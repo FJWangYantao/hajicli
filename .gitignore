@@ -10,4 +10,5 @@ dist/
 scratch/
 .workbuddy/
 .codebuddy/
+.zcode/
 diff-*.txt

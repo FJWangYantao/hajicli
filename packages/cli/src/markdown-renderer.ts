@@ -5,30 +5,14 @@
  */
 
 import { performanceMonitor } from '@hajicli/core';
+import { buildAnsiStyles } from './theme.js';
 
-/** ANSI 样式代码字典 */
-const ANSI = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  italic: '\x1b[3m',
-  underline: '\x1b[4m',
-  strikethrough: '\x1b[9m',
-
-  // 前景色定义
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  gray: '\x1b[90m',
-  brightGreen: '\x1b[92m',
-  brightYellow: '\x1b[93m',
-  brightBlue: '\x1b[94m',
-  brightCyan: '\x1b[96m',
-};
+/**
+ * ANSI 样式代码字典。颜色取自当前主题（24-bit 真彩色），使 Markdown 渲染
+ * 不再依赖终端 16 色调色板；reset 会恢复主题前景与背景，保证背景不丢失。
+ * 在模块加载时构建一次。
+ */
+const ANSI = buildAnsiStyles();
 
 /** 常见编程语言关键字集合 */
 const KEYWORDS = new Set([

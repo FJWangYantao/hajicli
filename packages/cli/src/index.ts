@@ -571,6 +571,12 @@ ${colors.bold('环境变量配置:')}
   ];
   ui.start();
   markStartupStage('ui_started');
+  // Logo 下方的启动信息行：provider · model · effort + 引导提示。
+  // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
+  ui.setHeaderInfo([
+    `${colors.muted(providerLabel(currentProviderName))} ${colors.gray('·')} ${colors.boldAccent(selectedModel)} ${colors.gray('·')} ${colors.cyan(reasoningEffort)}`,
+    colors.gray('输入 /help 查看命令，或直接开始对话')
+  ]);
   const showRuntimeWarning = (warning: string): void => {
     ui.writeLine(colors.yellow(`⚠️ ${warning}`));
   };
