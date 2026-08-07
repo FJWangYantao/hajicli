@@ -221,6 +221,9 @@ export async function startChatServer(
             }
             keepCalling = true;
           } else {
+            if (finishReason === 'length') {
+              res.write(JSON.stringify({ type: 'truncated', reason: 'length' }) + '\n');
+            }
             keepCalling = false;
           }
         }

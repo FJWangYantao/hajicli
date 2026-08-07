@@ -2888,7 +2888,9 @@ ${colors.bold('环境变量配置:')}
   } finally {
     ui.close();
     try {
-      // 经验系统：flush 会话内累积的观测样本
+      // 经验系统：先取出会话内累积的观测（flush 会清空缓冲，必须在此之前取）
+      const sessionObs = experienceStore.getPendingObservations();
+      // flush 观测样本落盘（提炼引擎用的是上面取出的副本，顺序不能反）
       await experienceStore.flushObservations();
       // 触发 Stop hook（此时 messages 完整、尚未落盘）
       await hookEngine.trigger('Stop', {
@@ -2904,7 +2906,6 @@ ${colors.bold('环境变量配置:')}
         model: () => selectedModel,
         logger: msg => console.log(colors.gray(`  ${msg}`))
       });
-      const sessionObs = experienceStore.getPendingObservations();
       const distillSummary = await distillEngine.runDistill(sessionObs, {
         messages, cwd: process.cwd(), sessionId: sessionManager.getCurrentSession().id
       });

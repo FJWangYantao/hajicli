@@ -20,10 +20,27 @@ import {
 
 /** LLM 路径的触发阈值：本会话观测数达到此值才触发。 */
 const LLM_TRIGGER_MIN_OBS = 20;
+/** LLM 路径的失败样本触发门槛：单次失败不触发，避免日常小错每次都烧 token。 */
+const LLM_TRIGGER_MIN_FAILURES = 2;
 /** LLM 调用的超时时间，避免阻塞退出过久。 */
 const LLM_TIMEOUT_MS = 30_000;
 /** 统计检测器触发所需的最低出现次数。 */
 const STATISTICAL_MIN_OCCURRENCES = 2;
+
+/**
+ * 工具注册名常量（与 packages/plugins/src/*-tool.ts 的 definition.function.name 一致）。
+ * 集中管理避免检测器里硬编码字面量与运行时漂移——历史教训：早期版本写成
+ * 'Edit'/'ReadFile'/'WriteFile'/'Bash'/'GrepSearch' 全部失效。
+ */
+const TOOL = {
+  READ: 'read',
+  EDIT: 'edit',
+  WRITE: 'write',
+  BASH: 'bash',
+  GREP: 'grep',
+  SUBAGENT: 'subagent',
+  VERIFY: 'verifyagent'
+} as const;
 
 export interface DistillEngineOptions {
   store: ExperienceStore;
@@ -55,9 +72,9 @@ export class DistillEngine {
     const statisticalInstincts = this.detectStatisticalPatterns(sessionObservations);
     notes.push(`统计路径检测到 ${statisticalInstincts.length} 条候选规则`);
 
-    // 路径 B：LLM 语义分析（智能触发）
+    // 路径 B：LLM 语义分析（智能触发：失败数达门槛 或 观测数足够大才烧 token）
     const failedCount = sessionObservations.filter(o => o.failed).length;
-    const shouldTriggerLLM = failedCount > 0 || sessionObservations.length >= LLM_TRIGGER_MIN_OBS;
+    const shouldTriggerLLM = failedCount >= LLM_TRIGGER_MIN_FAILURES || sessionObservations.length >= LLM_TRIGGER_MIN_OBS;
     let llmInstincts: Instinct[] = [];
     let memoryCandidates: Memory[] = [];
     let llmTriggered = false;
@@ -130,7 +147,7 @@ export class DistillEngine {
    * 若 Edit 调用前短期内没有 Read 同一文件，且出现≥2 次，强化"先读后改"。
    */
   private detectEditBeforeRead(obs: ToolObservation[]): Instinct[] {
-    const edits = obs.filter(o => o.toolName === 'Edit');
+    const edits = obs.filter(o => o.toolName === TOOL.EDIT);
     if (edits.length < STATISTICAL_MIN_OCCURRENCES) return [];
     let missingRead = 0;
     for (const edit of edits) {
@@ -139,7 +156,7 @@ export class DistillEngine {
       // 查找同会话、同文件、Edit 之前 5 分钟内的 Read
       const editTime = new Date(edit.ts).getTime();
       const hasPriorRead = obs.some(o =>
-        o.toolName === 'ReadFile'
+        o.toolName === TOOL.READ
         && String(o.args?.file_path || o.args?.path || '') === filePath
         && new Date(o.ts).getTime() <= editTime
         && editTime - new Date(o.ts).getTime() < 5 * 60 * 1000
@@ -160,7 +177,7 @@ export class DistillEngine {
    * 识别"失败→（修正）→成功"序列，提取前置检查建议。
    */
   private detectBashFailureRetry(obs: ToolObservation[]): Instinct[] {
-    const bash = obs.filter(o => o.toolName === 'Bash');
+    const bash = obs.filter(o => o.toolName === TOOL.BASH);
     const failedCommands = bash.filter(o => o.failed);
     if (failedCommands.length === 0) return [];
     const retryPatterns = new Set<string>();
@@ -189,13 +206,13 @@ export class DistillEngine {
    * 模式 3：Grep 命中后 Read 确认。
    */
   private detectGrepThenRead(obs: ToolObservation[]): Instinct[] {
-    const greps = obs.filter(o => o.toolName === 'GrepSearch' && !o.failed);
+    const greps = obs.filter(o => o.toolName === TOOL.GREP && !o.failed);
     if (greps.length < STATISTICAL_MIN_OCCURRENCES) return [];
     let followedByRead = 0;
     for (const grep of greps) {
       const grepTime = new Date(grep.ts).getTime();
       const hasFollowUpRead = obs.some(o =>
-        o.toolName === 'ReadFile'
+        o.toolName === TOOL.READ
         && Math.abs(new Date(o.ts).getTime() - grepTime) < 5 * 60 * 1000
         && new Date(o.ts).getTime() > grepTime
       );
@@ -214,13 +231,13 @@ export class DistillEngine {
    * 模式 4：subagent 后必有 verifyagent。
    */
   private detectSubagentVerify(obs: ToolObservation[]): Instinct[] {
-    const subagentCalls = obs.filter(o => o.toolName === 'subagent' && !o.failed);
+    const subagentCalls = obs.filter(o => o.toolName === TOOL.SUBAGENT && !o.failed);
     if (subagentCalls.length < STATISTICAL_MIN_OCCURRENCES) return [];
     let missingVerify = 0;
     for (const sub of subagentCalls) {
       const subTime = new Date(sub.ts).getTime();
       const hasVerify = obs.some(o =>
-        o.toolName === 'verifyagent'
+        o.toolName === TOOL.VERIFY
         && new Date(o.ts).getTime() > subTime
       );
       if (!hasVerify) missingVerify++;
@@ -238,7 +255,7 @@ export class DistillEngine {
    * 模式 5：连续 Write 同文件（应改用 Edit）。
    */
   private detectRepeatedWriteReplace(obs: ToolObservation[]): Instinct[] {
-    const writes = obs.filter(o => o.toolName === 'WriteFile' && !o.failed);
+    const writes = obs.filter(o => o.toolName === TOOL.WRITE && !o.failed);
     const byFile = new Map<string, number>();
     for (const w of writes) {
       const filePath = String(w.args?.file_path || w.args?.path || '');
@@ -272,7 +289,7 @@ export class DistillEngine {
       if (samples.length < 3) continue;
       const [toolName, errorSig] = signature.split(':');
       const sampleCmd = samples[0].args?.command || samples[0].args?.file_path || samples[0].args?.path || '';
-      const hint = sampleSiggestHint(toolName, errorSig, String(sampleCmd));
+      const hint = sampleSuggestHint(toolName, errorSig, String(sampleCmd));
       results.push(makeInstinct(
         `error-cluster-${toolName}-${errorSig}`.slice(0, 60),
         'error-prevention',
@@ -339,7 +356,8 @@ export class DistillEngine {
     const recent = obs.slice(-40); // 只取最近 40 条
     return recent.map(o => {
       const status = o.failed ? '❌' : '✓';
-      const arg = o.args?.command || o.args?.file_path || o.args?.path || o.args?.pattern || '';
+      // 兜底取参数：bash 用 command，grep 用 query，文件类用 path（file_path 兼容历史）
+      const arg = o.args?.command || o.args?.query || o.args?.path || o.args?.file_path || o.args?.pattern || '';
       const argStr = typeof arg === 'string' ? arg.slice(0, 80) : '';
       const output = o.failed ? o.output.slice(0, 120) : '';
       return `${status} ${o.toolName}(${argStr})${output ? ' -> ' + output : ''}`;
@@ -469,7 +487,7 @@ function extractErrorSignature(output: string): string {
 }
 
 /** 根据工具和错误签名给出可操作的建议。 */
-function sampleSiggestHint(toolName: string, errorSig: string, sample: string): string {
+function sampleSuggestHint(toolName: string, errorSig: string, sample: string): string {
   const sampleHint = sample ? `（曾出错样本：${sample.slice(0, 60)}）` : '';
   return `调用 ${toolName} 前预检可能导致 ${errorSig} 的问题${sampleHint}；参考观测中的失败与成功对照，先做前置检查。`;
 }

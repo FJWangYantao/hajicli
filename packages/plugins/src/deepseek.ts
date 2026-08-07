@@ -1,5 +1,5 @@
 import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
-import { fetchWithNetworkPolicy } from './network.js';
+import { fetchWithNetworkPolicy, getModelTimeoutMs } from './network.js';
 import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
 
 export interface DeepSeekConfig {
@@ -131,7 +131,7 @@ export class DeepSeekProvider implements ModelProvider {
           },
           body: JSON.stringify(payload),
           signal: options.abortSignal
-        });
+        }, { timeoutMs: getModelTimeoutMs() });
 
         if (!response.ok) {
           let errorMsg = `HTTP error! status: ${response.status}`;

@@ -508,31 +508,43 @@ export class ExperienceStore {
     await fsp.writeFile(this.observationsFile, retained.join('\n') + (retained.length ? '\n' : ''), 'utf8');
   }
 
-  /** 全量重写项目级规则（演化时使用）。用户级只重写 source=manual 的。 */
+  /**
+   * 增量持久化演化后的规则（演化时使用）。
+   *
+   * 历史教训：早期实现 clearInstinctsDir 清空整个目录再重写，有两个风险——
+   * (1) clear 与重写之间崩溃会丢失全部规则；
+   * (2) 用户级 non-manual 规则会被一并清除。
+   * 改为增量 upsert：只更新本次有变化的条目，先按 id 清掉两级目录的同名旧文件
+   * （处理 domain 改名导致的残文件），再写入对应目录。其他无关规则不动。
+   */
   private async persistInstincts(instincts: Instinct[]): Promise<void> {
     const projectDir = this.projectInstinctsDir();
     const userDir = this.userInstinctsDir();
     await this.ensureDir(projectDir);
     await this.ensureDir(userDir);
-    // 清空旧文件再重写（避免改名后残留）
-    await this.clearInstinctsDir(projectDir);
-    await this.clearInstinctsDir(userDir);
     for (const inst of instincts) {
-      const dir = inst.source === 'manual' ? userDir : projectDir;
+      // 先清掉两级目录中该 id 的旧文件（容忍 domain 改名后的残文件）
+      await this.removeInstinctFilesById(inst.id, projectDir, userDir);
+      const targetDir = inst.source === 'manual' ? userDir : projectDir;
       const fileName = `${inst.domain}__${this.sanitizeId(inst.id)}.md`;
-      await this.atomicWrite(path.join(dir, fileName), this.serializeInstinct(inst));
+      await this.atomicWrite(path.join(targetDir, fileName), this.serializeInstinct(inst));
     }
   }
 
-  private async clearInstinctsDir(dir: string): Promise<void> {
-    try {
-      const entries = await fsp.readdir(dir);
+  /** 删除指定 id 在给定目录中的所有 .md 文件（匹配 `__<id>.md` 后缀）。 */
+  private async removeInstinctFilesById(id: string, ...dirs: string[]): Promise<void> {
+    const sanitized = this.sanitizeId(id);
+    for (const dir of dirs) {
+      let entries: string[];
+      try { entries = await fsp.readdir(dir); } catch { continue; }
       for (const name of entries) {
-        if (name.endsWith('.md')) {
-          await fsp.rm(path.join(dir, name), { force: true });
+        if (!name.endsWith('.md')) continue;
+        const match = name.match(/^(.+?)__(.+)\.md$/);
+        if (match && match[2] === sanitized) {
+          await this.removeFile(path.join(dir, name));
         }
       }
-    } catch { /* 目录不存在忽略 */ }
+    }
   }
 
   // ─── Frontmatter 序列化/反序列化 ───────────────────────────────────────────

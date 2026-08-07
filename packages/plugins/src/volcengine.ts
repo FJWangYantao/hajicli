@@ -1,5 +1,5 @@
 import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
-import { fetchWithNetworkPolicy } from './network.js';
+import { fetchWithNetworkPolicy, getModelTimeoutMs } from './network.js';
 import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
 
 /**
@@ -203,7 +203,7 @@ export class VolcengineProvider implements ModelProvider {
           },
           body: JSON.stringify(payload),
           signal: options.abortSignal
-        });
+        }, { timeoutMs: getModelTimeoutMs() });
 
         if (!response.ok) {
           let errorMsg = `HTTP 错误！状态码: ${response.status}`;

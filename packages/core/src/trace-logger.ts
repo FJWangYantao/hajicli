@@ -25,6 +25,7 @@ export interface TraceLlmCall {
   reasoningContent?: string;
   content: string;
   toolCalls?: ToolCall[];
+  finishReason?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;

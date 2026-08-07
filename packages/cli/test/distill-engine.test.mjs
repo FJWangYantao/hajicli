@@ -21,7 +21,7 @@ function obs(overrides = {}) {
   return {
     ts: new Date().toISOString(),
     sessionId: 's1',
-    toolName: 'Bash',
+    toolName: 'bash',
     args: {},
     output: 'ok',
     failed: false,
@@ -40,9 +40,9 @@ test('runDistill detects edit-before-read pattern when Read is missing', async (
       model: () => 'test'
     });
     const observations = [
-      obs({ toolName: 'Edit', args: { file_path: '/a.ts' }, ts: minutesAgo(10) }),
-      obs({ toolName: 'Edit', args: { file_path: '/b.ts' }, ts: minutesAgo(8) }),
-      obs({ toolName: 'Edit', args: { file_path: '/c.ts' }, ts: minutesAgo(5) })
+      obs({ toolName: 'edit', args: { file_path: '/a.ts' }, ts: minutesAgo(10) }),
+      obs({ toolName: 'edit', args: { file_path: '/b.ts' }, ts: minutesAgo(8) }),
+      obs({ toolName: 'edit', args: { file_path: '/c.ts' }, ts: minutesAgo(5) })
     ];
     const summary = await engine.runDistill(observations, {
       messages: [], cwd: '/proj', sessionId: 's1'
@@ -60,10 +60,10 @@ test('runDistill does not flag edit-before-read when Read precedes Edit', async 
   try {
     const engine = new DistillEngine({ store, provider: () => null, model: () => 'm' });
     const observations = [
-      obs({ toolName: 'ReadFile', args: { file_path: '/a.ts' }, ts: minutesAgo(10) }),
-      obs({ toolName: 'Edit', args: { file_path: '/a.ts' }, ts: minutesAgo(9) }),
-      obs({ toolName: 'ReadFile', args: { file_path: '/b.ts' }, ts: minutesAgo(8) }),
-      obs({ toolName: 'Edit', args: { file_path: '/b.ts' }, ts: minutesAgo(7) })
+      obs({ toolName: 'read', args: { file_path: '/a.ts' }, ts: minutesAgo(10) }),
+      obs({ toolName: 'edit', args: { file_path: '/a.ts' }, ts: minutesAgo(9) }),
+      obs({ toolName: 'read', args: { file_path: '/b.ts' }, ts: minutesAgo(8) }),
+      obs({ toolName: 'edit', args: { file_path: '/b.ts' }, ts: minutesAgo(7) })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.equal(summary.statisticalInstincts, 0);
@@ -77,9 +77,9 @@ test('runDistill detects failed-pattern cluster (>=3 same errors)', async () => 
   try {
     const engine = new DistillEngine({ store, provider: () => null, model: () => 'm' });
     const observations = [
-      obs({ toolName: 'Bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT module not found', failed: true }),
-      obs({ toolName: 'Bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT another', failed: true }),
-      obs({ toolName: 'Bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT third', failed: true })
+      obs({ toolName: 'bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT module not found', failed: true }),
+      obs({ toolName: 'bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT another', failed: true }),
+      obs({ toolName: 'bash', args: { command: 'pnpm test' }, output: '执行出错: ENOENT third', failed: true })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.ok(summary.statisticalInstincts >= 1);
@@ -95,8 +95,8 @@ test('runDistill detects repeated WriteFile on same file', async () => {
   try {
     const engine = new DistillEngine({ store, provider: () => null, model: () => 'm' });
     const observations = [
-      obs({ toolName: 'WriteFile', args: { file_path: '/x.ts' }, output: 'written' }),
-      obs({ toolName: 'WriteFile', args: { file_path: '/x.ts' }, output: 'written' })
+      obs({ toolName: 'write', args: { file_path: '/x.ts' }, output: 'written' }),
+      obs({ toolName: 'write', args: { file_path: '/x.ts' }, output: 'written' })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.ok(summary.statisticalInstincts >= 1);
@@ -118,8 +118,8 @@ test('runDistill reinforces existing instinct on repeat detection', async () => 
     });
     const engine = new DistillEngine({ store, provider: () => null, model: () => 'm' });
     const observations = [
-      obs({ toolName: 'Edit', args: { file_path: '/a.ts' } }),
-      obs({ toolName: 'Edit', args: { file_path: '/b.ts' } })
+      obs({ toolName: 'edit', args: { file_path: '/a.ts' } }),
+      obs({ toolName: 'edit', args: { file_path: '/b.ts' } })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.ok(summary.reinforced >= 1, '应强化既有规则');
@@ -165,7 +165,8 @@ test('runDistill triggers LLM path when failures exist', async () => {
       model: () => 'mock'
     });
     const observations = [
-      obs({ toolName: 'Bash', args: { command: 'node x.js' }, output: '执行出错: not found', failed: true })
+      obs({ toolName: 'bash', args: { command: 'node x.js' }, output: '执行出错: not found', failed: true }),
+      obs({ toolName: 'bash', args: { command: 'node y.js' }, output: '执行出错: not found', failed: true })
     ];
     const summary = await engine.runDistill(observations, {
       messages: [{ role: 'user', content: 'test' }], cwd: '/p', sessionId: 's'
@@ -195,8 +196,8 @@ test('runDistill does not trigger LLM when few observations and no failures', as
       model: () => 'mock'
     });
     const observations = [
-      obs({ toolName: 'ReadFile', args: { path: '/a' } }),
-      obs({ toolName: 'ReadFile', args: { path: '/b' } })
+      obs({ toolName: 'read', args: { path: '/a' } }),
+      obs({ toolName: 'read', args: { path: '/b' } })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.equal(summary.llmTriggered, false);
@@ -215,7 +216,7 @@ test('runDistill triggers LLM when observations reach threshold (20)', async () 
       model: () => 'mock'
     });
     const observations = Array.from({ length: 20 }, (_, i) =>
-      obs({ toolName: 'ReadFile', args: { path: `/f${i}` } })
+      obs({ toolName: 'read', args: { path: `/f${i}` } })
     );
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.equal(summary.llmTriggered, true);
@@ -233,7 +234,8 @@ test('runDistill tolerates malformed LLM response', async () => {
       model: () => 'mock'
     });
     const observations = [
-      obs({ toolName: 'Bash', output: '执行出错: x', failed: true })
+      obs({ toolName: 'bash', output: '执行出错: x', failed: true }),
+      obs({ toolName: 'bash', output: '执行出错: y', failed: true })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     assert.equal(summary.llmInstincts, 0);
@@ -252,7 +254,8 @@ test('runDistill handles provider null gracefully', async () => {
       model: () => 'mock'
     });
     const observations = [
-      obs({ toolName: 'Bash', output: '执行出错: x', failed: true })
+      obs({ toolName: 'bash', output: '执行出错: x', failed: true }),
+      obs({ toolName: 'bash', output: '执行出错: y', failed: true })
     ];
     const summary = await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     // LLM 路径被触发但 provider 为 null，应安全跳过
@@ -293,7 +296,8 @@ test('deduplicateInstincts merges similar LLM outputs', async () => {
       model: () => 'mock'
     });
     const observations = [
-      obs({ toolName: 'Bash', output: '执行出错', failed: true })
+      obs({ toolName: 'bash', output: '执行出错', failed: true }),
+      obs({ toolName: 'bash', output: '执行出错', failed: true })
     ];
     await engine.runDistill(observations, { messages: [], cwd: '/p', sessionId: 's' });
     // 两条高度相似的 instinct 应去重为一条
