@@ -10,35 +10,36 @@ import {
   tryNativeLayoutAnsiDocument,
   tryNativeWrapAnsi
 } from './native-terminal-engine.js';
-import { getTheme, fgSeq, bgSeq, themeReset, themeEnter, themeBg, fillUserMsgRowEol } from './theme.js';
+import { getTheme, getColorLevel, fgSeq, bgSeq, themeReset, themeEnter, themeBg, fillUserMsgRowEol } from './theme.js';
+import { resolveTuiLayout, type TuiStatusDetail } from './tui-layout.js';
+import { redactSensitiveCommand, sanitizeTerminalText } from './terminal-sanitize.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
 const ANSI_RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const THEME = getTheme();
+const boldSeq = (): string => getColorLevel() === 'mono' ? '' : '\x1b[1m';
 /** 主题色序列：TUI 界面所有硬编码 ANSI 颜色的统一出口。 */
 const SEQ = {
-  accent: fgSeq(THEME.accent),
-  muted: fgSeq(THEME.muted),
-  green: fgSeq(THEME.green),
-  yellow: fgSeq(THEME.yellow),
-  red: fgSeq(THEME.red),
-  blue: fgSeq(THEME.blue),
-  cyan: fgSeq(THEME.cyan),
-  magenta: fgSeq(THEME.magenta),
-  bold: BOLD,
-  dim: '\x1b[2m',
-  boldAccent: BOLD + fgSeq(THEME.accent),
-  boldRed: BOLD + fgSeq(THEME.red),
-  boldYellow: BOLD + fgSeq(THEME.yellow),
-  reset: themeReset(),
-  bg: bgSeq(THEME.background)
+  get accent() { return fgSeq(getTheme().accent); },
+  get muted() { return fgSeq(getTheme().muted); },
+  get green() { return fgSeq(getTheme().green); },
+  get yellow() { return fgSeq(getTheme().yellow); },
+  get red() { return fgSeq(getTheme().red); },
+  get blue() { return fgSeq(getTheme().blue); },
+  get cyan() { return fgSeq(getTheme().cyan); },
+  get magenta() { return fgSeq(getTheme().magenta); },
+  get bold() { return boldSeq(); },
+  get dim() { return getColorLevel() === 'mono' ? '' : '\x1b[2m'; },
+  get boldAccent() { return boldSeq() + fgSeq(getTheme().accent); },
+  get boldRed() { return boldSeq() + fgSeq(getTheme().red); },
+  get boldYellow() { return boldSeq() + fgSeq(getTheme().yellow); },
+  get reset() { return themeReset(); },
+  get bg() { return bgSeq(getTheme().background); }
 };
 const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
 const NATIVE_LAYOUT_MIN_LENGTH = 1024;
-/** 对话区左右内边距（字符数），为 chat 内容留出阅读呼吸感。 */
-const CHAT_PADDING = 3;
+/** 宽屏默认对话内边距；实际值由响应式布局策略决定。 */
+const DEFAULT_CHAT_PADDING = 3;
 const graphemeSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
 function enableWindowsVirtualTerminalInput(): boolean {
@@ -86,6 +87,8 @@ export interface ReadInputOptions {
   continuationPrompt?: string;
   slashCommands?: readonly SlashCommand[];
   initialValue?: string;
+  /** 掩码显示且不写入输入历史，适用于 API Key 等敏感内容。 */
+  sensitive?: boolean;
 }
 
 export interface SlashCommand {
@@ -132,6 +135,7 @@ interface ActiveInput {
   continuationPrompt: string;
   graphemes: string[];
   cursorIndex: number;
+  sensitive: boolean;
   preferredColumn?: number;
   slashCommands: readonly SlashCommand[];
   selectedCommandIndex: number;
@@ -153,6 +157,7 @@ interface ChatViewport {
   visibleStart: number;
   visibleEnd: number;
   width: number;
+  padding: number;
 }
 
 interface PendingMouseSelection {
@@ -227,11 +232,29 @@ export function buildAgentPanelRows(
   if (items.length === 0 || maxRows <= 0) return [];
   const running = items.filter(item => item.status === 'running').length;
   const queued = items.filter(item => item.status === 'queued').length;
-  const rows = [`${SEQ.boldAccent}Agents ${running} running${queued ? ` · ${queued} queued` : ''}${SEQ.reset}`];
+  const rows = [`${SEQ.boldAccent}代理 ${running} 运行中${queued ? ` · ${queued} 排队` : ''}${SEQ.reset}`];
+  const statusLabels: Record<AgentPanelItem['status'], string> = {
+    queued: '排队中',
+    running: '运行中',
+    awaiting_verification: '待验证',
+    verified: '已验证',
+    rejected: '未通过',
+    failed: '失败',
+    aborted: '已中止'
+  };
+  const statusIcons: Record<AgentPanelItem['status'], string> = {
+    queued: '○',
+    running: '●',
+    awaiting_verification: '◇',
+    verified: '✓',
+    rejected: '×',
+    failed: '×',
+    aborted: '■'
+  };
   for (const agent of items) {
     if (rows.length >= maxRows) break;
-    const icon = agent.status === 'running' ? '●' : agent.status === 'queued' ? '○' : agent.status === 'awaiting_verification' ? '✓' : '×';
-    const activity = agent.currentTool || (agent.activity === 'responding' ? 'responding' : 'thinking');
+    const icon = statusIcons[agent.status];
+    const activity = agent.currentTool || (agent.activity === 'responding' ? '回复中' : '思考中');
     const tokenBudget = agent.maxTokens
       ? `${formatAgentTokens(agent.totalTokens)}/${formatAgentTokens(agent.maxTokens)} tok`
       : `${formatAgentTokens(agent.totalTokens)} tok`;
@@ -241,8 +264,8 @@ export function buildAgentPanelRows(
     const preview = agent.preview ? ` · ${agent.preview}` : '';
     const detail = agent.status === 'running'
       ? `${activity} · ${formatAgentElapsed(agent.startedAt, now)} · ${tokenBudget}${toolBudget}${preview}`
-      : agent.status.replaceAll('_', ' ');
-    const runtimeConfig = [agent.model, agent.provider, agent.reasoningEffort].filter(Boolean).join(' / ');
+      : statusLabels[agent.status];
+    const runtimeConfig = [agent.model, agent.provider, agent.reasoningEffort].filter(Boolean).join(' · ');
     const configSuffix = runtimeConfig ? ` · ${runtimeConfig}` : '';
     rows.push(`${SEQ.muted}${icon} ${agent.id}  ${truncateText(`${agent.role} · ${detail}${configSuffix}`, Math.max(1, width - agent.id.length - 4))}${SEQ.reset}`);
   }
@@ -417,6 +440,51 @@ export function buildScreenUpdate(previousRows: readonly string[], nextRows: rea
   return output;
 }
 
+/**
+ * 使用终端滚动区域移动既有聊天行，只重绘新露出或实际变化的行。
+ * scrollRows > 0 表示查看更早历史（屏幕内容向下移动）。
+ */
+export function buildViewportScrollUpdate(
+  previousRows: readonly string[],
+  nextRows: readonly string[],
+  regionStart: number,
+  regionHeight: number,
+  scrollRows: number
+): string | undefined {
+  const amount = Math.abs(Math.trunc(scrollRows));
+  if (
+    amount === 0
+    || amount >= regionHeight
+    || regionStart < 0
+    || regionHeight <= 0
+    || previousRows.length !== nextRows.length
+    || regionStart + regionHeight > previousRows.length
+  ) {
+    return undefined;
+  }
+
+  const shiftedRows = [...previousRows];
+  if (scrollRows > 0) {
+    for (let index = regionHeight - 1; index >= 0; index -= 1) {
+      shiftedRows[regionStart + index] = index >= amount
+        ? previousRows[regionStart + index - amount]
+        : '';
+    }
+  } else {
+    for (let index = 0; index < regionHeight; index += 1) {
+      shiftedRows[regionStart + index] = index + amount < regionHeight
+        ? previousRows[regionStart + index + amount]
+        : '';
+    }
+  }
+
+  const top = regionStart + 1;
+  const bottom = regionStart + regionHeight;
+  const direction = scrollRows > 0 ? 'T' : 'S';
+  const regionScroll = `\x1b[${top};${bottom}r\x1b[${top};1H${themeBg()}\x1b[${amount}${direction}\x1b[r`;
+  return regionScroll + buildScreenUpdate(shiftedRows, nextRows);
+}
+
 function splitGraphemes(value: string): string[] {
   // Most source code and terminal chrome is ASCII. Avoid the considerably
   // heavier Intl.Segmenter path when every UTF-16 code unit is one grapheme.
@@ -528,6 +596,62 @@ function truncateText(value: string, width: number): string {
   }
 
   return result;
+}
+
+function truncateAnsiText(value: string, width: number): string {
+  if (width <= 0) return '';
+  if (terminalWidth(value) <= width) return value;
+
+  const targetWidth = Math.max(0, width - 1);
+  let result = '';
+  let resultWidth = 0;
+  let offset = 0;
+  while (offset < value.length) {
+    if (value[offset] === '\x1b') {
+      const sequence = ansiSequenceAt(value, offset);
+      if (sequence) {
+        result += sequence;
+        offset += sequence.length;
+        continue;
+      }
+    }
+    const grapheme = splitGraphemes(value.slice(offset))[0];
+    const graphemeWidth = measureGrapheme(grapheme);
+    if (resultWidth + graphemeWidth > targetWidth) break;
+    result += grapheme;
+    resultWidth += graphemeWidth;
+    offset += grapheme.length;
+  }
+  return `${result}${SEQ.reset}…`;
+}
+
+function truncateTailText(value: string, width: number): string {
+  if (width <= 0) return '';
+  if (terminalWidth(value) <= width) return value;
+  if (width === 1) return '…';
+
+  const graphemes = splitGraphemes(value);
+  let suffix = '';
+  let suffixWidth = 0;
+  for (let index = graphemes.length - 1; index >= 0; index -= 1) {
+    const grapheme = graphemes[index];
+    const graphemeWidth = measureGrapheme(grapheme);
+    if (suffixWidth + graphemeWidth > width - 1) break;
+    suffix = grapheme + suffix;
+    suffixWidth += graphemeWidth;
+  }
+  return `…${suffix}`;
+}
+
+function buildLabeledDivider(width: number, label: string): string {
+  if (width <= 0) return '';
+  const visibleLabel = truncateText(label, Math.max(1, width - 2));
+  const labelWidth = terminalWidth(visibleLabel);
+  if (labelWidth + 2 >= width) return `${SEQ.muted}${truncateText(visibleLabel, width)}${SEQ.reset}`;
+  const remaining = width - labelWidth - 2;
+  const left = Math.floor(remaining / 2);
+  const right = remaining - left;
+  return `${SEQ.muted}${'─'.repeat(left)} ${visibleLabel} ${'─'.repeat(right)}${SEQ.reset}`;
 }
 
 function layoutInput(
@@ -793,7 +917,10 @@ export class TerminalUI {
   private status = '';
   private permissionMode = '';
   private modelName = '';
+  private providerName = '';
   private reasoningEffort = '';
+  private sessionTitle = '';
+  private currentPath = '';
   private usedTokens = 0;
   private maxTokens = 1000000;
   private taskPanelTitle = '';
@@ -802,6 +929,7 @@ export class TerminalUI {
   private agentPanelItems: AgentPanelItem[] = [];
   private agentPanelTimer: NodeJS.Timeout | null = null;
   private selectionAutoScrollTimer: NodeJS.Timeout | null = null;
+  private pendingWheelRows = 0;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
   private chatViewport?: ChatViewport;
@@ -832,6 +960,9 @@ export class TerminalUI {
   private renderedScreenWidth = 0;
   private renderedScreenHeight = 0;
   private renderedCursorState = '';
+  private renderedChatVisibleStart = 0;
+  private renderedChatRegionStart = 0;
+  private renderedChatRegionHeight = 0;
   private stdoutBackpressured = false;
   private renderPendingAfterDrain = false;
 
@@ -844,9 +975,21 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
-  setModelInfo(model: string, effort?: string): void {
-    this.modelName = model;
-    this.reasoningEffort = effort || '';
+  setModelInfo(model: string, effort?: string, provider?: string): void {
+    this.modelName = sanitizeTerminalText(model).replace(/\s*\n\s*/g, ' ');
+    this.reasoningEffort = sanitizeTerminalText(effort || '').replace(/\s*\n\s*/g, ' ');
+    this.providerName = sanitizeTerminalText(provider || '').replace(/\s*\n\s*/g, ' ');
+    this.scheduleRender();
+  }
+
+  setSessionTitle(title: string): void {
+    this.sessionTitle = sanitizeTerminalText(title).replace(/\s*\n\s*/g, ' ').trim();
+    this.scheduleRender();
+  }
+
+  /** 设置状态栏显示的当前工作目录（模型名称右侧）。 */
+  setCurrentPath(path: string): void {
+    this.currentPath = sanitizeTerminalText(path).replace(/\s*\n\s*/g, ' ');
     this.scheduleRender();
   }
 
@@ -863,14 +1006,36 @@ export class TerminalUI {
   }
 
   setTaskPlan(plan: { title: string; tasks: TaskPanelItem[]; completedTasks?: TaskPanelItem[] } | null): void {
-    this.taskPanelTitle = plan?.title || '';
-    this.taskPanelItems = plan ? [...(plan.completedTasks || []), ...plan.tasks] : [];
+    this.taskPanelTitle = sanitizeTerminalText(plan?.title || '').replace(/\s*\n\s*/g, ' ');
+    this.taskPanelItems = plan
+      ? [...(plan.completedTasks || []), ...plan.tasks].map(task => ({
+        ...task,
+        content: sanitizeTerminalText(task.content).replace(/\s*\n\s*/g, ' '),
+        agent: task.agent
+          ? {
+            ...task.agent,
+            role: sanitizeTerminalText(task.agent.role).replace(/\s*\n\s*/g, ' '),
+            summary: task.agent.summary
+              ? sanitizeTerminalText(task.agent.summary).replace(/\s*\n\s*/g, ' ')
+              : undefined
+          }
+          : undefined
+      }))
+      : [];
     if (!plan || this.taskPanelItems.length <= 5) this.taskPanelExpanded = false;
     this.scheduleRender();
   }
 
   setAgentPanel(items: AgentPanelItem[]): void {
-    this.agentPanelItems = items.slice(0, 20);
+    this.agentPanelItems = items.slice(0, 20).map(item => ({
+      ...item,
+      id: sanitizeTerminalText(item.id).replace(/\s*\n\s*/g, ' '),
+      role: sanitizeTerminalText(item.role).replace(/\s*\n\s*/g, ' '),
+      model: item.model ? sanitizeTerminalText(item.model).replace(/\s*\n\s*/g, ' ') : undefined,
+      provider: item.provider ? sanitizeTerminalText(item.provider).replace(/\s*\n\s*/g, ' ') : undefined,
+      currentTool: item.currentTool ? sanitizeTerminalText(item.currentTool).replace(/\s*\n\s*/g, ' ') : undefined,
+      preview: item.preview ? sanitizeTerminalText(item.preview).replace(/\s*\n\s*/g, ' ') : undefined
+    }));
     const hasRunning = items.some(item => item.status === 'running');
     if (hasRunning && !this.agentPanelTimer) {
       this.agentPanelTimer = setInterval(() => this.scheduleRender(), 1000);
@@ -895,7 +1060,7 @@ export class TerminalUI {
     this.onShiftTabCallback = callback;
   }
 
-  onEsc(callback: () => void): void {
+  onEsc(callback?: () => void): void {
     this.onEscCallback = callback;
   }
 
@@ -903,11 +1068,25 @@ export class TerminalUI {
     if (items.length === 0) {
       this.queueText = '';
     } else {
-      const formatted = items.map((msg, idx) => `[${idx + 1}] ${msg}`).join('  ');
-      const maxLen = Math.max(10, (stdout.columns || 80) - 26);
-      this.queueText = ` ${SEQ.boldYellow}⏳ 待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${truncateText(formatted, maxLen)}${SEQ.reset}`;
+      const formatted = items
+        .map((msg, idx) => {
+          const safeMessage = redactSensitiveCommand(sanitizeTerminalText(msg));
+          return `[${idx + 1}] ${safeMessage.replace(/\s*\n\s*/g, ' ')}`;
+        })
+        .join('  ');
+      // 保留原始队列内容，实际截断在 render 时按最新终端宽度计算。
+      this.queueText = ` ${SEQ.boldYellow}⏳ 待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${formatted}${SEQ.reset}`;
     }
     this.scheduleRender();
+  }
+
+  /** 当前聊天内容的真实可用宽度，供 Markdown 代码块和表格共享。 */
+  getContentWidth(): number {
+    const layout = resolveTuiLayout(
+      Math.max(1, stdout.columns || 80),
+      Math.max(1, stdout.rows || 24)
+    );
+    return Math.max(1, layout.safeWidth - layout.chatPadding * 2);
   }
 
   isInputActive(): boolean {
@@ -931,6 +1110,10 @@ export class TerminalUI {
     this.renderedScreenWidth = 0;
     this.renderedScreenHeight = 0;
     this.renderedCursorState = '';
+    this.renderedChatVisibleStart = 0;
+    this.renderedChatRegionStart = 0;
+    this.renderedChatRegionHeight = 0;
+    this.pendingWheelRows = 0;
 
     if (!this.interactive) {
       if (this.options.compactHeader) stdout.write(`${this.options.compactHeader}\n`);
@@ -987,6 +1170,7 @@ export class TerminalUI {
       clearInterval(this.agentPanelTimer);
       this.agentPanelTimer = null;
     }
+    this.pendingWheelRows = 0;
     this.stopSelectionAutoScroll();
     this.protocolParser.reset();
     this.clipboardWriter.close();
@@ -1002,6 +1186,7 @@ export class TerminalUI {
   }
 
   clearChat(): void {
+    this.pendingWheelRows = 0;
     this.chatContent = '';
     this.chatScrollOffset = 0;
     this.textSelection.clear();
@@ -1212,14 +1397,17 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
-  setStatus(value: string = ''): void {
+  setStatus(value: string = '', interactive = false): void {
     this.status = value;
-    this.scheduleRender();
+    this.scheduleRender(interactive);
   }
 
   async readInput(options: ReadInputOptions = {}): Promise<string> {
     const prompt = options.prompt ?? this.options.inputPrompt;
     if (!this.interactive) {
+      if (options.sensitive && (stdin.isTTY || stdout.isTTY)) {
+        throw new Error('敏感输入需要完整的交互式终端；请取消输入或输出重定向后重试');
+      }
       const questionInterface = readlinePromises.createInterface({ input: stdin, output: stdout });
       try {
         return await questionInterface.question(prompt);
@@ -1232,14 +1420,16 @@ export class TerminalUI {
       throw new Error('已有输入请求正在等待处理');
     }
 
-    const initialGraphemes = options.initialValue ? splitGraphemes(options.initialValue) : [];
-    this.inputHistory.begin(options.initialValue ?? '');
+    const safeInitialValue = sanitizeTerminalText(options.initialValue ?? '');
+    const initialGraphemes = safeInitialValue ? splitGraphemes(safeInitialValue) : [];
+    if (!options.sensitive) this.inputHistory.begin(safeInitialValue);
     return new Promise<string>((resolve, reject) => {
       this.activeInput = {
         prompt,
         continuationPrompt: options.continuationPrompt ?? this.options.continuationPrompt ?? '  ',
         graphemes: initialGraphemes,
         cursorIndex: initialGraphemes.length,
+        sensitive: Boolean(options.sensitive),
         slashCommands: options.slashCommands ?? [],
         selectedCommandIndex: 0,
         historyNavigationActive: false,
@@ -1336,9 +1526,13 @@ export class TerminalUI {
     const layout = this.getSelectionLayout();
     const layoutRow = layout.rows[logicalRow];
     if (!layoutRow) return undefined;
-    // chat 区有 CHAT_PADDING 的左内边距：把 1-based 物理列还原成内容列。
+    // chat 区有响应式左内边距：把 1-based 物理列还原成内容列。
     // cellAtColumn 内部会再做 column-1，故这里直接减 padding。
-    return cellAtColumn(layoutRow, column - CHAT_PADDING, clampToText);
+    return cellAtColumn(
+      layoutRow,
+      column - (this.chatViewport?.padding ?? DEFAULT_CHAT_PADDING),
+      clampToText
+    );
   }
 
   private getLogicalChatRow(row: number): number | undefined {
@@ -1462,12 +1656,27 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
+  private queueWheelScroll(rows: number): void {
+    const normalizedRows = Math.trunc(rows);
+    if (this.maxChatScrollOffset === 0 || normalizedRows === 0) return;
+
+    // 同一帧内合并同方向滚轮；反向输入立即覆盖，避免拖尾和方向迟滞。
+    if (this.pendingWheelRows !== 0 && Math.sign(this.pendingWheelRows) !== Math.sign(normalizedRows)) {
+      this.pendingWheelRows = normalizedRows;
+    } else {
+      this.pendingWheelRows += normalizedRows;
+    }
+    this.pendingWheelRows = Math.max(-48, Math.min(48, this.pendingWheelRows));
+    this.scheduleRender(true);
+  }
+
   private handleMouseEvent(event: TerminalMouseEvent): void {
     if (event.action === 'wheel') {
       this.pendingMouseSelection = undefined;
-      this.scrollChat(event.wheelRows ?? 0);
+      this.queueWheelScroll(event.wheelRows ?? 0);
       if (this.textSelection.dragging) {
-        this.updateMouseSelection(event.column, event.row);
+        // 端点随合并后的滚动帧更新，避免每个滚轮报文都触发一次选区布局。
+        this.selectionPointer = { column: event.column, row: event.row };
       }
       return;
     }
@@ -1606,7 +1815,23 @@ export class TerminalUI {
     const activeInput = this.activeInput;
     const prompt = activeInput?.prompt ?? this.options.inputPrompt;
     const continuationPrompt = activeInput?.continuationPrompt ?? this.options.continuationPrompt ?? '  ';
-    const graphemes = activeInput?.graphemes ?? [];
+    const rawInput = activeInput?.graphemes.join('') ?? '';
+    const inlineSecretIndexes = new Set<number>();
+    const providerSetPrefix = /^(\s*\/provider\s+set\s+\S+)/iu.exec(rawInput)?.[1];
+    if (providerSetPrefix !== undefined) {
+      const rest = rawInput.slice(providerSetPrefix.length);
+      for (const match of rest.matchAll(/\S+/gu)) {
+        if (['--project', '--global', '--user'].includes(match[0].toLowerCase())) continue;
+        const start = splitGraphemes(rawInput.slice(0, providerSetPrefix.length + (match.index ?? 0))).length;
+        const end = start + splitGraphemes(match[0]).length;
+        for (let index = start; index < end; index += 1) inlineSecretIndexes.add(index);
+      }
+    }
+    const graphemes = activeInput?.sensitive
+      ? activeInput.graphemes.map(grapheme => grapheme === '\n' ? grapheme : '•')
+      : activeInput?.graphemes.map((grapheme, index) => (
+        inlineSecretIndexes.has(index) && grapheme !== '\n' ? '•' : grapheme
+      )) ?? [];
     const cursorIndex = activeInput?.cursorIndex ?? 0;
     const layout = layoutInput(prompt, graphemes, width, continuationPrompt);
     const cursor = layout.positions[cursorIndex];
@@ -1627,7 +1852,7 @@ export class TerminalUI {
   }
 
   private getCommandSuggestions(activeInput: ActiveInput): readonly SlashCommand[] {
-    if (activeInput.historyNavigationActive) {
+    if (activeInput.sensitive || activeInput.historyNavigationActive) {
       return [];
     }
     const value = activeInput.graphemes.join('');
@@ -1721,11 +1946,13 @@ export class TerminalUI {
     return rows.slice(0, maxRows);
   }
 
-  private scrollChat(rows: number): void {
+  private scrollChat(rows: number, render = true, preservePendingWheel = false): number {
+    if (!preservePendingWheel) this.pendingWheelRows = 0;
     if (rows === 0 || this.maxChatScrollOffset === 0) {
-      return;
+      return 0;
     }
 
+    const previousOffset = this.chatScrollOffset;
     const nextOffset = Math.max(
       0,
       Math.min(this.maxChatScrollOffset, this.chatScrollOffset + rows)
@@ -1739,12 +1966,20 @@ export class TerminalUI {
         viewport.visibleEnd = Math.max(0, totalRows - nextOffset);
         viewport.visibleStart = Math.max(0, viewport.visibleEnd - viewportHeight);
       }
-      this.scheduleRender();
+      if (render) this.scheduleRender();
     }
+    return this.chatScrollOffset - previousOffset;
   }
 
-  private buildStatusBar(width: number): string {
-    const modeLabel = this.permissionMode === 'plan' ? 'Plan Mode' : this.permissionMode.replace('-', ' ');
+  private buildStatusBar(width: number, detail: TuiStatusDetail = 'full'): string {
+    const modeLabels: Record<string, string> = {
+      plan: 'PLAN',
+      default: 'DEFAULT',
+      'accept-edit': 'EDIT',
+      auto: 'AUTO',
+      'bypass-permissions': 'BYPASS'
+    };
+    const modeLabel = modeLabels[this.permissionMode] || this.permissionMode.toUpperCase();
     const permText = this.permissionMode ? `[${modeLabel}]` : '';
     const permColorMap: Record<string, string> = {
       plan: SEQ.cyan,
@@ -1757,15 +1992,22 @@ export class TerminalUI {
     const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : '';
 
     let modelStr = '';
-    if (this.modelName) {
-      modelStr = this.reasoningEffort
-        ? `${this.modelName}(${this.reasoningEffort})`
-        : this.modelName;
+    if (detail !== 'minimal' && this.modelName) {
+      modelStr = [
+        detail === 'full' ? this.providerName : '',
+        this.modelName,
+        this.reasoningEffort ? this.reasoningEffort.toUpperCase() : ''
+      ].filter(Boolean).join(' · ');
     }
-    const modelAnsi = modelStr ? `${SEQ.bold}${SEQ.cyan}${modelStr}${SEQ.reset}` : '';
+    const modelLimit = detail === 'full'
+      ? Math.max(8, Math.min(36, Math.floor(width * 0.38)))
+      : Math.max(6, Math.min(22, Math.floor(width * 0.36)));
+    const modelAnsi = modelStr
+      ? `${SEQ.bold}${SEQ.cyan}${truncateText(modelStr, modelLimit)}${SEQ.reset}`
+      : '';
 
-    const leftAnsi = [permAnsi, modelAnsi].filter(Boolean).join('  ');
-    const leftWidth = terminalWidth(leftAnsi);
+    const baseLeftAnsi = [permAnsi, modelAnsi].filter(Boolean).join('  ');
+    const baseLeftWidth = terminalWidth(baseLeftAnsi);
 
     const used = this.usedTokens;
     const max = this.maxTokens;
@@ -1778,33 +2020,46 @@ export class TerminalUI {
       colorCode = SEQ.yellow;
     }
 
-    const numText = `${used} / ${max}`;
+    const percentText = `${Math.round(ratio * 100)}%`;
+    const numText = `${formatAgentTokens(used)}/${formatAgentTokens(max)}`;
     const ctxLabel = 'ctx';
-    let barCapacity = 10;
-    const minRightWidth = barCapacity + 1 + ctxLabel.length + 1 + numText.length;
-
-    if (leftWidth + minRightWidth + 1 > width) {
-      barCapacity = Math.max(3, width - leftWidth - ctxLabel.length - 1 - numText.length - 2);
-    }
+    const barCapacity = detail === 'full' && width >= 72 ? 8 : 0;
 
     const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
     const emptyCount = Math.max(0, barCapacity - filledCount);
-    const barStr = `${'█'.repeat(filledCount)}${'░'.repeat(emptyCount)}`;
-
-    const rightAnsi = `${colorCode}${barStr}${SEQ.reset} ${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${numText}${SEQ.reset}`;
+    const barStr = barCapacity > 0
+      ? `${'█'.repeat(filledCount)}${'░'.repeat(emptyCount)} `
+      : '';
+    const valueText = detail === 'full' ? numText : percentText;
+    const rightAnsi = `${colorCode}${barStr}${SEQ.reset}${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${valueText}${SEQ.reset}`;
     const rightWidth = terminalWidth(rightAnsi);
 
-    if (leftWidth + rightWidth + 1 <= width) {
-      const padding = ' '.repeat(width - leftWidth - rightWidth);
-      return `${leftAnsi}${padding}${rightAnsi}`;
+    let pathAnsi = '';
+    if (detail === 'full' && this.currentPath) {
+      const pathMaxWidth = Math.max(0, width - baseLeftWidth - rightWidth - 4);
+      if (pathMaxWidth >= 3) {
+        pathAnsi = `${SEQ.muted}${truncateTailText(this.currentPath, pathMaxWidth)}${SEQ.reset}`;
+      }
+    }
+    const fullLeftAnsi = [baseLeftAnsi, pathAnsi].filter(Boolean).join('  ');
+    const fullLeftWidth = terminalWidth(fullLeftAnsi);
+
+    if (fullLeftWidth + rightWidth + 1 <= width) {
+      const padding = ' '.repeat(width - fullLeftWidth - rightWidth);
+      return `${fullLeftAnsi}${padding}${rightAnsi}`;
     }
 
-    return truncateText(`${leftAnsi} ${rightAnsi}`, width);
+    if (rightWidth >= width) return truncateAnsiText(rightAnsi, width);
+    const availableLeft = Math.max(0, width - rightWidth - 1);
+    const fittedLeft = truncateAnsiText(fullLeftAnsi, availableLeft);
+    const padding = ' '.repeat(Math.max(1, width - terminalWidth(fittedLeft) - rightWidth));
+    return `${fittedLeft}${padding}${rightAnsi}`;
   }
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
     if (!this.taskPanelTitle || maxRows <= 0) return [];
-    const rows = [`${SEQ.bold}${SEQ.blue}${truncateText('Todo', width)}${SEQ.reset}`];
+    const panelTitle = this.taskPanelTitle ? `任务 · ${this.taskPanelTitle}` : '任务';
+    const rows = [`${SEQ.bold}${SEQ.blue}${truncateText(panelTitle, width)}${SEQ.reset}`];
     const visibleTasks = this.taskPanelExpanded
       ? this.taskPanelItems
       : this.taskPanelItems.slice(0, 5);
@@ -1850,14 +2105,14 @@ export class TerminalUI {
         const activeCount = hiddenTasks.filter(task => task.status === 'in_progress').length;
         const pendingCount = hiddenTasks.filter(task => task.status === 'pending').length;
         const statusSummary = [
-          doneCount > 0 ? `${doneCount} done` : '',
-          activeCount > 0 ? `${activeCount} in progress` : '',
-          pendingCount > 0 ? `${pendingCount} pending` : ''
+          doneCount > 0 ? `${doneCount} 已完成` : '',
+          activeCount > 0 ? `${activeCount} 进行中` : '',
+          pendingCount > 0 ? `${pendingCount} 待处理` : ''
         ].filter(Boolean).join(' · ');
         const counts = statusSummary ? ` (${statusSummary})` : '';
-        rows.push(`${SEQ.muted}${truncateText(`… +${hiddenTasks.length} more${counts} · ctrl+t to ${this.taskPanelExpanded ? 'collapse' : 'expand'}`, width)}${SEQ.reset}`);
+        rows.push(`${SEQ.muted}${truncateText(`… 另有 ${hiddenTasks.length} 项${counts} · Ctrl+T ${this.taskPanelExpanded ? '收起' : '展开'}`, width)}${SEQ.reset}`);
       } else {
-        rows.push(`${SEQ.muted}${truncateText('… ctrl+t to collapse', width)}${SEQ.reset}`);
+        rows.push(`${SEQ.muted}${truncateText('… Ctrl+T 收起', width)}${SEQ.reset}`);
       }
     }
     return rows;
@@ -1894,48 +2149,98 @@ export class TerminalUI {
       return;
     }
 
-    const width = Math.max(20, (stdout.columns || 80) - 1);
-    const height = Math.max(8, stdout.rows || 24);
-    const header = this.startupHeaderVisible
-      ? (height >= 22 ? this.options.header : this.options.compactHeader)
-      : '';
+    const layout = resolveTuiLayout(
+      Math.max(1, stdout.columns || 80),
+      Math.max(1, stdout.rows || 24)
+    );
+    const width = Math.max(1, layout.safeWidth);
+    const height = Math.max(1, layout.safeHeight);
+    const persistentHeader = this.sessionTitle
+      ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, width - 7))}${SEQ.reset}`
+      : this.options.compactHeader;
+    const header = layout.headerMode === 'hidden'
+      ? ''
+      : this.startupHeaderVisible
+        ? (layout.headerMode === 'full' ? this.options.header : persistentHeader)
+        : persistentHeader;
+    const headerInfo = this.startupHeaderVisible && layout.headerMode === 'full' ? this.headerInfo : [];
     const headerRows = header
-      ? [...wrapAnsi(header, width), ...(this.headerInfo.length ? ['', ...this.headerInfo.flatMap(l => wrapAnsi(l, width))] : [])]
+      ? [...wrapAnsi(header, width), ...(headerInfo.length ? ['', ...headerInfo.flatMap(l => wrapAnsi(l, width))] : [])]
       : [];
-    const agentRows = this.buildAgentPanel(width, Math.max(0, Math.min(4, height - headerRows.length - 8)));
-    const availableTaskRows = Math.max(0, height - headerRows.length - agentRows.length - 8);
+    const panelBudget = Math.max(0, Math.min(layout.panelRows, height - headerRows.length - 4));
     const taskRows = this.buildTaskPanel(
       width,
-      this.taskPanelExpanded ? availableTaskRows : Math.min(8, availableTaskRows)
+      this.taskPanelExpanded ? panelBudget : Math.min(5, panelBudget)
     );
+    const agentRows = this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
     const topRows = [...headerRows, ...taskRows, ...agentRows];
     const divider = this.options.renderBorder(width);
     let inputLayout: VisibleInputLayout | undefined;
     let inputBlock: string[];
+    let inputCursorOffset = 0;
+    let historyDividerIndex = -1;
 
-    const statusBar = this.buildStatusBar(width);
+    const statusBar = this.buildStatusBar(width, layout.statusDetail);
+    const minimal = layout.mode === 'minimal';
+    const emergencyMinimal = minimal && height < 8;
+    const leadingInputRows: string[] = [];
+    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
+    const emergencyLeadingBudget = Math.max(0, height - 2);
+    const visibleLeadingInputRows = emergencyMinimal
+      ? (emergencyLeadingBudget === 0 ? [] : leadingInputRows.slice(-emergencyLeadingBudget))
+      : leadingInputRows;
+    const emergencyStatusRows = emergencyMinimal && height < 2 ? [] : [statusBar];
 
     if (this.activeSelection) {
-      const maxSelectionRows = Math.max(1, height - topRows.length - 5);
+      const maxSelectionRows = emergencyMinimal
+        ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
+        : Math.max(
+          1,
+          height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 5)
+        );
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
-      inputBlock = [divider, ...selectionRows, divider, statusBar];
+      if (emergencyMinimal) {
+        inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
+      } else if (minimal) {
+        inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
+      } else {
+        historyDividerIndex = visibleLeadingInputRows.length;
+        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
+      }
     } else {
-      const maxSuggestionRows = Math.max(0, height - topRows.length - 6);
+      const maxSuggestionRows = layout.showHints
+        ? Math.max(0, height - topRows.length - visibleLeadingInputRows.length - 6)
+        : 0;
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
-      const maxInputRows = Math.max(1, height - topRows.length - 5 - suggestionRows.length);
+      const maxInputRows = emergencyMinimal
+        ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
+        : Math.max(
+          1,
+          height - topRows.length - visibleLeadingInputRows.length - suggestionRows.length - (minimal ? 3 : 5)
+        );
       inputLayout = this.getInputLayout(width, maxInputRows);
-      inputBlock = [divider, ...inputLayout.rows, ...suggestionRows, divider, statusBar];
+      if (emergencyMinimal) {
+        inputCursorOffset = visibleLeadingInputRows.length;
+        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, ...emergencyStatusRows];
+      } else if (minimal) {
+        inputCursorOffset = visibleLeadingInputRows.length;
+        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, statusBar];
+      } else {
+        historyDividerIndex = visibleLeadingInputRows.length;
+        inputCursorOffset = visibleLeadingInputRows.length + 1;
+        inputBlock = [...visibleLeadingInputRows, divider, ...inputLayout.rows, ...suggestionRows, divider, statusBar];
+      }
     }
-    if (this.queueText) {
-      inputBlock.unshift(this.queueText);
-    }
-    const chatHeight = Math.max(1, height - topRows.length - 1 - inputBlock.length);
+    const chatHeight = emergencyMinimal
+      ? Math.max(0, height - inputBlock.length)
+      : Math.max(1, height - topRows.length - 1 - inputBlock.length);
     const contentWithStatus = this.status
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
       : this.chatContent;
-    // 对话区左右各留 CHAT_PADDING 内边距：内容按收窄后的宽度换行，
+    // 对话区使用响应式内边距：内容按收窄后的宽度换行，
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
-    const chatWidth = Math.max(20, width - CHAT_PADDING * 2);
+    const chatPadding = layout.chatPadding;
+    const chatWidth = Math.max(1, width - chatPadding * 2);
     const contentChanged = contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
     const previousWrappedCount = this.cachedWrappedChat.length;
     const wrappedChat = this.getWrappedChat(contentWithStatus, chatWidth);
@@ -1947,37 +2252,80 @@ export class TerminalUI {
     this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
     this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
 
+    const queuedWheelRows = this.pendingWheelRows;
+    this.pendingWheelRows = 0;
+    const wheelMovedRows = queuedWheelRows === 0
+      ? 0
+      : this.scrollChat(queuedWheelRows, false, true);
+
+    if (historyDividerIndex >= 0 && this.chatScrollOffset > 0) {
+      const label = width < 40
+        ? `↑ ${this.chatScrollOffset} 行 · Ctrl+End`
+        : `↑ 历史 · 距底部 ${this.chatScrollOffset} 行 · Ctrl+End 返回`;
+      inputBlock[historyDividerIndex] = buildLabeledDivider(width, label);
+    }
+
     this.chatPageSize = Math.max(1, chatViewportHeight - 1);
     const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
     const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
     this.chatViewport = {
-      screenTop: topRows.length + 2,
+      screenTop: emergencyMinimal ? 1 : topRows.length + 2,
       visibleStart,
       visibleEnd,
-      width: chatWidth
+      width: chatWidth,
+      padding: chatPadding
     };
-    const chatPrefix = ' '.repeat(CHAT_PADDING);
+    if (wheelMovedRows !== 0 && this.textSelection.dragging && this.selectionPointer) {
+      const cell = this.getChatCellFromMouse(
+        this.selectionPointer.column,
+        this.selectionPointer.row,
+        true
+      );
+      if (cell) this.textSelection.update(cell);
+    }
+    const chatPrefix = ' '.repeat(chatPadding);
     const visibleChat = wrappedChat
       .slice(visibleStart, visibleEnd)
       // 顺序：先补全用户消息行的行尾背景（软换行中间行缺 \x1b[K），
       // 再做选区高亮（列基于内容，无 padding），最后补左 padding。
       .map((row, index) => chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index));
     const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill('')];
-    const screenRows = [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
+    const screenRows = emergencyMinimal
+      ? [...chatRows, ...inputBlock].slice(0, height)
+      : [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
     while (screenRows.length < height) screenRows.push('');
     const fullRefresh = width !== this.renderedScreenWidth
       || height !== this.renderedScreenHeight
       || this.renderedScreenRows.length !== height;
-    const screenUpdate = buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+    const chatRegionStart = emergencyMinimal ? 0 : topRows.length + 1;
+    const viewportScrollRows = this.renderedChatVisibleStart - visibleStart;
+    const canScrollViewport = chatHeight > 0
+      && !fullRefresh
+      && chatRegionStart === this.renderedChatRegionStart
+      && chatHeight === this.renderedChatRegionHeight;
+    const screenUpdate = canScrollViewport
+      ? (buildViewportScrollUpdate(
+        this.renderedScreenRows,
+        screenRows,
+        chatRegionStart,
+        chatHeight,
+        viewportScrollRows
+      ) ?? buildScreenUpdate(this.renderedScreenRows, screenRows))
+      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
     let cursorState = '';
     if (this.activeInput && inputLayout) {
-      const inputTop = topRows.length + 1 + chatHeight;
+      const inputTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
       const cursorColumn = Math.min(inputLayout.cursor.column, width) + 1;
-      const cursorRow = inputTop + inputLayout.cursor.row + 2 + (this.queueText ? 1 : 0);
+      const cursorRow = inputTop + inputCursorOffset + inputLayout.cursor.row + 1;
       cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }
 
-    if (!fullRefresh && !screenUpdate && cursorState === this.renderedCursorState) return;
+    if (!fullRefresh && !screenUpdate && cursorState === this.renderedCursorState) {
+      this.renderedChatVisibleStart = visibleStart;
+      this.renderedChatRegionStart = chatRegionStart;
+      this.renderedChatRegionHeight = chatHeight;
+      return;
+    }
 
     let frame = '\x1b[?25l';
     if (fullRefresh) frame += themeEnter() + '\x1b[2J';
@@ -1988,6 +2336,9 @@ export class TerminalUI {
     this.renderedScreenWidth = width;
     this.renderedScreenHeight = height;
     this.renderedCursorState = cursorState;
+    this.renderedChatVisibleStart = visibleStart;
+    this.renderedChatRegionStart = chatRegionStart;
+    this.renderedChatRegionHeight = chatHeight;
     if (!accepted) this.stdoutBackpressured = true;
   }
 
@@ -2004,7 +2355,9 @@ export class TerminalUI {
     if (error) {
       activeInput.reject(error);
     } else {
-      this.inputHistory.record(value);
+      if (!activeInput.sensitive) {
+        this.inputHistory.record(redactSensitiveCommand(sanitizeTerminalText(value), ''));
+      }
       activeInput.resolve(value);
     }
   }
@@ -2037,7 +2390,7 @@ export class TerminalUI {
       return;
     }
 
-    const inserted = splitGraphemes(value.replace(/\r\n?/g, '\n'));
+    const inserted = splitGraphemes(sanitizeTerminalText(value));
     activeInput.graphemes.splice(activeInput.cursorIndex, 0, ...inserted);
     activeInput.cursorIndex += inserted.length;
     activeInput.preferredColumn = undefined;
@@ -2089,7 +2442,7 @@ export class TerminalUI {
 
   private navigateInputHistory(direction: -1 | 1): void {
     const activeInput = this.activeInput;
-    if (!activeInput) {
+    if (!activeInput || activeInput.sensitive) {
       return;
     }
 
@@ -2120,10 +2473,15 @@ export class TerminalUI {
     }
     if (key.name === 'escape') {
       this.finishSelection(new TerminalInputCancelledError());
+      this.onEscCallback?.();
       return;
     }
     if (key.name === 'pageup' || key.name === 'pagedown') {
       this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
+      return;
+    }
+    if (key.ctrl && key.name === 'end') {
+      this.scrollChat(-this.chatScrollOffset);
       return;
     }
     if (key.name === 'return' || key.name === 'enter') {
@@ -2166,14 +2524,18 @@ export class TerminalUI {
         this.textSelection.clear();
         this.selectionLayout = undefined;
         this.scheduleRender(true);
-      } else if (this.onEscCallback) {
-        this.onEscCallback();
       }
+      this.onEscCallback?.();
       return;
     }
 
     if (key.name === 'pageup' || key.name === 'pagedown') {
       this.scrollChat(key.name === 'pageup' ? this.chatPageSize : -this.chatPageSize);
+      return;
+    }
+
+    if (key.ctrl && key.name === 'end') {
+      this.scrollChat(-this.chatScrollOffset);
       return;
     }
 
@@ -2205,6 +2567,16 @@ export class TerminalUI {
     if (isRealCtrlU(value, key)) {
       const inputText = activeInput.graphemes.join('');
       if (inputText) {
+        const containsInlineSecret = redactSensitiveCommand(inputText, '') !== inputText;
+        if (activeInput.sensitive || containsInlineSecret) {
+          activeInput.graphemes = [];
+          activeInput.cursorIndex = 0;
+          activeInput.preferredColumn = undefined;
+          activeInput.selectedCommandIndex = 0;
+          activeInput.historyNavigationActive = false;
+          this.scheduleRender(true);
+          return;
+        }
         void this.clipboardWriter.write(inputText).then(success => {
           if (!success || this.activeInput !== activeInput || activeInput.graphemes.join('') !== inputText) return;
           activeInput.graphemes = [];

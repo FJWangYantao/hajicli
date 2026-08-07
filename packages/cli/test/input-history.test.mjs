@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { InputHistoryBuffer, buildScreenUpdate } from '../dist/terminal-input.js';
 import { MarkdownRenderThrottle, shouldShowToolThinkingSummary } from '../dist/markdown-renderer.js';
-import { setActiveTheme } from '../dist/theme.js';
+import { setActiveColorLevel, setActiveTheme } from '../dist/theme.js';
 
 /** 固定主题（黑色背景），保证 buildScreenUpdate 输出断言确定性。 */
 const FIXED_THEME = {
@@ -52,6 +52,7 @@ test('ignores empty submissions and tracks whether history is being browsed', ()
 });
 
 test('screen updates repaint only changed terminal rows', () => {
+  setActiveColorLevel('truecolor');
   setActiveTheme(FIXED_THEME);
   const update = buildScreenUpdate(['header', 'old input', 'status'], ['header', 'new input', 'status']);
   assert.equal(update, '\x1b[2;1H\x1b[48;2;0;0;0m\x1b[2Knew input');

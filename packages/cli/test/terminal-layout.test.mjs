@@ -3,6 +3,7 @@ import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
 import {
+  buildViewportScrollUpdate,
   getSelectionAutoScrollRows,
   layoutAnsiDocument,
   shouldRestartBackgroundInput,
@@ -48,6 +49,22 @@ test('drag selection scrolls toward the pointer when it crosses the chat viewpor
   assert.equal(getSelectionAutoScrollRows(18, 10, 8), -1);
   assert.equal(getSelectionAutoScrollRows(24, 10, 8), -3);
   assert.equal(getSelectionAutoScrollRows(10, 10, 0), 0);
+});
+
+test('viewport scroll moves existing terminal rows and repaints only newly exposed rows', () => {
+  const previous = ['header', 'old 1', 'old 2', 'old 3', 'footer'];
+  const older = ['header', 'new top', 'old 1', 'old 2', 'footer'];
+  const newer = ['header', 'old 2', 'old 3', 'new bottom', 'footer'];
+
+  const scrollToOlder = buildViewportScrollUpdate(previous, older, 1, 3, 1);
+  assert.match(scrollToOlder, /\x1b\[2;4r\x1b\[2;1H.*\x1b\[1T\x1b\[r/);
+  assert.match(scrollToOlder, /\x1b\[2;1H.*new top/);
+  assert.doesNotMatch(scrollToOlder, /old 1|old 2|footer/);
+
+  const scrollToNewer = buildViewportScrollUpdate(previous, newer, 1, 3, -1);
+  assert.match(scrollToNewer, /\x1b\[2;4r\x1b\[2;1H.*\x1b\[1S\x1b\[r/);
+  assert.match(scrollToNewer, /\x1b\[4;1H.*new bottom/);
+  assert.doesNotMatch(scrollToNewer, /old 2|old 3|footer/);
 });
 
 test('stable-prefix wrapping is identical to wrapping the complete document', () => {
@@ -103,15 +120,15 @@ test('renders the compact Todo panel and toggles its expanded state with Ctrl+T'
 
   const collapsed = ui.buildTaskPanel(100, 8).map(stripAnsi);
   assert.deepEqual(collapsed.slice(0, 4), [
-    'Todo',
+    '任务 · 配置开发环境',
     '✓ 阅读前后端配置文件',
     '● 创建数据库容器',
     '○ 修改本地配置'
   ]);
-  assert.match(collapsed.at(-1), /… \+3 more \(1 done · 2 pending\) · ctrl\+t to expand/);
+  assert.match(collapsed.at(-1), /… 另有 3 项 \(1 已完成 · 2 待处理\) · Ctrl\+T 展开/);
 
   ui.dispatchKeypress('\x14', { ctrl: true, name: 't' });
   const expanded = ui.buildTaskPanel(100, 12).map(stripAnsi);
   assert.ok(expanded.includes('○ 完成验收'));
-  assert.equal(expanded.at(-1), '… ctrl+t to collapse');
+  assert.equal(expanded.at(-1), '… Ctrl+T 收起');
 });

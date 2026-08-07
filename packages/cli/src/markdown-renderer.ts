@@ -6,6 +6,7 @@
 
 import { performanceMonitor } from '@hajicli/core';
 import { buildAnsiStyles } from './theme.js';
+import { sanitizeTerminalText } from './terminal-sanitize.js';
 
 /**
  * ANSI 样式代码字典。颜色取自当前主题（24-bit 真彩色），使 Markdown 渲染
@@ -58,6 +59,10 @@ export class MarkdownStreamRenderer {
   /** 累积接收到的原始 Markdown 全量文本 */
   private rawContent = '';
 
+  constructor(
+    private readonly widthProvider: () => number = () => Math.max(20, (process.stdout?.columns || 80) - 2)
+  ) {}
+
   /**
    * 重置渲染器状态。
    */
@@ -81,9 +86,10 @@ export class MarkdownStreamRenderer {
    * @param isFinal 是否已结束流式输出
    */
   render(content: string, isFinal = false): string {
+    const safeContent = sanitizeTerminalText(content);
     return performanceMonitor.measureSync(
       'markdown.render',
-      () => this.renderContent(content, isFinal)
+      () => this.renderContent(safeContent, isFinal)
     );
   }
 
@@ -216,6 +222,13 @@ export class MarkdownStreamRenderer {
     const match = headerLine.match(/^┌──\s*([a-zA-Z0-9_-]*)/);
     const langLabel = match && match[1] ? ` ${match[1]} ` : ' code ';
 
+    if (maxWidth < 40) {
+      return [
+        `${ANSI.gray}◇${langLabel.trim() ? ` ${langLabel.trim()}` : ''}${ANSI.reset}`,
+        ...lines.map(line => `${ANSI.gray}│${ANSI.reset} ${this.renderNormalLine(line)}`)
+      ];
+    }
+
     // 测量卡片内部最长文本的可视宽度
     const maxContentLen = lines.length > 0
       ? Math.max(...lines.map(l => this.getTextWidth(l)), 10)
@@ -282,11 +295,11 @@ export class MarkdownStreamRenderer {
       const level = headerMatch[1].length;
       const text = this.renderInlineStyles(headerMatch[2]);
       if (level === 1) {
-        return `${ANSI.bold}${ANSI.magenta}█ ${text.toUpperCase()}${ANSI.reset}`;
+        return `${ANSI.bold}${ANSI.magenta}◆ ${text}${ANSI.reset}`;
       } else if (level === 2) {
-        return `${ANSI.bold}${ANSI.cyan}■ ${text}${ANSI.reset}`;
+        return `${ANSI.bold}◇ ${text}${ANSI.reset}`;
       } else {
-        return `${ANSI.bold}${ANSI.blue}▲ ${text}${ANSI.reset}`;
+        return `${ANSI.gray}›${ANSI.reset} ${ANSI.bold}${text}${ANSI.reset}`;
       }
     }
 
@@ -315,7 +328,7 @@ export class MarkdownStreamRenderer {
     if (listMatch) {
       const indent = listMatch[1];
       const text = this.renderInlineStyles(listMatch[3]);
-      return `${indent}${ANSI.magenta}•${ANSI.reset} ${text}`;
+      return `${indent}${ANSI.gray}•${ANSI.reset} ${text}`;
     }
 
     // 5. 有序列表 (1.)
@@ -364,8 +377,8 @@ export class MarkdownStreamRenderer {
    * 获取终端当前可用可视宽度（留出安全边距）。
    */
   private getMaxWidth(): number {
-    const cols = process.stdout?.columns || 80;
-    return Math.max(20, cols - 2);
+    const width = this.widthProvider();
+    return Math.max(1, Number.isFinite(width) ? Math.floor(width) : 78);
   }
 
   /**
@@ -414,6 +427,24 @@ export class MarkdownStreamRenderer {
     const output: string[] = [];
     const langLabel = lang ? ` ${lang} ` : ' code ';
     const maxWidth = this.getMaxWidth();
+
+    if (maxWidth < 40) {
+      output.push(`${ANSI.gray}◇ ${lang || 'code'}${ANSI.reset}`);
+      for (const line of lines) {
+        const styled = lang === 'diff'
+          ? (line.startsWith('+')
+            ? `${ANSI.green}${line}${ANSI.reset}`
+            : line.startsWith('-')
+              ? `${ANSI.red}${line}${ANSI.reset}`
+              : line.startsWith('@@')
+                ? `${ANSI.cyan}${line}${ANSI.reset}`
+                : line)
+          : this.highlightCodeLine(line);
+        // 窄屏不在 Markdown 层截断；交给聊天区统一软换行，避免丢失代码。
+        output.push(`${ANSI.gray}│${ANSI.reset} ${styled}`);
+      }
+      return output;
+    }
 
     // 测量代码块内部最长行的可视宽度
     const maxContentLen = lines.length > 0
@@ -581,6 +612,26 @@ export class MarkdownStreamRenderer {
     // 若表格总宽度超过终端可用宽度，按比例压缩各列
     const maxWidth = this.getMaxWidth();
     const borderOverhead = 3 * colCount + 1;
+    if (maxWidth < 40 || borderOverhead + colCount * 3 > maxWidth) {
+      const headerRow = contentRows[0];
+      if (contentRows.length === 1) {
+        return [headerRow.map(cell => this.renderInlineStyles(cell)).join(' · ')];
+      }
+
+      const stacked: string[] = [];
+      for (let rowIndex = 1; rowIndex < contentRows.length; rowIndex += 1) {
+        if (rowIndex > 1) stacked.push('');
+        if (contentRows.length > 2) {
+          stacked.push(`${ANSI.gray}◇ ${rowIndex}${ANSI.reset}`);
+        }
+        for (let column = 0; column < colCount; column += 1) {
+          const label = headerRow[column] || `列 ${column + 1}`;
+          const value = contentRows[rowIndex][column] || '';
+          stacked.push(`${ANSI.bold}${this.renderInlineStyles(label)}${ANSI.reset}: ${this.renderInlineStyles(value)}`);
+        }
+      }
+      return stacked;
+    }
     const maxContentWidth = Math.max(colCount * 3, maxWidth - borderOverhead);
     const sumWidths = colWidths.reduce((a, b) => a + b, 0);
 

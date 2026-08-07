@@ -5,10 +5,10 @@ import path from 'node:path';
 /**
  * TUI 主题模块。
  *
- * haji 的终端界面不再跟随终端模拟器的主题：进入交互界面后，背景色、
- * 前景色与各类强调色都由本模块定义的 24-bit 真彩色主题控制，并通过
- * 配置文件覆盖。所有 SGR 重置点统一使用 {@link themeReset}（重置后立即
- * 恢复主题前景与背景），保证渲染过程中主题背景属性不被清除。
+ * haji 的终端界面使用本模块定义的主题，并按终端能力降级为 truecolor、
+ * 256 色、16 色或无色输出。所有 SGR 重置点统一使用 {@link themeReset}
+ * （有色模式下重置后立即恢复主题前景与背景），保证渲染过程中主题背景
+ * 属性不被清除。
  *
  * 配置分两级（与 provider 配置一致）：
  *   - 用户级：~/.haji/theme.json      （跨项目共用）
@@ -42,29 +42,97 @@ export interface Theme {
   brightCyan: string;
 }
 
-/** 内置默认主题：深色背景 + 紫色强调（GitHub Dark 风格调色）。 */
+/** 终端颜色能力，从完全无色到 24-bit 真彩色。 */
+export type ColorLevel = 'mono' | 'ansi16' | 'ansi256' | 'truecolor';
+
+/**
+ * 纯函数检测终端颜色能力。显式的无色请求优先于任何终端能力标记。
+ * `_platform` 作为稳定的测试/扩展入口保留，当前判断不依赖平台猜测。
+ */
+export function detectColorLevel(
+  env: Readonly<Record<string, string | undefined>>,
+  isTTY: boolean,
+  _platform?: NodeJS.Platform
+): ColorLevel {
+  if (!isTTY || Object.prototype.hasOwnProperty.call(env, 'NO_COLOR')) return 'mono';
+  if (env.TERM?.toLowerCase() === 'dumb') return 'mono';
+
+  const colorTerm = env.COLORTERM?.toLowerCase();
+  if (env.WT_SESSION || colorTerm === 'truecolor' || colorTerm === '24bit') {
+    return 'truecolor';
+  }
+  if (env.TERM?.toLowerCase().includes('256color') || colorTerm?.includes('256color')) {
+    return 'ansi256';
+  }
+  return 'ansi16';
+}
+
+let activeColorLevel: ColorLevel | undefined;
+
+/** 获取当前颜色能力；首次访问时根据进程环境检测。 */
+export function getColorLevel(): ColorLevel {
+  if (!activeColorLevel) {
+    activeColorLevel = detectColorLevel(process.env, Boolean(process.stdout.isTTY), process.platform);
+  }
+  return activeColorLevel;
+}
+
+/** 显式注入颜色能力，主要用于测试。 */
+export function setActiveColorLevel(level: ColorLevel): void {
+  activeColorLevel = level;
+}
+
+/** 清除颜色能力注入，下次访问时重新检测。 */
+export function resetActiveColorLevel(): void {
+  activeColorLevel = undefined;
+}
+
+/** 与主题注入命名兼容的简写别名。 */
+export const setColorLevel = setActiveColorLevel;
+export const resetColorLevel = resetActiveColorLevel;
+
+/** 内置默认主题：HAJI 轨迹台，低干扰深色表面 + 克制紫色强调。 */
 const DEFAULT_THEME: Theme = {
-  background: '#0d1117',
-  userMsgBg: '#1c2128',
-  foreground: '#c9d1d9',
-  accent: '#a371f7',
-  muted: '#6e7681',
-  red: '#ff7b72',
-  green: '#7ee787',
-  yellow: '#f2cc60',
-  blue: '#79c0ff',
-  magenta: '#d2a8ff',
-  cyan: '#56d4dd',
-  brightGreen: '#56d364',
-  brightYellow: '#e3b341',
-  brightBlue: '#6cb6ff',
-  brightCyan: '#39c5cf'
+  background: '#101318',
+  userMsgBg: '#171b22',
+  foreground: '#d9dee7',
+  accent: '#a995d6',
+  muted: '#8f98a5',
+  red: '#e07a7a',
+  green: '#78b892',
+  yellow: '#d6a85f',
+  blue: '#82aadd',
+  magenta: '#b8a1df',
+  cyan: '#7dcfff',
+  brightGreen: '#91c7a6',
+  brightYellow: '#e2bb78',
+  brightBlue: '#9ab8e6',
+  brightCyan: '#9edcff'
 };
 
 /** Theme 接口的所有合法键，用于配置合并时过滤未知字段。 */
 const THEME_KEYS = Object.keys(DEFAULT_THEME) as readonly (keyof Theme)[];
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+const ANSI16_PALETTE: readonly [number, number, number][] = [
+  [0x00, 0x00, 0x00],
+  [0x80, 0x00, 0x00],
+  [0x00, 0x80, 0x00],
+  [0x80, 0x80, 0x00],
+  [0x00, 0x00, 0x80],
+  [0x80, 0x00, 0x80],
+  [0x00, 0x80, 0x80],
+  [0xc0, 0xc0, 0xc0],
+  [0x80, 0x80, 0x80],
+  [0xff, 0x00, 0x00],
+  [0x00, 0xff, 0x00],
+  [0xff, 0xff, 0x00],
+  [0x00, 0x00, 0xff],
+  [0xff, 0x00, 0xff],
+  [0x00, 0xff, 0xff],
+  [0xff, 0xff, 0xff]
+];
 
 /** 将 #RRGGBB 解析为 [r, g, b]；非法时返回 undefined。 */
 function hexToRgb(hex: string): [number, number, number] | undefined {
@@ -75,20 +143,65 @@ function hexToRgb(hex: string): [number, number, number] | undefined {
   return [r, g, b];
 }
 
-/** 24-bit 前景色 SGR 序列。非法颜色回退到默认前景（39）。 */
-export function fgSeq(hex: string): string {
-  const rgb = hexToRgb(hex);
-  return rgb ? `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : '\x1b[39m';
+function rgbToAnsi256(r: number, g: number, b: number): number {
+  if (r === g && g === b) {
+    if (r < 8) return 16;
+    if (r > 248) return 231;
+    return 232 + Math.min(23, Math.round((r - 8) / 10));
+  }
+  const red = Math.round((r / 255) * 5);
+  const green = Math.round((g / 255) * 5);
+  const blue = Math.round((b / 255) * 5);
+  return 16 + (36 * red) + (6 * green) + blue;
 }
 
-/** 24-bit 背景色 SGR 序列。非法颜色回退到默认背景（49）。 */
-export function bgSeq(hex: string): string {
+function rgbToAnsi16(r: number, g: number, b: number): number {
+  let nearest = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < ANSI16_PALETTE.length; index += 1) {
+    const [pr, pg, pb] = ANSI16_PALETTE[index];
+    const distance = ((r - pr) ** 2) + ((g - pg) ** 2) + ((b - pb) ** 2);
+    if (distance < nearestDistance) {
+      nearest = index;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+function ansi16Code(index: number, background: boolean): number {
+  if (index < 8) return (background ? 40 : 30) + index;
+  return (background ? 100 : 90) + (index - 8);
+}
+
+/** 按当前颜色能力生成前景色 SGR；无色模式返回空串。 */
+export function fgSeq(hex: string): string {
+  const level = getColorLevel();
+  if (level === 'mono') return '';
   const rgb = hexToRgb(hex);
-  return rgb ? `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : '\x1b[49m';
+  if (!rgb) return '\x1b[39m';
+  if (level === 'truecolor') return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  if (level === 'ansi256') return `\x1b[38;5;${rgbToAnsi256(...rgb)}m`;
+  return `\x1b[${ansi16Code(rgbToAnsi16(...rgb), false)}m`;
+}
+
+/** 按当前颜色能力生成背景色 SGR；无色模式返回空串。 */
+export function bgSeq(hex: string): string {
+  const level = getColorLevel();
+  if (level === 'mono') return '';
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '\x1b[49m';
+  if (level === 'truecolor') return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  if (level === 'ansi256') return `\x1b[48;5;${rgbToAnsi256(...rgb)}m`;
+  return `\x1b[${ansi16Code(rgbToAnsi16(...rgb), true)}m`;
 }
 
 /** 粗体 SGR 序列。 */
 const BOLD = '\x1b[1m';
+
+function styleSeq(sequence: string): string {
+  return getColorLevel() === 'mono' ? '' : sequence;
+}
 
 function userThemeConfigPath(): string {
   return path.join(os.homedir(), '.haji', 'theme.json');
@@ -159,6 +272,7 @@ export function resetActiveTheme(): void {
  * 用于所有颜色函数的收尾，保证渲染过程中主题背景属性不被清除。
  */
 export function themeReset(): string {
+  if (getColorLevel() === 'mono') return '';
   const theme = getTheme();
   return `\x1b[0m${fgSeq(theme.foreground)}${bgSeq(theme.background)}`;
 }
@@ -175,13 +289,19 @@ export function themeFg(): string {
 
 /** 主题进入序列：设置前景与背景（用于进入 alt screen 后填充整屏）。 */
 export function themeEnter(): string {
+  if (getColorLevel() === 'mono') return '';
   const theme = getTheme();
   return `\x1b[0m${fgSeq(theme.foreground)}${bgSeq(theme.background)}`;
 }
 
 /** 主题退出序列：恢复终端默认前景与背景。 */
 export function themeExit(): string {
-  return '\x1b[0m';
+  return getColorLevel() === 'mono' ? '' : '\x1b[0m';
+}
+
+function paintText(text: string, color: string, bold = false): string {
+  if (getColorLevel() === 'mono') return text;
+  return `${bold ? BOLD : ''}${fgSeq(color)}${text}${themeReset()}`;
 }
 
 /**
@@ -189,27 +309,30 @@ export function themeExit(): string {
  * 便于直接替换。所有方法均在收尾调用 {@link themeReset} 恢复主题背景。
  */
 export const paint = {
-  accent: (text: string): string => `${fgSeq(getTheme().accent)}${text}${themeReset()}`,
-  boldAccent: (text: string): string => `${BOLD}${fgSeq(getTheme().accent)}${text}${themeReset()}`,
-  green: (text: string): string => `${fgSeq(getTheme().green)}${text}${themeReset()}`,
-  boldGreen: (text: string): string => `${BOLD}${fgSeq(getTheme().green)}${text}${themeReset()}`,
-  yellow: (text: string): string => `${fgSeq(getTheme().yellow)}${text}${themeReset()}`,
-  boldYellow: (text: string): string => `${BOLD}${fgSeq(getTheme().yellow)}${text}${themeReset()}`,
-  red: (text: string): string => `${fgSeq(getTheme().red)}${text}${themeReset()}`,
-  boldRed: (text: string): string => `${BOLD}${fgSeq(getTheme().red)}${text}${themeReset()}`,
-  blue: (text: string): string => `${fgSeq(getTheme().blue)}${text}${themeReset()}`,
-  boldBlue: (text: string): string => `${BOLD}${fgSeq(getTheme().blue)}${text}${themeReset()}`,
-  muted: (text: string): string => `${fgSeq(getTheme().muted)}${text}${themeReset()}`,
-  cyan: (text: string): string => `${fgSeq(getTheme().cyan)}${text}${themeReset()}`,
-  bold: (text: string): string => `${BOLD}${text}${themeReset()}`,
+  accent: (text: string): string => paintText(text, getTheme().accent),
+  boldAccent: (text: string): string => paintText(text, getTheme().accent, true),
+  green: (text: string): string => paintText(text, getTheme().green),
+  boldGreen: (text: string): string => paintText(text, getTheme().green, true),
+  yellow: (text: string): string => paintText(text, getTheme().yellow),
+  boldYellow: (text: string): string => paintText(text, getTheme().yellow, true),
+  red: (text: string): string => paintText(text, getTheme().red),
+  boldRed: (text: string): string => paintText(text, getTheme().red, true),
+  blue: (text: string): string => paintText(text, getTheme().blue),
+  boldBlue: (text: string): string => paintText(text, getTheme().blue, true),
+  muted: (text: string): string => paintText(text, getTheme().muted),
+  cyan: (text: string): string => paintText(text, getTheme().cyan),
+  bold: (text: string): string => getColorLevel() === 'mono' ? text : `${BOLD}${text}${themeReset()}`,
   userMsg: (text: string): string => {
+    const lines = text.split('\n');
+    if (getColorLevel() === 'mono') {
+      return lines.map((line, idx) => idx === 0 ? ` ❯ ${line}` : `   ${line}`).join('\n');
+    }
     const theme = getTheme();
     const accent = fgSeq(theme.accent);
     const bg = bgSeq(theme.userMsgBg);
     // 整行背景填充：每行前置 bg，行尾用激活背景的 \x1b[K 清到行尾实现整行填满。
     // 首行用 accent 色 ❯ 前缀，续行用 3 空格缩进对齐 "❯ "。
     // 每行用 themeReset() 收尾，避免背景泄漏到后续渲染（wrapAnsi 跨行时会保留 bg 作为 activeStyle）。
-    const lines = text.split('\n');
     return lines.map((line, idx) =>
       idx === 0
         ? `${bg}${BOLD}${accent} ❯ ${themeReset()}${bg}${line}\x1b[K${themeReset()}`
@@ -237,6 +360,7 @@ function userMsgBgSeq(): string {
  */
 export function fillUserMsgRowEol(row: string): string {
   const bg = userMsgBgSeq();
+  if (!bg) return row;
   if (!row.includes(bg)) return row;
   if (row.includes('\x1b[K')) return row;
   const lastReset = row.lastIndexOf('\x1b[0m');
@@ -270,13 +394,14 @@ export function buildAnsiStyles(): {
   brightCyan: string;
 } {
   const theme = getTheme();
+  const enabled = getColorLevel() !== 'mono';
   return {
     reset: themeReset(),
-    bold: BOLD,
-    dim: '\x1b[2m',
-    italic: '\x1b[3m',
-    underline: '\x1b[4m',
-    strikethrough: '\x1b[9m',
+    bold: styleSeq(BOLD),
+    dim: enabled ? '\x1b[2m' : '',
+    italic: enabled ? '\x1b[3m' : '',
+    underline: enabled ? '\x1b[4m' : '',
+    strikethrough: enabled ? '\x1b[9m' : '',
     red: fgSeq(theme.red),
     green: fgSeq(theme.green),
     yellow: fgSeq(theme.yellow),

@@ -507,9 +507,9 @@ test('agent panel shows concurrency, current tool, elapsed time and token usage'
     },
     { id: 'sub-b2', role: 'review', status: 'queued', totalTokens: 0 }
   ], 100, 4, 13_500).map(row => row.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
-  assert.equal(rows[0], 'Agents 1 running · 1 queued');
+  assert.equal(rows[0], '代理 1 运行中 · 1 排队');
   assert.match(rows[1], /sub-a1\s+research · grep · 12s · 1\.8k\/100k tok · 3\/50 tools/);
-  assert.match(rows[2], /sub-b2\s+review · queued/);
+  assert.match(rows[2], /sub-b2\s+review · 排队中/);
 });
 
 test('agent panel includes per-agent runtime configuration when provided', () => {
@@ -519,7 +519,7 @@ test('agent panel includes per-agent runtime configuration when provided', () =>
       model: 'glm-5.2', provider: 'volcengine', reasoningEffort: 'high'
     }
   ], 120, 3).map(row => row.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
-  assert.match(rows[1], /review · queued · glm-5\.2 \/ volcengine \/ high/);
+  assert.match(rows[1], /review · 排队中 · glm-5\.2 · volcengine · high/);
 });
 
 test('CLI registers deterministic subagent and agent management commands', () => {

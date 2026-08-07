@@ -139,6 +139,7 @@ test('the large HAJI logo remains until the first ordinary user message', () => 
   assert.match(source, /if \(!trimmedInput\.startsWith\('\/'\)\) \{\s*ui\.dismissStartupHeader\(\)/);
   assert.match(terminalSource, /dismissStartupHeader\(\): void/);
   assert.doesNotMatch(terminalSource, /startupHeaderDurationMs/);
-  // header 行包含 Logo + headerInfo（provider/model/effort + 引导提示），随 startupHeaderVisible 一起显示。
-  assert.match(terminalSource, /\.\.\.wrapAnsi\(header, width\), \.\.\.\(this\.headerInfo/);
+  // 完整页眉包含 Logo + headerInfo；紧凑模式只保留单行会话标题。
+  assert.match(terminalSource, /const headerInfo = this\.startupHeaderVisible && layout\.headerMode === 'full' \? this\.headerInfo : \[\]/);
+  assert.match(terminalSource, /\.\.\.wrapAnsi\(header, width\), \.\.\.\(headerInfo\.length/);
 });
