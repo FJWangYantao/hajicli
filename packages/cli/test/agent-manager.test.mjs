@@ -83,6 +83,103 @@ test('manual subagent command supports per-agent model, provider, effort and ins
   );
 });
 
+test('manual subagent command supports presets via --preset and preset: prefix', () => {
+  assert.deepEqual(parseSubagentCommand('preset:fast 调研问题'), {
+    background: false,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    preset: 'fast',
+    description: '调研问题'
+  });
+  assert.deepEqual(parseSubagentCommand('bg --preset fast 调研问题'), {
+    background: true,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    preset: 'fast',
+    description: '调研问题'
+  });
+  assert.deepEqual(parseSubagentCommand('research --preset=fast --effort high 调研'), {
+    background: false,
+    role: 'research',
+    taskId: undefined,
+    reasoningEffort: 'high',
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    preset: 'fast',
+    description: '调研'
+  });
+  assert.deepEqual(parseSubagentCommand('preset:"deep dive" 调研'), {
+    background: false,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    preset: 'deep dive',
+    description: '调研'
+  });
+  assert.throws(() => parseSubagentCommand('--preset "" 调研'), /--preset 不能为空/);
+});
+
+test('manual subagent command parsing guards -- separator, preset syntax and quotes', () => {
+  // -- 终止符：其后内容全部视为描述，不再解析选项
+  assert.deepEqual(parseSubagentCommand('research -- 请参考 --model 与 --provider 的说明'), {
+    background: false,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    role: 'research',
+    description: '请参考 --model 与 --provider 的说明'
+  });
+  // preset: 空名称报错（不再静默当作描述）
+  assert.throws(() => parseSubagentCommand('preset: 调研任务'), /preset: 名称不能为空/);
+  // preset: 与 --preset 冲突报错
+  assert.throws(() => parseSubagentCommand('preset:foo --preset bar 任务'), /不能同时使用 preset: 前缀与 --preset 选项/);
+  // 引号未闭合报错
+  assert.throws(() => parseSubagentCommand('research --model "abc 任务'), /引号未闭合/);
+  // --task 引号值不再截断
+  assert.deepEqual(parseSubagentCommand('review --task "inspect all" 检查'), {
+    background: false,
+    taskId: 'inspect all',
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    role: 'review',
+    description: '检查'
+  });
+  // 非十进制整数被拒绝
+  assert.throws(() => parseSubagentCommand('research --max-tokens 1e3 任务'), /必须是 1000 到 2000000 之间的整数/);
+  assert.throws(() => parseSubagentCommand('research --max-tokens 0x10 任务'), /必须是 1000 到 2000000 之间的整数/);
+  // 选项必须位于描述之前：描述中的 --xxx / preset: 原样保留，不再被误解析
+  assert.deepEqual(parseSubagentCommand('research 请参考 --model 与 --provider 的说明'), {
+    background: false,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    role: 'research',
+    description: '请参考 --model 与 --provider 的说明'
+  });
+  assert.deepEqual(parseSubagentCommand('research preset:foo 任务'), {
+    background: false,
+    taskId: undefined,
+    timeoutMs: undefined,
+    maxTokens: undefined,
+    maxToolCalls: undefined,
+    role: 'research',
+    description: 'preset:foo 任务'
+  });
+  // 未知选项同样视为描述开始
+  assert.equal(parseSubagentCommand('research --unknown-flag 任务').description, '--unknown-flag 任务');
+  // 选项缺少值时报错
+  assert.throws(() => parseSubagentCommand('research --model'), /--model 缺少值/);
+});
+
 test('running agents time out even when their executor ignores abort', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'haji-agent-timeout-'));
   try {

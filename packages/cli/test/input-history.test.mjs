@@ -3,6 +3,25 @@ import test from 'node:test';
 
 import { InputHistoryBuffer, buildScreenUpdate } from '../dist/terminal-input.js';
 import { MarkdownRenderThrottle, shouldShowToolThinkingSummary } from '../dist/markdown-renderer.js';
+import { setActiveTheme } from '../dist/theme.js';
+
+/** 固定主题（黑色背景），保证 buildScreenUpdate 输出断言确定性。 */
+const FIXED_THEME = {
+  background: '#000000',
+  foreground: '#ffffff',
+  accent: '#ffffff',
+  muted: '#888888',
+  red: '#ff0000',
+  green: '#00ff00',
+  yellow: '#ffff00',
+  blue: '#0000ff',
+  magenta: '#ff00ff',
+  cyan: '#00ffff',
+  brightGreen: '#00ff00',
+  brightYellow: '#ffff00',
+  brightBlue: '#0000ff',
+  brightCyan: '#00ffff'
+};
 
 test('navigates submitted input and restores the unsent draft', () => {
   const history = new InputHistoryBuffer();
@@ -33,8 +52,9 @@ test('ignores empty submissions and tracks whether history is being browsed', ()
 });
 
 test('screen updates repaint only changed terminal rows', () => {
+  setActiveTheme(FIXED_THEME);
   const update = buildScreenUpdate(['header', 'old input', 'status'], ['header', 'new input', 'status']);
-  assert.equal(update, '\x1b[2;1H\x1b[2Knew input');
+  assert.equal(update, '\x1b[2;1H\x1b[48;2;0;0;0m\x1b[2Knew input');
   assert.equal(buildScreenUpdate(['same'], ['same']), '');
 });
 

@@ -8,6 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export interface Preferences {
   model: string;
   reasoningEffort: string;
+  /** 上次使用的 provider 名称（内置 deepseek/volcengine 或自定义名称）。 */
+  provider?: string;
   permissionMode?: string;
   riskThreshold?: string;
 }
