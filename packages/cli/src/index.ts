@@ -2,7 +2,7 @@
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS, MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor, SubagentRole, ExperienceStore, ExperiencesPromptPart, isFailedToolOutput } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS, MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor, SubagentRole, ExperienceStore, ExperiencesPromptPart, isFailedToolOutput, DistillEngine } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -450,6 +450,15 @@ ${colors.bold('环境变量配置:')}
   const systemPromptManager = new SystemPromptManager();
   const experienceStore = new ExperienceStore({ cwd: process.cwd() });
   systemPromptManager.registerPart(new ExperiencesPromptPart(experienceStore));
+  // SIGINT 处理：Ctrl+C 时尽力 flush 观测样本（提炼逻辑太重，跳过）
+  // Node 默认 Ctrl+C 直接终止跳过 finally，这里补一个最小收尾。
+  let sigintHandling = false;
+  process.on('SIGINT', async () => {
+    if (sigintHandling) return;       // 防止连按导致重复执行
+    sigintHandling = true;
+    try { await experienceStore.flushObservations(); } catch { /* 静默 */ }
+    process.exit(130);
+  });
   const skillRegistry = new SkillRegistry({ cwd: process.cwd() });
   const initialSkillScan = await skillRegistry.scan();
   markStartupStage('skill_scan');
@@ -2848,8 +2857,36 @@ ${colors.bold('环境变量配置:')}
   } finally {
     ui.close();
     try {
-      // 经验系统：flush 会话内累积的观测样本（提炼逻辑在提交 3 接入）
+      // 经验系统：flush 会话内累积的观测样本
       await experienceStore.flushObservations();
+      // 触发 Stop hook（此时 messages 完整、尚未落盘）
+      await hookEngine.trigger('Stop', {
+        messages,
+        permissionMode,
+        sessionId: sessionManager.getCurrentSession().id,
+        cwd: process.cwd()
+      });
+      // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选
+      const distillEngine = new DistillEngine({
+        store: experienceStore,
+        provider: () => provider,
+        model: () => selectedModel,
+        logger: msg => console.log(colors.gray(`  ${msg}`))
+      });
+      const sessionObs = experienceStore.getPendingObservations();
+      const distillSummary = await distillEngine.runDistill(sessionObs, {
+        messages, cwd: process.cwd(), sessionId: sessionManager.getCurrentSession().id
+      });
+      if (distillSummary.statisticalInstincts > 0
+        || distillSummary.llmInstincts > 0
+        || distillSummary.memoryCandidates > 0) {
+        const parts = [`统计 ${distillSummary.statisticalInstincts}`, `LLM ${distillSummary.llmInstincts}`, `强化 ${distillSummary.reinforced}`];
+        if (distillSummary.memoryCandidates > 0) parts.push(`记忆候选 ${distillSummary.memoryCandidates}`);
+        console.log(colors.gray(`🧠 经验提炼：${parts.join(' / ')}${distillSummary.llmTriggered ? '' : '（LLM 未触发）'}`));
+        if (distillSummary.memoryCandidates > 0) {
+          console.log(colors.gray(`   使用 /memory confirm <id> 确认候选记忆`));
+        }
+      }
       await sessionManager.flush();
       const tracePath = await tracker.save();
       console.log(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
