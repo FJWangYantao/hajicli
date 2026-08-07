@@ -21,3 +21,6 @@ export * from './agent-manager.js';
 export * from './skill-types.js';
 export * from './skill-context.js';
 export * from './skill-registry.js';
+export * from './experience-types.js';
+export * from './failed-output.js';
+export * from './experience-store.js';

@@ -10,6 +10,7 @@ import {
   TaskStore,
   ToolExecutionContext,
   ToolProgressEvent,
+  isFailedToolOutput,
   performanceMonitor
 } from '@hajicli/core';
 
@@ -150,11 +151,7 @@ export class SharedToolExecutor {
     if (toolName.toLowerCase().startsWith('task') && !output.startsWith('错误:')) {
       this.options.onTaskPlanChanged?.(finishingTask);
     }
-    const failed = output.startsWith('错误:')
-      || output.startsWith('执行出错:')
-      || /^\[[^\]]*已中止\]/.test(output)
-      || output.startsWith('[安全引擎拒绝拦截]')
-      || (output.startsWith('[SUBAGENT_RESULT') && /"status":\s*"(?:failed|aborted|max_turns)"/.test(output));
+    const failed = isFailedToolOutput(output);
     if (!context.agentId && !failed && !isOrchestrationTool && context.toolCallId) {
       output = `${output}\n[verification_evidence_id: ${context.toolCallId}]`;
     }
