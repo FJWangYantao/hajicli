@@ -33,9 +33,10 @@ export interface ExperienceColors {
  *
  * 用法：
  *   /memory                  列出 active + staging
- *   /memory confirm <id>     确认 staging → active
+ *   /memory confirm <id>     确认 staging -> active
  *   /memory add <type> <内容> 手工添加（type: user|project|feedback）
  *   /memory forget <id>      删除
+ *   /memory promote <id>     提升到用户级（跨项目共用）
  *   /memory reload           重读磁盘
  */
 export async function handleMemoryCommand(
@@ -94,6 +95,20 @@ export async function handleMemoryCommand(
     return;
   }
 
+  if (sub === 'promote') {
+    const id = args[1];
+    if (!id) { ctx.writeLine(colors.red('用法: /memory promote <id>')); return; }
+    const result = await ctx.store.promoteMemory(id);
+    if (result === 'promoted') {
+      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已提升到用户级（跨项目共用）。`));
+    } else if (result === 'already-user-level') {
+      ctx.writeLine(colors.gray(`记忆 "${id}" 已在用户级，无需提升。`));
+    } else {
+      ctx.writeLine(colors.red(`未找到项目级 id 为 "${id}" 的记忆。`));
+    }
+    return;
+  }
+
   // 默认：列出所有
   const active = ctx.store.loadMemories('active');
   const staging = ctx.store.loadMemories('all').filter(m => m.status === 'staging');
@@ -124,6 +139,7 @@ export async function handleMemoryCommand(
  *   /instinct                列出所有规则（按 confidence 排序）
  *   /instinct distill        手动触发提炼（用当前 pending 观测）
  *   /instinct forget <id>    删除某条
+ *   /instinct promote <id>   提升到用户级（跨项目共用）
  *   /instinct stats          统计
  */
 export async function handleInstinctCommand(
@@ -167,6 +183,20 @@ export async function handleInstinctCommand(
     ctx.writeLine(ok
       ? colors.green(`✓ 已删除规则 "${id}"。`)
       : colors.red(`未找到 id 为 "${id}" 的规则。`));
+    return;
+  }
+
+  if (sub === 'promote') {
+    const id = args[1];
+    if (!id) { ctx.writeLine(colors.red('用法: /instinct promote <id>')); return; }
+    const result = await ctx.store.promoteInstinct(id);
+    if (result === 'promoted') {
+      ctx.writeLine(colors.green(`✓ 规则 "${id}" 已提升到用户级（跨项目共用）。`));
+    } else if (result === 'already-user-level') {
+      ctx.writeLine(colors.gray(`规则 "${id}" 已在用户级，无需提升。`));
+    } else {
+      ctx.writeLine(colors.red(`未找到项目级 id 为 "${id}" 的规则。`));
+    }
     return;
   }
 

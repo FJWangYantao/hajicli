@@ -332,6 +332,67 @@ export class ExperienceStore {
     return toRemove.length;
   }
 
+  // ─── 作用域提升（项目级 -> 用户级） ───────────────────────────────────────
+
+  /**
+   * 把一条项目级规则提升到用户级（跨项目共用）。
+   *
+   * 实现：从项目级目录读取 -> source 改为 manual -> 写用户级 -> 删项目级。
+   * 必须改 source=manual：evolveInstincts -> persistInstincts 会按 source 分流
+   * （manual 写用户级，其余写项目级），不改 source 会在下次 evolve 时写回项目级，回退提升。
+   *
+   * 返回值：
+   *   - 'promoted'：成功从项目级迁移到用户级
+   *   - 'already-user-level'：项目级无此 id，但用户级已存在（之前已提升过）
+   *   - 'not-found'：两级目录都找不到
+   */
+  async promoteInstinct(id: string): Promise<'promoted' | 'not-found' | 'already-user-level'> {
+    const projectDir = this.projectInstinctsDir();
+    const userDir = this.userInstinctsDir();
+    const projectFile = this.findFileById(id, projectDir);
+    if (!projectFile) {
+      return this.findFileById(id, userDir) ? 'already-user-level' : 'not-found';
+    }
+    const content = fs.readFileSync(projectFile, 'utf8');
+    const parsed = this.parseInstinctFile(content);
+    if (!parsed) return 'not-found';
+    parsed.source = 'manual'; // 防 evolve 回写项目级
+    await this.ensureDir(userDir);
+    const fileName = `${parsed.domain}__${this.sanitizeId(parsed.id)}.md`;
+    await this.atomicWrite(path.join(userDir, fileName), this.serializeInstinct(parsed));
+    await this.removeFile(projectFile);
+    return 'promoted';
+  }
+
+  /**
+   * 把一条项目级记忆提升到用户级 active（跨项目共用）。
+   *
+   * 从项目级 active 或 staging 读取 -> status 设为 active -> 写用户级 active -> 删项目级原文件。
+   * Memory 没有 source 字段、无自动回写机制（不像 instinct 有 evolveInstincts），提升后安全。
+   *
+   * 返回值语义同 {@link promoteInstinct}。
+   */
+  async promoteMemory(id: string): Promise<'promoted' | 'not-found' | 'already-user-level'> {
+    const projectActive = path.join(this.projectMemoryDir(), 'active');
+    const projectStaging = path.join(this.projectMemoryDir(), 'staging');
+    const userActive = path.join(this.userMemoryDir(), 'active');
+    // 先在项目级 active 找，再在 staging 找（staging 的也会被提升为 active）
+    const srcFile = this.findFileById(id, projectActive) ?? this.findFileById(id, projectStaging);
+    if (!srcFile) {
+      return this.findFileById(id, userActive) ? 'already-user-level' : 'not-found';
+    }
+    const content = fs.readFileSync(srcFile, 'utf8');
+    const parsed = this.parseMemoryFile(content, 'active');
+    if (!parsed) return 'not-found';
+    parsed.status = 'active';
+    parsed.updatedAt = new Date().toISOString();
+    await this.ensureDir(userActive);
+    const fileName = `${parsed.type}__${this.sanitizeId(parsed.id)}.md`;
+    await this.atomicWrite(path.join(userActive, fileName), this.serializeMemory(parsed));
+    await this.removeFile(srcFile);
+    return 'promoted';
+  }
+
   // ─── 召回（关键词匹配，无向量） ────────────────────────────────────────────
 
   /**
@@ -413,6 +474,22 @@ export class ExperienceStore {
 
   private async removeFile(filePath: string): Promise<void> {
     try { await fsp.rm(filePath, { force: true }); } catch { /* ignore */ }
+  }
+
+  /**
+   * 在指定目录中按 id 查找 .md 文件路径（匹配 `<anything>__<id>.md`）。
+   * 供 promoteInstinct/promoteMemory 定位源文件，只查找不删除。
+   */
+  private findFileById(id: string, dir: string): string | undefined {
+    const sanitized = this.sanitizeId(id);
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { return undefined; }
+    for (const name of entries) {
+      if (!name.endsWith('.md')) continue;
+      const match = name.match(/^(.+?)__(.+)\.md$/);
+      if (match && match[2] === sanitized) return path.join(dir, name);
+    }
+    return undefined;
   }
 
   private async deleteById(id: string, ...dirs: string[]): Promise<boolean> {

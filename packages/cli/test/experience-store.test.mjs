@@ -437,3 +437,117 @@ test('observation args are truncated when exceeding limit', async () => {
     fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+// ─── 作用域提升（promote） ───────────────────────────────────────────────────
+
+test('promoteInstinct moves project rule to user level with source=manual', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    // 项目级规则（source=statistical，自动提炼产出）
+    await store.upsertInstinct(makeInstinct({
+      id: 'read-before-edit',
+      source: 'statistical',
+      confidence: 0.8
+    }));
+    // 确认写在项目级
+    assert.ok(fs.existsSync(path.join(projectDir, 'instincts', 'workflow__read-before-edit.md')));
+    assert.ok(!fs.existsSync(path.join(userDir, 'instincts', 'workflow__read-before-edit.md')));
+
+    const result = await store.promoteInstinct('read-before-edit');
+    assert.equal(result, 'promoted');
+    // 项目级文件应消失
+    assert.ok(!fs.existsSync(path.join(projectDir, 'instincts', 'workflow__read-before-edit.md')));
+    // 用户级文件应出现
+    assert.ok(fs.existsSync(path.join(userDir, 'instincts', 'workflow__read-before-edit.md')));
+    // source 必须改为 manual（防 evolve 回写项目级）
+    const loaded = store.loadInstincts(true);
+    const found = loaded.find(i => i.id === 'read-before-edit');
+    assert.ok(found);
+    assert.equal(found.source, 'manual');
+    assert.equal(found.confidence, 0.8); // 其他字段不变
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('promoteInstinct returns already-user-level when rule is already user-level', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    // 手写规则写用户级
+    await store.upsertInstinct(makeInstinct({
+      id: 'global-pref',
+      source: 'manual'
+    }));
+    assert.ok(fs.existsSync(path.join(userDir, 'instincts', 'workflow__global-pref.md')));
+    const result = await store.promoteInstinct('global-pref');
+    assert.equal(result, 'already-user-level');
+    // 文件仍在用户级，未被删除或改动
+    assert.ok(fs.existsSync(path.join(userDir, 'instincts', 'workflow__global-pref.md')));
+    assert.ok(!fs.existsSync(path.join(projectDir, 'instincts', 'workflow__global-pref.md')));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('promoteInstinct returns not-found for unknown id', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const result = await store.promoteInstinct('does-not-exist');
+    assert.equal(result, 'not-found');
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('promoteMemory moves project memory to user level as active', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    // 项目级 active memory
+    await store.upsertMemory(makeMemory({
+      id: 'no-auto-commit',
+      type: 'feedback',
+      status: 'active',
+      content: 'Do not auto commit'
+    }));
+    assert.ok(fs.existsSync(path.join(projectDir, 'memory', 'active', 'feedback__no-auto-commit.md')));
+    assert.ok(!fs.existsSync(path.join(userDir, 'memory', 'active', 'feedback__no-auto-commit.md')));
+
+    const result = await store.promoteMemory('no-auto-commit');
+    assert.equal(result, 'promoted');
+    // 项目级消失，用户级出现
+    assert.ok(!fs.existsSync(path.join(projectDir, 'memory', 'active', 'feedback__no-auto-commit.md')));
+    assert.ok(fs.existsSync(path.join(userDir, 'memory', 'active', 'feedback__no-auto-commit.md')));
+    // 加载仍可见（两级合并读取）
+    const active = store.loadMemories('active');
+    assert.equal(active.length, 1);
+    assert.equal(active[0].id, 'no-auto-commit');
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('promoteMemory promotes from staging too', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    // 项目级 staging memory
+    await store.stageMemory(makeMemory({
+      id: 'cand-staging',
+      type: 'project',
+      status: 'staging',
+      content: 'Use kebab-case for files'
+    }));
+    assert.ok(fs.existsSync(path.join(projectDir, 'memory', 'staging', 'project__cand-staging.md')));
+
+    const result = await store.promoteMemory('cand-staging');
+    assert.equal(result, 'promoted');
+    // staging 原文件应消失
+    assert.ok(!fs.existsSync(path.join(projectDir, 'memory', 'staging', 'project__cand-staging.md')));
+    // 用户级 active 应出现，status 升为 active
+    assert.ok(fs.existsSync(path.join(userDir, 'memory', 'active', 'project__cand-staging.md')));
+    const active = store.loadMemories('active');
+    assert.equal(active.length, 1);
+    assert.equal(active[0].status, 'active');
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});

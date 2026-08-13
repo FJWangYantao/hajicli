@@ -154,9 +154,11 @@ HAJI 内置一套跨会话的自学习闭环，在日常使用中观察工具调
 - `/memory confirm <id>`：确认 staging 记忆为 active
 - `/memory add <user|project|feedback> <内容>`：手工添加记忆
 - `/memory forget <id>`：删除记忆
+- `/memory promote <id>`：把项目级记忆提升到用户级（跨项目共用）
 - `/instinct`：列出所有规则（按 confidence 排序）
 - `/instinct distill`：用本会话观测手动触发提炼（不必等会话结束）
 - `/instinct forget <id>`：删除规则
+- `/instinct promote <id>`：把项目级规则提升到用户级（跨项目共用）
 - `/instinct stats`：查看规则/记忆数量与领域分布
 
 经验文件默认不入版本库（`.haji/` 已被 gitignore）。LLM 提炼在你的本地 provider 上完成，记忆内容不会上传第三方服务。Ctrl+C 退出时会尽力 flush 已累积的观测样本。

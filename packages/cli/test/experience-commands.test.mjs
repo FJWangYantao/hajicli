@@ -199,3 +199,73 @@ test('/instinct distill reports when no observations', async () => {
     assert.ok(outputs.some(l => l.includes('暂无待提炼')));
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });
+
+// ─── promote 子命令 ──────────────────────────────────────────────────────────
+
+test('/memory promote moves memory to user level', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertMemory({
+      id: 'm1', name: 'n', type: 'project', content: 'c', status: 'active',
+      confidence: 0.8, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      keywords: ['c']
+    });
+    const outputs = [];
+    await handleMemoryCommand(['promote', 'm1'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('已提升到用户级')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/memory promote reports already-user-level', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    // 先 promote 一次（项目级 -> 用户级）
+    await store.upsertMemory({
+      id: 'm2', name: 'n', type: 'project', content: 'c', status: 'active',
+      confidence: 0.8, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      keywords: ['c']
+    });
+    await store.promoteMemory('m2');
+    // 再 promote 应报告 already-user-level
+    const outputs = [];
+    await handleMemoryCommand(['promote', 'm2'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('已在用户级')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/memory promote requires id', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleMemoryCommand(['promote'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('用法')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct promote moves rule to user level', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct({
+      id: 'to-promote', trigger: 't', action: 'a',
+      confidence: 0.8, domain: 'workflow', source: 'statistical',
+      deprecated: false, observedAt: new Date().toISOString(), occurrenceCount: 3
+    });
+    const outputs = [];
+    await handleInstinctCommand(['promote', 'to-promote'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('已提升到用户级')));
+    // 确认 source 改为 manual
+    const loaded = store.loadInstincts(true);
+    const found = loaded.find(i => i.id === 'to-promote');
+    assert.ok(found);
+    assert.equal(found.source, 'manual');
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct promote reports not-found', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleInstinctCommand(['promote', 'nope'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('未找到项目级')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
