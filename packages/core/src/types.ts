@@ -52,6 +52,10 @@ export interface ToolExecutionContext {
   riskThreshold?: string;
   anchorSnapshotId?: string;
   agentAccess?: 'readonly' | 'workspace-write';
+  /** Suppresses per-tool status clearing while a parent read-only batch owns the shared status line. */
+  suppressStatus?: boolean;
+  batchIndex?: number;
+  batchSize?: number;
   onProgress?: (event: ToolProgressEvent) => void;
 }
 

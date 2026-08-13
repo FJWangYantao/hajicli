@@ -46,8 +46,9 @@ export interface Theme {
 export type ColorLevel = 'mono' | 'ansi16' | 'ansi256' | 'truecolor';
 
 /**
- * 纯函数检测终端颜色能力。显式的无色请求优先于任何终端能力标记。
- * `_platform` 作为稳定的测试/扩展入口保留，当前判断不依赖平台猜测。
+ * 纯函数检测终端颜色能力。显式的无色请求（非 TTY / NO_COLOR / TERM=dumb）
+ * 优先于任何终端能力标记。win32 一律按 truecolor 处理（详见下方分支），
+ * 其余平台依据 WT_SESSION/COLORTERM/TERM 等环境变量推断。
  */
 export function detectColorLevel(
   env: Readonly<Record<string, string | undefined>>,
@@ -58,7 +59,11 @@ export function detectColorLevel(
   if (env.TERM?.toLowerCase() === 'dumb') return 'mono';
 
   const colorTerm = env.COLORTERM?.toLowerCase();
-  if (env.WT_SESSION || colorTerm === 'truecolor' || colorTerm === '24bit') {
+  // win32 一律按 truecolor 处理：现代 Windows 控制台支持 24-bit VT，但
+  // shells/launchers 不总是保留 WT_SESSION/COLORTERM；若回退 ANSI 16，深色
+  // 主题背景会被映射到终端配色里的 "black"，往往比预期亮得多。老 conhost
+  // 不解析 24-bit SGR 时会自行量化/降级渲染，乱码风险不高于既有 ANSI 16 回退。
+  if (_platform === 'win32' || env.WT_SESSION || colorTerm === 'truecolor' || colorTerm === '24bit') {
     return 'truecolor';
   }
   if (env.TERM?.toLowerCase().includes('256color') || colorTerm?.includes('256color')) {

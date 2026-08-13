@@ -114,7 +114,7 @@ export class SharedToolExecutor {
       : undefined;
 
     const agentPrefix = context.agentId ? `[${context.agentId}] ` : '';
-    if (!context.agentId) this.options.setStatus?.(`${agentPrefix}正在执行 ${toolName}...`);
+    if (!context.agentId && !context.suppressStatus) this.options.setStatus?.(`${agentPrefix}正在执行 ${toolName}...`);
     let output: string;
     let mutationWarning: string | undefined;
     let lastProgressAt = 0;
@@ -144,7 +144,7 @@ export class SharedToolExecutor {
         );
         mutationWarning = mutationResult?.warning;
       }
-      if (!context.agentId) this.options.setStatus?.();
+      if (!context.agentId && !context.suppressStatus) this.options.setStatus?.();
     }
     if (mutationWarning) output = `${output}\n${mutationWarning}`;
 

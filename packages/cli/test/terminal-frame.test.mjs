@@ -163,7 +163,32 @@ test('prioritizes the input on terminals only one to three rows tall', () => {
   }
 });
 
-test('renders transient activity directly after chat content without persisting it', () => {
+test('adds breathing room around the input and keeps the cursor on the text row', () => {
+  const frame = renderFrame(80, 24);
+  const inputRow = frame.plainRows.findIndex(row => row.includes('INPUT'));
+  assert.ok(inputRow > 0);
+  assert.equal(frame.plainRows[inputRow - 1], '');
+  assert.equal(frame.plainRows[inputRow + 1], '');
+
+  const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
+  assert.ok(cursorMatch, 'cursor position is rendered');
+  assert.equal(Number(cursorMatch[1]), inputRow + 1);
+});
+
+test('accepts a multi-character Unicode commit from the terminal host', () => {
+  withFakeStdout(80, 24, () => {
+    const ui = createTerminalUI();
+    try {
+      ui.handleKeypress('中文🙂', {});
+      assert.equal(ui.activeInput.graphemes.join(''), 'INPUT中文🙂');
+      assert.equal(ui.activeInput.cursorIndex, 8);
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
+});
+
+test('renders transient activity on the fixed track above input without persisting it', () => {
   const chatContent = 'CHAT_SENTINEL';
   const frame = renderFrame(80, 24, ui => {
     ui.chatContent = chatContent;
@@ -173,10 +198,34 @@ test('renders transient activity directly after chat content without persisting 
   const chatRow = frame.plainRows.findIndex(row => row.includes('CHAT_SENTINEL'));
   const activityRow = frame.plainRows.findIndex(row => row.includes('ACTIVITY_SENTINEL'));
   const inputRow = frame.plainRows.findIndex(row => row.includes('INPUT'));
-  assert.equal(activityRow, chatRow + 1, 'activity follows the latest chat row');
-  assert.ok(inputRow > activityRow, 'activity remains inside the chat region above the input');
+  assert.ok(activityRow > chatRow, 'activity stays below chat content');
+  assert.equal(activityRow, inputRow - 1, 'activity owns the fixed row directly above input');
   assert.equal(frame.ui.chatContent, chatContent);
   assert.doesNotMatch(frame.ui.chatContent, /ACTIVITY_SENTINEL/);
+});
+
+test('renders animated observability with phase, meter, elapsed time and detail', () => {
+  const chatContent = 'CHAT_SENTINEL';
+  const frame = renderFrame(80, 24, ui => {
+    ui.chatContent = chatContent;
+    ui.activityFrame = {
+      phase: 'tool',
+      tone: 'waiting',
+      icon: '⠹',
+      label: '执行工具',
+      meter: '··▱▰▱··',
+      elapsed: '18s',
+      detail: 'grep: 读取结果',
+      idleText: '13s 无新事件'
+    };
+  });
+
+  const screen = frame.plainRows.join('\n');
+  assert.match(screen, /执行工具/);
+  assert.match(screen, /等待新事件/);
+  assert.match(screen, /18s/);
+  assert.match(screen, /grep: 读取结果/);
+  assert.equal(frame.ui.chatContent, chatContent);
 });
 
 test('status animation preserves a scrolled-up chat viewport', () => {
@@ -188,18 +237,81 @@ test('status animation preserves a scrolled-up chat viewport', () => {
       ui.chatScrollOffset = 7;
       ui.renderFrame();
       const visibleStart = ui.chatViewport.visibleStart;
+      const wrappedChat = ui.cachedWrappedChat;
 
       ui.status = 'THINKING_FRAME_1';
       ui.renderFrame();
       assert.equal(ui.chatViewport.visibleStart, visibleStart, 'adding status does not move historical content');
+      assert.equal(ui.cachedWrappedChat, wrappedChat, 'activity does not invalidate wrapped chat rows');
 
       ui.status = 'THINKING_FRAME_2';
       ui.renderFrame();
       assert.equal(ui.chatViewport.visibleStart, visibleStart, 'spinner updates do not move historical content');
+      assert.equal(ui.cachedWrappedChat, wrappedChat, 'animation reuses the chat layout cache');
 
       ui.status = '';
       ui.renderFrame();
       assert.equal(ui.chatViewport.visibleStart, visibleStart, 'clearing status does not move historical content');
+      assert.equal(ui.cachedWrappedChat, wrappedChat, 'clearing activity keeps the chat layout cache');
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
+});
+
+test('activity detail progressively compacts on narrow terminals', () => {
+  const createActivity = ui => {
+    ui.activityFrame = {
+      phase: 'tool',
+      tone: 'waiting',
+      icon: '⠹',
+      label: '执行工具',
+      meter: '··▱▰▱··',
+      elapsed: '18s',
+      detail: 'grep: a/very/long/path/source.ts',
+      idleText: '13s 无新事件'
+    };
+  };
+  const wide = renderFrame(80, 24, createActivity).plainRows.join('\n');
+  const compact = renderFrame(50, 24, createActivity).plainRows.join('\n');
+  const narrow = renderFrame(30, 24, createActivity).plainRows.join('\n');
+
+  assert.match(wide, /grep: a\/very\/long\/path/);
+  assert.match(compact, /等待新事件/);
+  assert.doesNotMatch(compact, /a\/very\/long\/path/);
+  assert.match(narrow, /执行工具/);
+  assert.match(narrow, /18s/);
+  assert.doesNotMatch(narrow, /等待新事件|··▱▰▱··/);
+});
+
+test('an animation tick repaints only the fixed activity row', () => {
+  withFakeStdout(80, 24, writes => {
+    const ui = createTerminalUI();
+    try {
+      ui.chatContent = Array.from({ length: 40 }, (_, index) => `history ${index}`).join('\n');
+      ui.activityFrame = {
+        phase: 'thinking',
+        tone: 'active',
+        icon: '✦',
+        label: '思考中',
+        meter: '▰▱·····',
+        elapsed: '1s'
+      };
+      ui.renderFrame();
+      writes.length = 0;
+
+      ui.activityFrame = {
+        ...ui.activityFrame,
+        icon: '✧',
+        meter: '▱▰▱····',
+        elapsed: '2s'
+      };
+      ui.renderFrame();
+
+      const update = writes.join('');
+      const paintedRows = [...update.matchAll(/\x1b\[(\d+);1H/g)].map(match => Number(match[1]));
+      assert.equal(new Set(paintedRows).size, 1, `unexpected repaint rows: ${paintedRows.join(', ')}`);
+      assert.doesNotMatch(update, /history|INPUT|ctx/);
     } finally {
       cleanupTerminalUI(ui);
     }

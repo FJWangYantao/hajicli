@@ -13,6 +13,7 @@ import {
 import { getTheme, getColorLevel, fgSeq, bgSeq, themeReset, themeEnter, themeBg, fillUserMsgRowEol } from './theme.js';
 import { resolveTuiLayout, type TuiStatusDetail } from './tui-layout.js';
 import { redactSensitiveCommand, sanitizeTerminalText } from './terminal-sanitize.js';
+import type { ActivityFrame } from './activity-indicator.js';
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
@@ -915,6 +916,7 @@ export class TerminalUI {
   private maxChatScrollOffset = 0;
   private chatPageSize = 1;
   private status = '';
+  private activityFrame?: ActivityFrame;
   private permissionMode = '';
   private modelName = '';
   private providerName = '';
@@ -1171,6 +1173,7 @@ export class TerminalUI {
       this.agentPanelTimer = null;
     }
     this.pendingWheelRows = 0;
+    this.activityFrame = undefined;
     this.stopSelectionAutoScroll();
     this.protocolParser.reset();
     this.clipboardWriter.close();
@@ -1251,7 +1254,7 @@ export class TerminalUI {
       return this.cachedWrappedChat;
     }
 
-    if (!this.status && contentWithStatus === this.chatContent) {
+    if (contentWithStatus === this.chatContent) {
       const layout = performanceMonitor.measureSync(
         'terminal.layout.full',
         () => layoutAnsiDocument(contentWithStatus, width)
@@ -1400,6 +1403,11 @@ export class TerminalUI {
   setStatus(value: string = '', interactive = false): void {
     this.status = value;
     this.scheduleRender(interactive);
+  }
+
+  setActivity(frame?: ActivityFrame): void {
+    this.activityFrame = frame;
+    this.scheduleRender();
   }
 
   async readInput(options: ReadInputOptions = {}): Promise<string> {
@@ -2056,6 +2064,41 @@ export class TerminalUI {
     return `${fittedLeft}${padding}${rightAnsi}`;
   }
 
+  private buildActivityRow(width: number): string {
+    const frame = this.activityFrame;
+    if (!frame || width <= 0) return '';
+
+    const color = frame.tone === 'stalled'
+      ? SEQ.boldYellow
+      : frame.tone === 'waiting'
+        ? SEQ.yellow
+        : frame.phase === 'responding'
+          ? SEQ.green
+          : frame.phase === 'permission'
+            ? SEQ.yellow
+            : SEQ.cyan;
+    const toneText = frame.tone === 'stalled'
+      ? '较久无进展'
+      : frame.tone === 'waiting' && frame.phase !== 'permission'
+        ? '等待新事件'
+        : '';
+    const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(' · ');
+    const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
+    const animated = `${SEQ.accent}${frame.meter}${SEQ.reset}`;
+    const suffix = `${SEQ.muted}${frame.elapsed}${detail ? ` · ${detail}` : ''}${SEQ.reset}`;
+    if (width < 32) {
+      return truncateAnsiText(`${primary}  ${SEQ.muted}${frame.elapsed}${SEQ.reset}`, width);
+    }
+    if (width < 60) {
+      const compactState = toneText ? ` · ${toneText}` : '';
+      return truncateAnsiText(
+        `${primary}  ${animated}  ${SEQ.muted}${frame.elapsed}${compactState}${SEQ.reset}`,
+        width
+      );
+    }
+    return truncateAnsiText(`${primary}  ${animated}  ${suffix}`, width);
+  }
+
   private buildTaskPanel(width: number, maxRows = 8): string[] {
     if (!this.taskPanelTitle || maxRows <= 0) return [];
     const panelTitle = this.taskPanelTitle ? `任务 · ${this.taskPanelTitle}` : '任务';
@@ -2183,6 +2226,13 @@ export class TerminalUI {
     const statusBar = this.buildStatusBar(width, layout.statusDetail);
     const minimal = layout.mode === 'minimal';
     const emergencyMinimal = minimal && height < 8;
+    const inputPaddingRows = layout.inputPaddingRows;
+    const trailingInputPadding = new Array(inputPaddingRows).fill('');
+    // 活动轨道固定占据输入框上方一行。动画开始、更新和结束都不会改变
+    // 聊天区高度，也不会把活动文本送入聊天正文的软换行缓存。
+    const activityTrack = this.buildActivityRow(width)
+      || (this.status ? truncateAnsiText(this.status, width) : '');
+    const activityTrackRows = emergencyMinimal ? [] : [activityTrack];
     const leadingInputRows: string[] = [];
     if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
     const emergencyLeadingBudget = Math.max(0, height - 2);
@@ -2196,51 +2246,71 @@ export class TerminalUI {
         ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
         : Math.max(
           1,
-          height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 5)
+          height - topRows.length - visibleLeadingInputRows.length - (minimal ? 4 : 6)
         );
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
       if (emergencyMinimal) {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
       } else if (minimal) {
-        inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
+        inputBlock = [...visibleLeadingInputRows, ...activityTrackRows, ...selectionRows, statusBar];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          divider,
+          ...activityTrackRows,
+          ...selectionRows,
+          divider,
+          statusBar
+        ];
       }
     } else {
       const maxSuggestionRows = layout.showHints
-        ? Math.max(0, height - topRows.length - visibleLeadingInputRows.length - 6)
+        ? Math.max(0, height - topRows.length - visibleLeadingInputRows.length - 7 - inputPaddingRows)
         : 0;
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
       const maxInputRows = emergencyMinimal
         ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
         : Math.max(
           1,
-          height - topRows.length - visibleLeadingInputRows.length - suggestionRows.length - (minimal ? 3 : 5)
+          height - topRows.length - visibleLeadingInputRows.length - suggestionRows.length
+            - (minimal ? 4 : 6 + inputPaddingRows)
         );
       inputLayout = this.getInputLayout(width, maxInputRows);
       if (emergencyMinimal) {
         inputCursorOffset = visibleLeadingInputRows.length;
         inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, ...emergencyStatusRows];
       } else if (minimal) {
-        inputCursorOffset = visibleLeadingInputRows.length;
-        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, statusBar];
+        inputCursorOffset = visibleLeadingInputRows.length + activityTrackRows.length;
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          ...activityTrackRows,
+          ...inputLayout.rows,
+          statusBar
+        ];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputCursorOffset = visibleLeadingInputRows.length + 1;
-        inputBlock = [...visibleLeadingInputRows, divider, ...inputLayout.rows, ...suggestionRows, divider, statusBar];
+        inputCursorOffset = visibleLeadingInputRows.length + 1 + activityTrackRows.length;
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          divider,
+          ...activityTrackRows,
+          ...inputLayout.rows,
+          ...suggestionRows,
+          ...trailingInputPadding,
+          divider,
+          statusBar
+        ];
       }
     }
     const chatHeight = emergencyMinimal
       ? Math.max(0, height - inputBlock.length)
       : Math.max(1, height - topRows.length - 1 - inputBlock.length);
-    const contentWithStatus = this.status
-      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith('\n') ? '\n' : ''}${this.status}`
-      : this.chatContent;
     // 对话区使用响应式内边距：内容按收窄后的宽度换行，
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
     const chatPadding = layout.chatPadding;
     const chatWidth = Math.max(1, width - chatPadding * 2);
+    const contentWithStatus = this.chatContent;
     const contentChanged = contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
     const previousWrappedCount = this.cachedWrappedChat.length;
     const wrappedChat = this.getWrappedChat(contentWithStatus, chatWidth);

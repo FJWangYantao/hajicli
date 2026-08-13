@@ -48,9 +48,11 @@ test('detectColorLevel honors explicit mono conditions before color capabilities
   assert.equal(detectColorLevel({ WT_SESSION: '1' }, false, 'win32'), 'mono');
   assert.equal(detectColorLevel({ NO_COLOR: '', WT_SESSION: '1' }, true, 'win32'), 'mono');
   assert.equal(detectColorLevel({ TERM: 'DuMb', COLORTERM: 'truecolor' }, true, 'linux'), 'mono');
+  assert.equal(detectColorLevel({ TERM: 'dumb' }, true, 'win32'), 'mono');
 });
 
 test('detectColorLevel detects truecolor, 256 color and ordinary TTY levels', () => {
+  assert.equal(detectColorLevel({}, true, 'win32'), 'truecolor');
   assert.equal(detectColorLevel({ WT_SESSION: '1' }, true, 'win32'), 'truecolor');
   assert.equal(detectColorLevel({ COLORTERM: 'TRUECOLOR' }, true, 'linux'), 'truecolor');
   assert.equal(detectColorLevel({ COLORTERM: '24bit' }, true, 'linux'), 'truecolor');

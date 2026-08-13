@@ -33,6 +33,7 @@ import { MarkdownRenderThrottle, MarkdownStreamRenderer, shouldShowToolThinkingS
 import { getNativeTerminalEngineStatus } from './native-terminal-engine.js';
 import { REWIND_CONFIRM_DEFAULT, queueRewindRefill } from './rewind-flow.js';
 import { SharedToolExecutor } from './tool-executor.js';
+import { createToolCallBatches, runToolCallBatch } from './tool-batch.js';
 import { parsePresetCommand, parseSubagentCommand, type ParsedSubagentCommand } from './agent-commands.js';
 import { handleMemoryCommand, handleInstinctCommand } from './experience-commands.js';
 import { getModelContextWindowTokens, getModelMaxOutputTokens } from './context-policy.js';
@@ -72,6 +73,7 @@ import {
 import { paint } from './theme.js';
 import { redactSensitiveCommand, sanitizeTerminalText } from './terminal-sanitize.js';
 import { splitPendingUserTurn } from './turn-lifecycle.js';
+import { ActivityIndicator } from './activity-indicator.js';
 
 // 主题化色彩工具：颜色取自当前主题（24-bit 真彩色），独立于终端调色板。
 // purple/boldPurple/gray 保留为旧名别名，便于全文既有调用点无缝兼容。
@@ -361,9 +363,15 @@ ${colors.bold('环境变量配置:')}
         ui.cancelInput();
       }
       const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : 'AI';
-      const answer = await ui.readInput({
-        prompt: `  ${colors.boldYellow(`⚠️  ${requester} 申请执行修改型工具：`)}${colors.purple(ctx.toolName!)}${displayArgs} ${colors.boldYellow('授权？(y/N)')} › `
-      });
+      activityIndicator.start('permission', '等待授权', `${requester} 请求执行 ${ctx.toolName}`);
+      let answer: string;
+      try {
+        answer = await ui.readInput({
+          prompt: `  ${colors.boldYellow(`⚠️  ${requester} 申请执行修改型工具：`)}${colors.purple(ctx.toolName!)}${displayArgs} ${colors.boldYellow('授权？(y/N)')} › `
+        });
+      } finally {
+        activityIndicator.stop();
+      }
       const approved = answer.trim().toLowerCase() === 'y';
       if (!approved) {
         ui.writeLine(`  ${colors.boldRed('✕')} ${colors.purple(ctx.toolName!)}${displayArgs} ${colors.gray('(已拒绝执行)')}`);
@@ -445,7 +453,7 @@ ${colors.bold('环境变量配置:')}
       '只输出摘要正文，不要解释摘要过程。'
     ].join('\n');
 
-    ui.setStatus(`${colors.purple('🧹')} ${colors.gray('正在调用当前模型生成结构化摘要...')}`);
+    activityIndicator.start('compacting', '压缩上下文', '正在生成结构化摘要');
     try {
       const summary = await provider.complete([
         { role: 'system', content: summaryInstruction },
@@ -460,7 +468,7 @@ ${colors.bold('环境变量配置:')}
       if (!summary.trim()) throw new Error('摘要模型返回了空内容');
       return summary.trim();
     } finally {
-      if (!foregroundAbortSignal?.aborted) ui.setStatus();
+      if (!foregroundAbortSignal?.aborted) activityIndicator.stop();
     }
   }
   const systemPromptManager = new SystemPromptManager();
@@ -560,6 +568,9 @@ ${colors.bold('环境变量配置:')}
     inputPrompt: colors.boldAccent('› '),
     continuationPrompt: colors.muted('│ '),
     renderBorder: width => colors.gray('─'.repeat(width))
+  });
+  const activityIndicator = new ActivityIndicator({
+    render: frame => ui.setActivity(frame)
   });
   markStartupStage('ui_ctor');
   const slashCommands = [
@@ -1108,14 +1119,20 @@ ${colors.bold('环境变量配置:')}
     permissionEngine,
     snapshotEngine,
     taskStore,
-    setStatus: status => ui.setStatus(status ? `${colors.blue('⚙')} ${colors.gray(status)}` : undefined),
+    setStatus: status => {
+      if (status) activityIndicator.start('tool', '执行工具', status);
+      else activityIndicator.stop();
+    },
     onToolProgress: ({ toolName, progress, context }) => {
       if (context.agentId) return;
       const plain = sanitizeTerminalText(progress.chunk).trim();
       const lastLine = plain.split(/\r?\n/).filter(Boolean).at(-1);
       if (!lastLine) return;
       const preview = lastLine.length > 120 ? `${lastLine.slice(0, 117)}...` : lastLine;
-      ui.setStatus(`${colors.blue('⚙')} ${colors.gray(`${toolName}: ${preview}`)}`);
+      const batchPrefix = context.batchSize && context.batchSize > 1
+        ? `[${(context.batchIndex || 0) + 1}/${context.batchSize}] `
+        : '';
+      activityIndicator.progress(`${batchPrefix}${toolName}: ${preview}`);
     },
     onTaskPlanChanged: recentlyCompleted => {
       syncTaskPlanUI(recentlyCompleted);
@@ -2613,6 +2630,7 @@ ${colors.bold('环境变量配置:')}
 
       const showAbortNotice = () => {
         stopActiveTurnVisuals();
+        activityIndicator.stop();
         ui.setStatus();
         if (abortNoticeShown) return;
         abortNoticeShown = true;
@@ -2632,6 +2650,7 @@ ${colors.bold('环境变量配置:')}
         skillRegistry.restoreScopeFromMessages('main', messages);
         sessionManager.saveCurrentSession(messages);
         ui.updateChatFrom(promptDisplayStartOffset, '');
+        activityIndicator.stop();
         ui.setStatus();
         ui.writeLine(colors.gray('↩ 请求尚未发出，prompt 已收回到输入框。'));
         ui.setQueue(pendingInputs);
@@ -2653,7 +2672,7 @@ ${colors.bold('环境变量配置:')}
         if (interruptedDraft?.trim()) {
           deferredInputDrafts.unshift(interruptedDraft);
         }
-        ui.setStatus(`⏹ ${colors.gray('正在终止...')}`, true);
+        activityIndicator.start('stopping', '正在终止', '等待当前操作响应中止信号');
         requestAbortController.abort();
       });
       startBackgroundInput();
@@ -2702,24 +2721,13 @@ ${colors.bold('环境变量配置:')}
         let textContent = '';
         let reasoningContent = '';
 
-        // 启动异步 Spinner 加载动画（TTFT 思考期）
+        // TTFT、推理与流式回复共用一条可观测活动状态。
         let isThinking = true;
-        const spinnerChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinIdx = 0;
-
-        ui.setStatus(`⠋ ${colors.gray('思考中...')}`);
-        const spinnerInterval = setInterval(() => {
-          if (isThinking) {
-            const statusLabel = reasoningContent.length > 0
-              ? `深度思考中... (${reasoningContent.length} 字)`
-              : '思考中...';
-            ui.setStatus(`${spinnerChars[spinIdx]} ${colors.gray(statusLabel)}`);
-            spinIdx = (spinIdx + 1) % spinnerChars.length;
-          }
-        }, 100);
+        let isResponding = false;
+        activityIndicator.start('thinking', '思考中', '等待模型首个事件');
         stopActiveTurnVisuals = () => {
           isThinking = false;
-          clearInterval(spinnerInterval);
+          activityIndicator.stop();
         };
         const mdStreamRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
         const markdownRenderThrottle = new MarkdownRenderThrottle();
@@ -2741,8 +2749,7 @@ ${colors.bold('环境变量配置:')}
           onReasoning: (content: string) => {
             if (isTurnAborted) return;
             reasoningContent += content;
-            // Spinner samples the latest length at a bounded rate. Rendering on
-            // every provider delta can otherwise saturate Windows Terminal.
+            activityIndicator.progress(`已接收 ${reasoningContent.length} 字推理内容`);
           },
           onUsage: usage => {
             completionTokens = usage.completion_tokens;
@@ -2755,12 +2762,14 @@ ${colors.bold('环境变量配置:')}
         try {
           for await (const chunk of stream) {
             if (isTurnAborted) continue;
-            if (isThinking) {
+            if (!isResponding) {
               isThinking = false;
-              ui.setStatus();
+              isResponding = true;
+              activityIndicator.transition('responding', '生成回复', '正在接收模型输出');
             }
 
             textContent += chunk;
+            activityIndicator.progress(`已生成 ${textContent.length} 字`);
             // Reparse at most once per frame; the final pass below always renders the complete answer.
             if (markdownRenderThrottle.shouldRender(Date.now(), textContent.length)) {
               const renderedMarkdown = mdStreamRenderer.render(textContent, false);
@@ -2796,7 +2805,7 @@ ${colors.bold('环境变量配置:')}
             showAbortNotice();
           } else {
             commitPromptForRequest();
-            ui.setStatus();
+            activityIndicator.stop();
             // 捕获 Provider 调用错误，展示友好提示而非崩溃
             const errMsg = sanitizeTerminalText(
               streamError instanceof Error ? streamError.message : String(streamError)
@@ -2810,7 +2819,7 @@ ${colors.bold('环境变量配置:')}
           continue;
         } finally {
           stopActiveTurnVisuals();
-          if (!isTurnAborted) ui.setStatus();
+          if (!isTurnAborted) activityIndicator.stop();
         }
 
         if (isThinking) {
@@ -2882,86 +2891,101 @@ ${colors.bold('环境变量配置:')}
         if (toolCalls && toolCalls.length > 0) {
           // 工具调用块前空一行：与上方思考/正文分隔；工具调用相互之间不空行
           ui.writeBlankLine();
-          for (const tc of toolCalls) {
-            // 用户按 ESC 中断后跳过后续工具执行
-            if (isTurnAborted) {
-              messages.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: '[工具调用已跳过：用户中止了当前工作流]'
-              });
-              continue;
-            }
-            const toolName = tc.function.name;
-            const targetTool = toolsMap.get(toolName);
+          type ToolExecutionResult = Awaited<ReturnType<typeof toolExecutor.execute>>;
+          type BatchItemResult = {
+            tc: ToolCall;
+            toolName: string;
+            args: Record<string, unknown>;
+            duration: number;
+            execution?: ToolExecutionResult;
+            unregistered?: boolean;
+            skipped?: boolean;
+          };
+          const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
+          const anchorSnapshotId = [...messages].reverse()
+            .find(message => message.role === 'user' && message.snapshotId)?.snapshotId;
+          const batches = createToolCallBatches(toolCalls);
 
-            if (!targetTool) {
-              ui.writeLine(`❌ ${colors.red(`错误: 调用的工具 "${toolName}" 未注册。`)}`);
-              messages.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: `错误: 工具 "${toolName}" 未注册。`
-              });
+          for (const batch of batches) {
+            const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
+              if (isTurnAborted) {
+                return { tc, toolName: tc.function.name, args: {}, duration: 0, skipped: true };
+              }
+              const toolName = tc.function.name;
+              const targetTool = toolsMap.get(toolName);
+              if (!targetTool) return { tc, toolName, args: {}, duration: 0, unregistered: true };
+              const parsedToolCall = validateToolCall(tc);
+              const args = (parsedToolCall.arguments || {}) as Record<string, unknown>;
+              try {
+                const execution = await toolExecutor.execute(toolName, args, {
+                  toolCallId: tc.id,
+                  abortSignal: requestAbortController.signal,
+                  depth: 0,
+                  userIntent: lastUserMsg,
+                  permissionMode,
+                  riskThreshold,
+                  anchorSnapshotId,
+                  suppressStatus: batch.parallel,
+                  batchIndex,
+                  batchSize: batch.calls.length
+                });
+                return { tc, toolName, args, duration: execution.duration, execution };
+              } catch (error) {
+                if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
+                return { tc, toolName, args, duration: 0, skipped: true };
+              }
+            };
+
+            if (batch.parallel) {
+              activityIndicator.start('batch', '并行执行', `${batch.calls.length} 个只读工具`);
+            }
+            let batchRun: Awaited<ReturnType<typeof runToolCallBatch<ToolCall, BatchItemResult>>>;
+            try {
+              batchRun = await runToolCallBatch(batch, executeCall);
+            } finally {
+              if (batch.parallel) activityIndicator.stop();
+            }
+            for (const result of batchRun.results) {
+              const { tc, toolName, args, execution } = result;
+              if (result.skipped) {
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: '[工具调用已跳过：用户中止了当前工作流]'
+                });
+                continue;
+              }
+              if (result.unregistered || !execution) {
+                ui.writeLine(`❌ ${colors.red(`错误: 调用的工具 "${toolName}" 未注册。`)}`);
+                messages.push({ role: 'tool', tool_call_id: tc.id, content: `错误: 工具 "${toolName}" 未注册。` });
+                sessionManager.saveCurrentSession(messages);
+                updateStatusUI();
+                continue;
+              }
+
+              const toolOutput = execution.output;
+              const safeToolOutput = sanitizeTerminalText(toolOutput);
+              const argsSummary = sanitizeTerminalText(formatToolArgs(args));
+              const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
+              if (execution.blocked || toolOutput.startsWith('执行出错:')) {
+                ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${safeToolOutput})`)}`);
+              } else {
+                ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${execution.duration}ms)`)}`);
+              }
+
+              if (
+                permissionMode === 'plan' &&
+                toolName === 'taskcreate' &&
+                args.finalize === true &&
+                toolOutput.includes(PLAN_READY_MARKER)
+              ) {
+                planReadyForReview = true;
+                planReviewSummaryRequested = false;
+              }
+              messages.push({ role: 'tool', tool_call_id: tc.id, content: toolOutput });
               sessionManager.saveCurrentSession(messages);
               updateStatusUI();
-              continue;
             }
-
-            const parsedToolCall = validateToolCall(tc);
-            const args = parsedToolCall.arguments || {};
-
-            // 获取用户最新意图（提取上下文中的最近一条 user 消息）
-            const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
-            const anchorSnapshotId = [...messages].reverse()
-              .find(message => message.role === 'user' && message.snapshotId)?.snapshotId;
-            let execution: Awaited<ReturnType<typeof toolExecutor.execute>>;
-            try {
-              execution = await toolExecutor.execute(toolName, args, {
-                toolCallId: tc.id,
-                abortSignal: requestAbortController.signal,
-                depth: 0,
-                userIntent: lastUserMsg,
-                permissionMode,
-                riskThreshold,
-                anchorSnapshotId
-              });
-            } catch (error) {
-              if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
-              messages.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: '[工具调用已跳过：用户中止了当前工作流]'
-              });
-              continue;
-            }
-            const toolOutput = execution.output;
-            const safeToolOutput = sanitizeTerminalText(toolOutput);
-            const argsSummary = sanitizeTerminalText(formatToolArgs(args));
-            const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : '';
-            if (execution.blocked || toolOutput.startsWith('执行出错:')) {
-              ui.writeLine(`  ${colors.boldRed('❌')} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${safeToolOutput})`)}`);
-            } else {
-              ui.writeLine(`  ${colors.boldGreen('✓')} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${execution.duration}ms)`)}`);
-            }
-
-            if (
-              permissionMode === 'plan' &&
-              toolName === 'taskcreate' &&
-              (args as Record<string, unknown>).finalize === true &&
-              toolOutput.includes(PLAN_READY_MARKER)
-            ) {
-              planReadyForReview = true;
-              planReviewSummaryRequested = false;
-            }
-
-            // 保存工具输出至上下文
-            messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: toolOutput
-            });
-            sessionManager.saveCurrentSession(messages);
-            updateStatusUI();
           }
           // 工具调用块后空一行：与下方思考/正文分隔
           ui.writeLine();
@@ -3053,6 +3077,7 @@ ${colors.bold('环境变量配置:')}
       throw error;
     }
   } finally {
+    activityIndicator.stop();
     ui.close();
     try {
       // 经验系统：先取出会话内累积的观测（flush 会清空缓冲，必须在此之前取）

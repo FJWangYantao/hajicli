@@ -13,6 +13,7 @@ export interface TuiLayout {
   statusDetail: TuiStatusDetail;
   panelRows: number;
   showHints: boolean;
+  inputPaddingRows: number;
 }
 
 interface TuiLayoutProfile {
@@ -21,6 +22,7 @@ interface TuiLayoutProfile {
   statusDetail: TuiStatusDetail;
   panelRows: number;
   showHints: boolean;
+  inputPaddingRows: number;
 }
 
 const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
@@ -29,35 +31,40 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     headerMode: 'full',
     statusDetail: 'full',
     panelRows: 8,
-    showHints: true
+    showHints: true,
+    inputPaddingRows: 1
   },
   comfortable: {
     chatPadding: 2,
     headerMode: 'full',
     statusDetail: 'full',
     panelRows: 6,
-    showHints: true
+    showHints: true,
+    inputPaddingRows: 1
   },
   compact: {
     chatPadding: 1,
     headerMode: 'compact',
     statusDetail: 'compact',
     panelRows: 4,
-    showHints: true
+    showHints: true,
+    inputPaddingRows: 1
   },
   narrow: {
     chatPadding: 1,
     headerMode: 'compact',
     statusDetail: 'minimal',
     panelRows: 2,
-    showHints: false
+    showHints: false,
+    inputPaddingRows: 0
   },
   minimal: {
     chatPadding: 0,
     headerMode: 'hidden',
     statusDetail: 'minimal',
     panelRows: 0,
-    showHints: false
+    showHints: false,
+    inputPaddingRows: 0
   }
 };
 
@@ -124,6 +131,7 @@ export function resolveTuiLayout(columns: number, rows: number): TuiLayout {
     headerMode,
     statusDetail,
     panelRows: Math.min(profile.panelRows, resolvePanelRowBudget(safeRows)),
-    showHints: profile.showHints && !short
+    showHints: profile.showHints && !short,
+    inputPaddingRows: short ? 0 : profile.inputPaddingRows
   };
 }

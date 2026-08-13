@@ -60,7 +60,8 @@ test('forces minimal layout below 24 columns or 10 rows', () => {
       headerMode: 'hidden',
       statusDetail: 'minimal',
       panelRows: 0,
-      showHints: false
+      showHints: false,
+      inputPaddingRows: 0
     });
   }
 });
@@ -74,7 +75,8 @@ test('reduces vertical detail before changing the width mode', () => {
     headerMode: 'hidden',
     statusDetail: 'minimal',
     panelRows: 1,
-    showHints: false
+    showHints: false,
+    inputPaddingRows: 0
   });
 
   assert.deepEqual(resolveTuiLayout(120, 24), {
@@ -85,10 +87,12 @@ test('reduces vertical detail before changing the width mode', () => {
     headerMode: 'full',
     statusDetail: 'full',
     panelRows: 4,
-    showHints: true
+    showHints: true,
+    inputPaddingRows: 1
   });
 
   assert.equal(resolveTuiLayout(120, 40).panelRows, 8);
+  assert.equal(resolveTuiLayout(120, 40).inputPaddingRows, 1);
 });
 
 test('rejects invalid terminal dimensions', () => {
