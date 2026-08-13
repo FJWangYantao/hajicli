@@ -36,7 +36,7 @@ import { SharedToolExecutor } from './tool-executor.js';
 import { createToolCallBatches, runToolCallBatch } from './tool-batch.js';
 import { parsePresetCommand, parseSubagentCommand, type ParsedSubagentCommand } from './agent-commands.js';
 import { handleMemoryCommand, handleInstinctCommand } from './experience-commands.js';
-import { getModelContextWindowTokens, getModelMaxOutputTokens } from './context-policy.js';
+import { getModelContextWindowTokens } from './context-policy.js';
 import { formatToolArgs, getCliVersion, loadPreference, savePreference } from './cli-runtime.js';
 import {
   budgetPrompt,
@@ -2738,7 +2738,6 @@ ${colors.bold('环境变量配置:')}
           model: selectedModel,
           reasoningEffort,
           thinking: true,
-          maxTokens: getModelMaxOutputTokens(selectedModel),
           tools: activeTools().map(tool => tool.definition),
           abortSignal: requestAbortController.signal,
           onRequestStart: commitPromptForRequest,
@@ -2859,8 +2858,8 @@ ${colors.bold('环境变量配置:')}
           malformedToolRecoveryAttempts += 1;
           const toolName = invalidToolCall.toolCall.function?.name || 'unknown';
           const truncationHint = finishReason === 'length'
-            ? 'Provider 返回 finish_reason=length，确认本轮输出达到长度上限。'
-            : '工具参数可能因输出上限或上游流中断而被截断。';
+            ? 'Provider 返回 finish_reason=length；Haji 未设置单次输出上限，这是上游服务端限制。'
+            : '工具参数可能因上游流中断而被截断。';
           ui.writeLine(colors.boldYellow(`⚠️ 已拦截不完整的 ${toolName} 工具调用，未执行、未写入工具调用历史。`));
           ui.writeLine(colors.gray(`${invalidToolCall.validation.error} ${truncationHint}`));
 
@@ -2880,11 +2879,10 @@ ${colors.bold('环境变量配置:')}
         }
 
         if (finishReason === 'length') {
-          const outputMax = getModelMaxOutputTokens(selectedModel);
           const usedText = completionTokens !== undefined
-            ? `${completionTokens.toLocaleString('en-US')} / ${outputMax.toLocaleString('en-US')}`
-            : `${outputMax.toLocaleString('en-US')}`;
-          ui.writeLine(colors.yellow(`⚠️ 模型输出达到单次长度上限（${usedText} tokens，非上下文窗口），本轮内容可能不完整。可设置 HAJI_MAX_TOKENS 调高。`));
+            ? `（已生成 ${completionTokens.toLocaleString('en-US')} tokens）`
+            : '';
+          ui.writeLine(colors.yellow(`⚠️ 上游 Provider 以 length 结束${usedText}，本轮内容可能不完整；Haji 未设置单次输出上限。`));
         }
 
         // 处理工具调用逻辑
