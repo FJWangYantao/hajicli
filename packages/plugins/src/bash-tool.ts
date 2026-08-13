@@ -1,6 +1,32 @@
 import { exec, execFile, type ChildProcess } from 'node:child_process';
 import { BaseTool, ToolDefinition, ToolExecutionContext, ToolMutationScope } from '@hajicli/core';
 
+class HeadTailBuffer {
+  private head = '';
+  private tail = '';
+  private totalLength = 0;
+
+  constructor(private readonly headLimit = 1_000, private readonly tailLimit = 2_500) {}
+
+  append(value: string): void {
+    if (!value) return;
+    this.totalLength += value.length;
+    let remaining = value;
+    if (this.head.length < this.headLimit) {
+      const accepted = remaining.slice(0, this.headLimit - this.head.length);
+      this.head += accepted;
+      remaining = remaining.slice(accepted.length);
+    }
+    if (remaining) this.tail = `${this.tail}${remaining}`.slice(-this.tailLimit);
+  }
+
+  render(): string {
+    const omitted = Math.max(0, this.totalLength - this.head.length - this.tail.length);
+    if (omitted === 0) return `${this.head}${this.tail}`;
+    return `${this.head}\n[中间省略 ${omitted} 个字符]\n${this.tail}`;
+  }
+}
+
 /**
  * 只对无法组合其他命令、且没有输出重定向的白名单查询命令跳过工作区快照。
  * 任何不确定命令都按 workspace 处理，宁可多做一次快照也不漏记修改。
@@ -41,6 +67,10 @@ export class BashTool implements BaseTool {
           command: {
             type: 'string',
             description: '要在终端运行的完整命令行指令。'
+          },
+          timeoutMs: {
+            type: 'number',
+            description: '可选超时，1000-600000 毫秒；超时后清理命令进程树。'
           }
         },
         required: ['command']
@@ -61,20 +91,53 @@ export class BashTool implements BaseTool {
     if (!command) {
       return '错误: 缺少 command 参数。';
     }
+    const timeoutMs = args.timeoutMs === undefined ? undefined : Number(args.timeoutMs);
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000)) {
+      return '错误: timeoutMs 必须是 1000 到 600000 之间的整数。';
+    }
 
     if (context?.abortSignal?.aborted) return '[命令已中止]';
 
     return new Promise<string>((resolve) => {
       let settled = false;
       let aborting = false;
+      let terminationReason: 'abort' | 'timeout' = 'abort';
       let child: ChildProcess | undefined;
       let abort = () => {};
+      let timeout: NodeJS.Timeout | undefined;
+      const startedAt = Date.now();
+      const stdoutBuffer = new HeadTailBuffer();
+      const stderrBuffer = new HeadTailBuffer();
+      let sawStdoutChunk = false;
+      let sawStderrChunk = false;
+      const terminationLabel = () => terminationReason === 'timeout'
+        ? `[命令执行超时 - ${timeoutMs}ms]`
+        : '[命令已中止]';
       const finish = (value: string) => {
         if (settled) return;
         settled = true;
+        if (timeout) clearTimeout(timeout);
         context?.abortSignal?.removeEventListener('abort', abort);
         child = undefined;
         resolve(value);
+      };
+      const finishAfterProcessClose = (value: string) => {
+        const runningChild = child;
+        if (!runningChild || runningChild.exitCode !== null || typeof runningChild.once !== 'function') {
+          finish(value);
+          return;
+        }
+        let closeTimeout: NodeJS.Timeout | undefined;
+        const closed = () => {
+          if (closeTimeout) clearTimeout(closeTimeout);
+          finish(value);
+        };
+        runningChild.once('close', closed);
+        closeTimeout = setTimeout(() => {
+          runningChild.removeListener?.('close', closed);
+          finish(value);
+        }, 750);
+        closeTimeout.unref?.();
       };
       // 允许使用 10MB 的缓冲区，防止长输出崩掉
       child = this.commandExecutor(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
@@ -82,33 +145,39 @@ export class BashTool implements BaseTool {
           if (!aborting) abort();
           return;
         }
+        if (aborting) return;
         const exitCode = error ? error.code ?? 1 : 0;
-        
-        let result = `[命令执行结果 - 退出码 ${exitCode}]\n`;
-        
-        if (stdout) {
-          result += `--- 标准输出 (stdout) ---\n${stdout}\n`;
+        if (!sawStdoutChunk && stdout) stdoutBuffer.append(String(stdout));
+        if (!sawStderrChunk && stderr) stderrBuffer.append(String(stderr));
+        const boundedStdout = stdoutBuffer.render();
+        const boundedStderr = stderrBuffer.render();
+        const durationMs = Date.now() - startedAt;
+
+        let result = `[命令执行结果 - 退出码 ${exitCode}；耗时 ${durationMs}ms]\n`;
+        if (boundedStdout) {
+          result += `--- 标准输出 (stdout，保留头尾) ---\n${boundedStdout}\n`;
         }
-        if (stderr) {
-          result += `--- 标准错误 (stderr) ---\n${stderr}\n`;
+        if (boundedStderr) {
+          result += `--- 标准错误 (stderr，保留头尾) ---\n${boundedStderr}\n`;
         }
-        if (!stdout && !stderr) {
+        if (!boundedStdout && !boundedStderr) {
           result += `(命令执行完成，无控制台输出)\n`;
         }
-
-        // 截断超长结果以防止上下文溢出（限制 8000 字符）
-        const maxOutputLength = 8000;
-        if (result.length > maxOutputLength) {
-          result = result.substring(0, maxOutputLength) + '\n\n[输出已被截断，因为内容超过了 8000 字符限制]';
-        }
-
         finish(result);
       });
       child.stdout?.on('data', chunk => {
-        if (!settled) context?.onProgress?.({ type: 'stdout', chunk: String(chunk) });
+        if (!settled) {
+          sawStdoutChunk = true;
+          stdoutBuffer.append(String(chunk));
+          context?.onProgress?.({ type: 'stdout', chunk: String(chunk) });
+        }
       });
       child.stderr?.on('data', chunk => {
-        if (!settled) context?.onProgress?.({ type: 'stderr', chunk: String(chunk) });
+        if (!settled) {
+          sawStderrChunk = true;
+          stderrBuffer.append(String(chunk));
+          context?.onProgress?.({ type: 'stderr', chunk: String(chunk) });
+        }
       });
 
       abort = () => {
@@ -116,7 +185,7 @@ export class BashTool implements BaseTool {
         aborting = true;
         const runningChild = child;
         if (!runningChild) {
-          finish('[命令已中止]');
+          finish(terminationLabel());
           return;
         }
 
@@ -175,7 +244,7 @@ export class BashTool implements BaseTool {
             (taskkillError) => {
               if (settled) return;
               if (!taskkillError) {
-                finish('[命令已中止]');
+                finishAfterProcessClose(terminationLabel());
                 return;
               }
 
@@ -205,15 +274,15 @@ export class BashTool implements BaseTool {
                   }
                   const parentSignalSent = runningChild.kill('SIGTERM');
                   if (!enumerationError && descendantIds.length > 0 && failedIds.length === 0 && parentSignalSent) {
-                    finish(`[命令已中止]\n提示: taskkill 失败 (code=${taskkillCode})，已通过进程枚举兜底清理。`);
+                    finishAfterProcessClose(`${terminationLabel()}\n提示: taskkill 失败 (code=${taskkillCode})，已通过进程枚举兜底清理。`);
                     return;
                   }
 
                   const enumerationCode = enumerationError
                     ? (enumerationError as NodeJS.ErrnoException & { code?: string | number }).code ?? 'unknown'
                     : 'ok';
-                  finish(
-                    `[命令已中止]\n警告: taskkill 失败 (code=${taskkillCode})，进程树未能确认完整清理；`
+                  finishAfterProcessClose(
+                    `${terminationLabel()}\n警告: taskkill 失败 (code=${taskkillCode})，进程树未能确认完整清理；`
                     + `枚举状态: ${enumerationCode}，未清理 PID: ${failedIds.length > 0 ? failedIds.join(', ') : '未知'}。`
                   );
                 }
@@ -224,11 +293,18 @@ export class BashTool implements BaseTool {
         }
 
         const signalSent = runningChild.kill('SIGTERM');
-        finish(signalSent
-          ? '[命令已中止]'
-          : '[命令已中止]\n警告: 进程终止信号发送失败，可能存在残留进程。');
+        finishAfterProcessClose(signalSent
+          ? terminationLabel()
+          : `${terminationLabel()}\n警告: 进程终止信号发送失败，可能存在残留进程。`);
       };
       context?.abortSignal?.addEventListener('abort', abort, { once: true });
+      if (timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          terminationReason = 'timeout';
+          abort();
+        }, timeoutMs);
+        timeout.unref?.();
+      }
       if (context?.abortSignal?.aborted) abort();
     });
   }

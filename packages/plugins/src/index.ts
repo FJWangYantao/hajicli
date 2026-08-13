@@ -5,6 +5,7 @@ export * from './bash-tool.js';
 export * from './read-tool.js';
 export * from './write-tool.js';
 export * from './global-tool.js';
+export * from './project-info-tool.js';
 export * from './grep-tool.js';
 export * from './web-search-tool.js';
 export * from './web-fetch-tool.js';

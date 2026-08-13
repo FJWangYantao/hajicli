@@ -83,19 +83,22 @@ export class ToolsPromptPart implements SystemPromptPart {
     rules.push('- 修改完成后必须查看相关差异，并执行至少一个能覆盖该改动的验证；若无法验证，明确说明原因。');
 
     if (activeTools.includes('global')) {
-      rules.push('\n- global：按路径或名称定位文件、了解项目结构。不要在已知精确路径时进行全仓库枚举。');
+      rules.push('\n- global：按路径或名称定位文件、了解项目结构。优先使用 include、exclude、fileTypes 缩小范围；存在 nextOffset 时按需分页。已知精确路径时不要全仓库枚举。');
+    }
+    if (activeTools.includes('projectinfo')) {
+      rules.push('- projectinfo：进入陌生项目或需要确定构建、测试、入口和技术栈时先获取紧凑项目摘要；不要为了单个已知文件重复调用。');
     }
     if (activeTools.includes('grep')) {
-      rules.push('- grep：搜索符号、配置、错误文本及引用。先用精确关键词缩小范围，再读取命中文件。');
+      rules.push('- grep：搜索符号、配置、错误文本及引用。默认是字面量搜索；需要模式匹配时使用 regex，并优先用 include、exclude、fileTypes 和上下文参数缩小范围。结果存在 nextOffset 时按需继续分页，再读取命中文件。');
     }
     if (activeTools.includes('read')) {
-      rules.push('- read：读取已定位的文件。大文件按相关行范围读取，必要时再向上下文扩展。');
+      rules.push('- read：读取已定位的文件。大文件使用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新。');
     }
     if (activeTools.includes('edit')) {
-      rules.push('- edit：对已有文件做局部、唯一匹配的修改。oldText 必须包含足够上下文，修改后重新读取或检查差异。');
+      rules.push('- edit：对已有文件做局部、唯一匹配的原子修改。oldText 必须包含足够上下文；读取过文件时传入 expectedHash，冲突后重新读取，不得绕过。修改后检查差异。');
     }
     if (activeTools.includes('write')) {
-      rules.push('- write：仅用于创建新文件或确有必要的完整覆写。局部修改必须使用 edit。');
+      rules.push('- write：仅用于创建新文件或确有必要的完整覆写。覆写已读取文件时传入 expectedHash；局部修改必须使用 edit。');
     }
     if (activeTools.includes('websearch')) {
       rules.push('- websearch：用于时效性信息、陌生错误和未知资料。技术问题优先寻找官方文档或一手来源。');

@@ -87,6 +87,7 @@ export class PermissionEngine {
       'grep',
       'global_find_files',
       'find_files',
+      'projectinfo',
       'web_search',
       'web_fetch',
       'loadskill',
