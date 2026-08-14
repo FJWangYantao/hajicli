@@ -57,10 +57,6 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.fr
   Object.fromEntries(MODEL_REGISTRY.map(model => [model.value, model.contextWindowTokens]))
 );
 
-export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = Object.freeze(
-  Object.fromEntries(MODEL_REGISTRY.map(model => [model.value, model.maxOutputTokens]))
-);
-
 export function getModelMetadata(modelValue: string): ModelDescriptor | undefined {
   return MODEL_REGISTRY.find(model => model.value === modelValue);
 }
