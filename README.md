@@ -180,6 +180,7 @@ HAJI 内置一套跨会话的自学习闭环，在日常使用中观察工具调
 - `/instinct distill`：用本会话观测手动触发提炼（不必等会话结束）
 - `/instinct forget <id>`：删除规则
 - `/instinct promote <id>`：把项目级规则提升到用户级（跨项目共用）
+- `/instinct skill [id]`：查看可蒸馏规则（confidence ≥ 0.8 且观测 ≥ 3 次）/ 把高频规则生成为用户级 Skill 草稿（trigger→when_to_use、action→执行要点），`/skills reload` 后生效
 - `/instinct stats`：查看规则/记忆数量（含作用域分布）、领域分布与观测健康（近 30 天失败率、失败集中的工具、周趋势）
 
 经验文件默认不入版本库（`.haji/` 已被 gitignore）。LLM 提炼在你的本地 provider 上完成，记忆内容不会上传第三方服务。Ctrl+C 退出时会尽力 flush 已累积的观测样本。

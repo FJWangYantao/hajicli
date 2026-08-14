@@ -4,6 +4,10 @@
  * 这两个命令让用户能查看、确认、手工添加、删除经验系统积累的规则与记忆，
  * 而不必等会话结束的自动提炼。命令分发仍在 index.ts，本模块只负责业务逻辑。
  */
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { ExperienceStore, DistillEngine, Instinct, Memory } from '@hajicli/core';
 
 export interface ExperienceCommandContext {
@@ -16,6 +20,8 @@ export interface ExperienceCommandContext {
   /** 提炼后的消息写入通道。 */
   writeLine: (line: string) => void;
   writeChat: (content: string) => void;
+  /** 用户级 Skill 目录（/instinct skill 蒸馏目标），缺省 ~/.haji/skills；测试注入临时目录。 */
+  userSkillsDir?: string;
 }
 
 /** ANSI 颜色辅助（与 index.ts 的 colors 一致，由调用方注入）。 */
@@ -153,6 +159,7 @@ export async function handleMemoryCommand(
  *   /instinct distill        手动触发提炼（用当前 pending 观测）
  *   /instinct forget <id>    删除某条
  *   /instinct promote <id>   提升到用户级（跨项目共用）
+ *   /instinct skill [id]     查看可蒸馏规则 / 把规则生成为用户级 Skill 草稿
  *   /instinct stats          统计
  */
 export async function handleInstinctCommand(
@@ -210,6 +217,11 @@ export async function handleInstinctCommand(
     } else {
       ctx.writeLine(colors.red(`未找到项目级 id 为 "${id}" 的规则。`));
     }
+    return;
+  }
+
+  if (sub === 'skill') {
+    await handleInstinctSkillCommand(args.slice(1), ctx, colors);
     return;
   }
 
@@ -278,4 +290,94 @@ export async function handleInstinctCommand(
     lines.push(colors.gray(`  ...另有 ${instincts.length - 30} 条，使用 /instinct stats 查看统计。`));
   }
   ctx.writeChat(lines.join('\n'));
+}
+
+/** 可蒸馏为 Skill 的最低门槛：规则已被反复验证，才值得固化成可复用工作流。 */
+const DISTILL_SKILL_MIN_CONFIDENCE = 0.8;
+const DISTILL_SKILL_MIN_OCCURRENCES = 3;
+
+/**
+ * /instinct skill 子命令：无参数列出可蒸馏候选；带 id 把规则蒸馏为用户级 Skill 草稿。
+ *
+ * 蒸馏是模板化的确定性生成（trigger → when_to_use，action → 执行要点），
+ * 不调 LLM；生成物落在用户级 skills 目录，经 /skills reload 生效。
+ * 目标目录已存在同名 Skill 时拒绝覆盖。
+ */
+async function handleInstinctSkillCommand(
+  args: string[],
+  ctx: ExperienceCommandContext,
+  colors: ExperienceColors
+): Promise<void> {
+  const id = args[0];
+  const userSkillsDir = ctx.userSkillsDir ?? path.join(os.homedir(), '.haji', 'skills');
+
+  if (!id) {
+    const candidates = ctx.store.loadInstincts()
+      .filter(i => !i.deprecated && i.confidence >= DISTILL_SKILL_MIN_CONFIDENCE && i.occurrenceCount >= DISTILL_SKILL_MIN_OCCURRENCES)
+      .sort((a, b) => b.confidence - a.confidence || b.occurrenceCount - a.occurrenceCount);
+    if (candidates.length === 0) {
+      ctx.writeLine(colors.gray(`暂无可蒸馏规则（需 confidence ≥ ${DISTILL_SKILL_MIN_CONFIDENCE} 且观测 ≥ ${DISTILL_SKILL_MIN_OCCURRENCES} 次）。`));
+      return;
+    }
+    const lines: string[] = [colors.bold(`可蒸馏为 Skill 的规则（${candidates.length}）`)];
+    for (const i of candidates) {
+      const conf = colors.gray(`conf ${i.confidence.toFixed(2)} · ${i.occurrenceCount} 次`);
+      lines.push(`  ${colors.purple(i.id.padEnd(28))} ${conf} ${scopeTag(i.scope, colors)}`);
+      lines.push(colors.gray(`    ${i.action.replace(/\s+/g, ' ').slice(0, 90)}`));
+    }
+    lines.push(colors.gray('使用 /instinct skill <id> 生成用户级 Skill 草稿。'));
+    ctx.writeChat(lines.join('\n'));
+    return;
+  }
+
+  const instinct = ctx.store.loadInstincts(true).find(i => i.id === id);
+  if (!instinct) {
+    ctx.writeLine(colors.red(`未找到 id 为 "${id}" 的规则。`));
+    return;
+  }
+
+  // Skill name 仅允许小写字母/数字/-/_（1-64），从规则 id 派生并合法化
+  const skillName = instinct.id.toLowerCase().replace(/[^a-z0-9-_]/g, '-')
+    .replace(/^[-_]+/, '').slice(0, 64) || 'distilled-skill';
+  const skillDir = path.join(userSkillsDir, skillName);
+  const manifestPath = path.join(skillDir, 'SKILL.md');
+  if (fs.existsSync(manifestPath)) {
+    ctx.writeLine(colors.red(`用户级 Skill "${skillName}" 已存在，已拒绝覆盖。如需重新生成，请先删除 ${skillDir}。`));
+    return;
+  }
+
+  const trigger = instinct.trigger.replace(/\s+/g, ' ').trim();
+  const action = instinct.action.replace(/\s+/g, ' ').trim();
+  // frontmatter 值经 JSON.stringify 转义（JSON 字符串是合法 YAML flow scalar），防冒号/引号破坏解析
+  const content = [
+    '---',
+    `name: ${skillName}`,
+    `description: ${JSON.stringify(action.slice(0, 120))}`,
+    `when_to_use: ${JSON.stringify(trigger.slice(0, 160))}`,
+    'user_invocable: true',
+    '---',
+    '',
+    `# ${action.slice(0, 60) || skillName}`,
+    '',
+    `> 由经验系统蒸馏生成（confidence ${instinct.confidence.toFixed(2)}，观测 ${instinct.occurrenceCount} 次）。请结合实际使用修订完善。`,
+    '',
+    '## 触发场景',
+    '',
+    trigger,
+    '',
+    '## 执行要点',
+    '',
+    action,
+    '',
+    '## 来源',
+    '',
+    `- 源规则：${instinct.id}（${instinct.domain}/${instinct.source}，confidence ${instinct.confidence.toFixed(2)}，观测 ${instinct.occurrenceCount} 次）`,
+    `- 生成时间：${new Date().toISOString()}`,
+    ''
+  ].join('\n');
+
+  await fsp.mkdir(skillDir, { recursive: true });
+  await fsp.writeFile(manifestPath, content, 'utf8');
+  ctx.writeLine(colors.green(`✓ 已生成用户级 Skill 草稿 "${skillName}"：${manifestPath}`));
+  ctx.writeLine(colors.gray(`执行 /skills reload 重新扫描后生效；原规则保留，如不再需要可用 /instinct forget ${instinct.id} 移除。`));
 }

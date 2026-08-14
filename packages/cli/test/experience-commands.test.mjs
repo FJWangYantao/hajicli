@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { ExperienceStore } from '@hajicli/core';
+import { ExperienceStore, SkillRegistry } from '@hajicli/core';
 import { handleMemoryCommand, handleInstinctCommand } from '../dist/experience-commands.js';
 
 function createStoreWithTmp() {
@@ -20,14 +20,15 @@ function createStoreWithTmp() {
 
 const noColor = { purple: s => s, gray: s => s, green: s => s, red: s => s, yellow: s => s, bold: s => s };
 
-function makeCtx(store, outputs) {
+function makeCtx(store, outputs, userSkillsDir) {
   return {
     store,
     provider: () => null,
     model: () => 'mock',
     pendingObservations: () => [],
     writeLine: line => outputs.push(line),
-    writeChat: content => outputs.push(content)
+    writeChat: content => outputs.push(content),
+    ...(userSkillsDir ? { userSkillsDir } : {})
   };
 }
 
@@ -353,5 +354,96 @@ test('/instinct stats shows observation health', async () => {
     const topLine = outputs.find(l => l.includes('失败集中'));
     assert.ok(topLine.includes('bash 2/4'));
     assert.ok(topLine.includes('edit 1/6'));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+// ─── /instinct skill 蒸馏 ──────────────────────────────────────────────────────
+
+function makeHighConfidenceInstinct(overrides = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: 'read-before-edit',
+    trigger: 'about to edit a file',
+    action: 'Read the file and check hash first',
+    confidence: 0.85,
+    domain: 'workflow',
+    source: 'llm',
+    deprecated: false,
+    observedAt: now,
+    occurrenceCount: 5,
+    ...overrides
+  };
+}
+
+test('/instinct skill lists only rules above the distill threshold', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const now = new Date().toISOString();
+    // 低置信度与低观测次数的规则不应入选
+    await store.upsertInstinct(makeHighConfidenceInstinct({ id: 'weak-rule', confidence: 0.7, occurrenceCount: 5, observedAt: now }));
+    await store.upsertInstinct(makeHighConfidenceInstinct({ id: 'rare-rule', confidence: 0.9, occurrenceCount: 1, observedAt: now }));
+    await store.upsertInstinct(makeHighConfidenceInstinct());
+    const outputs = [];
+    await handleInstinctCommand(['skill'], makeCtx(store, outputs), noColor);
+    const listBlock = outputs.find(l => l.includes('可蒸馏为 Skill 的规则'));
+    assert.ok(listBlock.includes('1）'));
+    assert.ok(outputs.some(l => l.includes('read-before-edit')));
+    assert.ok(!outputs.some(l => l.includes('weak-rule') || l.includes('rare-rule')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct skill reports when no rule qualifies', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleInstinctCommand(['skill'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('暂无可蒸馏规则')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct skill <id> generates a skill the registry can scan', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  const skillsDir = path.join(tmp, 'user-skills');
+  try {
+    await store.upsertInstinct(makeHighConfidenceInstinct({
+      trigger: '触发场景: 含冒号与 "引号" 的描述',
+      action: '执行要点: 先读文件、校验 hash，再编辑'
+    }));
+    const outputs = [];
+    await handleInstinctCommand(['skill', 'read-before-edit'], makeCtx(store, outputs, skillsDir), noColor);
+    assert.ok(outputs.some(l => l.includes('已生成用户级 Skill 草稿')));
+    const manifest = path.join(skillsDir, 'read-before-edit', 'SKILL.md');
+    assert.ok(fs.existsSync(manifest));
+
+    // 强验证：生成物必须能被真实 SkillRegistry 扫描识别
+    const registry = new SkillRegistry({ cwd: tmp, userSkillsDir: skillsDir });
+    const scan = await registry.scan();
+    assert.equal(scan.issues.filter(i => i.severity === 'error').length, 0);
+    const skill = registry.list().find(s => s.name === 'read-before-edit');
+    assert.ok(skill, '生成的 skill 应出现在注册表中');
+    assert.equal(skill.whenToUse, '触发场景: 含冒号与 "引号" 的描述');
+    assert.equal(skill.userInvocable, true);
+    assert.ok(skill.description.includes('执行要点'));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct skill refuses to overwrite an existing skill', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  const skillsDir = path.join(tmp, 'user-skills');
+  try {
+    await store.upsertInstinct(makeHighConfidenceInstinct());
+    await handleInstinctCommand(['skill', 'read-before-edit'], makeCtx(store, [], skillsDir), noColor);
+    const outputs = [];
+    await handleInstinctCommand(['skill', 'read-before-edit'], makeCtx(store, outputs, skillsDir), noColor);
+    assert.ok(outputs.some(l => l.includes('已拒绝覆盖')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct skill reports unknown id', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleInstinctCommand(['skill', 'nope'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('未找到')));
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });
