@@ -63,13 +63,14 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     return `${projectName} workflow edit read test git error prevention`;
   }
 
-  private formatInstincts(instincts: { id: string; domain: string; confidence: number; action: string }[], budget: number): { formatted: string; used: number } | null {
+  private formatInstincts(instincts: { id: string; domain: string; confidence: number; action: string; scope?: 'user' | 'project' }[], budget: number): { formatted: string; used: number } | null {
     const lines: string[] = ['## 行为规则（自动提炼，按置信度）'];
     let used = lines.join('\n').length;
     for (const inst of instincts) {
       const conf = inst.confidence.toFixed(2);
       const action = inst.action.replace(/\s+/g, ' ').slice(0, 160);
-      const line = `- [${inst.domain} ${conf}] ${action}`;
+      const globalTag = inst.scope === 'user' ? ' · 全局' : '';
+      const line = `- [${inst.domain} ${conf}${globalTag}] ${action}`;
       if (used + line.length + 1 > budget) break;
       lines.push(line);
       used += line.length + 1;
@@ -78,12 +79,13 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     return { formatted: lines.join('\n'), used };
   }
 
-  private formatMemories(memories: { type: string; content: string }[], budget: number): string {
+  private formatMemories(memories: { type: string; content: string; scope?: 'user' | 'project' }[], budget: number): string {
     const lines: string[] = ['## 项目知识与偏好'];
     let used = lines.join('\n').length;
     for (const mem of memories) {
       const content = mem.content.replace(/\s+/g, ' ').slice(0, 200);
-      const line = `- [${mem.type}] ${content}`;
+      const globalTag = mem.scope === 'user' ? '·全局' : '';
+      const line = `- [${mem.type}${globalTag}] ${content}`;
       if (used + line.length + 1 > budget) break;
       lines.push(line);
       used += line.length + 1;

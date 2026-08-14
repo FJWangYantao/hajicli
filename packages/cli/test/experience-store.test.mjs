@@ -551,3 +551,50 @@ test('promoteMemory promotes from staging too', async () => {
     fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+// ─── 作用域标记与 user 写入分流 ───────────────────────────────────────────────
+
+test('loadInstincts marks scope and keeps project scope on override', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    // 同名 id：用户级 manual + 项目级 statistical，项目级覆盖
+    await store.upsertInstinct(makeInstinct({ id: 'shared-rule', source: 'manual' }));
+    await store.upsertInstinct(makeInstinct({ id: 'shared-rule', source: 'statistical' }));
+    const overridden = store.loadInstincts(true).find(i => i.id === 'shared-rule');
+    assert.equal(overridden.scope, 'project');
+
+    await store.forgetInstinct('shared-rule');
+    await store.upsertInstinct(makeInstinct({ id: 'user-only', source: 'manual' }));
+    const userOnly = store.loadInstincts(true).find(i => i.id === 'user-only');
+    assert.equal(userOnly.scope, 'user');
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('loadMemories marks scope for user and project entries', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertMemory(makeMemory({ id: 'global-pref', type: 'user' }));
+    await store.upsertMemory(makeMemory({ id: 'local-fact', type: 'project' }));
+    const all = store.loadMemories('active');
+    assert.equal(all.find(m => m.id === 'global-pref').scope, 'user');
+    assert.equal(all.find(m => m.id === 'local-fact').scope, 'project');
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('upsertMemory routes type=user to user level and others to project level', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    await store.upsertMemory(makeMemory({ id: 'user-pref', type: 'user' }));
+    await store.upsertMemory(makeMemory({ id: 'proj-fact', type: 'project' }));
+    assert.ok(fs.existsSync(path.join(userDir, 'memory', 'active', 'user__user-pref.md')));
+    assert.ok(!fs.existsSync(path.join(projectDir, 'memory', 'active', 'user__user-pref.md')));
+    assert.ok(fs.existsSync(path.join(projectDir, 'memory', 'active', 'project__proj-fact.md')));
+    assert.ok(!fs.existsSync(path.join(userDir, 'memory', 'active', 'project__proj-fact.md')));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});

@@ -133,3 +133,36 @@ test('ExperiencesPromptPart has correct id and priority', () => {
     fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+test('ExperiencesPromptPart marks user-level entries as global', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct({
+      id: 'global-pref',
+      trigger: 'edit file',
+      action: 'Always read before editing',
+      confidence: 0.85,
+      domain: 'workflow',
+      source: 'manual',
+      deprecated: false,
+      observedAt: new Date().toISOString(),
+      occurrenceCount: 3
+    });
+    await store.upsertMemory({
+      id: 'global-mem',
+      name: 'global preference',
+      type: 'user',
+      content: 'Prefer kebab-case file names',
+      status: 'active',
+      confidence: 0.8,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      keywords: ['kebab', 'case']
+    });
+    const part = new ExperiencesPromptPart(store);
+    const content = part.getContent({ cwd: '/proj', os: 'linux' });
+    assert.ok(content.includes('全局'));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});

@@ -157,17 +157,21 @@ export class ExperienceStore {
 
   /**
    * 加载所有规则：两级目录合并，项目级覆盖用户级同名 id。
-   * 自动跳过 deprecated 标记（除非 includeDeprecated）。
+   * 自动跳过 deprecated 标记（除非 includeDeprecated）。返回条目带 scope 标记。
    */
   loadInstincts(includeDeprecated = false): Instinct[] {
     const merged = new Map<string, Instinct>();
     // 用户级先加载，项目级后加载并覆盖
-    for (const dir of [this.userInstinctsDir(), this.projectInstinctsDir()]) {
+    const dirs: Array<{ dir: string; scope: 'user' | 'project' }> = [
+      { dir: this.userInstinctsDir(), scope: 'user' },
+      { dir: this.projectInstinctsDir(), scope: 'project' }
+    ];
+    for (const { dir, scope } of dirs) {
       const entries = this.scanMarkdownFiles(dir);
       for (const entry of entries) {
         const parsed = this.parseInstinctFile(entry.content);
         if (!parsed) continue;
-        merged.set(parsed.id, parsed);
+        merged.set(parsed.id, { ...parsed, scope });
       }
     }
     const result = Array.from(merged.values());
@@ -250,21 +254,22 @@ export class ExperienceStore {
 
   /**
    * 加载记忆，默认只读 active。两级目录合并，项目级覆盖用户级同名 id。
+   * 返回条目带 scope 标记（user=用户级，project=项目级）。
    */
   loadMemories(status: MemoryStatus | 'all' = 'active'): Memory[] {
     const merged = new Map<string, Memory>();
-    const scopes: Array<{ dir: string; status: MemoryStatus }> = [
-      { dir: path.join(this.userMemoryDir(), 'active'), status: 'active' },
-      { dir: path.join(this.userMemoryDir(), 'staging'), status: 'staging' },
-      { dir: path.join(this.projectMemoryDir(), 'active'), status: 'active' },
-      { dir: path.join(this.projectMemoryDir(), 'staging'), status: 'active' } // 项目级 staging 视作 active 覆盖
+    const scopes: Array<{ dir: string; status: MemoryStatus; scope: 'user' | 'project' }> = [
+      { dir: path.join(this.userMemoryDir(), 'active'), status: 'active', scope: 'user' },
+      { dir: path.join(this.userMemoryDir(), 'staging'), status: 'staging', scope: 'user' },
+      { dir: path.join(this.projectMemoryDir(), 'active'), status: 'active', scope: 'project' },
+      { dir: path.join(this.projectMemoryDir(), 'staging'), status: 'active', scope: 'project' } // 项目级 staging 视作 active 覆盖
     ];
     for (const scope of scopes) {
       const entries = this.scanMarkdownFiles(scope.dir);
       for (const entry of entries) {
         const parsed = this.parseMemoryFile(entry.content, scope.status);
         if (!parsed) continue;
-        merged.set(parsed.id, parsed);
+        merged.set(parsed.id, { ...parsed, scope: scope.scope });
       }
     }
     const all = Array.from(merged.values());
@@ -281,9 +286,13 @@ export class ExperienceStore {
     await this.atomicWrite(filePath, this.serializeMemory(memory));
   }
 
-  /** 直接写入 active 区（用于手工 /memory add 或高置信度直入）。 */
+  /**
+   * 直接写入 active 区（用于手工 /memory add 或高置信度直入）。
+   * type=user 写用户级（跨项目偏好），其余类型写项目级。
+   */
   async upsertMemory(memory: Memory): Promise<void> {
-    const dir = path.join(this.projectMemoryDir(), 'active');
+    const baseDir = memory.type === 'user' ? this.userMemoryDir() : this.projectMemoryDir();
+    const dir = path.join(baseDir, 'active');
     await this.ensureDir(dir);
     const fileName = `${memory.type}__${this.sanitizeId(memory.id)}.md`;
     const filePath = path.join(dir, fileName);

@@ -269,3 +269,42 @@ test('/instinct promote reports not-found', async () => {
     assert.ok(outputs.some(l => l.includes('未找到项目级')));
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });
+
+// ─── 作用域展示 ──────────────────────────────────────────────────────────────
+
+test('/memory list shows scope tags for user and project entries', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const base = { name: 'n', content: 'content', status: 'active', confidence: 0.8, keywords: [] };
+    const now = new Date().toISOString();
+    await store.upsertMemory({ ...base, id: 'user-pref', type: 'user', createdAt: now, updatedAt: now });
+    await store.upsertMemory({ ...base, id: 'proj-fact', type: 'project', createdAt: now, updatedAt: now });
+    const outputs = [];
+    await handleMemoryCommand([], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('[用户级]')));
+    assert.ok(outputs.some(l => l.includes('[项目级]')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/memory add user reports user-level placement', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleMemoryCommand(['add', 'user', 'prefer kebab-case'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('用户级')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('/instinct list shows scope tags', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct({
+      id: 'user-rule', trigger: 't', action: 'a',
+      confidence: 0.8, domain: 'workflow', source: 'manual',
+      deprecated: false, observedAt: new Date().toISOString(), occurrenceCount: 1
+    });
+    const outputs = [];
+    await handleInstinctCommand([], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('[用户级]')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});

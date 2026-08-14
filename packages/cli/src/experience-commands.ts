@@ -28,6 +28,13 @@ export interface ExperienceColors {
   bold: (s: string) => string;
 }
 
+/** 作用域展示标签：用户级（跨项目）用绿色突出，项目级用灰色。 */
+function scopeTag(scope: 'user' | 'project' | undefined, colors: ExperienceColors): string {
+  return scope === 'user'
+    ? colors.green('[用户级]')
+    : colors.gray('[项目级]');
+}
+
 /**
  * 处理 /memory 命令。返回 true 表示已处理（调用方应 continue）。
  *
@@ -81,7 +88,9 @@ export async function handleMemoryCommand(
       keywords: Array.from(content.toLowerCase().match(/[a-z0-9]{2,}/g) || [])
     };
     await ctx.store.upsertMemory(memory);
-    ctx.writeLine(colors.green(`✓ 已添加 ${type} 记忆 "${id}"。`));
+    ctx.writeLine(colors.green(type === 'user'
+      ? `✓ 已添加 user 记忆 "${id}"（用户级，跨项目共用）。`
+      : `✓ 已添加 ${type} 记忆 "${id}"（项目级）。`));
     return;
   }
 
@@ -120,13 +129,13 @@ export async function handleMemoryCommand(
   if (active.length > 0) {
     lines.push(colors.gray('— active —'));
     for (const m of active) {
-      lines.push(`  ${colors.purple(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${m.content.replace(/\s+/g, ' ').slice(0, 80)}`);
+      lines.push(`  ${colors.purple(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${scopeTag(m.scope, colors)} ${m.content.replace(/\s+/g, ' ').slice(0, 80)}`);
     }
   }
   if (staging.length > 0) {
     lines.push(colors.yellow(`— staging（待确认，/memory confirm <id>）—`));
     for (const m of staging) {
-      lines.push(`  ${colors.yellow(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${m.content.replace(/\s+/g, ' ').slice(0, 80)}`);
+      lines.push(`  ${colors.yellow(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${scopeTag(m.scope, colors)} ${m.content.replace(/\s+/g, ' ').slice(0, 80)}`);
     }
   }
   ctx.writeChat(lines.join('\n'));
@@ -204,12 +213,19 @@ export async function handleInstinctCommand(
     const instincts = ctx.store.loadInstincts(true);
     const active = instincts.filter(i => !i.deprecated);
     const deprecated = instincts.filter(i => i.deprecated);
+    const memories = ctx.store.loadMemories('active');
     const byDomain = new Map<string, number>();
     for (const i of active) byDomain.set(i.domain, (byDomain.get(i.domain) || 0) + 1);
+    const countByScope = (items: Array<{ scope?: 'user' | 'project' }>) => ({
+      user: items.filter(x => x.scope === 'user').length,
+      project: items.filter(x => x.scope !== 'user').length
+    });
+    const instScope = countByScope(active);
+    const memScope = countByScope(memories);
     const lines: string[] = [
       colors.bold('经验系统统计'),
-      `  规则总数：${active.length} active · ${deprecated.length} deprecated`,
-      `  记忆数量：${ctx.store.loadMemories('active').length} active`,
+      `  规则总数：${active.length} active · ${deprecated.length} deprecated（用户级 ${instScope.user} / 项目级 ${instScope.project}）`,
+      `  记忆数量：${memories.length} active（用户级 ${memScope.user} / 项目级 ${memScope.project}）`,
       `  待提炼观测：${ctx.pendingObservations().length} 条`
     ];
     if (byDomain.size > 0) {
@@ -233,7 +249,7 @@ export async function handleInstinctCommand(
   for (const i of instincts.slice(0, 30)) {
     const depTag = i.deprecated ? colors.yellow(' [deprecated]') : '';
     const conf = colors.gray(i.confidence.toFixed(2));
-    lines.push(`  ${colors.purple(i.id.padEnd(28))} ${conf} ${colors.gray(`[${i.domain}/${i.source}]`)}${depTag}`);
+    lines.push(`  ${colors.purple(i.id.padEnd(28))} ${conf} ${colors.gray(`[${i.domain}/${i.source}]`)} ${scopeTag(i.scope, colors)}${depTag}`);
     lines.push(colors.gray(`    ${i.action.replace(/\s+/g, ' ').slice(0, 90)}`));
   }
   if (instincts.length > 30) {

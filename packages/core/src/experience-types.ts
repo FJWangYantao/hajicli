@@ -51,6 +51,8 @@ export interface Instinct {
   observedAt: string;
   /** 累计被观测/强化次数。 */
   occurrenceCount: number;
+  /** 加载时由目录推导的作用域（user=用户级跨项目，project=项目级）；不写入磁盘。 */
+  scope?: 'user' | 'project';
 }
 
 /** 记忆的类型分类。 */
@@ -80,6 +82,8 @@ export interface Memory {
   updatedAt: string;
   /** 召回用的关键词数组（从 name+content 提取的英文 token + 中文关键字符）。 */
   keywords: string[];
+  /** 加载时由目录推导的作用域（user=用户级跨项目，project=项目级）；不写入磁盘。 */
+  scope?: 'user' | 'project';
 }
 
 /**
