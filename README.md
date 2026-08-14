@@ -84,6 +84,27 @@ HAJI 的 TUI 界面（背景、前景、边框、Logo 与 Markdown 配色）默�
 
 所有字段均为 `#RRGGBB` 格式，缺省字段回退到内置默认值；非法值会被忽略。`.haji/` 已被 git 忽略，主题文件不会进入版本库。
 
+## MCP 外部工具
+
+HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 `mcp_<server>_<tool>` 暴露给模型。MVP 支持 stdio 传输（npx/uvx 启动的本地 server），在 `.haji/config.json`（用户级 `~/.haji/` 跨项目，或项目级）中配置：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "readOnly": true
+    }
+  }
+}
+```
+
+字段说明：`env` 附加环境变量；`readOnly: true` 将该 server 全部工具视为只读（任何权限模式自动放行）；未标记的按修改型工具走权限审批（default/accept-edit 模式需人工确认）；`enabled: false` 临时禁用；`callTimeoutMs` 调用超时（默认 120s）。两级配置同名 server 时项目级覆盖用户级。
+
+- `/mcp`：查看各 server 状态（running/failed/disabled）、挂载的工具与失败原因
+- 启动时并行连接，单个 server 失败不影响其余与 CLI 本身；MCP 工具失败输出与内置工具同格式（`错误:` 前缀），会被经验系统纳入失败观测
+
 ## 安全边界
 
 文件读取、写入、编辑和 Grep 默认只能访问启动 HAJI 时的当前工作区，并校验符号链接是否逃逸。若确实需要访问工作区外路径，可在可信会话中显式设置：

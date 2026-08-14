@@ -2,7 +2,7 @@
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { exec } from 'node:child_process';
-import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS, MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor, SubagentRole, ExperienceStore, ExperiencesPromptPart, isFailedToolOutput, DistillEngine } from '@hajicli/core';
+import { SystemPromptManager, SessionTracker, ObservableModelProvider, startTraceServer, ChatMessage, ToolCall, ToolExecutionContext, ReasoningEffort, REASONING_EFFORTS, isReasoningEffort, PermissionEngine, PermissionMode, PERMISSION_MODES, isPermissionMode, RiskLevel, HookEngine, SnapshotEngine, runCompactionPipeline, repairToolCallPairs, estimateMessagesTokens, SessionManager, TaskStore, SubagentRequest, SubagentRunner, AgentManager, AgentRecord, formatSubagentResult, formatPendingAgentVerificationContext, AGENT_VERIFICATION_CONTEXT_START, AGENT_VERIFICATION_CONTEXT_END, getContextCompactionThresholds, shouldTriggerAutoCompaction, MAX_SUBAGENT_INSTRUCTIONS_LENGTH, MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS, MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS, normalizeSubagentInstructions, SkillRegistry, validateToolCall, performanceMonitor, SubagentRole, ExperienceStore, ExperiencesPromptPart, isFailedToolOutput, DistillEngine, BaseTool } from '@hajicli/core';
 import {
   DeepSeekProvider,
   VolcengineProvider,
@@ -26,7 +26,9 @@ import {
   LoadSkillTool,
   ListSkillResourcesTool,
   ReadSkillResourceTool,
-  MODEL_REGISTRY
+  MODEL_REGISTRY,
+  McpManager,
+  readMcpServerConfigs
 } from '@hajicli/plugins';
 import { TerminalUI, TerminalInputCancelledError, shouldRestartBackgroundInput } from './terminal-input.js';
 import { MarkdownRenderThrottle, MarkdownStreamRenderer, shouldShowToolThinkingSummary } from './markdown-renderer.js';
@@ -55,6 +57,8 @@ import {
 } from './subagent-presets.js';
 import {
   loadProviderConfig,
+  userProviderConfigPath,
+  projectProviderConfigPath,
   saveProviderConfig,
   unsetProviderConfig,
   resolveProviderSetting,
@@ -504,7 +508,7 @@ ${colors.bold('环境变量配置:')}
   }) => Promise<string> = async () => '错误: Agent 管理器尚未初始化。';
   const subagentTool = new SubagentTool((request, context) => runSubagent(request, context));
   const verifyAgentTool = new VerifyAgentTool(input => verifyAgent(input));
-  const tools = [
+  const tools: BaseTool[] = [
     new BashTool(),
     new ReadFileTool(),
     new WriteFileTool(),
@@ -527,6 +531,29 @@ ${colors.bold('环境变量配置:')}
 
   const toolsMap = new Map(tools.map(t => [t.name, t]));
   markStartupStage('tools');
+
+  // MCP 外部工具：读取两级 .haji/config.json 的 mcpServers 并行启动，
+  // 单个 server 失败降级（记入 /mcp 状态），不阻塞 CLI。
+  const mcpManager = new McpManager();
+  const mcpStartupWarnings: string[] = [];
+  const mcpConfigs = readMcpServerConfigs([userProviderConfigPath(), projectProviderConfigPath()]);
+  if (Object.keys(mcpConfigs).length > 0) {
+    const mcpTools = await mcpManager.startAll(mcpConfigs);
+    for (const tool of mcpTools) {
+      tools.push(tool);
+      toolsMap.set(tool.name, tool);
+    }
+    for (const status of mcpManager.getServerStatuses()) {
+      if (status.state === 'failed') {
+        mcpStartupWarnings.push(`MCP server "${status.name}" 启动失败: ${status.error ?? '未知错误'}`);
+      } else if (status.state === 'running' && mcpConfigs[status.name]?.readOnly) {
+        // 只读 server 的工具注册进权限引擎，任何模式下自动放行
+        for (const toolName of status.tools) permissionEngine.registerReadOnlyTool(toolName);
+      }
+    }
+  }
+  // 任意退出路径（正常退出/SIGINT/异常）统一清理 MCP 子进程
+  process.on('exit', () => mcpManager.stopAll());
   const activeTools = () => permissionMode === 'plan'
     ? tools.filter(tool => permissionEngine.isReadOnlyTool(tool.name) || ['subagent', 'verifyagent'].includes(tool.name) || ['taskcreate', 'tasklist', 'updatetask'].includes(tool.name))
     : tools;
@@ -596,10 +623,12 @@ ${colors.bold('环境变量配置:')}
     { command: '/clear', description: '清空聊天与上下文' },
     { command: '/perf', description: '查看或重置性能指标' },
     { command: '/viewer', description: '打开 Trace 观测中心' },
+    { command: '/mcp', description: '查看 MCP server 与外部工具状态' },
     { command: '/exit', description: '退出 haji' }
   ];
   ui.start();
   markStartupStage('ui_started');
+  for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
   // 状态栏展示当前工作目录（模型名称右侧）。
   ui.setCurrentPath(process.cwd());
   // Logo 下方的启动信息行：provider · model · effort + 引导提示。
@@ -1475,6 +1504,31 @@ ${colors.bold('环境变量配置:')}
           if (abortedAgents > 0) ui.writeLine(colors.gray(`已中止 ${abortedAgents} 个后台 Agent。`));
           ui.writeLine(colors.gray('再见！'));
           break;
+        }
+        if (command === 'mcp') {
+          const statuses = mcpManager.getServerStatuses();
+          if (statuses.length === 0) {
+            ui.writeLine(colors.gray('未配置 MCP server。在 .haji/config.json（用户级 ~/.haji/ 或项目级）添加 mcpServers 字段：'));
+            ui.writeChat(colors.gray(JSON.stringify({
+              mcpServers: {
+                'example': { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] }
+              }
+            }, null, 2)));
+            ui.writeLine(colors.gray('可选字段：env（环境变量）、readOnly: true（工具视为只读，免审批）、enabled: false（禁用）、callTimeoutMs。'));
+          } else {
+            const stateLabel = (s: typeof statuses[number]) => s.state === 'running'
+              ? colors.green('running')
+              : s.state === 'disabled' ? colors.gray('disabled') : colors.red('failed');
+            const lines = [colors.bold(`MCP servers（${statuses.length}）`)];
+            for (const status of statuses) {
+              const ro = status.state === 'running' && mcpConfigs[status.name]?.readOnly ? colors.gray(' · 只读') : '';
+              lines.push(`  ${colors.purple(status.name.padEnd(20))} ${stateLabel(status)}${ro} · ${status.toolCount} 个工具`);
+              if (status.state === 'failed' && status.error) lines.push(colors.red(`    ${status.error.replace(/\s+/g, ' ').slice(0, 160)}`));
+              for (const tool of status.tools) lines.push(colors.gray(`    ${tool}`));
+            }
+            ui.writeChat(lines.join('\n'));
+          }
+          continue;
         }
         if (command === 'skills') {
           if (parts[1]?.toLowerCase() === 'validate') {

@@ -69,11 +69,22 @@ export class PermissionError extends HajiError {
 /**
  * 核心权限引擎类。
  */
+/** 运行期注册的额外只读工具（如 readOnly MCP server 的工具），小写。 */
+const extraReadOnlyTools = new Set<string>();
+
 export class PermissionEngine {
   private classifier: SecurityClassifier;
 
   constructor() {
     this.classifier = new SecurityClassifier();
+  }
+
+  /**
+   * 注册运行期发现的只读工具名（如 readOnly MCP server 的工具），
+   * 使其在任何权限模式下自动放行。仅应传入来源可信、确认无副作用的工具。
+   */
+  public registerReadOnlyTool(name: string): void {
+    extraReadOnlyTools.add(name.toLowerCase());
   }
 
   /**
@@ -94,7 +105,7 @@ export class PermissionEngine {
       'listskillresources',
       'readskillresource'
     ];
-    return readOnlyTools.includes(toolName.toLowerCase());
+    return readOnlyTools.includes(toolName.toLowerCase()) || extraReadOnlyTools.has(toolName.toLowerCase());
   }
 
   /**
