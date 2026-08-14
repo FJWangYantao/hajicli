@@ -47,9 +47,11 @@ export class EditFileTool implements BaseTool {
     const filePath = args.path;
     try {
       const resolvedPath = await resolveWorkspacePath(filePath);
-      const content = await fs.readFile(resolvedPath, { encoding: 'utf8', signal: context?.abortSignal });
+      // 按原始字节计算 hash，与 read 工具返回的 hash 口径一致（UTF-8 解码有损的文件也能正确比对）。
+      const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
       if (context?.abortSignal?.aborted) return '[文件编辑已中止]';
-      const originalHash = contentHash(content);
+      const content = buffer.toString('utf8');
+      const originalHash = contentHash(buffer);
       if (expectedHash !== undefined && expectedHash !== originalHash) {
         return `编辑失败: 文件已被修改，期望 hash=${expectedHash}，当前 hash=${originalHash}。请重新读取后再编辑。`;
       }

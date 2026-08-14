@@ -163,6 +163,29 @@ test('edit and write reject stale hashes and replace files atomically', async ()
   });
 });
 
+test('edit hash stays consistent for non-UTF-8 files read as raw bytes', async () => {
+  await withWorkspace(async workspace => {
+    // 0xE9 后跟换行是非法的 UTF-8 序列，字符串往返会变成 U+FFFD，只有按原始字节 hash 才能与 read 一致
+    const target = path.join(workspace, 'latin.txt');
+    await fs.writeFile(target, Buffer.from([0x63, 0x61, 0x66, 0xE9, 0x0A]));
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+
+    const readResult = await reader.execute({ path: 'latin.txt' });
+    const hash = readResult.match(/hash=([a-f0-9]{16})/)?.[1];
+    assert.ok(hash, 'read must return a hash for the raw bytes');
+
+    const edited = await editor.execute({
+      path: 'latin.txt',
+      oldText: 'caf\uFFFD',
+      newText: 'cafe',
+      expectedHash: hash
+    });
+    assert.match(edited, /文件精准编辑成功/);
+    assert.equal(await fs.readFile(target, 'utf8'), 'cafe\n');
+  });
+});
+
 test('bash keeps both output head and tail with duration metadata', async () => {
   await withWorkspace(async workspace => {
     const script = path.join(workspace, 'long-output.cjs');
