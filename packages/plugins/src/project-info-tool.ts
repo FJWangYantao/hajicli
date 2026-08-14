@@ -43,6 +43,8 @@ interface GitSummary {
 
 const MAX_SCANNED_FILES = 20_000;
 const MAX_OUTPUT_LENGTH = 8_000;
+/** 缓存按 cwd 记录的项目摘要数量上限；超限时淘汰最久未写入的条目，防止长期运行会话内存无界增长。 */
+const MAX_CACHED_PROJECTS = 8;
 const projectInfoCache = new Map<string, CachedProjectInfo>();
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.ts': 'TypeScript', '.tsx': 'TypeScript', '.mts': 'TypeScript', '.cts': 'TypeScript',
@@ -308,7 +310,16 @@ export class ProjectInfoTool implements BaseTool {
       const info = cacheHit
         ? cached
         : await buildProjectInfo(cwd, listed.files, listed.truncated, fingerprint, context);
-      if (!cacheHit) projectInfoCache.set(cwd, info);
+      if (!cacheHit) {
+        // 命中刷新时先删除再写回，保持 Map 插入序即最近使用序。
+        projectInfoCache.delete(cwd);
+        projectInfoCache.set(cwd, info);
+        while (projectInfoCache.size > MAX_CACHED_PROJECTS) {
+          const oldest = projectInfoCache.keys().next().value;
+          if (oldest === undefined) break;
+          projectInfoCache.delete(oldest);
+        }
+      }
       const git = options.includeGit ? await readGitSummary(cwd, context) : undefined;
       if (context?.abortSignal?.aborted) return '[项目摘要已中止]';
       return renderProjectInfo(cwd, info, cacheHit, options.depth, git);

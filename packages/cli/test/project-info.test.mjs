@@ -109,3 +109,31 @@ test('projectinfo validates arguments and honors pre-aborted contexts', async ()
   controller.abort();
   assert.equal(await tool.execute({}, { abortSignal: controller.signal }), '[项目摘要已中止]');
 });
+
+test('projectinfo cache is bounded and evicts the oldest project', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'haji-project-cache-'));
+  const previousCwd = process.cwd();
+  try {
+    const dirs = [];
+    for (let index = 0; index < 10; index += 1) {
+      const dir = path.join(root, `p${index}`);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: `p${index}` }));
+      dirs.push(dir);
+    }
+    const tool = new ProjectInfoTool();
+    for (const dir of dirs) {
+      process.chdir(dir);
+      await tool.execute({ includeGit: false });
+    }
+    // 超过 8 个项目的缓存上限，最早写入的 p0 应已被淘汰
+    process.chdir(dirs[0]);
+    assert.match(await tool.execute({ includeGit: false }), /缓存=miss/);
+    // 最近写入的 p9 仍在缓存
+    process.chdir(dirs[9]);
+    assert.match(await tool.execute({ includeGit: false }), /缓存=hit/);
+  } finally {
+    process.chdir(previousCwd);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
