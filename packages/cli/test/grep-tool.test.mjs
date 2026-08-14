@@ -170,3 +170,27 @@ test('streaming ripgrep helper terminates when aborted', async () => {
   setTimeout(() => controller.abort(), 50);
   await assert.rejects(pending, error => error instanceof Error && error.name === 'AbortError');
 });
+
+test('grep pagination follows byte order across mixed-case paths', async () => {
+  await withWorkspace(async workspace => {
+    // 字节序：'Z' < 'a'，而 localeCompare 通常把 'a' 排前；分页必须与 --sort path 一致
+    await fs.writeFile(path.join(workspace, 'src', 'Z.ts'), 'needle-upper\n');
+    await fs.writeFile(path.join(workspace, 'src', 'a.ts'), 'needle-lower\n');
+    const previousPath = process.env.PATH;
+    process.env.PATH = workspace;
+    try {
+      const tool = new GrepSearchTool();
+      const first = await tool.execute({ query: 'needle-', include: ['src/**/*.ts'], limit: 1 });
+      assert.match(first, /引擎=node/);
+      assert.match(first, /src\/Z\.ts:1:/);
+      assert.match(first, /nextOffset=1/);
+
+      const second = await tool.execute({ query: 'needle-', include: ['src/**/*.ts'], limit: 1, offset: 1 });
+      assert.match(second, /src\/a\.ts:1:/);
+      assert.match(second, /hasMore=false/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+});

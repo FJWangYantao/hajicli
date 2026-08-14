@@ -4,6 +4,7 @@ import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 import { takeWholeRecords } from './bounded-output.js';
 import { runRipgrepLines } from './ripgrep.js';
 import {
+  comparePathsBytewise,
   createPathFilter,
   DEFAULT_EXCLUDED_DIRS,
   FILE_TYPE_GLOBS,
@@ -112,7 +113,7 @@ async function findWithRipgrep(
       break;
     }
   }
-  files.sort((left, right) => left.localeCompare(right));
+  files.sort(comparePathsBytewise);
   return { files, truncated: result.truncated || filteredEarly, engine: 'ripgrep' };
 }
 
@@ -128,7 +129,7 @@ async function findWithNode(
   const walk = async (currentDir: string) => {
     throwIfAborted(context);
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => comparePathsBytewise(left.name, right.name));
     for (const entry of entries) {
       if (truncated) return;
       throwIfAborted(context);
@@ -144,7 +145,7 @@ async function findWithNode(
     }
   };
   await walk(startDir);
-  files.sort((left, right) => left.localeCompare(right));
+  files.sort(comparePathsBytewise);
   return { files, truncated, engine: 'node' };
 }
 

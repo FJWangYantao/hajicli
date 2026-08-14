@@ -97,6 +97,15 @@ function matchesAny(pathname: string, patterns: RegExp[]): boolean {
   return patterns.some(pattern => pattern.test(pathname));
 }
 
+/**
+ * 按 UTF-8 字节序比较路径。JS 字符串比较按码元顺序，与 UTF-8 字节序一致，
+ * 也和 ripgrep `--sort path` 的输出顺序一致；统一用它替代 localeCompare，
+ * 使提前截断后的结果集合始终是最终排序下的稳定前缀，offset 分页不会跳结果。
+ */
+export function comparePathsBytewise(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function createPathFilter(options: PathFilterOptions): (pathname: string) => boolean {
   const includePatterns = options.include.map(globToRegExp);
   const excludePatterns = options.exclude.map(globToRegExp);

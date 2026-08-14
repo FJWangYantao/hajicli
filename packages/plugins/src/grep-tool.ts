@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
 import { runRipgrepLines } from './ripgrep.js';
 import {
+  comparePathsBytewise,
   createPathFilter,
   DEFAULT_EXCLUDED_DIRS,
   DEFAULT_EXCLUDED_EXTENSIONS,
@@ -89,7 +90,7 @@ function parseOptions(args: Record<string, unknown>): SearchOptions {
 }
 
 function compareMatches(left: SearchMatch, right: SearchMatch): number {
-  return left.file.localeCompare(right.file) || left.line - right.line || left.column - right.column;
+  return comparePathsBytewise(left.file, right.file) || left.line - right.line || left.column - right.column;
 }
 
 function throwIfAborted(context?: ToolExecutionContext): void {
@@ -192,7 +193,7 @@ async function searchWithNode(
   const walk = async (currentDir: string) => {
     throwIfAborted(context);
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => comparePathsBytewise(left.name, right.name));
     for (const entry of entries) {
       if (truncated) return;
       throwIfAborted(context);
