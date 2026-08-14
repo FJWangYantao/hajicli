@@ -151,7 +151,7 @@ HAJI 内置一套跨会话的自学习闭环，在日常使用中观察工具调
 交互命令：
 
 - `/memory`：列出 active 与 staging 记忆（标注 `[用户级]`/`[项目级]` 作用域）
-- `/memory confirm <id>`：确认 staging 记忆为 active
+- `/memory confirm <id>`：确认 staging 记忆为 active（`user` 类型确认后进用户级，跨项目生效；其余进项目级）
 - `/memory add <user|project|feedback> <内容>`：手工添加记忆（`user` 写用户级，跨项目共用；其余写项目级）
 - `/memory forget <id>`：删除记忆
 - `/memory promote <id>`：把项目级记忆提升到用户级（跨项目共用）

@@ -56,10 +56,14 @@ export async function handleMemoryCommand(
   if (sub === 'confirm') {
     const id = args[1];
     if (!id) { ctx.writeLine(colors.red('用法: /memory confirm <id>')); return; }
-    const ok = await ctx.store.confirmMemory(id);
-    ctx.writeLine(ok
-      ? colors.green(`✓ 记忆 "${id}" 已确认并进入 active。`)
-      : colors.red(`未找到 staging 中 id 为 "${id}" 的记忆。`));
+    const result = await ctx.store.confirmMemory(id);
+    if (result === 'user') {
+      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已确认并进入用户级 active（跨项目生效）。`));
+    } else if (result === 'project') {
+      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已确认并进入 active。`));
+    } else {
+      ctx.writeLine(colors.red(`未找到 staging 中 id 为 "${id}" 的记忆。`));
+    }
     return;
   }
 

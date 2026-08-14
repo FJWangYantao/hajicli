@@ -100,6 +100,24 @@ test('/memory confirm reports unknown id', async () => {
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });
 
+test('/memory confirm user type reports user-level placement', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.stageMemory({
+      id: 'cand-user', name: 'test', type: 'user',
+      content: 'prefer kebab-case', status: 'staging', confidence: 0.7,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      keywords: ['kebab']
+    });
+    const outputs = [];
+    await handleMemoryCommand(['confirm', 'cand-user'], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some(l => l.includes('用户级')));
+    // 落点验证：用户级 active 有文件，项目级无
+    assert.ok(fs.existsSync(path.join(tmp, 'user', '.haji', 'memory', 'active', 'user__cand-user.md')));
+    assert.ok(!fs.existsSync(path.join(tmp, 'project', '.haji', 'memory', 'active', 'user__cand-user.md')));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});
+
 test('/memory forget removes memory', async () => {
   const { store, tmp } = createStoreWithTmp();
   try {
@@ -298,13 +316,20 @@ test('/memory add user reports user-level placement', async () => {
 test('/instinct list shows scope tags', async () => {
   const { store, tmp } = createStoreWithTmp();
   try {
+    const now = new Date().toISOString();
     await store.upsertInstinct({
       id: 'user-rule', trigger: 't', action: 'a',
       confidence: 0.8, domain: 'workflow', source: 'manual',
-      deprecated: false, observedAt: new Date().toISOString(), occurrenceCount: 1
+      deprecated: false, observedAt: now, occurrenceCount: 1
+    });
+    await store.upsertInstinct({
+      id: 'proj-rule', trigger: 't2', action: 'a2',
+      confidence: 0.7, domain: 'testing', source: 'llm',
+      deprecated: false, observedAt: now, occurrenceCount: 1
     });
     const outputs = [];
     await handleInstinctCommand([], makeCtx(store, outputs), noColor);
-    assert.ok(outputs.some(l => l.includes('[用户级]')));
+    assert.ok(outputs.some(l => l.includes('user-rule') && l.includes('[用户级]')));
+    assert.ok(outputs.some(l => l.includes('proj-rule') && l.includes('[项目级]')));
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });

@@ -84,7 +84,7 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     let used = lines.join('\n').length;
     for (const mem of memories) {
       const content = mem.content.replace(/\s+/g, ' ').slice(0, 200);
-      const globalTag = mem.scope === 'user' ? '·全局' : '';
+      const globalTag = mem.scope === 'user' ? ' · 全局' : '';
       const line = `- [${mem.type}${globalTag}] ${content}`;
       if (used + line.length + 1 > budget) break;
       lines.push(line);

@@ -157,11 +157,51 @@ test('ExperiencesPromptPart marks user-level entries as global', async () => {
       confidence: 0.8,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      keywords: ['kebab', 'case']
+      // keywords 需与召回 query（项目名 + workflow/edit/read/...）有交集，否则 memory 不进 prompt
+      keywords: ['workflow', 'kebab', 'case']
     });
     const part = new ExperiencesPromptPart(store);
     const content = part.getContent({ cwd: '/proj', os: 'linux' });
-    assert.ok(content.includes('全局'));
+    // 分别验证 instinct 与 memory 两个 formatter 的全局标注
+    assert.ok(content.includes('[workflow 0.85 · 全局]'));
+    assert.ok(content.includes('[user · 全局]'));
+    assert.ok(content.includes('Prefer kebab-case file names'));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('ExperiencesPromptPart does not mark project-level entries as global', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct({
+      id: 'proj-pref',
+      trigger: 'edit file',
+      action: 'Read before editing',
+      confidence: 0.85,
+      domain: 'workflow',
+      source: 'llm',
+      deprecated: false,
+      observedAt: new Date().toISOString(),
+      occurrenceCount: 3
+    });
+    await store.upsertMemory({
+      id: 'proj-mem',
+      name: 'project preference',
+      type: 'project',
+      content: 'Prefer kebab-case file names',
+      status: 'active',
+      confidence: 0.8,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      keywords: ['workflow', 'kebab', 'case']
+    });
+    const part = new ExperiencesPromptPart(store);
+    const content = part.getContent({ cwd: '/proj', os: 'linux' });
+    // 两条都应被召回（与 query 有交集），但都不带全局标注
+    assert.ok(content.includes('Read before editing'));
+    assert.ok(content.includes('Prefer kebab-case file names'));
+    assert.ok(!content.includes('全局'));
   } finally {
     fsp.rm(tmp, { recursive: true, force: true });
   }

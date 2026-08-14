@@ -301,9 +301,10 @@ export class ExperienceStore {
 
   /**
    * 确认一条 staging 候选：从 staging 移到 active。
-   * 返回是否成功找到并迁移。
+   * type=user 的候选落用户级 active（跨项目生效），其余落项目级。
+   * 返回实际落点（'user' | 'project'），null 表示 staging 中未找到。
    */
-  async confirmMemory(id: string): Promise<boolean> {
+  async confirmMemory(id: string): Promise<'user' | 'project' | null> {
     const stagingDir = path.join(this.projectMemoryDir(), 'staging');
     const entries = this.scanMarkdownFiles(stagingDir);
     for (const entry of entries) {
@@ -313,10 +314,10 @@ export class ExperienceStore {
         parsed.updatedAt = new Date().toISOString();
         await this.upsertMemory(parsed);
         await this.removeFile(entry.filePath);
-        return true;
+        return parsed.type === 'user' ? 'user' : 'project';
       }
     }
-    return false;
+    return null;
   }
 
   /** 删除指定 id 的记忆（两级目录都清）。 */

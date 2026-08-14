@@ -269,7 +269,7 @@ test('stageMemory then confirmMemory promotes staging to active', async () => {
     assert.equal(allAfterStage[0].status, 'staging');
 
     const ok = await store.confirmMemory('cand-1');
-    assert.equal(ok, true);
+    assert.equal(ok, 'project');
     const active = store.loadMemories('active');
     assert.equal(active.length, 1);
     assert.equal(active[0].status, 'active');
@@ -282,11 +282,25 @@ test('stageMemory then confirmMemory promotes staging to active', async () => {
   }
 });
 
-test('confirmMemory returns false for unknown id', async () => {
+test('confirmMemory returns null for unknown id', async () => {
   const { store, tmp } = createStoreWithTmp();
   try {
     const ok = await store.confirmMemory('does-not-exist');
-    assert.equal(ok, false);
+    assert.equal(ok, null);
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('confirmMemory routes type=user candidate to user level', async () => {
+  const { store, tmp, userDir, projectDir } = createStoreWithTmp();
+  try {
+    await store.stageMemory(makeMemory({ id: 'user-cand', type: 'user', status: 'staging' }));
+    const result = await store.confirmMemory('user-cand');
+    assert.equal(result, 'user');
+    assert.ok(fs.existsSync(path.join(userDir, 'memory', 'active', 'user__user-cand.md')));
+    assert.ok(!fs.existsSync(path.join(projectDir, 'memory', 'active', 'user__user-cand.md')));
+    assert.ok(!fs.existsSync(path.join(projectDir, 'memory', 'staging', 'user__user-cand.md')));
   } finally {
     fsp.rm(tmp, { recursive: true, force: true });
   }
