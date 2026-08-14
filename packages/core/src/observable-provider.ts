@@ -21,6 +21,7 @@ export class ObservableModelProvider implements ModelProvider {
     let capturedToolCalls: ToolCall[] | undefined;
     let capturedReasoning = '';
     let capturedUsage: any;
+    let capturedFinishReason: string | undefined;
 
     const interceptedOptions: CompletionOptions = {
       ...options,
@@ -40,6 +41,12 @@ export class ObservableModelProvider implements ModelProvider {
         capturedUsage = usage;
         if (options.onUsage) {
           options.onUsage(usage);
+        }
+      },
+      onFinish: (finish) => {
+        capturedFinishReason = finish.reason;
+        if (options.onFinish) {
+          options.onFinish(finish);
         }
       }
     };
@@ -64,6 +71,7 @@ export class ObservableModelProvider implements ModelProvider {
         reasoningContent: capturedReasoning || undefined,
         content: response,
         toolCalls: capturedToolCalls,
+        finishReason: capturedFinishReason,
         usage: capturedUsage
       });
 
@@ -96,6 +104,7 @@ export class ObservableModelProvider implements ModelProvider {
     let accumulatedReasoning = '';
     let capturedToolCalls: ToolCall[] | undefined;
     let capturedUsage: any;
+    let capturedFinishReason: string | undefined;
 
     const setFirstTokenTime = () => {
       if (firstTokenTime === 0) {
@@ -122,6 +131,12 @@ export class ObservableModelProvider implements ModelProvider {
         capturedUsage = usage;
         if (options.onUsage) {
           options.onUsage(usage);
+        }
+      },
+      onFinish: (finish) => {
+        capturedFinishReason = finish.reason;
+        if (options.onFinish) {
+          options.onFinish(finish);
         }
       }
     };
@@ -176,6 +191,7 @@ export class ObservableModelProvider implements ModelProvider {
       reasoningContent: accumulatedReasoning || undefined,
       content: accumulatedContent,
       toolCalls: capturedToolCalls,
+      finishReason: capturedFinishReason,
       usage: capturedUsage
     });
   }

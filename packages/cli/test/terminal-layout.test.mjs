@@ -2,7 +2,26 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
-import { layoutAnsiDocument, wrapAnsi, wrapAnsiWithState } from '../dist/terminal-input.js';
+import {
+  buildViewportScrollUpdate,
+  getSelectionAutoScrollRows,
+  layoutAnsiDocument,
+  shouldRestartBackgroundInput,
+  TerminalUI,
+  wrapAnsi,
+  wrapAnsiWithState
+} from '../dist/terminal-input.js';
+
+const stripAnsi = value => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+
+function createTerminalUI() {
+  return new TerminalUI({
+    header: '',
+    compactHeader: '',
+    inputPrompt: '',
+    renderBorder: width => '-'.repeat(width)
+  });
+}
 
 test('lays out ANSI, wide characters, and document offsets consistently', () => {
   const layout = layoutAnsiDocument('\x1b[31m你a\x1b[0m\n🙂b', 3);
@@ -23,6 +42,31 @@ test('selection layout rows stay aligned with scrolling rows', () => {
   assert.deepEqual(selectionRows, wrapAnsi(input, width));
 });
 
+test('drag selection scrolls toward the pointer when it crosses the chat viewport edge', () => {
+  assert.equal(getSelectionAutoScrollRows(10, 10, 8), 0);
+  assert.equal(getSelectionAutoScrollRows(9, 10, 8), 1);
+  assert.equal(getSelectionAutoScrollRows(5, 10, 8), 3);
+  assert.equal(getSelectionAutoScrollRows(18, 10, 8), -1);
+  assert.equal(getSelectionAutoScrollRows(24, 10, 8), -3);
+  assert.equal(getSelectionAutoScrollRows(10, 10, 0), 0);
+});
+
+test('viewport scroll moves existing terminal rows and repaints only newly exposed rows', () => {
+  const previous = ['header', 'old 1', 'old 2', 'old 3', 'footer'];
+  const older = ['header', 'new top', 'old 1', 'old 2', 'footer'];
+  const newer = ['header', 'old 2', 'old 3', 'new bottom', 'footer'];
+
+  const scrollToOlder = buildViewportScrollUpdate(previous, older, 1, 3, 1);
+  assert.match(scrollToOlder, /\x1b\[2;4r\x1b\[2;1H.*\x1b\[1T\x1b\[r/);
+  assert.match(scrollToOlder, /\x1b\[2;1H.*new top/);
+  assert.doesNotMatch(scrollToOlder, /old 1|old 2|footer/);
+
+  const scrollToNewer = buildViewportScrollUpdate(previous, newer, 1, 3, -1);
+  assert.match(scrollToNewer, /\x1b\[2;4r\x1b\[2;1H.*\x1b\[1S\x1b\[r/);
+  assert.match(scrollToNewer, /\x1b\[4;1H.*new bottom/);
+  assert.doesNotMatch(scrollToNewer, /old 2|old 3|footer/);
+});
+
 test('stable-prefix wrapping is identical to wrapping the complete document', () => {
   const prefix = '\x1b[31mfirst line\nsecond line\n';
   const tail = '你🙂 tail\x1b[0m\nstatus';
@@ -36,6 +80,17 @@ test('stable-prefix wrapping is identical to wrapping the complete document', ()
   assert.deepEqual(incrementalRows, wrapAnsi(prefix + tail, width));
 });
 
+test('malformed escape sequences cannot stall the TypeScript wrapping fallback', () => {
+  assert.deepEqual(wrapAnsiWithState('\x1bX', 80).rows, ['\x1bX\x1b[0m']);
+});
+
+test('queued slash commands keep the input channel exclusive for selectors', () => {
+  assert.equal(shouldRestartBackgroundInput('next normal message'), true);
+  assert.equal(shouldRestartBackgroundInput('   '), true);
+  assert.equal(shouldRestartBackgroundInput('/model'), false);
+  assert.equal(shouldRestartBackgroundInput('  /permission  '), false);
+});
+
 test('lays out long chat history in linear time', () => {
   const input = '中'.repeat(20_000);
   const startedAt = performance.now();
@@ -45,4 +100,35 @@ test('lays out long chat history in linear time', () => {
   assert.equal(layout.document, input);
   assert.equal(layout.rows.length, 500);
   assert.ok(durationMs < 1_500, `layout took ${Math.round(durationMs)}ms`);
+});
+
+test('renders the compact Todo panel and toggles its expanded state with Ctrl+T', () => {
+  const ui = createTerminalUI();
+  ui.setTaskPlan({
+    title: '配置开发环境',
+    tasks: [
+      { id: '1', content: '阅读前后端配置文件', status: 'completed' },
+      { id: '2', content: '创建数据库容器', status: 'in_progress' },
+      { id: '3', content: '修改本地配置', status: 'pending' },
+      { id: '4', content: '构建后端', status: 'pending' },
+      { id: '5', content: '启动前端', status: 'pending' },
+      { id: '6', content: '验证接口', status: 'completed' },
+      { id: '7', content: '检查日志', status: 'pending' },
+      { id: '8', content: '完成验收', status: 'pending' }
+    ]
+  });
+
+  const collapsed = ui.buildTaskPanel(100, 8).map(stripAnsi);
+  assert.deepEqual(collapsed.slice(0, 4), [
+    '任务 · 配置开发环境',
+    '✓ 阅读前后端配置文件',
+    '● 创建数据库容器',
+    '○ 修改本地配置'
+  ]);
+  assert.match(collapsed.at(-1), /… 另有 3 项 \(1 已完成 · 2 待处理\) · Ctrl\+T 展开/);
+
+  ui.dispatchKeypress('\x14', { ctrl: true, name: 't' });
+  const expanded = ui.buildTaskPanel(100, 12).map(stripAnsi);
+  assert.ok(expanded.includes('○ 完成验收'));
+  assert.equal(expanded.at(-1), '… Ctrl+T 收起');
 });

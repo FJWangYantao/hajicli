@@ -747,6 +747,13 @@
                 }
                 scrollToBottom();
               }
+              else if (data.type === 'truncated') {
+                activeTextEl = null;
+                activeTextContent = '';
+                const truncHtml = `<div class="message-body" style="color: #F59E0B; margin-top: 8px; font-size: 0.85em;">⚠️ 模型输出达到单次长度上限，本轮内容可能不完整。</div>`;
+                assistantMessageEl.appendChild(createElementFromHtml(truncHtml));
+                scrollToBottom();
+              }
               else if (data.type === 'done') {
                 currentSessionId = data.sessionId;
               }

@@ -1,4 +1,6 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, ToolCall, withExponentialBackoff } from '@hajicli/core';
+import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
+import { fetchWithNetworkPolicy, getModelTimeoutMs } from './network.js';
+import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -17,18 +19,19 @@ export class DeepSeekProvider implements ModelProvider {
       throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || 'deepseek-v4-flash';
+    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
   }
 
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
     const response = await this.request(messages, { ...options, stream: false });
-    const data = await response.json() as any;
+    const data = await response.json() as OpenAICompatibleResponseData;
     if (data.error) {
       throw new ProviderError(data.error.message || 'API error', 'deepseek', response.status);
     }
     
     const choice = data.choices?.[0];
+    options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
       options.onToolCall(choice.message.tool_calls);
     }
@@ -52,153 +55,22 @@ export class DeepSeekProvider implements ModelProvider {
 
   async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
     const response = await this.request(messages, { ...options, stream: true });
-    
-    if (!response.body) {
-      throw new ProviderError('Response body is empty', 'deepseek', response.status);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-    const accumulatedToolCalls: any[] = [];
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        // 将最后一个不完整的行保留在缓冲区中
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          if (trimmed === 'data: [DONE]') {
-            break;
-          }
-          if (trimmed.startsWith('data: ')) {
-            const dataStr = trimmed.slice(6);
-            try {
-              const data = JSON.parse(dataStr);
-              const choice = data.choices?.[0];
-              
-              // 收集流式工具调用
-              const deltaToolCalls = choice?.delta?.tool_calls;
-              if (deltaToolCalls) {
-                for (const dtc of deltaToolCalls) {
-                  const idx = dtc.index ?? 0;
-                  if (!accumulatedToolCalls[idx]) {
-                    accumulatedToolCalls[idx] = {
-                      id: dtc.id || '',
-                      type: dtc.type || 'function',
-                      function: {
-                        name: dtc.function?.name || '',
-                        arguments: dtc.function?.arguments || ''
-                      }
-                    };
-                  } else {
-                    if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
-                    if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
-                    if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
-                  }
-                }
-              }
-
-              // 收集流式思考过程内容
-              const reasoningContent = choice?.delta?.reasoning_content || '';
-              if (reasoningContent && options.onReasoning) {
-                options.onReasoning(reasoningContent);
-              }
-
-              // 收集流式 Token 用量
-              if (data.usage && options.onUsage) {
-                options.onUsage({
-                  prompt_tokens: data.usage.prompt_tokens,
-                  completion_tokens: data.usage.completion_tokens,
-                  total_tokens: data.usage.total_tokens
-                });
-              }
-
-              // 收集文本内容
-              const content = choice?.delta?.content || '';
-              if (content) {
-                yield content;
-              }
-            } catch (e) {
-              // 忽略不完整的行或 JSON 解析错误
-            }
-          }
-        }
-      }
-
-      // 处理缓冲区中剩余的数据
-      if (buffer.trim()) {
-        const trimmed = buffer.trim();
-        if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
-          try {
-            const data = JSON.parse(trimmed.slice(6));
-            const choice = data.choices?.[0];
-            const content = choice?.delta?.content || '';
-            
-            const deltaToolCalls = choice?.delta?.tool_calls;
-            if (deltaToolCalls) {
-              for (const dtc of deltaToolCalls) {
-                const idx = dtc.index ?? 0;
-                if (!accumulatedToolCalls[idx]) {
-                  accumulatedToolCalls[idx] = {
-                    id: dtc.id || '',
-                    type: dtc.type || 'function',
-                    function: {
-                      name: dtc.function?.name || '',
-                      arguments: dtc.function?.arguments || ''
-                    }
-                  };
-                } else {
-                  if (dtc.id) accumulatedToolCalls[idx].id = dtc.id;
-                  if (dtc.function?.name) accumulatedToolCalls[idx].function.name = dtc.function.name;
-                  if (dtc.function?.arguments) accumulatedToolCalls[idx].function.arguments += dtc.function.arguments;
-                }
-              }
-            }
-            
-            // 收集流式思考过程内容
-            const reasoningContent = choice?.delta?.reasoning_content || '';
-            if (reasoningContent && options.onReasoning) {
-              options.onReasoning(reasoningContent);
-            }
-
-            // 收集流式 Token 用量
-            if (data.usage && options.onUsage) {
-              options.onUsage({
-                prompt_tokens: data.usage.prompt_tokens,
-                completion_tokens: data.usage.completion_tokens,
-                total_tokens: data.usage.total_tokens
-              });
-            }
-
-            if (content) {
-              yield content;
-            }
-          } catch (e) {
-            // 忽略错误
-          }
-        }
-      }
-
-      // 如果收集到了工具调用，在结束前触发回调
-      const finalToolCalls = accumulatedToolCalls.filter(Boolean);
-      if (finalToolCalls.length > 0 && options.onToolCall) {
-        options.onToolCall(finalToolCalls as ToolCall[]);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    yield* parseOpenAICompatibleStream(response, {
+      provider: 'deepseek',
+      emptyBodyMessage: 'Response body is empty',
+      completion: options
+    });
   }
 
   private async request(messages: ChatMessage[], options: CompletionOptions): Promise<Response> {
     const url = `${this.baseUrl}/chat/completions`;
+    const invalidToolCall = findInvalidToolCall(messages);
+    if (invalidToolCall) {
+      throw new ProviderError(
+        `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
+        'deepseek'
+      );
+    }
     
     const requestMessages = messages.map(msg => {
       const payloadMsg: any = {
@@ -218,8 +90,11 @@ export class DeepSeekProvider implements ModelProvider {
       if (msg.tool_call_id) {
         payloadMsg.tool_call_id = msg.tool_call_id;
       }
-      if (msg.reasoning_content) {
-        payloadMsg.reasoning_content = msg.reasoning_content;
+      if (
+        msg.reasoning_content !== undefined
+        || (options.thinking === true && msg.role === 'assistant' && Boolean(msg.tool_calls?.length))
+      ) {
+        payloadMsg.reasoning_content = msg.reasoning_content ?? '';
       }
       return payloadMsg;
     });
@@ -246,9 +121,10 @@ export class DeepSeekProvider implements ModelProvider {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
+    options.onRequestStart?.();
     return withExponentialBackoff(async () => {
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithNetworkPolicy(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -256,12 +132,12 @@ export class DeepSeekProvider implements ModelProvider {
           },
           body: JSON.stringify(payload),
           signal: options.abortSignal
-        });
+        }, { timeoutMs: getModelTimeoutMs() });
 
         if (!response.ok) {
           let errorMsg = `HTTP error! status: ${response.status}`;
           try {
-            const errData = await response.json() as any;
+            const errData = await response.json() as { error?: { message?: string } };
             if (errData.error?.message) {
               errorMsg = errData.error.message;
             }
@@ -276,7 +152,13 @@ export class DeepSeekProvider implements ModelProvider {
         if (error instanceof ProviderError) {
           throw error;
         }
-        const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        if (options.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          throw reason instanceof Error && reason.name === 'TimeoutError'
+            ? reason
+            : normalizeAbortError(error);
+        }
+        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
         throw new ProviderError(msg, 'deepseek');
       }

@@ -4,29 +4,16 @@
  * 纯 TypeScript 实现，零外部依赖。
  */
 
-/** ANSI 样式代码字典 */
-const ANSI = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  italic: '\x1b[3m',
-  underline: '\x1b[4m',
-  strikethrough: '\x1b[9m',
+import { performanceMonitor } from '@hajicli/core';
+import { buildAnsiStyles } from './theme.js';
+import { sanitizeTerminalText } from './terminal-sanitize.js';
 
-  // 前景色定义
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  gray: '\x1b[90m',
-  brightGreen: '\x1b[92m',
-  brightYellow: '\x1b[93m',
-  brightBlue: '\x1b[94m',
-  brightCyan: '\x1b[96m',
-};
+/**
+ * ANSI 样式代码字典。颜色取自当前主题（24-bit 真彩色），使 Markdown 渲染
+ * 不再依赖终端 16 色调色板；reset 会恢复主题前景与背景，保证背景不丢失。
+ * 在模块加载时构建一次。
+ */
+const ANSI = buildAnsiStyles();
 
 /** 常见编程语言关键字集合 */
 const KEYWORDS = new Set([
@@ -38,12 +25,43 @@ const KEYWORDS = new Set([
   'null', 'undefined', 'true', 'false', 'boolean', 'string', 'number'
 ]);
 
+/** Limits expensive full Markdown reparses while model chunks arrive rapidly. */
+export class MarkdownRenderThrottle {
+  private lastRenderAt = Number.NEGATIVE_INFINITY;
+
+  constructor(private readonly intervalMs = 32) {}
+
+  /**
+   * Longer accumulated replies cost more to reparse, so reduce their refresh
+   * rate while preserving the final, unthrottled render performed by the caller.
+   */
+  shouldRender(now = Date.now(), contentLength = 0): boolean {
+    const adaptiveInterval = contentLength >= 64_000
+      ? Math.max(this.intervalMs, 64)
+      : contentLength >= 24_000
+        ? Math.max(this.intervalMs, 48)
+        : this.intervalMs;
+    if (now - this.lastRenderAt < adaptiveInterval) return false;
+    this.lastRenderAt = now;
+    return true;
+  }
+}
+
+/** Only show the fallback thinking summary when a tool call has no visible assistant text. */
+export function shouldShowToolThinkingSummary(textContent: string, toolCallCount: number): boolean {
+  return toolCallCount > 0 && textContent.trim().length === 0;
+}
+
 /**
  * 流式 Markdown 解析与终端 ANSI 渲染器。
  */
 export class MarkdownStreamRenderer {
   /** 累积接收到的原始 Markdown 全量文本 */
   private rawContent = '';
+
+  constructor(
+    private readonly widthProvider: () => number = () => Math.max(20, (process.stdout?.columns || 80) - 2)
+  ) {}
 
   /**
    * 重置渲染器状态。
@@ -68,6 +86,14 @@ export class MarkdownStreamRenderer {
    * @param isFinal 是否已结束流式输出
    */
   render(content: string, isFinal = false): string {
+    const safeContent = sanitizeTerminalText(content);
+    return performanceMonitor.measureSync(
+      'markdown.render',
+      () => this.renderContent(safeContent, isFinal)
+    );
+  }
+
+  private renderContent(content: string, isFinal: boolean): string {
     // 1. 流式中间态时补充未闭合语法标签
     const processedContent = isFinal ? content : this.autoCloseMarkdown(content);
 
@@ -196,6 +222,13 @@ export class MarkdownStreamRenderer {
     const match = headerLine.match(/^┌──\s*([a-zA-Z0-9_-]*)/);
     const langLabel = match && match[1] ? ` ${match[1]} ` : ' code ';
 
+    if (maxWidth < 40) {
+      return [
+        `${ANSI.gray}◇${langLabel.trim() ? ` ${langLabel.trim()}` : ''}${ANSI.reset}`,
+        ...lines.map(line => `${ANSI.gray}│${ANSI.reset} ${this.renderNormalLine(line)}`)
+      ];
+    }
+
     // 测量卡片内部最长文本的可视宽度
     const maxContentLen = lines.length > 0
       ? Math.max(...lines.map(l => this.getTextWidth(l)), 10)
@@ -262,11 +295,11 @@ export class MarkdownStreamRenderer {
       const level = headerMatch[1].length;
       const text = this.renderInlineStyles(headerMatch[2]);
       if (level === 1) {
-        return `${ANSI.bold}${ANSI.magenta}█ ${text.toUpperCase()}${ANSI.reset}`;
+        return `${ANSI.bold}${ANSI.magenta}◆ ${text}${ANSI.reset}`;
       } else if (level === 2) {
-        return `${ANSI.bold}${ANSI.cyan}■ ${text}${ANSI.reset}`;
+        return `${ANSI.bold}◇ ${text}${ANSI.reset}`;
       } else {
-        return `${ANSI.bold}${ANSI.blue}▲ ${text}${ANSI.reset}`;
+        return `${ANSI.gray}›${ANSI.reset} ${ANSI.bold}${text}${ANSI.reset}`;
       }
     }
 
@@ -295,7 +328,7 @@ export class MarkdownStreamRenderer {
     if (listMatch) {
       const indent = listMatch[1];
       const text = this.renderInlineStyles(listMatch[3]);
-      return `${indent}${ANSI.magenta}•${ANSI.reset} ${text}`;
+      return `${indent}${ANSI.gray}•${ANSI.reset} ${text}`;
     }
 
     // 5. 有序列表 (1.)
@@ -344,8 +377,8 @@ export class MarkdownStreamRenderer {
    * 获取终端当前可用可视宽度（留出安全边距）。
    */
   private getMaxWidth(): number {
-    const cols = process.stdout?.columns || 80;
-    return Math.max(20, cols - 2);
+    const width = this.widthProvider();
+    return Math.max(1, Number.isFinite(width) ? Math.floor(width) : 78);
   }
 
   /**
@@ -394,6 +427,24 @@ export class MarkdownStreamRenderer {
     const output: string[] = [];
     const langLabel = lang ? ` ${lang} ` : ' code ';
     const maxWidth = this.getMaxWidth();
+
+    if (maxWidth < 40) {
+      output.push(`${ANSI.gray}◇ ${lang || 'code'}${ANSI.reset}`);
+      for (const line of lines) {
+        const styled = lang === 'diff'
+          ? (line.startsWith('+')
+            ? `${ANSI.green}${line}${ANSI.reset}`
+            : line.startsWith('-')
+              ? `${ANSI.red}${line}${ANSI.reset}`
+              : line.startsWith('@@')
+                ? `${ANSI.cyan}${line}${ANSI.reset}`
+                : line)
+          : this.highlightCodeLine(line);
+        // 窄屏不在 Markdown 层截断；交给聊天区统一软换行，避免丢失代码。
+        output.push(`${ANSI.gray}│${ANSI.reset} ${styled}`);
+      }
+      return output;
+    }
 
     // 测量代码块内部最长行的可视宽度
     const maxContentLen = lines.length > 0
@@ -561,6 +612,26 @@ export class MarkdownStreamRenderer {
     // 若表格总宽度超过终端可用宽度，按比例压缩各列
     const maxWidth = this.getMaxWidth();
     const borderOverhead = 3 * colCount + 1;
+    if (maxWidth < 40 || borderOverhead + colCount * 3 > maxWidth) {
+      const headerRow = contentRows[0];
+      if (contentRows.length === 1) {
+        return [headerRow.map(cell => this.renderInlineStyles(cell)).join(' · ')];
+      }
+
+      const stacked: string[] = [];
+      for (let rowIndex = 1; rowIndex < contentRows.length; rowIndex += 1) {
+        if (rowIndex > 1) stacked.push('');
+        if (contentRows.length > 2) {
+          stacked.push(`${ANSI.gray}◇ ${rowIndex}${ANSI.reset}`);
+        }
+        for (let column = 0; column < colCount; column += 1) {
+          const label = headerRow[column] || `列 ${column + 1}`;
+          const value = contentRows[rowIndex][column] || '';
+          stacked.push(`${ANSI.bold}${this.renderInlineStyles(label)}${ANSI.reset}: ${this.renderInlineStyles(value)}`);
+        }
+      }
+      return stacked;
+    }
     const maxContentWidth = Math.max(colCount * 3, maxWidth - borderOverhead);
     const sumWidths = colWidths.reduce((a, b) => a + b, 0);
 
