@@ -206,3 +206,44 @@ test('ExperiencesPromptPart does not mark project-level entries as global', asyn
     fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+test('ExperiencesPromptPart recalls by recent user message, not fixed vocabulary', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    // 条目关键词与固定词表（workflow/edit/read/test/git/error/prevention）无交集
+    await store.upsertInstinct({
+      id: 'login-retry-rule',
+      trigger: 'login retry',
+      action: 'Prompt the user to retry login',
+      confidence: 0.85,
+      domain: 'other',
+      source: 'llm',
+      deprecated: false,
+      observedAt: new Date().toISOString(),
+      occurrenceCount: 3
+    });
+    await store.upsertMemory({
+      id: 'auth-mem',
+      name: 'auth session policy',
+      type: 'project',
+      content: 'Auth session expires after login retry',
+      status: 'active',
+      confidence: 0.8,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      keywords: ['login', 'auth', 'retry']
+    });
+    const part = new ExperiencesPromptPart(store);
+
+    // 固定词表召回不到：无当前消息时这些条目进不了 prompt（旧策略的盲区）
+    const withoutMessage = part.getContent({ cwd: '/proj', os: 'linux' });
+    assert.ok(!withoutMessage.includes('login'));
+
+    // 传当前任务消息后按任务语义召回
+    const withMessage = part.getContent({ cwd: '/proj', os: 'linux', recentUserMessage: 'fix the login retry bug' });
+    assert.ok(withMessage.includes('Prompt the user to retry login'));
+    assert.ok(withMessage.includes('Auth session expires'));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});

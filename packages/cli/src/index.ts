@@ -531,6 +531,9 @@ ${colors.bold('环境变量配置:')}
     ? tools.filter(tool => permissionEngine.isReadOnlyTool(tool.name) || ['subagent', 'verifyagent'].includes(tool.name) || ['taskcreate', 'tasklist', 'updatetask'].includes(tool.name))
     : tools;
 
+  // 最近一条用户消息：供经验召回等 prompt 分片按当前任务检索（在 messages 声明前初始化，避免闭包 TDZ）
+  let lastUserMessageForRecall = '';
+
   // 动态生成系统初始提示词，指导 AI 环境认知
   const createSystemPrompt = () => systemPromptManager.generatePrompt({
     cwd: process.cwd(),
@@ -538,7 +541,8 @@ ${colors.bold('环境变量配置:')}
     tools: activeTools().map(t => t.name),
     skills: skillRegistry.list(),
     reasoningEffort,
-    permissionMode
+    permissionMode,
+    recentUserMessage: lastUserMessageForRecall
   });
   let systemPrompt = await createSystemPrompt();
   markStartupStage('system_prompt');
@@ -2581,6 +2585,7 @@ ${colors.bold('环境变量配置:')}
       const promptInput = forwardedPrompt || trimmedInput;
       const messagesBeforePrompt = [...messages];
       messages.push({ role: 'user', content: promptInput });
+      lastUserMessageForRecall = promptInput;
       if (manualSkillExchange) {
         messages.push(
           { role: 'assistant', content: '', reasoning_content: '', tool_calls: [manualSkillExchange.toolCall] },

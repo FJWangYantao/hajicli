@@ -333,3 +333,25 @@ test('/instinct list shows scope tags', async () => {
     assert.ok(outputs.some(l => l.includes('proj-rule') && l.includes('[项目级]')));
   } finally { fsp.rm(tmp, { recursive: true, force: true }); }
 });
+
+test('/instinct stats shows observation health', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const obs = (toolName, failed) => ({
+      ts: new Date().toISOString(),
+      sessionId: 's', toolName, args: {}, output: failed ? 'error' : 'ok', failed
+    });
+    for (let i = 0; i < 6; i++) store.appendObservation(obs('edit', i === 0));
+    for (let i = 0; i < 4; i++) store.appendObservation(obs('bash', i < 2));
+    await store.flushObservations();
+    const outputs = [];
+    await handleInstinctCommand(['stats'], makeCtx(store, outputs), noColor);
+    const statLine = outputs.find(l => l.includes('观测健康'));
+    assert.ok(statLine);
+    assert.ok(statLine.includes('10 次'));
+    assert.ok(statLine.includes('失败 3 次'));
+    const topLine = outputs.find(l => l.includes('失败集中'));
+    assert.ok(topLine.includes('bash 2/4'));
+    assert.ok(topLine.includes('edit 1/6'));
+  } finally { fsp.rm(tmp, { recursive: true, force: true }); }
+});

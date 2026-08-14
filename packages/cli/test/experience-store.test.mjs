@@ -306,6 +306,73 @@ test('confirmMemory routes type=user candidate to user level', async () => {
   }
 });
 
+// ─── 观测健康统计 ──────────────────────────────────────────────────────────────
+
+function makeObservation(toolName, failed, ageDays = 0) {
+  return {
+    ts: new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000).toISOString(),
+    sessionId: 'test-session',
+    toolName,
+    args: {},
+    output: failed ? 'error' : 'ok',
+    failed
+  };
+}
+
+test('getObservationStats aggregates failures, tools and weekly trend', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    // 近 7 天：edit 6 条（1 失败）+ bash 4 条（2 失败）；前 7-14 天：grep 10 条（5 失败）
+    for (let i = 0; i < 6; i++) store.appendObservation(makeObservation('edit', i === 0));
+    for (let i = 0; i < 4; i++) store.appendObservation(makeObservation('bash', i < 2));
+    for (let i = 0; i < 10; i++) store.appendObservation(makeObservation('grep', i < 5, 10));
+    await store.flushObservations();
+
+    const stats = await store.getObservationStats();
+    assert.equal(stats.total, 20);
+    assert.equal(stats.failed, 8);
+    assert.ok(Math.abs(stats.failureRate - 0.4) < 1e-9);
+    // 失败集中按失败数降序：grep(5) > bash(2) > edit(1)；无失败的 read 不出现
+    assert.deepEqual(stats.byTool.map(t => t.tool), ['grep', 'bash', 'edit']);
+    assert.deepEqual(stats.byTool.map(t => t.failed), [5, 2, 1]);
+    // 近 7 天 3/10 vs 前 7 天 5/10，样本足够，趋势应存在
+    assert.ok(stats.weeklyTrend);
+    assert.ok(Math.abs(stats.weeklyTrend.recent - 0.3) < 1e-9);
+    assert.ok(Math.abs(stats.weeklyTrend.previous - 0.5) < 1e-9);
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('getObservationStats returns empty stats and null trend without samples', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const stats = await store.getObservationStats();
+    assert.equal(stats.total, 0);
+    assert.equal(stats.failed, 0);
+    assert.equal(stats.failureRate, 0);
+    assert.deepEqual(stats.byTool, []);
+    assert.equal(stats.weeklyTrend, null);
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('getObservationStats hides trend when weekly samples are sparse', async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    // 近 7 天 3 条、前 7 天 2 条：均不足 10 条，趋势应为 null
+    for (let i = 0; i < 3; i++) store.appendObservation(makeObservation('edit', false));
+    for (let i = 0; i < 2; i++) store.appendObservation(makeObservation('grep', true, 10));
+    await store.flushObservations();
+    const stats = await store.getObservationStats();
+    assert.equal(stats.total, 5);
+    assert.equal(stats.weeklyTrend, null);
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('forgetMemory removes from both levels', async () => {
   const { store, tmp } = createStoreWithTmp();
   try {

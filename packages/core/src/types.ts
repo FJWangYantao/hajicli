@@ -168,6 +168,8 @@ export interface PromptContext {
   vars?: Record<string, string>;
   reasoningEffort?: ReasoningEffort;
   permissionMode?: string;
+  /** 最近一条用户消息，供经验召回等分片按当前任务做相关性检索。 */
+  recentUserMessage?: string;
 }
 
 /**

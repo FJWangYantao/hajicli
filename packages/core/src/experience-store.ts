@@ -9,6 +9,7 @@ import {
   Memory,
   MemoryStatus,
   MemoryType,
+  ObservationStats,
   ToolObservation
 } from './experience-types.js';
 import { replaceFileAtomically } from './atomic-file.js';
@@ -151,6 +152,54 @@ export class ExperienceStore {
    */
   getPendingObservations(): ToolObservation[] {
     return [...this.pendingObservations];
+  }
+
+  /**
+   * 统计观测流健康度（近 N 天）：总量、失败率、失败集中的工具与周趋势。
+   * 失败率趋势是经验系统效果的间接度量——规则注入起效时失败率应随时间下降。
+   */
+  async getObservationStats(windowDays = 30): Promise<ObservationStats> {
+    const observations = await this.loadRecentObservations(windowDays);
+    const byToolMap = new Map<string, { tool: string; total: number; failed: number }>();
+    let failed = 0;
+    for (const obs of observations) {
+      if (obs.failed) failed += 1;
+      const entry = byToolMap.get(obs.toolName) || { tool: obs.toolName, total: 0, failed: 0 };
+      entry.total += 1;
+      if (obs.failed) entry.failed += 1;
+      byToolMap.set(obs.toolName, entry);
+    }
+    const byTool = Array.from(byToolMap.values())
+      .filter(t => t.failed > 0)
+      .sort((a, b) => b.failed - a.failed || b.total - a.total)
+      .slice(0, 5);
+
+    // 周趋势：近 7 天 vs 前 7 天（两个窗口各至少 10 个样本才可信）
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let recentTotal = 0, recentFailed = 0, prevTotal = 0, prevFailed = 0;
+    for (const obs of observations) {
+      const ageDays = (now - new Date(obs.ts).getTime()) / dayMs;
+      if (ageDays <= 7) {
+        recentTotal += 1;
+        if (obs.failed) recentFailed += 1;
+      } else if (ageDays <= 14) {
+        prevTotal += 1;
+        if (obs.failed) prevFailed += 1;
+      }
+    }
+    const weeklyTrend = recentTotal >= 10 && prevTotal >= 10
+      ? { recent: recentFailed / recentTotal, previous: prevFailed / prevTotal }
+      : null;
+
+    return {
+      windowDays,
+      total: observations.length,
+      failed,
+      failureRate: observations.length === 0 ? 0 : failed / observations.length,
+      byTool,
+      weeklyTrend
+    };
   }
 
   // ─── Instinct CRUD ───────────────────────────────────────────────────────

@@ -226,12 +226,30 @@ export async function handleInstinctCommand(
     });
     const instScope = countByScope(active);
     const memScope = countByScope(memories);
+    const obsStats = await ctx.store.getObservationStats();
     const lines: string[] = [
       colors.bold('经验系统统计'),
       `  规则总数：${active.length} active · ${deprecated.length} deprecated（用户级 ${instScope.user} / 项目级 ${instScope.project}）`,
       `  记忆数量：${memories.length} active（用户级 ${memScope.user} / 项目级 ${memScope.project}）`,
       `  待提炼观测：${ctx.pendingObservations().length} 条`
     ];
+    if (obsStats.total > 0) {
+      const pct = (obsStats.failureRate * 100).toFixed(1);
+      lines.push(`  观测健康（近 ${obsStats.windowDays} 天）：${obsStats.total} 次 · 失败 ${obsStats.failed} 次（${pct}%）`);
+      if (obsStats.byTool.length > 0) {
+        const top = obsStats.byTool.map(t => `${t.tool} ${t.failed}/${t.total}`).join(' · ');
+        lines.push(`  失败集中：${top}`);
+      }
+      if (obsStats.weeklyTrend) {
+        const r = (obsStats.weeklyTrend.recent * 100).toFixed(1);
+        const p = (obsStats.weeklyTrend.previous * 100).toFixed(1);
+        const dir = obsStats.weeklyTrend.recent < obsStats.weeklyTrend.previous
+          ? '下降' : obsStats.weeklyTrend.recent > obsStats.weeklyTrend.previous ? '上升' : '持平';
+        lines.push(`  失败率趋势：近 7 天 ${r}% vs 前 7 天 ${p}%（${dir}）`);
+      }
+    } else {
+      lines.push(`  观测健康：暂无近 30 天观测数据`);
+    }
     if (byDomain.size > 0) {
       lines.push(colors.gray('  — active 按领域 —'));
       for (const [domain, count] of Array.from(byDomain.entries()).sort((a, b) => b[1] - a[1])) {

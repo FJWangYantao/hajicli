@@ -14,8 +14,9 @@ import { PromptContext, SystemPromptPart } from './types.js';
  *   - 空库返回空串，被 generatePrompt 的 trim 跳过，不占 token
  *   - 召回基于当前工作目录的项目名作为 query，Top-K 限制注入规模
  *
- * 召回策略：不按用户单条消息做相关性检索（那是运行期成本高的做法），
- * 而是注入「项目相关 + 全局高置信度」的规则集，让模型在每轮对话都感知。
+ * 召回策略：以最近一条用户消息 + 项目名为 query 做关键词召回（Jaccard），
+ * 让注入的经验跟随当前任务；无消息时回落到固定领域词表兜底。
+ * 关键词召回是 O(token 集合) 的轻量操作，避免每轮对话跑向量检索。
  */
 export class ExperiencesPromptPart implements SystemPromptPart {
   public readonly id = 'experiences';
@@ -57,9 +58,15 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     return result.length > this.maxChars ? result.slice(0, this.maxChars) + '…' : result;
   }
 
-  /** 召回 query：以项目名为主，附带 domain 关键词提升匹配率。 */
+  /**
+   * 召回 query：优先用最近一条用户消息（任务语义的最强信号），
+   * 附加项目名匹配项目知识；无消息时（会话启动/压缩恢复）回落到固定词表。
+   * 截断防止超长历史消息把 token 集稀释成噪声。
+   */
   private buildQuery(context: PromptContext): string {
     const projectName = path.basename(context.cwd);
+    const recent = (context.recentUserMessage || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+    if (recent) return `${recent} ${projectName}`;
     return `${projectName} workflow edit read test git error prevention`;
   }
 

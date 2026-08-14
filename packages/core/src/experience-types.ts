@@ -125,3 +125,19 @@ export interface DistillSummary {
   /** 提炼过程中产生的可读消息（用于调试/日志）。 */
   notes: string[];
 }
+
+/** 观测流健康统计，用于 /instinct stats 量化经验系统的输入质量与失败率趋势。 */
+export interface ObservationStats {
+  /** 统计窗口（天）。 */
+  windowDays: number;
+  /** 窗口内观测总数。 */
+  total: number;
+  /** 窗口内失败调用数。 */
+  failed: number;
+  /** 失败率（0-1，无样本时为 0）。 */
+  failureRate: number;
+  /** 失败集中的工具，按失败数降序，最多 5 个。 */
+  byTool: Array<{ tool: string; total: number; failed: number }>;
+  /** 近 7 天与前 7 天失败率对比；任一窗口样本 < 10 时为 null（样本太少无意义）。 */
+  weeklyTrend: { recent: number; previous: number } | null;
+}
