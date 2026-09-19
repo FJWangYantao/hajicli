@@ -1,6 +1,14 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
-import { fetchWithNetworkPolicy, getModelTimeoutMs } from './network.js';
-import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
+import {
+  type ChatMessage,
+  type CompletionOptions,
+  findInvalidToolCall,
+  type ModelProvider,
+  normalizeAbortError,
+  ProviderError,
+  withExponentialBackoff,
+} from "@hajicli/core";
+import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
+import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
 
 export interface DeepSeekConfig {
   apiKey?: string;
@@ -16,20 +24,23 @@ export class DeepSeekProvider implements ModelProvider {
   constructor(config: DeepSeekConfig = {}) {
     const apiKey = config.apiKey || process.env.DEEPSEEK_API_KEY;
     if (!apiKey) {
-      throw new ProviderError('DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.', 'deepseek');
+      throw new ProviderError(
+        "DeepSeek API key is missing. Please set DEEPSEEK_API_KEY environment variable or pass it to constructor.",
+        "deepseek",
+      );
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
-    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+    this.baseUrl = config.baseUrl || process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+    this.defaultModel = config.defaultModel || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
   }
 
   async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
     const response = await this.request(messages, { ...options, stream: false });
-    const data = await response.json() as OpenAICompatibleResponseData;
+    const data = (await response.json()) as OpenAICompatibleResponseData;
     if (data.error) {
-      throw new ProviderError(data.error.message || 'API error', 'deepseek', response.status);
+      throw new ProviderError(data.error.message || "API error", "deepseek", response.status);
     }
-    
+
     const choice = data.choices?.[0];
     options.onFinish?.({ reason: choice?.finish_reason || undefined });
     if (choice?.message?.tool_calls && options.onToolCall) {
@@ -46,19 +57,22 @@ export class DeepSeekProvider implements ModelProvider {
       options.onUsage({
         prompt_tokens: data.usage.prompt_tokens,
         completion_tokens: data.usage.completion_tokens,
-        total_tokens: data.usage.total_tokens
+        total_tokens: data.usage.total_tokens,
       });
     }
-    
-    return choice?.message?.content || '';
+
+    return choice?.message?.content || "";
   }
 
-  async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
+  async *completeStream(
+    messages: ChatMessage[],
+    options: CompletionOptions = {},
+  ): AsyncGenerator<string, void, unknown> {
     const response = await this.request(messages, { ...options, stream: true });
     yield* parseOpenAICompatibleStream(response, {
-      provider: 'deepseek',
-      emptyBodyMessage: 'Response body is empty',
-      completion: options
+      provider: "deepseek",
+      emptyBodyMessage: "Response body is empty",
+      completion: options,
     });
   }
 
@@ -68,43 +82,43 @@ export class DeepSeekProvider implements ModelProvider {
     if (invalidToolCall) {
       throw new ProviderError(
         `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
-        'deepseek'
+        "deepseek",
       );
     }
-    
-    const requestMessages = messages.map(msg => {
-      const payloadMsg: any = {
+
+    const requestMessages = messages.map((msg) => {
+      const payloadMsg: Record<string, unknown> = {
         role: msg.role,
-        content: msg.content
+        content: msg.content,
       };
       if (msg.tool_calls) {
-        payloadMsg.tool_calls = msg.tool_calls.map(tc => ({
+        payloadMsg.tool_calls = msg.tool_calls.map((tc) => ({
           id: tc.id,
           type: tc.type,
           function: {
             name: tc.function.name,
-            arguments: tc.function.arguments
-          }
+            arguments: tc.function.arguments,
+          },
         }));
       }
       if (msg.tool_call_id) {
         payloadMsg.tool_call_id = msg.tool_call_id;
       }
       if (
-        msg.reasoning_content !== undefined
-        || (options.thinking === true && msg.role === 'assistant' && Boolean(msg.tool_calls?.length))
+        msg.reasoning_content !== undefined ||
+        (options.thinking === true && msg.role === "assistant" && Boolean(msg.tool_calls?.length))
       ) {
-        payloadMsg.reasoning_content = msg.reasoning_content ?? '';
+        payloadMsg.reasoning_content = msg.reasoning_content ?? "";
       }
       return payloadMsg;
     });
 
-    const payload: any = {
+    const payload: Record<string, unknown> = {
       model: options.model || this.defaultModel,
       messages: requestMessages,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
-      stream: options.stream ?? false
+      stream: options.stream ?? false,
     };
 
     if (payload.stream) {
@@ -115,53 +129,64 @@ export class DeepSeekProvider implements ModelProvider {
       payload.tools = options.tools;
     }
     if (options.thinking !== undefined) {
-      payload.thinking = { type: options.thinking ? 'enabled' : 'disabled' };
+      payload.thinking = { type: options.thinking ? "enabled" : "disabled" };
     }
     if (options.reasoningEffort) {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
     options.onRequestStart?.();
-    return withExponentialBackoff(async () => {
-      try {
-        const response = await fetchWithNetworkPolicy(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.apiKey}`
-          },
-          body: JSON.stringify(payload),
-          signal: options.abortSignal
-        }, { timeoutMs: getModelTimeoutMs() });
+    return withExponentialBackoff(
+      async () => {
+        try {
+          const response = await fetchWithNetworkPolicy(
+            url,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${this.apiKey}`,
+              },
+              body: JSON.stringify(payload),
+              signal: options.abortSignal,
+            },
+            { timeoutMs: getModelTimeoutMs() },
+          );
 
-        if (!response.ok) {
-          let errorMsg = `HTTP error! status: ${response.status}`;
-          try {
-            const errData = await response.json() as { error?: { message?: string } };
-            if (errData.error?.message) {
-              errorMsg = errData.error.message;
+          if (!response.ok) {
+            let errorMsg = `HTTP error! status: ${response.status}`;
+            try {
+              const errData = (await response.json()) as { error?: { message?: string } };
+              if (errData.error?.message) {
+                errorMsg = errData.error.message;
+              }
+            } catch {
+              // 忽略解析错误
             }
-          } catch {
-            // 忽略解析错误
+            throw new ProviderError(errorMsg, "deepseek", response.status);
           }
-          throw new ProviderError(errorMsg, 'deepseek', response.status);
-        }
 
-        return response;
-      } catch (error) {
-        if (error instanceof ProviderError) {
-          throw error;
+          return response;
+        } catch (error) {
+          if (error instanceof ProviderError) {
+            throw error;
+          }
+          if (options.abortSignal?.aborted) {
+            const reason = options.abortSignal.reason;
+            throw reason instanceof Error && reason.name === "TimeoutError"
+              ? reason
+              : normalizeAbortError(error);
+          }
+          const isTimeout = error instanceof Error && error.name === "TimeoutError";
+          const msg = isTimeout
+            ? "网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。"
+            : error instanceof Error
+              ? error.message
+              : String(error);
+          throw new ProviderError(msg, "deepseek");
         }
-        if (options.abortSignal?.aborted) {
-          const reason = options.abortSignal.reason;
-          throw reason instanceof Error && reason.name === 'TimeoutError'
-            ? reason
-            : normalizeAbortError(error);
-        }
-        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-        const msg = isTimeout ? '网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
-        throw new ProviderError(msg, 'deepseek');
-      }
-    }, { maxRetries: 3, initialDelayMs: 1000, providerName: 'deepseek' });
+      },
+      { maxRetries: 3, initialDelayMs: 1000, providerName: "deepseek" },
+    );
   }
 }

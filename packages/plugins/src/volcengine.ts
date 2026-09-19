@@ -1,6 +1,14 @@
-import { ModelProvider, ChatMessage, CompletionOptions, ProviderError, withExponentialBackoff, normalizeAbortError, findInvalidToolCall } from '@hajicli/core';
-import { fetchWithNetworkPolicy, getModelTimeoutMs } from './network.js';
-import { OpenAICompatibleResponseData, parseOpenAICompatibleStream } from './openai-stream.js';
+import {
+  type ChatMessage,
+  type CompletionOptions,
+  findInvalidToolCall,
+  type ModelProvider,
+  normalizeAbortError,
+  ProviderError,
+  withExponentialBackoff,
+} from "@hajicli/core";
+import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
+import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
 
 /**
  * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
@@ -36,13 +44,18 @@ export class VolcengineProvider implements ModelProvider {
     const apiKey = config.apiKey || process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
     if (!apiKey) {
       throw new ProviderError(
-        '火山引擎 API Key 缺失。请设置 VOLC_API_KEY 或 ARK_API_KEY 环境变量，或在构造函数中传入 apiKey。',
-        'volcengine'
+        "火山引擎 API Key 缺失。请设置 VOLC_API_KEY 或 ARK_API_KEY 环境变量，或在构造函数中传入 apiKey。",
+        "volcengine",
       );
     }
     this.apiKey = apiKey;
-    this.baseUrl = config.baseUrl || process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding/v3';
-    this.defaultModel = config.defaultModel || process.env.VOLC_MODEL || process.env.ARK_MODEL || 'glm-5.2';
+    this.baseUrl =
+      config.baseUrl ||
+      process.env.VOLC_BASE_URL ||
+      process.env.ARK_BASE_URL ||
+      "https://ark.cn-beijing.volces.com/api/coding/v3";
+    this.defaultModel =
+      config.defaultModel || process.env.VOLC_MODEL || process.env.ARK_MODEL || "glm-5.2";
   }
 
   /**
@@ -55,7 +68,11 @@ export class VolcengineProvider implements ModelProvider {
     const data = (await response.json()) as OpenAICompatibleResponseData;
 
     if (data.error) {
-      throw new ProviderError(data.error.message || '火山引擎 API 返回错误', 'volcengine', response.status);
+      throw new ProviderError(
+        data.error.message || "火山引擎 API 返回错误",
+        "volcengine",
+        response.status,
+      );
     }
 
     const choice = data.choices?.[0];
@@ -74,11 +91,11 @@ export class VolcengineProvider implements ModelProvider {
       options.onUsage({
         prompt_tokens: data.usage.prompt_tokens,
         completion_tokens: data.usage.completion_tokens,
-        total_tokens: data.usage.total_tokens
+        total_tokens: data.usage.total_tokens,
       });
     }
 
-    return choice?.message?.content || '';
+    return choice?.message?.content || "";
   }
 
   /**
@@ -88,13 +105,13 @@ export class VolcengineProvider implements ModelProvider {
    */
   async *completeStream(
     messages: ChatMessage[],
-    options: CompletionOptions = {}
+    options: CompletionOptions = {},
   ): AsyncGenerator<string, void, unknown> {
     const response = await this.request(messages, { ...options, stream: true });
     yield* parseOpenAICompatibleStream(response, {
-      provider: 'volcengine',
-      emptyBodyMessage: '响应体为空',
-      completion: options
+      provider: "volcengine",
+      emptyBodyMessage: "响应体为空",
+      completion: options,
     });
   }
 
@@ -104,8 +121,8 @@ export class VolcengineProvider implements ModelProvider {
 
     if (!modelToUse) {
       throw new ProviderError(
-        '未指定模型接入点 Endpoint ID。请设置 VOLC_MODEL 环境变量，或在调用 complete/completeStream 时传入 model 参数。',
-        'volcengine'
+        "未指定模型接入点 Endpoint ID。请设置 VOLC_MODEL 环境变量，或在调用 complete/completeStream 时传入 model 参数。",
+        "volcengine",
       );
     }
 
@@ -113,7 +130,7 @@ export class VolcengineProvider implements ModelProvider {
     if (invalidToolCall) {
       throw new ProviderError(
         `本地拒绝发送损坏的历史工具调用（消息 ${invalidToolCall.messageIndex + 1}）：${invalidToolCall.error}`,
-        'volcengine'
+        "volcengine",
       );
     }
 
@@ -135,7 +152,7 @@ export class VolcengineProvider implements ModelProvider {
     const requestMessages: RequestPayloadMessage[] = messages.map((msg) => {
       const payloadMsg: RequestPayloadMessage = {
         role: msg.role,
-        content: msg.content
+        content: msg.content,
       };
       if (msg.tool_calls) {
         payloadMsg.tool_calls = msg.tool_calls.map((tc) => ({
@@ -143,18 +160,18 @@ export class VolcengineProvider implements ModelProvider {
           type: tc.type,
           function: {
             name: tc.function.name,
-            arguments: tc.function.arguments
-          }
+            arguments: tc.function.arguments,
+          },
         }));
       }
       if (msg.tool_call_id) {
         payloadMsg.tool_call_id = msg.tool_call_id;
       }
       if (
-        msg.reasoning_content !== undefined
-        || (options.thinking === true && msg.role === 'assistant' && Boolean(msg.tool_calls?.length))
+        msg.reasoning_content !== undefined ||
+        (options.thinking === true && msg.role === "assistant" && Boolean(msg.tool_calls?.length))
       ) {
-        payloadMsg.reasoning_content = msg.reasoning_content ?? '';
+        payloadMsg.reasoning_content = msg.reasoning_content ?? "";
       }
       return payloadMsg;
     });
@@ -176,7 +193,7 @@ export class VolcengineProvider implements ModelProvider {
       messages: requestMessages,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
-      stream: options.stream ?? false
+      stream: options.stream ?? false,
     };
 
     if (payload.stream) {
@@ -187,53 +204,64 @@ export class VolcengineProvider implements ModelProvider {
       payload.tools = options.tools;
     }
     if (options.thinking !== undefined) {
-      payload.thinking = { type: options.thinking ? 'enabled' : 'disabled' };
+      payload.thinking = { type: options.thinking ? "enabled" : "disabled" };
     }
     if (options.reasoningEffort) {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
     options.onRequestStart?.();
-    return withExponentialBackoff(async () => {
-      try {
-        const response = await fetchWithNetworkPolicy(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`
-          },
-          body: JSON.stringify(payload),
-          signal: options.abortSignal
-        }, { timeoutMs: getModelTimeoutMs() });
+    return withExponentialBackoff(
+      async () => {
+        try {
+          const response = await fetchWithNetworkPolicy(
+            url,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${this.apiKey}`,
+              },
+              body: JSON.stringify(payload),
+              signal: options.abortSignal,
+            },
+            { timeoutMs: getModelTimeoutMs() },
+          );
 
-        if (!response.ok) {
-          let errorMsg = `HTTP 错误！状态码: ${response.status}`;
-          try {
-            const errData = (await response.json()) as { error?: { message?: string } };
-            if (errData.error?.message) {
-              errorMsg = errData.error.message;
+          if (!response.ok) {
+            let errorMsg = `HTTP 错误！状态码: ${response.status}`;
+            try {
+              const errData = (await response.json()) as { error?: { message?: string } };
+              if (errData.error?.message) {
+                errorMsg = errData.error.message;
+              }
+            } catch {
+              // 忽略 JSON 解析错误
             }
-          } catch {
-            // 忽略 JSON 解析错误
+            throw new ProviderError(errorMsg, "volcengine", response.status);
           }
-          throw new ProviderError(errorMsg, 'volcengine', response.status);
-        }
 
-        return response;
-      } catch (error) {
-        if (error instanceof ProviderError) {
-          throw error;
+          return response;
+        } catch (error) {
+          if (error instanceof ProviderError) {
+            throw error;
+          }
+          if (options.abortSignal?.aborted) {
+            const reason = options.abortSignal.reason;
+            throw reason instanceof Error && reason.name === "TimeoutError"
+              ? reason
+              : normalizeAbortError(error);
+          }
+          const isTimeout = error instanceof Error && error.name === "TimeoutError";
+          const msg = isTimeout
+            ? "网络请求超时 (60s)，大模型 API 未在规定时间内响应。"
+            : error instanceof Error
+              ? error.message
+              : String(error);
+          throw new ProviderError(msg, "volcengine");
         }
-        if (options.abortSignal?.aborted) {
-          const reason = options.abortSignal.reason;
-          throw reason instanceof Error && reason.name === 'TimeoutError'
-            ? reason
-            : normalizeAbortError(error);
-        }
-        const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-        const msg = isTimeout ? '网络请求超时 (60s)，大模型 API 未在规定时间内响应。' : (error instanceof Error ? error.message : String(error));
-        throw new ProviderError(msg, 'volcengine');
-      }
-    }, { maxRetries: 3, initialDelayMs: 1000, providerName: 'volcengine' });
+      },
+      { maxRetries: 3, initialDelayMs: 1000, providerName: "volcengine" },
+    );
   }
 }

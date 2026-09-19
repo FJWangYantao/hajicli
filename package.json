@@ -14,11 +14,14 @@
     "build:full": "pnpm run build && pnpm run build:native",
     "bench:native": "node scripts/benchmark-terminal-engine.mjs",
     "clean": "tsc --build --clean",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
     "test": "pnpm run build && node --test packages/cli/test/*.test.mjs",
-    "check": "pnpm test",
+    "check": "pnpm lint && pnpm test",
     "pack:check": "pnpm run build && node scripts/verify-packages.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3"
   }

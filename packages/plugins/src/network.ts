@@ -1,5 +1,5 @@
-import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
-import { normalizeAbortError } from '@hajicli/core';
+import { normalizeAbortError } from "@hajicli/core";
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 
 const DEFAULT_HTTP_TIMEOUT_MS = 60_000;
 /** 模型请求默认总超时：reasoning 模型长生成时 60s 容易被掐断，放宽到 5 分钟。 */
@@ -21,12 +21,14 @@ export interface NetworkPolicyOptions {
   useProxy?: boolean;
 }
 
-let cachedProxySignature = '';
+let cachedProxySignature = "";
 let cachedProxyAgent: EnvHttpProxyAgent | undefined;
 
 export function getHttpTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.HAJI_HTTP_TIMEOUT_MS);
-  return Number.isInteger(configured) && configured >= MIN_HTTP_TIMEOUT_MS && configured <= MAX_HTTP_TIMEOUT_MS
+  return Number.isInteger(configured) &&
+    configured >= MIN_HTTP_TIMEOUT_MS &&
+    configured <= MAX_HTTP_TIMEOUT_MS
     ? configured
     : DEFAULT_HTTP_TIMEOUT_MS;
 }
@@ -37,7 +39,9 @@ export function getHttpTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
  */
 export function getModelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.HAJI_MODEL_TIMEOUT_MS);
-  return Number.isInteger(configured) && configured >= MIN_HTTP_TIMEOUT_MS && configured <= MAX_HTTP_TIMEOUT_MS
+  return Number.isInteger(configured) &&
+    configured >= MIN_HTTP_TIMEOUT_MS &&
+    configured <= MAX_HTTP_TIMEOUT_MS
     ? configured
     : DEFAULT_MODEL_TIMEOUT_MS;
 }
@@ -45,7 +49,9 @@ export function getModelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number 
 /** 连接建立阶段超时：默认 20s，可通过 HAJI_CONNECT_TIMEOUT_MS 覆盖。 */
 export function getConnectTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.HAJI_CONNECT_TIMEOUT_MS);
-  return Number.isInteger(configured) && configured >= MIN_HTTP_TIMEOUT_MS && configured <= MAX_HTTP_TIMEOUT_MS
+  return Number.isInteger(configured) &&
+    configured >= MIN_HTTP_TIMEOUT_MS &&
+    configured <= MAX_HTTP_TIMEOUT_MS
     ? configured
     : DEFAULT_CONNECT_TIMEOUT_MS;
 }
@@ -59,7 +65,7 @@ export function getProxyConfiguration(env: NodeJS.ProcessEnv = process.env): Pro
     enabled: Boolean(httpProxy || httpsProxy),
     httpProxy,
     httpsProxy,
-    noProxy
+    noProxy,
   };
 }
 
@@ -71,7 +77,7 @@ function getProxyAgent(config: ProxyConfiguration): EnvHttpProxyAgent | undefine
     cachedProxyAgent = new EnvHttpProxyAgent({
       httpProxy: config.httpProxy,
       httpsProxy: config.httpsProxy,
-      noProxy: config.noProxy
+      noProxy: config.noProxy,
     });
   }
   return cachedProxyAgent;
@@ -79,33 +85,38 @@ function getProxyAgent(config: ProxyConfiguration): EnvHttpProxyAgent | undefine
 
 function timeoutError(timeoutMs: number): Error {
   const error = new Error(`请求在 ${timeoutMs}ms 内未完成（连接建立或响应头超时）`);
-  error.name = 'TimeoutError';
+  error.name = "TimeoutError";
   return error;
 }
 
 /** Uses one abort controller so ESC remains effective after response headers arrive. */
-function createRequestController(parentSignal: AbortSignal | undefined, timeoutMs: number): {
+function createRequestController(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): {
   controller: AbortController;
   clearRequestTimeout: () => void;
 } {
   const controller = new AbortController();
   const abortFromParent = () => {
     const reason = parentSignal?.reason;
-    controller.abort(reason instanceof Error && reason.name === 'TimeoutError'
-      ? reason
-      : normalizeAbortError(reason));
+    controller.abort(
+      reason instanceof Error && reason.name === "TimeoutError"
+        ? reason
+        : normalizeAbortError(reason),
+    );
   };
   if (parentSignal?.aborted) {
     abortFromParent();
   } else {
-    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   }
 
   const timeoutHandle = setTimeout(() => controller.abort(timeoutError(timeoutMs)), timeoutMs);
   timeoutHandle.unref?.();
   return {
     controller,
-    clearRequestTimeout: () => clearTimeout(timeoutHandle)
+    clearRequestTimeout: () => clearTimeout(timeoutHandle),
   };
 }
 
@@ -116,10 +127,13 @@ function createRequestController(parentSignal: AbortSignal | undefined, timeoutM
 export async function fetchWithNetworkPolicy(
   input: Parameters<typeof undiciFetch>[0],
   init: NonNullable<Parameters<typeof undiciFetch>[1]> = {},
-  options: NetworkPolicyOptions = {}
+  options: NetworkPolicyOptions = {},
 ): Promise<globalThis.Response> {
   const timeoutMs = options.timeoutMs ?? getHttpTimeoutMs();
-  const { controller, clearRequestTimeout } = createRequestController(init.signal || undefined, timeoutMs);
+  const { controller, clearRequestTimeout } = createRequestController(
+    init.signal || undefined,
+    timeoutMs,
+  );
   const proxy = options.useProxy === false ? undefined : getProxyAgent(getProxyConfiguration());
 
   try {
@@ -128,7 +142,7 @@ export async function fetchWithNetworkPolicy(
       ...init,
       signal: controller.signal,
       connect: { timeout: getConnectTimeoutMs() },
-      ...(proxy ? { dispatcher: proxy } : {})
+      ...(proxy ? { dispatcher: proxy } : {}),
     } as Parameters<typeof undiciFetch>[1]);
     return response as unknown as globalThis.Response;
   } catch (error) {
@@ -146,19 +160,22 @@ export async function fetchWithNetworkPolicy(
  */
 function decorateConnectionError(error: unknown): unknown {
   const cause = error instanceof Error && error.cause instanceof Error ? error.cause : undefined;
-  const code = cause && 'code' in cause
-    ? String((cause as { code?: unknown }).code ?? '')
-    : error instanceof Error && 'code' in error
-      ? String((error as { code?: unknown }).code ?? '')
-      : '';
-  if (code.startsWith('ECONN')) {
-    const wrapped = new Error(`无法连接目标服务（${code}）：请检查网络、代理（HAJI_PROXY）与目标地址是否可达`);
-    wrapped.name = 'ConnectionError';
+  const code =
+    cause && "code" in cause
+      ? String((cause as { code?: unknown }).code ?? "")
+      : error instanceof Error && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+  if (code.startsWith("ECONN")) {
+    const wrapped = new Error(
+      `无法连接目标服务（${code}）：请检查网络、代理（HAJI_PROXY）与目标地址是否可达`,
+    );
+    wrapped.name = "ConnectionError";
     return wrapped;
   }
-  if (code.startsWith('ENOT')) {
+  if (code.startsWith("ENOT")) {
     const wrapped = new Error(`无法解析目标域名（${code}）：请检查 DNS 与代理配置（HAJI_PROXY）`);
-    wrapped.name = 'ConnectionError';
+    wrapped.name = "ConnectionError";
     return wrapped;
   }
   return error;

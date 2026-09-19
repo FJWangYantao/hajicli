@@ -4,9 +4,9 @@
  * 纯 TypeScript 实现，零外部依赖。
  */
 
-import { performanceMonitor } from '@hajicli/core';
-import { buildAnsiStyles } from './theme.js';
-import { sanitizeTerminalText } from './terminal-sanitize.js';
+import { performanceMonitor } from "@hajicli/core";
+import { sanitizeTerminalText } from "./terminal-sanitize.js";
+import { buildAnsiStyles } from "./theme.js";
 
 /**
  * ANSI 样式代码字典。颜色取自当前主题（24-bit 真彩色），使 Markdown 渲染
@@ -17,12 +17,53 @@ const ANSI = buildAnsiStyles();
 
 /** 常见编程语言关键字集合 */
 const KEYWORDS = new Set([
-  'import', 'export', 'from', 'default', 'const', 'let', 'var', 'function',
-  'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break',
-  'continue', 'try', 'catch', 'finally', 'throw', 'new', 'class', 'extends',
-  'interface', 'type', 'async', 'await', 'yield', 'typeof', 'instanceof',
-  'void', 'public', 'private', 'protected', 'readonly', 'static', 'as', 'is',
-  'null', 'undefined', 'true', 'false', 'boolean', 'string', 'number'
+  "import",
+  "export",
+  "from",
+  "default",
+  "const",
+  "let",
+  "var",
+  "function",
+  "return",
+  "if",
+  "else",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "case",
+  "break",
+  "continue",
+  "try",
+  "catch",
+  "finally",
+  "throw",
+  "new",
+  "class",
+  "extends",
+  "interface",
+  "type",
+  "async",
+  "await",
+  "yield",
+  "typeof",
+  "instanceof",
+  "void",
+  "public",
+  "private",
+  "protected",
+  "readonly",
+  "static",
+  "as",
+  "is",
+  "null",
+  "undefined",
+  "true",
+  "false",
+  "boolean",
+  "string",
+  "number",
 ]);
 
 /** Limits expensive full Markdown reparses while model chunks arrive rapidly. */
@@ -36,11 +77,12 @@ export class MarkdownRenderThrottle {
    * rate while preserving the final, unthrottled render performed by the caller.
    */
   shouldRender(now = Date.now(), contentLength = 0): boolean {
-    const adaptiveInterval = contentLength >= 64_000
-      ? Math.max(this.intervalMs, 64)
-      : contentLength >= 24_000
-        ? Math.max(this.intervalMs, 48)
-        : this.intervalMs;
+    const adaptiveInterval =
+      contentLength >= 64_000
+        ? Math.max(this.intervalMs, 64)
+        : contentLength >= 24_000
+          ? Math.max(this.intervalMs, 48)
+          : this.intervalMs;
     if (now - this.lastRenderAt < adaptiveInterval) return false;
     this.lastRenderAt = now;
     return true;
@@ -57,17 +99,18 @@ export function shouldShowToolThinkingSummary(textContent: string, toolCallCount
  */
 export class MarkdownStreamRenderer {
   /** 累积接收到的原始 Markdown 全量文本 */
-  private rawContent = '';
+  private rawContent = "";
 
   constructor(
-    private readonly widthProvider: () => number = () => Math.max(20, (process.stdout?.columns || 80) - 2)
+    private readonly widthProvider: () => number = () =>
+      Math.max(20, (process.stdout?.columns || 80) - 2),
   ) {}
 
   /**
    * 重置渲染器状态。
    */
   reset(): void {
-    this.rawContent = '';
+    this.rawContent = "";
   }
 
   /**
@@ -87,9 +130,8 @@ export class MarkdownStreamRenderer {
    */
   render(content: string, isFinal = false): string {
     const safeContent = sanitizeTerminalText(content);
-    return performanceMonitor.measureSync(
-      'markdown.render',
-      () => this.renderContent(safeContent, isFinal)
+    return performanceMonitor.measureSync("markdown.render", () =>
+      this.renderContent(safeContent, isFinal),
     );
   }
 
@@ -102,11 +144,11 @@ export class MarkdownStreamRenderer {
     const renderedLines: string[] = [];
 
     let inCodeBlock = false;
-    let codeLanguage = '';
+    let codeLanguage = "";
     let codeBlockBuffer: string[] = [];
     let tableBuffer: string[] = [];
     let inAsciiCard = false;
-    let asciiCardHeader = '';
+    let asciiCardHeader = "";
     let asciiCardBuffer: string[] = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -127,7 +169,7 @@ export class MarkdownStreamRenderer {
         } else {
           inCodeBlock = false;
           renderedLines.push(...this.renderCodeBlock(codeBlockBuffer, codeLanguage));
-          codeLanguage = '';
+          codeLanguage = "";
           codeBlockBuffer = [];
         }
         continue;
@@ -209,7 +251,7 @@ export class MarkdownStreamRenderer {
       asciiCardBuffer = [];
     }
 
-    return renderedLines.join('\n');
+    return renderedLines.join("\n");
   }
 
   /**
@@ -220,37 +262,40 @@ export class MarkdownStreamRenderer {
     const maxWidth = this.getMaxWidth();
 
     const match = headerLine.match(/^┌──\s*([a-zA-Z0-9_-]*)/);
-    const langLabel = match && match[1] ? ` ${match[1]} ` : ' code ';
+    const langLabel = match?.[1] ? ` ${match[1]} ` : " code ";
 
     if (maxWidth < 40) {
       return [
-        `${ANSI.gray}◇${langLabel.trim() ? ` ${langLabel.trim()}` : ''}${ANSI.reset}`,
-        ...lines.map(line => `${ANSI.gray}│${ANSI.reset} ${this.renderNormalLine(line)}`)
+        `${ANSI.gray}◇${langLabel.trim() ? ` ${langLabel.trim()}` : ""}${ANSI.reset}`,
+        ...lines.map((line) => `${ANSI.gray}│${ANSI.reset} ${this.renderNormalLine(line)}`),
       ];
     }
 
     // 测量卡片内部最长文本的可视宽度
-    const maxContentLen = lines.length > 0
-      ? Math.max(...lines.map(l => this.getTextWidth(l)), 10)
-      : 10;
+    const maxContentLen =
+      lines.length > 0 ? Math.max(...lines.map((l) => this.getTextWidth(l)), 10) : 10;
 
     const innerWidth = Math.min(maxWidth - 4, maxContentLen);
     const cardWidth = innerWidth + 4;
     const topDashes = Math.max(2, cardWidth - 4 - langLabel.length);
 
     // 顶栏边框 ┌── label ───────┐
-    output.push(`${ANSI.gray}┌──${ANSI.cyan}${langLabel}${ANSI.gray}${'─'.repeat(topDashes)}┐${ANSI.reset}`);
+    output.push(
+      `${ANSI.gray}┌──${ANSI.cyan}${langLabel}${ANSI.gray}${"─".repeat(topDashes)}┐${ANSI.reset}`,
+    );
 
     for (const line of lines) {
       const styled = this.renderNormalLine(line);
       const truncated = this.truncateVisual(styled, innerWidth);
       const padLen = Math.max(0, innerWidth - this.getTextWidth(truncated));
-      output.push(`${ANSI.gray}│${ANSI.reset} ${truncated}${' '.repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`);
+      output.push(
+        `${ANSI.gray}│${ANSI.reset} ${truncated}${" ".repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`,
+      );
     }
 
     // 底栏边框 └────────────────┘
     const botDashes = Math.max(2, cardWidth - 2);
-    output.push(`${ANSI.gray}└${'─'.repeat(botDashes)}┘${ANSI.reset}`);
+    output.push(`${ANSI.gray}└${"─".repeat(botDashes)}┘${ANSI.reset}`);
 
     return output;
   }
@@ -264,22 +309,22 @@ export class MarkdownStreamRenderer {
     // 补全代码块 ```
     const codeBlockCount = (text.match(/^```/gm) || []).length;
     if (codeBlockCount % 2 !== 0) {
-      closed += '\n```';
+      closed += "\n```";
     }
 
     // 补全粗体 **
     const boldCount = (closed.match(/\*\*/g) || []).length;
     if (boldCount % 2 !== 0) {
-      closed += '**';
+      closed += "**";
     }
 
     // 补齐末行未闭合的单反引号 `
-    const lines = closed.split('\n');
+    const lines = closed.split("\n");
     const lastIdx = lines.length - 1;
     const backtickCount = (lines[lastIdx].match(/`/g) || []).length;
     if (backtickCount % 2 !== 0) {
-      lines[lastIdx] += '`';
-      closed = lines.join('\n');
+      lines[lastIdx] += "`";
+      closed = lines.join("\n");
     }
 
     return closed;
@@ -314,7 +359,7 @@ export class MarkdownStreamRenderer {
     const taskMatch = line.match(/^(\s*)([-*+])\s+\[([ xX])\]\s+(.*)$/);
     if (taskMatch) {
       const indent = taskMatch[1];
-      const isChecked = taskMatch[3].toLowerCase() === 'x';
+      const isChecked = taskMatch[3].toLowerCase() === "x";
       const text = this.renderInlineStyles(taskMatch[4]);
       if (isChecked) {
         return `${indent}${ANSI.green}☑ ${ANSI.strikethrough}${text}${ANSI.reset}`;
@@ -385,13 +430,13 @@ export class MarkdownStreamRenderer {
    * 按终端可视宽度截断文本，超出部分以 `…` 替换，并包含 ANSI 样式重置。
    */
   private truncateVisual(str: string, targetWidth: number): string {
-    if (targetWidth <= 0) return '';
+    if (targetWidth <= 0) return "";
     const totalWidth = this.getTextWidth(str);
     if (totalWidth <= targetWidth) return str;
 
     const limit = Math.max(1, targetWidth - 1);
     let currentWidth = 0;
-    let result = '';
+    let result = "";
     const ansiPrefix = /^\x1b\[[0-?]*[ -/]*[@-~]/;
     let i = 0;
 
@@ -425,21 +470,22 @@ export class MarkdownStreamRenderer {
    */
   private renderCodeBlock(lines: string[], lang: string): string[] {
     const output: string[] = [];
-    const langLabel = lang ? ` ${lang} ` : ' code ';
+    const langLabel = lang ? ` ${lang} ` : " code ";
     const maxWidth = this.getMaxWidth();
 
     if (maxWidth < 40) {
-      output.push(`${ANSI.gray}◇ ${lang || 'code'}${ANSI.reset}`);
+      output.push(`${ANSI.gray}◇ ${lang || "code"}${ANSI.reset}`);
       for (const line of lines) {
-        const styled = lang === 'diff'
-          ? (line.startsWith('+')
-            ? `${ANSI.green}${line}${ANSI.reset}`
-            : line.startsWith('-')
-              ? `${ANSI.red}${line}${ANSI.reset}`
-              : line.startsWith('@@')
-                ? `${ANSI.cyan}${line}${ANSI.reset}`
-                : line)
-          : this.highlightCodeLine(line);
+        const styled =
+          lang === "diff"
+            ? line.startsWith("+")
+              ? `${ANSI.green}${line}${ANSI.reset}`
+              : line.startsWith("-")
+                ? `${ANSI.red}${line}${ANSI.reset}`
+                : line.startsWith("@@")
+                  ? `${ANSI.cyan}${line}${ANSI.reset}`
+                  : line
+            : this.highlightCodeLine(line);
         // 窄屏不在 Markdown 层截断；交给聊天区统一软换行，避免丢失代码。
         output.push(`${ANSI.gray}│${ANSI.reset} ${styled}`);
       }
@@ -447,9 +493,8 @@ export class MarkdownStreamRenderer {
     }
 
     // 测量代码块内部最长行的可视宽度
-    const maxContentLen = lines.length > 0
-      ? Math.max(...lines.map(l => this.getTextWidth(l)), 10)
-      : 10;
+    const maxContentLen =
+      lines.length > 0 ? Math.max(...lines.map((l) => this.getTextWidth(l)), 10) : 10;
 
     // 计算包含两侧边框 (│  ...  │) 的适配列宽
     const innerWidth = Math.min(maxWidth - 4, maxContentLen);
@@ -457,16 +502,18 @@ export class MarkdownStreamRenderer {
     const topDashes = Math.max(2, cardWidth - 4 - langLabel.length);
 
     // 代码块顶栏边框 ┌── label ───────┐
-    output.push(`${ANSI.gray}┌──${ANSI.cyan}${langLabel}${ANSI.gray}${'─'.repeat(topDashes)}┐${ANSI.reset}`);
+    output.push(
+      `${ANSI.gray}┌──${ANSI.cyan}${langLabel}${ANSI.gray}${"─".repeat(topDashes)}┐${ANSI.reset}`,
+    );
 
     for (const line of lines) {
       let styled = line;
-      if (lang === 'diff') {
-        if (line.startsWith('+')) {
+      if (lang === "diff") {
+        if (line.startsWith("+")) {
           styled = `${ANSI.green}${line}${ANSI.reset}`;
-        } else if (line.startsWith('-')) {
+        } else if (line.startsWith("-")) {
           styled = `${ANSI.red}${line}${ANSI.reset}`;
-        } else if (line.startsWith('@@')) {
+        } else if (line.startsWith("@@")) {
           styled = `${ANSI.cyan}${line}${ANSI.reset}`;
         }
       } else {
@@ -475,12 +522,14 @@ export class MarkdownStreamRenderer {
 
       const truncated = this.truncateVisual(styled, innerWidth);
       const padLen = Math.max(0, innerWidth - this.getTextWidth(truncated));
-      output.push(`${ANSI.gray}│${ANSI.reset} ${truncated}${' '.repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`);
+      output.push(
+        `${ANSI.gray}│${ANSI.reset} ${truncated}${" ".repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`,
+      );
     }
 
     // 代码块底栏边框 └────────────────┘
     const botDashes = Math.max(2, cardWidth - 2);
-    output.push(`${ANSI.gray}└${'─'.repeat(botDashes)}┘${ANSI.reset}`);
+    output.push(`${ANSI.gray}└${"─".repeat(botDashes)}┘${ANSI.reset}`);
 
     return output;
   }
@@ -489,12 +538,12 @@ export class MarkdownStreamRenderer {
    * 单行代码语法高亮处理。
    */
   private highlightCodeLine(line: string): string {
-    if (line.trim().startsWith('//') || line.trim().startsWith('#')) {
+    if (line.trim().startsWith("//") || line.trim().startsWith("#")) {
       return `${ANSI.gray}${line}${ANSI.reset}`;
     }
 
     return line.replace(/("[^"]*"|'[^']*'|`[^`]*`|\b\d+\b|\b[a-zA-Z_]\w*\b)/g, (token) => {
-      if (token.startsWith('"') || token.startsWith("'") || token.startsWith('`')) {
+      if (token.startsWith('"') || token.startsWith("'") || token.startsWith("`")) {
         return `${ANSI.green}${token}${ANSI.reset}`;
       }
       if (/^\d+$/.test(token)) {
@@ -512,7 +561,7 @@ export class MarkdownStreamRenderer {
    */
   private isTableLine(line: string): boolean {
     const trimmed = line.trim();
-    return trimmed.startsWith('|') && trimmed.endsWith('|');
+    return trimmed.startsWith("|") && trimmed.endsWith("|");
   }
 
   /**
@@ -522,24 +571,24 @@ export class MarkdownStreamRenderer {
   private splitTableRow(line: string): string[] {
     const trimmed = line.trim();
     let content = trimmed;
-    if (content.startsWith('|')) content = content.slice(1);
-    if (content.endsWith('|')) content = content.slice(0, -1);
+    if (content.startsWith("|")) content = content.slice(1);
+    if (content.endsWith("|")) content = content.slice(0, -1);
 
     const cells: string[] = [];
-    let current = '';
+    let current = "";
     let inBacktick = false;
 
     for (let i = 0; i < content.length; i++) {
       const char = content[i];
-      if (char === '`') {
+      if (char === "`") {
         inBacktick = !inBacktick;
         current += char;
-      } else if (char === '\\' && i + 1 < content.length && content[i + 1] === '|') {
-        current += '|';
+      } else if (char === "\\" && i + 1 < content.length && content[i + 1] === "|") {
+        current += "|";
         i++;
-      } else if (char === '|' && !inBacktick) {
+      } else if (char === "|" && !inBacktick) {
         cells.push(current.trim());
-        current = '';
+        current = "";
       } else {
         current += char;
       }
@@ -554,13 +603,13 @@ export class MarkdownStreamRenderer {
   private stripMarkdown(text: string): string {
     let result = text;
     // 行内代码 `code`
-    result = result.replace(/`([^`]+)`/g, '$1');
+    result = result.replace(/`([^`]+)`/g, "$1");
     // 粗体 **text** 或 __text__
-    result = result.replace(/(\*\*|__)(.*?)\1/g, '$2');
+    result = result.replace(/(\*\*|__)(.*?)\1/g, "$2");
     // 斜体 *text* 或 _text_（要求两侧有非字母下划线界限，避免把代码变量 write_file 当作斜体误删）
-    result = result.replace(/(^|[^\w])(\*|_)(.*?)\2(?=[^\w]|$)/g, '$1$3');
+    result = result.replace(/(^|[^\w])(\*|_)(.*?)\2(?=[^\w]|$)/g, "$1$3");
     // 删除线 ~~text~~
-    result = result.replace(/~~(.*?)~~/g, '$1');
+    result = result.replace(/~~(.*?)~~/g, "$1");
     return result;
   }
 
@@ -568,18 +617,20 @@ export class MarkdownStreamRenderer {
    * 判断字符码位是否为东亚宽字符（CJK / 全角符号 / Emoji）。
    */
   private isWideChar(cp: number): boolean {
-    return cp >= 0x1100 && (
-      cp <= 0x115f
-      || cp === 0x2329 || cp === 0x232a
-      || (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f)
-      || (cp >= 0xac00 && cp <= 0xd7a3)
-      || (cp >= 0xf900 && cp <= 0xfaff)
-      || (cp >= 0xfe10 && cp <= 0xfe19)
-      || (cp >= 0xfe30 && cp <= 0xfe6f)
-      || (cp >= 0xff00 && cp <= 0xff60)
-      || (cp >= 0xffe0 && cp <= 0xffe6)
-      || (cp >= 0x1f300 && cp <= 0x1faff)
-      || (cp >= 0x20000 && cp <= 0x3fffd)
+    return (
+      cp >= 0x1100 &&
+      (cp <= 0x115f ||
+        cp === 0x2329 ||
+        cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe10 && cp <= 0xfe19) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x1f300 && cp <= 0x1faff) ||
+        (cp >= 0x20000 && cp <= 0x3fffd))
     );
   }
 
@@ -591,20 +642,20 @@ export class MarkdownStreamRenderer {
       return lines;
     }
 
-    const rows = lines.map(line => this.splitTableRow(line));
+    const rows = lines.map((line) => this.splitTableRow(line));
 
-    const contentRows = rows.filter(row => !row.every(cell => /^:?-+:?$/.test(cell)));
+    const contentRows = rows.filter((row) => !row.every((cell) => /^:?-+:?$/.test(cell)));
 
     if (contentRows.length === 0) {
       return lines;
     }
 
-    const colCount = Math.max(...contentRows.map(r => r.length));
+    const colCount = Math.max(...contentRows.map((r) => r.length));
     const colWidths = new Array(colCount).fill(0);
 
     for (const row of contentRows) {
       for (let c = 0; c < colCount; c++) {
-        const text = row[c] || '';
+        const text = row[c] || "";
         colWidths[c] = Math.max(colWidths[c] || 0, this.getRawMarkdownWidth(text));
       }
     }
@@ -615,19 +666,21 @@ export class MarkdownStreamRenderer {
     if (maxWidth < 40 || borderOverhead + colCount * 3 > maxWidth) {
       const headerRow = contentRows[0];
       if (contentRows.length === 1) {
-        return [headerRow.map(cell => this.renderInlineStyles(cell)).join(' · ')];
+        return [headerRow.map((cell) => this.renderInlineStyles(cell)).join(" · ")];
       }
 
       const stacked: string[] = [];
       for (let rowIndex = 1; rowIndex < contentRows.length; rowIndex += 1) {
-        if (rowIndex > 1) stacked.push('');
+        if (rowIndex > 1) stacked.push("");
         if (contentRows.length > 2) {
           stacked.push(`${ANSI.gray}◇ ${rowIndex}${ANSI.reset}`);
         }
         for (let column = 0; column < colCount; column += 1) {
           const label = headerRow[column] || `列 ${column + 1}`;
-          const value = contentRows[rowIndex][column] || '';
-          stacked.push(`${ANSI.bold}${this.renderInlineStyles(label)}${ANSI.reset}: ${this.renderInlineStyles(value)}`);
+          const value = contentRows[rowIndex][column] || "";
+          stacked.push(
+            `${ANSI.bold}${this.renderInlineStyles(label)}${ANSI.reset}: ${this.renderInlineStyles(value)}`,
+          );
         }
       }
       return stacked;
@@ -636,7 +689,7 @@ export class MarkdownStreamRenderer {
     const sumWidths = colWidths.reduce((a, b) => a + b, 0);
 
     if (sumWidths > maxContentWidth) {
-      const scaledWidths = colWidths.map(w => {
+      const scaledWidths = colWidths.map((w) => {
         const ratio = sumWidths > 0 ? w / sumWidths : 1 / colCount;
         return Math.max(3, Math.floor(ratio * maxContentWidth));
       });
@@ -647,7 +700,7 @@ export class MarkdownStreamRenderer {
         currentSum++;
         idx = (idx + 1) % colCount;
       }
-      while (currentSum > maxContentWidth && scaledWidths.some(w => w > 3)) {
+      while (currentSum > maxContentWidth && scaledWidths.some((w) => w > 3)) {
         for (let c = colCount - 1; c >= 0; c--) {
           if (scaledWidths[c] > 3 && currentSum > maxContentWidth) {
             scaledWidths[c]--;
@@ -663,25 +716,29 @@ export class MarkdownStreamRenderer {
     const output: string[] = [];
 
     // 顶边框 ┌─────┬─────┐
-    const topBorder = '┌' + colWidths.map(w => '─'.repeat(w + 2)).join('┬') + '┐';
+    const topBorder = `┌${colWidths.map((w) => "─".repeat(w + 2)).join("┬")}┐`;
     output.push(`${ANSI.gray}${topBorder}${ANSI.reset}`);
 
     // 表头行
     const headerRow = contentRows[0];
     const headerCells = [];
     for (let c = 0; c < colCount; c++) {
-      const rawText = headerRow[c] || '';
+      const rawText = headerRow[c] || "";
       const styledText = this.renderInlineStyles(rawText);
       const truncatedText = this.truncateVisual(styledText, colWidths[c]);
       const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
-      headerCells.push(` ${ANSI.bold}${ANSI.cyan}${truncatedText}${ANSI.reset}${' '.repeat(padLen)} `);
+      headerCells.push(
+        ` ${ANSI.bold}${ANSI.cyan}${truncatedText}${ANSI.reset}${" ".repeat(padLen)} `,
+      );
     }
-    output.push(`${ANSI.gray}│${ANSI.reset}${headerCells.join(ANSI.gray + '│' + ANSI.reset)}${ANSI.gray}│${ANSI.reset}`);
+    output.push(
+      `${ANSI.gray}│${ANSI.reset}${headerCells.join(`${ANSI.gray}│${ANSI.reset}`)}${ANSI.gray}│${ANSI.reset}`,
+    );
 
     // 如果包含数据行，渲染中间分隔线与表体行
     if (contentRows.length > 1) {
       // 分割边框 ├─────┼─────┤
-      const midBorder = '├' + colWidths.map(w => '─'.repeat(w + 2)).join('┼') + '┤';
+      const midBorder = `├${colWidths.map((w) => "─".repeat(w + 2)).join("┼")}┤`;
       output.push(`${ANSI.gray}${midBorder}${ANSI.reset}`);
 
       // 表体行
@@ -689,18 +746,20 @@ export class MarkdownStreamRenderer {
         const row = contentRows[r];
         const cells = [];
         for (let c = 0; c < colCount; c++) {
-          const rawText = row[c] || '';
+          const rawText = row[c] || "";
           const styledText = this.renderInlineStyles(rawText);
           const truncatedText = this.truncateVisual(styledText, colWidths[c]);
           const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
-          cells.push(` ${truncatedText}${' '.repeat(padLen)} `);
+          cells.push(` ${truncatedText}${" ".repeat(padLen)} `);
         }
-        output.push(`${ANSI.gray}│${ANSI.reset}${cells.join(ANSI.gray + '│' + ANSI.reset)}${ANSI.gray}│${ANSI.reset}`);
+        output.push(
+          `${ANSI.gray}│${ANSI.reset}${cells.join(`${ANSI.gray}│${ANSI.reset}`)}${ANSI.gray}│${ANSI.reset}`,
+        );
       }
     }
 
     // 底边框 └─────┴─────┘
-    const botBorder = '└' + colWidths.map(w => '─'.repeat(w + 2)).join('┴') + '┘';
+    const botBorder = `└${colWidths.map((w) => "─".repeat(w + 2)).join("┴")}┘`;
     output.push(`${ANSI.gray}${botBorder}${ANSI.reset}`);
 
     return output;
@@ -710,7 +769,7 @@ export class MarkdownStreamRenderer {
    * 计算字符串的真实终端可视宽度（仅过滤 ANSI 颜色转义码，精准保留代码下划线与所有可见字符）。
    */
   private getTextWidth(str: string): number {
-    const plain = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+    const plain = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     let width = 0;
     for (const ch of plain) {
       const cp = ch.codePointAt(0) ?? 0;
@@ -723,7 +782,7 @@ export class MarkdownStreamRenderer {
    * 计算原始 Markdown 单元格在渲染前的可视宽度（剥离 Markdown 语法标记）。
    */
   private getRawMarkdownWidth(str: string): number {
-    const plainANSI = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+    const plainANSI = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     const plain = this.stripMarkdown(plainANSI);
     let width = 0;
     for (const ch of plain) {

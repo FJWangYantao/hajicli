@@ -1,7 +1,7 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fetchWithNetworkPolicy } from '@hajicli/plugins';
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fetchWithNetworkPolicy } from "@hajicli/plugins";
 
 /**
  * Provider 快速配置模块。
@@ -21,7 +21,7 @@ import { fetchWithNetworkPolicy } from '@hajicli/plugins';
  */
 
 export type ProviderName = string;
-export type ProviderConfigScope = 'user' | 'project';
+export type ProviderConfigScope = "user" | "project";
 
 export interface ProviderEntry {
   apiKey?: string;
@@ -36,7 +36,7 @@ export interface ProviderConfig {
 }
 
 /** 内置 provider 名称，保持既有环境变量/模型注册表兼容。 */
-export const PROVIDER_NAMES: readonly ProviderName[] = ['deepseek', 'volcengine'];
+export const PROVIDER_NAMES: readonly ProviderName[] = ["deepseek", "volcengine"];
 
 export function isBuiltinProvider(name: string): boolean {
   return PROVIDER_NAMES.includes(name);
@@ -45,10 +45,10 @@ export function isBuiltinProvider(name: string): boolean {
 /** 校验用户输入的 provider 名称；合法返回 null，否则返回错误描述。 */
 export function validateProviderName(name: string): string | null {
   const trimmed = name.trim();
-  if (!trimmed) return 'provider 名称不能为空';
-  if (/\s/.test(trimmed)) return 'provider 名称不能包含空白字符';
-  if (/[\\/:*?"<>|]/.test(trimmed)) return 'provider 名称不能包含路径/保留字符';
-  if (trimmed.length > 32) return 'provider 名称过长（最多 32 个字符）';
+  if (!trimmed) return "provider 名称不能为空";
+  if (/\s/.test(trimmed)) return "provider 名称不能包含空白字符";
+  if (/[\\/:*?"<>|]/.test(trimmed)) return "provider 名称不能包含路径/保留字符";
+  if (trimmed.length > 32) return "provider 名称过长（最多 32 个字符）";
   return null;
 }
 
@@ -56,25 +56,37 @@ export function validateProviderName(name: string): string | null {
  * 解析用户输入的模型列表：支持分号、逗号、中文分号分隔，自动去空白与去重。
  */
 export function parseModelList(input: string): string[] {
-  return [...new Set(input.split(/[;；,，]/).map(s => s.trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      input
+        .split(/[;；,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 export function userProviderConfigPath(): string {
-  return path.join(os.homedir(), '.haji', 'config.json');
+  return path.join(os.homedir(), ".haji", "config.json");
 }
 
 export function projectProviderConfigPath(): string {
-  return path.join(process.cwd(), '.haji', 'config.json');
+  return path.join(process.cwd(), ".haji", "config.json");
 }
 
 export function providerConfigPath(scope: ProviderConfigScope): string {
-  return scope === 'project' ? projectProviderConfigPath() : userProviderConfigPath();
+  return scope === "project" ? projectProviderConfigPath() : userProviderConfigPath();
 }
 
 function readConfigFile(filePath: string): ProviderConfig {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as ProviderConfig;
-    if (!parsed || typeof parsed !== 'object' || !parsed.providers || typeof parsed.providers !== 'object') {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as ProviderConfig;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !parsed.providers ||
+      typeof parsed.providers !== "object"
+    ) {
       return { providers: {} };
     }
     return { providers: parsed.providers };
@@ -96,7 +108,11 @@ export function loadProviderConfigScope(scope: ProviderConfigScope): ProviderCon
 export function loadProviderConfig(): ProviderConfig {
   const user = readConfigFile(userProviderConfigPath());
   const project = readConfigFile(projectProviderConfigPath());
-  const names = new Set<string>([...PROVIDER_NAMES, ...Object.keys(user.providers), ...Object.keys(project.providers)]);
+  const names = new Set<string>([
+    ...PROVIDER_NAMES,
+    ...Object.keys(user.providers),
+    ...Object.keys(project.providers),
+  ]);
   const providers: Record<ProviderName, ProviderEntry> = {};
   for (const name of names) {
     providers[name] = { ...user.providers[name], ...project.providers[name] };
@@ -108,7 +124,7 @@ function writeConfig(config: ProviderConfig, scope: ProviderConfigScope): boolea
   const filePath = providerConfigPath(scope);
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf8');
+    fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
     // 尽量收紧文件权限；Windows 上可能无效，忽略失败
     try {
       fs.chmodSync(filePath, 0o600);
@@ -129,17 +145,19 @@ function writeConfig(config: ProviderConfig, scope: ProviderConfigScope): boolea
 export function saveProviderConfig(
   provider: ProviderName,
   entry: ProviderEntry,
-  scope: ProviderConfigScope = 'user'
+  scope: ProviderConfigScope = "user",
 ): boolean {
   const config = readConfigFile(providerConfigPath(scope));
   const merged: ProviderEntry = { ...config.providers[provider], ...entry };
   const cleaned: ProviderEntry = {};
   const out = cleaned as Record<string, unknown>;
   for (const [key, value] of Object.entries(merged)) {
-    if (key === 'models') {
-      const items = (Array.isArray(value) ? value : []).filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+    if (key === "models") {
+      const items = (Array.isArray(value) ? value : []).filter(
+        (item): item is string => typeof item === "string" && Boolean(item.trim()),
+      );
       if (items.length > 0) out.models = items;
-    } else if (typeof value === 'string' && value.trim()) {
+    } else if (typeof value === "string" && value.trim()) {
       out[key] = value;
     }
   }
@@ -152,7 +170,7 @@ export function saveProviderConfig(
  */
 export function unsetProviderConfig(
   provider: ProviderName,
-  scope: ProviderConfigScope = 'user'
+  scope: ProviderConfigScope = "user",
 ): boolean {
   const config = readConfigFile(providerConfigPath(scope));
   delete config.providers[provider];
@@ -165,10 +183,10 @@ export function unsetProviderConfig(
  */
 export function resolveProviderSetting(
   provider: ProviderName,
-  key: 'apiKey' | 'baseUrl' | 'model',
+  key: "apiKey" | "baseUrl" | "model",
   envValue: string | undefined,
   fallback: string | undefined,
-  config: ProviderConfig = loadProviderConfig()
+  config: ProviderConfig = loadProviderConfig(),
 ): string | undefined {
   return envValue || config.providers[provider]?.[key] || fallback;
 }
@@ -202,33 +220,33 @@ export function normalizeBaseUrl(input: string): { url: string; note?: string } 
   const qIndex = url.search(/[?#]/);
   if (qIndex >= 0) {
     const stripped = url.slice(0, qIndex);
-    if (stripped !== url) notes.push('已去掉 URL 中的查询参数');
+    if (stripped !== url) notes.push("已去掉 URL 中的查询参数");
     url = stripped;
   }
 
   // 去掉全部尾部斜杠
-  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/+$/, "");
 
   // 剥掉完整的 OpenAI 兼容端点后缀（含重复与大小写变体）
   const chatMatch = url.match(/(\/chat\/completions)+$/i);
   if (chatMatch) {
     url = url.slice(0, url.length - chatMatch[0].length);
-    notes.push('已自动去掉末尾的 /chat/completions（Base URL 只需填服务根地址）');
+    notes.push("已自动去掉末尾的 /chat/completions（Base URL 只需填服务根地址）");
   }
 
   // 剥掉 Anthropic 风格 /messages 后缀，转成 OpenAI 兼容请求
   const msgMatch = url.match(/(\/messages)+$/i);
   if (msgMatch) {
     url = url.slice(0, url.length - msgMatch[0].length);
-    notes.push('已自动去掉末尾的 /messages（Anthropic 端点，按 OpenAI 兼容方式请求）');
+    notes.push("已自动去掉末尾的 /messages（Anthropic 端点，按 OpenAI 兼容方式请求）");
   }
 
   // 剥掉后缀后可能残留斜杠
-  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/+$/, "");
 
   return {
     url,
-    ...(notes.length > 0 ? { note: notes.join('；') } : {})
+    ...(notes.length > 0 ? { note: notes.join("；") } : {}),
   };
 }
 
@@ -241,12 +259,16 @@ export async function testProviderConnection(
   baseUrl: string,
   apiKey: string,
   model: string,
-  timeoutMs = 15_000
+  timeoutMs = 15_000,
 ): Promise<ProviderConnectionResult> {
   const normalized = normalizeBaseUrl(baseUrl);
   const base = normalized.url;
   if (!/^https?:\/\//i.test(base)) {
-    return { ok: false, error: `Base URL 无效：${baseUrl}`, ...(normalized.note ? { normalizedNote: normalized.note } : {}) };
+    return {
+      ok: false,
+      error: `Base URL 无效：${baseUrl}`,
+      ...(normalized.note ? { normalizedNote: normalized.note } : {}),
+    };
   }
   const url = `${base}/chat/completions`;
   const startedAt = performance.now();
@@ -254,23 +276,28 @@ export async function testProviderConnection(
     const response = await fetchWithNetworkPolicy(
       url,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
           model,
-          messages: [{ role: 'user', content: 'ping' }],
+          messages: [{ role: "user", content: "ping" }],
           max_tokens: 1,
-          stream: false
-        })
+          stream: false,
+        }),
       },
-      { timeoutMs }
+      { timeoutMs },
     );
     const ms = Math.round(performance.now() - startedAt);
     if (response.ok) {
-      return { ok: true, ms, usedUrl: url, ...(normalized.note ? { normalizedNote: normalized.note } : {}) };
+      return {
+        ok: true,
+        ms,
+        usedUrl: url,
+        ...(normalized.note ? { normalizedNote: normalized.note } : {}),
+      };
     }
     let errorMsg = `HTTP ${response.status}`;
     try {
@@ -279,12 +306,28 @@ export async function testProviderConnection(
     } catch {
       // 响应体非 JSON 时保留状态码描述
     }
-    return { ok: false, ms, error: errorMsg, usedUrl: url, ...(normalized.note ? { normalizedNote: normalized.note } : {}) };
+    return {
+      ok: false,
+      ms,
+      error: errorMsg,
+      usedUrl: url,
+      ...(normalized.note ? { normalizedNote: normalized.note } : {}),
+    };
   } catch (error) {
     const ms = Math.round(performance.now() - startedAt);
-    if (error instanceof Error && error.name === 'TimeoutError') {
-      return { ok: false, ms, error: `请求超时（${timeoutMs}ms）`, ...(normalized.note ? { normalizedNote: normalized.note } : {}) };
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return {
+        ok: false,
+        ms,
+        error: `请求超时（${timeoutMs}ms）`,
+        ...(normalized.note ? { normalizedNote: normalized.note } : {}),
+      };
     }
-    return { ok: false, ms, error: error instanceof Error ? error.message : String(error), ...(normalized.note ? { normalizedNote: normalized.note } : {}) };
+    return {
+      ok: false,
+      ms,
+      error: error instanceof Error ? error.message : String(error),
+      ...(normalized.note ? { normalizedNote: normalized.note } : {}),
+    };
   }
 }

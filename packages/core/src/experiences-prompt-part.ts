@@ -1,6 +1,6 @@
-import path from 'node:path';
-import { ExperienceStore } from './experience-store.js';
-import { PromptContext, SystemPromptPart } from './types.js';
+import path from "node:path";
+import type { ExperienceStore } from "./experience-store.js";
+import type { PromptContext, SystemPromptPart } from "./types.js";
 
 /**
  * 经验记忆系统提示词分片。
@@ -19,7 +19,7 @@ import { PromptContext, SystemPromptPart } from './types.js';
  * 关键词召回是 O(token 集合) 的轻量操作，避免每轮对话跑向量检索。
  */
 export class ExperiencesPromptPart implements SystemPromptPart {
-  public readonly id = 'experiences';
+  public readonly id = "experiences";
   public readonly priority = 46;
 
   /** 单次注入的字符上限，防止经验库膨胀后挤占上下文。 */
@@ -27,7 +27,7 @@ export class ExperiencesPromptPart implements SystemPromptPart {
 
   constructor(
     private readonly store: ExperienceStore,
-    options: { maxChars?: number } = {}
+    options: { maxChars?: number } = {},
   ) {
     this.maxChars = options.maxChars ?? 2000;
   }
@@ -36,10 +36,10 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     const query = this.buildQuery(context);
     const instincts = this.store.recallInstincts(query, 8, 0.7);
     const memories = this.store.recallMemories(query, 5);
-    if (instincts.length === 0 && memories.length === 0) return '';
+    if (instincts.length === 0 && memories.length === 0) return "";
 
-    const sections: string[] = ['# 经验记忆（系统自动积累，请优先参考）'];
-    const used = sections.join('\n').length;
+    const sections: string[] = ["# 经验记忆（系统自动积累，请优先参考）"];
+    const used = sections.join("\n").length;
     let budget = this.maxChars - used;
 
     if (instincts.length > 0) {
@@ -54,8 +54,8 @@ export class ExperiencesPromptPart implements SystemPromptPart {
       if (memoryLines) sections.push(memoryLines);
     }
 
-    const result = sections.join('\n\n');
-    return result.length > this.maxChars ? result.slice(0, this.maxChars) + '…' : result;
+    const result = sections.join("\n\n");
+    return result.length > this.maxChars ? `${result.slice(0, this.maxChars)}…` : result;
   }
 
   /**
@@ -65,38 +65,50 @@ export class ExperiencesPromptPart implements SystemPromptPart {
    */
   private buildQuery(context: PromptContext): string {
     const projectName = path.basename(context.cwd);
-    const recent = (context.recentUserMessage || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+    const recent = (context.recentUserMessage || "").replace(/\s+/g, " ").trim().slice(0, 400);
     if (recent) return `${recent} ${projectName}`;
     return `${projectName} workflow edit read test git error prevention`;
   }
 
-  private formatInstincts(instincts: { id: string; domain: string; confidence: number; action: string; scope?: 'user' | 'project' }[], budget: number): { formatted: string; used: number } | null {
-    const lines: string[] = ['## 行为规则（自动提炼，按置信度）'];
-    let used = lines.join('\n').length;
+  private formatInstincts(
+    instincts: {
+      id: string;
+      domain: string;
+      confidence: number;
+      action: string;
+      scope?: "user" | "project";
+    }[],
+    budget: number,
+  ): { formatted: string; used: number } | null {
+    const lines: string[] = ["## 行为规则（自动提炼，按置信度）"];
+    let used = lines.join("\n").length;
     for (const inst of instincts) {
       const conf = inst.confidence.toFixed(2);
-      const action = inst.action.replace(/\s+/g, ' ').slice(0, 160);
-      const globalTag = inst.scope === 'user' ? ' · 全局' : '';
+      const action = inst.action.replace(/\s+/g, " ").slice(0, 160);
+      const globalTag = inst.scope === "user" ? " · 全局" : "";
       const line = `- [${inst.domain} ${conf}${globalTag}] ${action}`;
       if (used + line.length + 1 > budget) break;
       lines.push(line);
       used += line.length + 1;
     }
     if (lines.length <= 1) return null;
-    return { formatted: lines.join('\n'), used };
+    return { formatted: lines.join("\n"), used };
   }
 
-  private formatMemories(memories: { type: string; content: string; scope?: 'user' | 'project' }[], budget: number): string {
-    const lines: string[] = ['## 项目知识与偏好'];
-    let used = lines.join('\n').length;
+  private formatMemories(
+    memories: { type: string; content: string; scope?: "user" | "project" }[],
+    budget: number,
+  ): string {
+    const lines: string[] = ["## 项目知识与偏好"];
+    let used = lines.join("\n").length;
     for (const mem of memories) {
-      const content = mem.content.replace(/\s+/g, ' ').slice(0, 200);
-      const globalTag = mem.scope === 'user' ? ' · 全局' : '';
+      const content = mem.content.replace(/\s+/g, " ").slice(0, 200);
+      const globalTag = mem.scope === "user" ? " · 全局" : "";
       const line = `- [${mem.type}${globalTag}] ${content}`;
       if (used + line.length + 1 > budget) break;
       lines.push(line);
       used += line.length + 1;
     }
-    return lines.length <= 1 ? '' : lines.join('\n');
+    return lines.length <= 1 ? "" : lines.join("\n");
   }
 }

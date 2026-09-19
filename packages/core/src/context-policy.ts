@@ -4,7 +4,7 @@ export const AUTO_COMPACTION_REARM_RATIO = 0.5;
 export const AUTO_COMPACTION_EMERGENCY_RATIO = 0.9;
 
 export const DEFAULT_COMPACTION_TOKEN_THRESHOLD = Math.round(
-  DEFAULT_CONTEXT_WINDOW_TOKENS * AUTO_COMPACTION_TRIGGER_RATIO
+  DEFAULT_CONTEXT_WINDOW_TOKENS * AUTO_COMPACTION_TRIGGER_RATIO,
 );
 
 export interface ContextCompactionThresholds {
@@ -20,13 +20,15 @@ export interface ContextCompactionThresholds {
  * 达到 trigger 时触发常规压缩；压缩后只有降到 rearm 以下才重新布防，
  * 避免在阈值附近反复压缩。即使尚未重新布防，达到 emergency 也会强制压缩。
  */
-export function getContextCompactionThresholds(contextWindowTokens: number): ContextCompactionThresholds {
+export function getContextCompactionThresholds(
+  contextWindowTokens: number,
+): ContextCompactionThresholds {
   const normalized = Math.max(1_000, Math.round(contextWindowTokens));
   return {
     contextWindowTokens: normalized,
     triggerTokens: Math.round(normalized * AUTO_COMPACTION_TRIGGER_RATIO),
     rearmTokens: Math.round(normalized * AUTO_COMPACTION_REARM_RATIO),
-    emergencyTokens: Math.round(normalized * AUTO_COMPACTION_EMERGENCY_RATIO)
+    emergencyTokens: Math.round(normalized * AUTO_COMPACTION_EMERGENCY_RATIO),
   };
 }
 
@@ -34,8 +36,9 @@ export function getContextCompactionThresholds(contextWindowTokens: number): Con
 export function shouldTriggerAutoCompaction(
   usedTokens: number,
   thresholds: ContextCompactionThresholds,
-  armed: boolean
+  armed: boolean,
 ): boolean {
-  return usedTokens >= thresholds.emergencyTokens
-    || (armed && usedTokens >= thresholds.triggerTokens);
+  return (
+    usedTokens >= thresholds.emergencyTokens || (armed && usedTokens >= thresholds.triggerTokens)
+  );
 }

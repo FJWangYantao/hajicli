@@ -9,10 +9,12 @@
  * 确保所有失败样本都能被经验系统捕获。
  */
 export function isFailedToolOutput(output: string): boolean {
-  return output.startsWith('错误:')
-    || output.startsWith('执行出错:')
-    || /^\[[^\]]*已中止\]/.test(output)
-    || output.startsWith('[安全引擎拒绝拦截]')
-    || (output.startsWith('[SUBAGENT_RESULT')
-      && /"status":\s*"(?:failed|aborted|max_turns)"/.test(output));
+  return (
+    output.startsWith("错误:") ||
+    output.startsWith("执行出错:") ||
+    /^\[[^\]]*已中止\]/.test(output) ||
+    output.startsWith("[安全引擎拒绝拦截]") ||
+    (output.startsWith("[SUBAGENT_RESULT") &&
+      /"status":\s*"(?:failed|aborted|max_turns)"/.test(output))
+  );
 }

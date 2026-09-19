@@ -3,7 +3,7 @@
  */
 export interface ToolCall {
   id: string;
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     arguments: string;
@@ -14,7 +14,7 @@ export interface ToolCall {
  * 表示大模型工具定义的接口。
  */
 export interface ToolDefinition {
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     description: string;
@@ -33,10 +33,10 @@ export interface BaseTool {
   execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string>;
 }
 
-export type ToolMutationScope = 'none' | 'paths' | 'workspace';
+export type ToolMutationScope = "none" | "paths" | "workspace";
 
 export interface ToolProgressEvent {
-  type: 'status' | 'stdout' | 'stderr';
+  type: "status" | "stdout" | "stderr";
   chunk: string;
 }
 
@@ -51,7 +51,7 @@ export interface ToolExecutionContext {
   permissionMode?: string;
   riskThreshold?: string;
   anchorSnapshotId?: string;
-  agentAccess?: 'readonly' | 'workspace-write';
+  agentAccess?: "readonly" | "workspace-write";
   /** Suppresses per-tool status clearing while a parent read-only batch owns the shared status line. */
   suppressStatus?: boolean;
   batchIndex?: number;
@@ -62,7 +62,7 @@ export interface ToolExecutionContext {
 /**
  * 聊天消息发送者的角色。
  */
-export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 /**
  * 表示聊天历史记录中消息的接口。
@@ -99,7 +99,11 @@ export interface CompletionOptions {
   /**
    * 接收大模型本次调用的 token 消耗统计。
    */
-  onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
+  onUsage?: (usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  }) => void;
   /** 接收 Provider 返回的停止原因，例如 stop、tool_calls 或 length。 */
   onFinish?: (finish: { reason?: string }) => void;
 }
@@ -120,16 +124,22 @@ export interface ModelProvider {
    * @param messages - 表示上下文的聊天消息数组。
    * @param options - 生成配置项。
    */
-  completeStream(messages: ChatMessage[], options?: CompletionOptions): AsyncGenerator<string, void, unknown>;
+  completeStream(
+    messages: ChatMessage[],
+    options?: CompletionOptions,
+  ): AsyncGenerator<string, void, unknown>;
 }
 
 /**
  * hajicli 的基础自定义错误类。
  */
 export class HajiError extends Error {
-  constructor(message: string, public readonly code: string) {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
     super(message);
-    this.name = 'HajiError';
+    this.name = "HajiError";
   }
 }
 
@@ -137,18 +147,22 @@ export class HajiError extends Error {
  * 模型提供商抛出的特定错误。
  */
 export class ProviderError extends HajiError {
-  constructor(message: string, public readonly provider: string, public readonly status?: number) {
-    super(message, 'PROVIDER_ERROR');
-    this.name = 'ProviderError';
+  constructor(
+    message: string,
+    public readonly provider: string,
+    public readonly status?: number,
+  ) {
+    super(message, "PROVIDER_ERROR");
+    this.name = "ProviderError";
   }
 }
 
 /**
  * 控制系统提示词的任务分析与验证强度。
  */
-export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 /**
  * 判断输入是否为受支持的思考强度。
@@ -164,7 +178,7 @@ export interface PromptContext {
   cwd: string;
   os: string;
   tools?: string[];
-  skills?: import('./skill-types.js').SkillCatalogItem[];
+  skills?: import("./skill-types.js").SkillCatalogItem[];
   vars?: Record<string, string>;
   reasoningEffort?: ReasoningEffort;
   permissionMode?: string;

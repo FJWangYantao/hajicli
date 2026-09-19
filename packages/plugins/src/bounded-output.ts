@@ -8,7 +8,7 @@ export interface BoundedRecordsResult {
 export function takeWholeRecords(
   records: readonly string[],
   maxLength: number,
-  separator = '\n'
+  separator = "\n",
 ): BoundedRecordsResult {
   const accepted: string[] = [];
   let length = 0;
@@ -21,12 +21,12 @@ export function takeWholeRecords(
   return {
     text: accepted.join(separator),
     count: accepted.length,
-    truncated: accepted.length < records.length
+    truncated: accepted.length < records.length,
   };
 }
 
 export function truncateSingleLine(value: string, maxLength: number): string {
-  const normalized = value.replace(/[\r\n]+/g, ' ');
+  const normalized = value.replace(/[\r\n]+/g, " ");
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
 }

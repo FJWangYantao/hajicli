@@ -1,18 +1,16 @@
-import path from 'node:path';
+import path from "node:path";
 import {
-  BaseTool,
-  HookEngine,
-  PermissionEngine,
-  PermissionMode,
-  RiskLevel,
-  SnapshotEngine,
-  TaskItem,
-  TaskStore,
-  ToolExecutionContext,
-  ToolProgressEvent,
+  type BaseTool,
+  type HookEngine,
   isFailedToolOutput,
-  performanceMonitor
-} from '@hajicli/core';
+  type PermissionEngine,
+  performanceMonitor,
+  type SnapshotEngine,
+  type TaskItem,
+  type TaskStore,
+  type ToolExecutionContext,
+  type ToolProgressEvent,
+} from "@hajicli/core";
 
 export interface ToolExecutionResult {
   output: string;
@@ -51,7 +49,7 @@ export class SharedToolExecutor {
   async execute(
     toolName: string,
     args: Record<string, unknown>,
-    context: ToolExecutionContext
+    context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
     const targetTool = this.options.tools.get(toolName);
@@ -59,62 +57,74 @@ export class SharedToolExecutor {
       return { output: `错误: 工具 "${toolName}" 未注册。`, duration: 0, blocked: true };
     }
     if (context.abortSignal?.aborted) {
-      return { output: '[工具执行已中止]', duration: 0, blocked: true };
+      return { output: "[工具执行已中止]", duration: 0, blocked: true };
     }
 
-    const preHookResult = await performanceMonitor.measure(
-      'tool.pre_hook',
-      () => this.options.hookEngine.trigger('PreToolUse', {
+    const preHookResult = await performanceMonitor.measure("tool.pre_hook", () =>
+      this.options.hookEngine.trigger("PreToolUse", {
         toolName,
         args,
-        userIntent: context.userIntent || '',
+        userIntent: context.userIntent || "",
         permissionMode: context.permissionMode,
         riskThreshold: context.riskThreshold,
         agentId: context.agentId,
         parentAgentId: context.parentAgentId,
-        depth: context.depth
-      })
+        depth: context.depth,
+      }),
     );
     if (preHookResult) {
       await this.post(toolName, args, preHookResult, context);
       return { output: preHookResult, duration: Date.now() - startedAt, blocked: true };
     }
     if (context.abortSignal?.aborted) {
-      return { output: '[工具执行已中止]', duration: Date.now() - startedAt, blocked: true };
+      return { output: "[工具执行已中止]", duration: Date.now() - startedAt, blocked: true };
     }
 
-    const isOrchestrationTool = ['subagent', 'verifyagent', 'loadskill'].includes(toolName) || toolName.toLowerCase().startsWith('task');
+    const isOrchestrationTool =
+      ["subagent", "verifyagent", "loadskill"].includes(toolName) ||
+      toolName.toLowerCase().startsWith("task");
     const declaredMutationScope = targetTool.getMutationScope?.(args);
-    const mutationScope = declaredMutationScope
-      ?? (this.options.permissionEngine.isReadOnlyTool(toolName)
-        ? 'none'
-        : (this.options.permissionEngine.isEditTool(toolName) ? 'paths' : 'workspace'));
+    const mutationScope =
+      declaredMutationScope ??
+      (this.options.permissionEngine.isReadOnlyTool(toolName)
+        ? "none"
+        : this.options.permissionEngine.isEditTool(toolName)
+          ? "paths"
+          : "workspace");
     const shouldTrackMutation = Boolean(
-      context.anchorSnapshotId
-      && !this.options.permissionEngine.isReadOnlyTool(toolName)
-      && !isOrchestrationTool
-      && mutationScope !== 'none'
+      context.anchorSnapshotId &&
+        !this.options.permissionEngine.isReadOnlyTool(toolName) &&
+        !isOrchestrationTool &&
+        mutationScope !== "none",
     );
     let mutationPaths: string[] | undefined;
-    if (mutationScope === 'paths' && typeof args.path === 'string') {
+    if (mutationScope === "paths" && typeof args.path === "string") {
       const absoluteTarget = path.resolve(this.options.cwd, args.path);
       const relativeTarget = path.relative(this.options.cwd, absoluteTarget);
-      if (relativeTarget && !relativeTarget.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeTarget)) {
+      if (
+        relativeTarget &&
+        !relativeTarget.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relativeTarget)
+      ) {
         mutationPaths = [relativeTarget];
       }
     }
-    const checkpoint = shouldTrackMutation && context.anchorSnapshotId
-      ? performanceMonitor.measureSync(
-          'snapshot.begin_mutation',
-          () => this.options.snapshotEngine.beginMutation(context.anchorSnapshotId!, mutationPaths)
-        )
-      : null;
-    const finishingTask = toolName === 'taskfinish'
-      ? this.options.taskStore.getPlan()?.tasks.find(task => task.id === String(args.taskId || ''))
-      : undefined;
+    const checkpoint =
+      shouldTrackMutation && context.anchorSnapshotId
+        ? performanceMonitor.measureSync("snapshot.begin_mutation", () =>
+            this.options.snapshotEngine.beginMutation(context.anchorSnapshotId!, mutationPaths),
+          )
+        : null;
+    const finishingTask =
+      toolName === "taskfinish"
+        ? this.options.taskStore
+            .getPlan()
+            ?.tasks.find((task) => task.id === String(args.taskId || ""))
+        : undefined;
 
-    const agentPrefix = context.agentId ? `[${context.agentId}] ` : '';
-    if (!context.agentId && !context.suppressStatus) this.options.setStatus?.(`${agentPrefix}正在执行 ${toolName}...`);
+    const agentPrefix = context.agentId ? `[${context.agentId}] ` : "";
+    if (!context.agentId && !context.suppressStatus)
+      this.options.setStatus?.(`${agentPrefix}正在执行 ${toolName}...`);
     let output: string;
     let mutationWarning: string | undefined;
     let lastProgressAt = 0;
@@ -126,21 +136,19 @@ export class SharedToolExecutor {
       this.options.onToolProgress?.({ toolName, progress, context });
     };
     try {
-      output = await performanceMonitor.measure(
-        'tool.execute',
-        () => targetTool.execute(args, {
+      output = await performanceMonitor.measure("tool.execute", () =>
+        targetTool.execute(args, {
           ...context,
           toolCallId: context.toolCallId,
-          onProgress: emitProgress
-        })
+          onProgress: emitProgress,
+        }),
       );
     } catch (error) {
       output = `执行出错: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       if (checkpoint) {
-        const mutationResult = performanceMonitor.measureSync(
-          'snapshot.complete_mutation',
-          () => this.options.snapshotEngine.completeMutation(checkpoint)
+        const mutationResult = performanceMonitor.measureSync("snapshot.complete_mutation", () =>
+          this.options.snapshotEngine.completeMutation(checkpoint),
         );
         mutationWarning = mutationResult?.warning;
       }
@@ -148,26 +156,28 @@ export class SharedToolExecutor {
     }
     if (mutationWarning) output = `${output}\n${mutationWarning}`;
 
-    if (toolName.toLowerCase().startsWith('task') && !output.startsWith('错误:')) {
+    if (toolName.toLowerCase().startsWith("task") && !output.startsWith("错误:")) {
       this.options.onTaskPlanChanged?.(finishingTask);
     }
     const failed = isFailedToolOutput(output);
     if (!context.agentId && !failed && !isOrchestrationTool && context.toolCallId) {
       output = `${output}\n[verification_evidence_id: ${context.toolCallId}]`;
     }
-    await performanceMonitor.measure('tool.post_hook', () => this.post(toolName, args, output, context));
+    await performanceMonitor.measure("tool.post_hook", () =>
+      this.post(toolName, args, output, context),
+    );
     this.options.onToolExecuted?.({
       toolName,
       toolCallId: context.toolCallId,
       context,
       output,
       blocked: failed,
-      finishedAt: Date.now()
+      finishedAt: Date.now(),
     });
     return {
       output,
       duration: Date.now() - startedAt,
-      blocked: failed
+      blocked: failed,
     };
   }
 
@@ -175,16 +185,16 @@ export class SharedToolExecutor {
     toolName: string,
     args: Record<string, unknown>,
     output: string,
-    context: ToolExecutionContext
+    context: ToolExecutionContext,
   ): Promise<void> {
-    await this.options.hookEngine.trigger('PostToolUse', {
+    await this.options.hookEngine.trigger("PostToolUse", {
       toolCallId: context.toolCallId,
       toolName,
       args,
       toolOutput: output,
       agentId: context.agentId,
       parentAgentId: context.parentAgentId,
-      depth: context.depth
+      depth: context.depth,
     });
   }
 }

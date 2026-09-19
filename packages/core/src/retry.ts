@@ -1,4 +1,4 @@
-import { ProviderError } from './types.js';
+import { ProviderError } from "./types.js";
 
 /**
  * 指数退避重试配置选项。
@@ -21,17 +21,17 @@ export function isRetryableError(error: unknown, status?: number): boolean {
   }
   if (error instanceof Error) {
     // 用户主动中断（AbortError）不应被视为可重试错误
-    if (error.name === 'AbortError') {
+    if (error.name === "AbortError") {
       return false;
     }
     const name = error.name.toLowerCase();
     const message = error.message.toLowerCase();
     return (
-      name.includes('timeout') ||
-      message.includes('fetch failed') ||
-      message.includes('network') ||
-      message.includes('econnreset') ||
-      message.includes('etimedout')
+      name.includes("timeout") ||
+      message.includes("fetch failed") ||
+      message.includes("network") ||
+      message.includes("econnreset") ||
+      message.includes("etimedout")
     );
   }
   return false;
@@ -40,8 +40,12 @@ export function isRetryableError(error: unknown, status?: number): boolean {
 /**
  * 计算带抖动（Full Jitter）的指数退避延迟时间。
  */
-export function calculateBackoffDelay(attempt: number, initialDelayMs = 1000, maxDelayMs = 10000): number {
-  const exponentialDelay = initialDelayMs * Math.pow(2, attempt);
+export function calculateBackoffDelay(
+  attempt: number,
+  initialDelayMs = 1000,
+  maxDelayMs = 10000,
+): number {
+  const exponentialDelay = initialDelayMs * 2 ** attempt;
   const cappedDelay = Math.min(maxDelayMs, exponentialDelay);
   // Full Jitter 随机抖动避免惊群效应
   return Math.floor(Math.random() * cappedDelay);
@@ -52,7 +56,7 @@ export function calculateBackoffDelay(attempt: number, initialDelayMs = 1000, ma
  */
 export async function withExponentialBackoff<T>(
   fn: (attempt: number) => Promise<T>,
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): Promise<T> {
   const { maxRetries = 3, initialDelayMs = 1000, maxDelayMs = 10000, onRetry } = options;
 

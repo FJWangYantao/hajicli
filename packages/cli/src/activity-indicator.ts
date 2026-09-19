@@ -1,15 +1,15 @@
-import { sanitizeTerminalText } from './terminal-sanitize.js';
+import { sanitizeTerminalText } from "./terminal-sanitize.js";
 
 export type ActivityPhase =
-  | 'thinking'
-  | 'responding'
-  | 'tool'
-  | 'batch'
-  | 'permission'
-  | 'compacting'
-  | 'stopping';
+  | "thinking"
+  | "responding"
+  | "tool"
+  | "batch"
+  | "permission"
+  | "compacting"
+  | "stopping";
 
-export type ActivityTone = 'active' | 'waiting' | 'stalled';
+export type ActivityTone = "active" | "waiting" | "stalled";
 
 export interface ActivityState {
   phase: ActivityPhase;
@@ -41,13 +41,13 @@ interface ActivityIndicatorOptions {
 }
 
 const PHASE_ICONS: Readonly<Record<ActivityPhase, readonly string[]>> = {
-  thinking: ['✦', '✧', '⋆', '·', '⋆', '✧'],
-  responding: ['▁▂▃', '▂▃▄', '▃▄▅', '▄▅▆', '▅▆▇', '▄▅▆', '▃▄▅', '▂▃▄'],
-  tool: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-  batch: ['◐', '◓', '◑', '◒'],
-  permission: ['◆', '◇'],
-  compacting: ['◜', '◝', '◞', '◟'],
-  stopping: ['■', '□']
+  thinking: ["✦", "✧", "⋆", "·", "⋆", "✧"],
+  responding: ["▁▂▃", "▂▃▄", "▃▄▅", "▄▅▆", "▅▆▇", "▄▅▆", "▃▄▅", "▂▃▄"],
+  tool: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  batch: ["◐", "◓", "◑", "◒"],
+  permission: ["◆", "◇"],
+  compacting: ["◜", "◝", "◞", "◟"],
+  stopping: ["■", "□"],
 };
 
 export const DEFAULT_ACTIVITY_WAITING_MS = 12_000;
@@ -55,7 +55,9 @@ export const DEFAULT_ACTIVITY_STALLED_MS = 30_000;
 
 function oneLine(value: string | undefined, maxLength = 120): string | undefined {
   if (!value) return undefined;
-  const normalized = sanitizeTerminalText(value).replace(/\s*\r?\n\s*/g, ' ').trim();
+  const normalized = sanitizeTerminalText(value)
+    .replace(/\s*\r?\n\s*/g, " ")
+    .trim();
   if (!normalized) return undefined;
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 }
@@ -66,7 +68,7 @@ export function formatActivityDuration(durationMs: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
-  return `${minutes}m${String(remainingSeconds).padStart(2, '0')}s`;
+  return `${minutes}m${String(remainingSeconds).padStart(2, "0")}s`;
 }
 
 function buildPulseMeter(tick: number, width = 7): string {
@@ -74,10 +76,10 @@ function buildPulseMeter(tick: number, width = 7): string {
   const offset = ((tick % cycle) + cycle) % cycle;
   const head = offset < width ? offset : cycle - offset;
   return Array.from({ length: width }, (_, index) => {
-    if (index === head) return '▰';
-    if (Math.abs(index - head) === 1) return '▱';
-    return '·';
-  }).join('');
+    if (index === head) return "▰";
+    if (Math.abs(index - head) === 1) return "▱";
+    return "·";
+  }).join("");
 }
 
 export function buildActivityFrame(
@@ -85,18 +87,18 @@ export function buildActivityFrame(
   tick: number,
   now = Date.now(),
   waitingAfterMs = DEFAULT_ACTIVITY_WAITING_MS,
-  stalledAfterMs = DEFAULT_ACTIVITY_STALLED_MS
+  stalledAfterMs = DEFAULT_ACTIVITY_STALLED_MS,
 ): ActivityFrame {
   const elapsedMs = Math.max(0, now - state.startedAt);
   const idleMs = Math.max(0, now - state.lastProgressAt);
-  const isPermission = state.phase === 'permission';
+  const isPermission = state.phase === "permission";
   const tone: ActivityTone = isPermission
-    ? 'waiting'
+    ? "waiting"
     : idleMs >= stalledAfterMs
-      ? 'stalled'
+      ? "stalled"
       : idleMs >= waitingAfterMs
-        ? 'waiting'
-        : 'active';
+        ? "waiting"
+        : "active";
   const icons = PHASE_ICONS[state.phase];
 
   return {
@@ -107,9 +109,8 @@ export function buildActivityFrame(
     meter: buildPulseMeter(tick),
     elapsed: formatActivityDuration(elapsedMs),
     detail: state.detail,
-    idleText: !isPermission && tone !== 'active'
-      ? `${formatActivityDuration(idleMs)} 无新事件`
-      : undefined
+    idleText:
+      !isPermission && tone !== "active" ? `${formatActivityDuration(idleMs)} 无新事件` : undefined,
   };
 }
 
@@ -124,8 +125,8 @@ export class ActivityIndicator {
   private readonly intervalMs: number;
   private readonly waitingAfterMs: number;
   private readonly stalledAfterMs: number;
-  private readonly schedule: NonNullable<ActivityIndicatorOptions['schedule']>;
-  private readonly cancel: NonNullable<ActivityIndicatorOptions['cancel']>;
+  private readonly schedule: NonNullable<ActivityIndicatorOptions["schedule"]>;
+  private readonly cancel: NonNullable<ActivityIndicatorOptions["cancel"]>;
   private state?: ActivityState;
   private timer?: ReturnType<typeof setInterval>;
   private tick = 0;
@@ -138,10 +139,11 @@ export class ActivityIndicator {
     this.waitingAfterMs = Math.max(1_000, options.waitingAfterMs || DEFAULT_ACTIVITY_WAITING_MS);
     this.stalledAfterMs = Math.max(
       this.waitingAfterMs + 1_000,
-      options.stalledAfterMs || DEFAULT_ACTIVITY_STALLED_MS
+      options.stalledAfterMs || DEFAULT_ACTIVITY_STALLED_MS,
     );
-    this.schedule = options.schedule || ((callback, intervalMs) => setInterval(callback, intervalMs));
-    this.cancel = options.cancel || (timer => clearInterval(timer));
+    this.schedule =
+      options.schedule || ((callback, intervalMs) => setInterval(callback, intervalMs));
+    this.cancel = options.cancel || ((timer) => clearInterval(timer));
   }
 
   start(phase: ActivityPhase, label: string, detail?: string): void {
@@ -152,7 +154,7 @@ export class ActivityIndicator {
       label: oneLine(label, 48) || label,
       detail: oneLine(detail),
       startedAt: now,
-      lastProgressAt: now
+      lastProgressAt: now,
     };
     this.tick = 0;
     this.emit(now);
@@ -186,13 +188,9 @@ export class ActivityIndicator {
   private emit(now: number): void {
     if (!this.state) return;
     this.lastRenderedAt = now;
-    this.renderFrame(buildActivityFrame(
-      this.state,
-      this.tick,
-      now,
-      this.waitingAfterMs,
-      this.stalledAfterMs
-    ));
+    this.renderFrame(
+      buildActivityFrame(this.state, this.tick, now, this.waitingAfterMs, this.stalledAfterMs),
+    );
   }
 
   private clearTimer(): void {

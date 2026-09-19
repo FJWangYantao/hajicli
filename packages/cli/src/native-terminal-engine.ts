@@ -1,4 +1,4 @@
-import { createRequire } from 'node:module';
+import { createRequire } from "node:module";
 
 export interface NativeWrappedAnsiResult {
   rows: string[];
@@ -22,7 +22,7 @@ interface NativeTerminalBinding {
   layoutAnsiDocument(value: string, width: number): NativeAnsiTextLayout;
 }
 
-export type NativeTerminalEngineMode = 'auto' | 'on' | 'off';
+export type NativeTerminalEngineMode = "auto" | "on" | "off";
 
 export interface NativeTerminalEngineStatus {
   mode: NativeTerminalEngineMode;
@@ -33,16 +33,16 @@ export interface NativeTerminalEngineStatus {
 const require = createRequire(import.meta.url);
 let binding: NativeTerminalBinding | undefined;
 let loadAttempted = false;
-let loadError = '';
+let loadError = "";
 
 function getMode(): NativeTerminalEngineMode {
   const configured = process.env.HAJI_NATIVE_RENDERER?.trim().toLowerCase();
-  return configured === 'on' || configured === 'off' ? configured : 'auto';
+  return configured === "on" || configured === "off" ? configured : "auto";
 }
 
 function loadBinding(): NativeTerminalBinding | undefined {
   const mode = getMode();
-  if (mode === 'off') return undefined;
+  if (mode === "off") return undefined;
   if (loadAttempted) return binding;
   loadAttempted = true;
 
@@ -51,7 +51,7 @@ function loadBinding(): NativeTerminalBinding | undefined {
     binding = require(moduleName) as NativeTerminalBinding;
   } catch (error) {
     loadError = error instanceof Error ? error.message : String(error);
-    if (mode === 'on') {
+    if (mode === "on") {
       throw new Error(`原生终端渲染引擎加载失败：${loadError}`);
     }
   }
@@ -60,7 +60,7 @@ function loadBinding(): NativeTerminalBinding | undefined {
 
 export function getNativeTerminalEngineStatus(): NativeTerminalEngineStatus {
   const mode = getMode();
-  if (mode === 'off') return { mode, available: false };
+  if (mode === "off") return { mode, available: false };
   try {
     const available = Boolean(loadBinding());
     return { mode, available, error: available || !loadError ? undefined : loadError };
@@ -68,7 +68,7 @@ export function getNativeTerminalEngineStatus(): NativeTerminalEngineStatus {
     return {
       mode,
       available: false,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
     };
   }
 }
@@ -76,7 +76,7 @@ export function getNativeTerminalEngineStatus(): NativeTerminalEngineStatus {
 export function tryNativeWrapAnsi(
   value: string,
   width: number,
-  initialStyle = ''
+  initialStyle = "",
 ): NativeWrappedAnsiResult | undefined {
   const native = loadBinding();
   if (!native) return undefined;
@@ -85,7 +85,7 @@ export function tryNativeWrapAnsi(
   } catch (error) {
     loadError = error instanceof Error ? error.message : String(error);
     binding = undefined;
-    if (getMode() === 'on') {
+    if (getMode() === "on") {
       throw new Error(`原生终端软换行失败：${loadError}`);
     }
     return undefined;
@@ -94,7 +94,7 @@ export function tryNativeWrapAnsi(
 
 export function tryNativeLayoutAnsiDocument(
   value: string,
-  width: number
+  width: number,
 ): NativeAnsiTextLayout | undefined {
   const native = loadBinding();
   if (!native) return undefined;
@@ -103,7 +103,7 @@ export function tryNativeLayoutAnsiDocument(
   } catch (error) {
     loadError = error instanceof Error ? error.message : String(error);
     binding = undefined;
-    if (getMode() === 'on') {
+    if (getMode() === "on") {
       throw new Error(`原生终端文档布局失败：${loadError}`);
     }
     return undefined;

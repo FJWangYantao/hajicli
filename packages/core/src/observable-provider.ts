@@ -1,6 +1,13 @@
-import * as crypto from 'node:crypto';
-import { ModelProvider, ChatMessage, CompletionOptions, ToolCall } from './types.js';
-import { SessionTracker } from './trace-logger.js';
+import * as crypto from "node:crypto";
+import type { SessionTracker } from "./trace-logger.js";
+import type { ChatMessage, CompletionOptions, ModelProvider, ToolCall } from "./types.js";
+
+/** 一次模型调用的 token 用量统计（与 CompletionOptions.onUsage 回调形状一致）。 */
+type CapturedUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
 
 /**
  * 无侵入包装的模型提供商，用于拦截并记录调用轨迹和统计指标。
@@ -8,7 +15,7 @@ import { SessionTracker } from './trace-logger.js';
 export class ObservableModelProvider implements ModelProvider {
   constructor(
     private readonly inner: ModelProvider,
-    private readonly tracker: SessionTracker
+    private readonly tracker: SessionTracker,
   ) {}
 
   /**
@@ -16,11 +23,11 @@ export class ObservableModelProvider implements ModelProvider {
    */
   public async complete(messages: ChatMessage[], options: CompletionOptions = {}): Promise<string> {
     const startTime = Date.now();
-    const model = options.model || 'unknown';
-    
+    const model = options.model || "unknown";
+
     let capturedToolCalls: ToolCall[] | undefined;
-    let capturedReasoning = '';
-    let capturedUsage: any;
+    let capturedReasoning = "";
+    let capturedUsage: CapturedUsage | undefined;
     let capturedFinishReason: string | undefined;
 
     const interceptedOptions: CompletionOptions = {
@@ -48,7 +55,7 @@ export class ObservableModelProvider implements ModelProvider {
         if (options.onFinish) {
           options.onFinish(finish);
         }
-      }
+      },
     };
 
     try {
@@ -58,7 +65,7 @@ export class ObservableModelProvider implements ModelProvider {
 
       // 估算 Token 生成速度（非流式使用字符数估算）
       const totalChars = response.length + capturedReasoning.length;
-      const speed = duration > 0 ? (totalChars / (duration / 1000)) : 0;
+      const speed = duration > 0 ? totalChars / (duration / 1000) : 0;
 
       this.tracker.recordLlmCall({
         id: crypto.randomUUID(),
@@ -72,7 +79,7 @@ export class ObservableModelProvider implements ModelProvider {
         content: response,
         toolCalls: capturedToolCalls,
         finishReason: capturedFinishReason,
-        usage: capturedUsage
+        usage: capturedUsage,
       });
 
       return response;
@@ -86,7 +93,7 @@ export class ObservableModelProvider implements ModelProvider {
         ttft: 0,
         duration: endTime - startTime,
         speed: 0,
-        content: `Error: ${error instanceof Error ? error.message : String(error)}`
+        content: `Error: ${error instanceof Error ? error.message : String(error)}`,
       });
       throw error;
     }
@@ -95,15 +102,18 @@ export class ObservableModelProvider implements ModelProvider {
   /**
    * 针对给定的聊天历史生成流式响应。
    */
-  public async *completeStream(messages: ChatMessage[], options: CompletionOptions = {}): AsyncGenerator<string, void, unknown> {
+  public async *completeStream(
+    messages: ChatMessage[],
+    options: CompletionOptions = {},
+  ): AsyncGenerator<string, void, unknown> {
     const startTime = Date.now();
-    const model = options.model || 'unknown';
-    
+    const model = options.model || "unknown";
+
     let firstTokenTime = 0;
-    let accumulatedContent = '';
-    let accumulatedReasoning = '';
+    let accumulatedContent = "";
+    let accumulatedReasoning = "";
     let capturedToolCalls: ToolCall[] | undefined;
-    let capturedUsage: any;
+    let capturedUsage: CapturedUsage | undefined;
     let capturedFinishReason: string | undefined;
 
     const setFirstTokenTime = () => {
@@ -138,7 +148,7 @@ export class ObservableModelProvider implements ModelProvider {
         if (options.onFinish) {
           options.onFinish(finish);
         }
-      }
+      },
     };
 
     const stream = this.inner.completeStream(messages, interceptedOptions);
@@ -156,23 +166,23 @@ export class ObservableModelProvider implements ModelProvider {
         timestamp: new Date(startTime).toISOString(),
         model,
         messages,
-        ttft: firstTokenTime > 0 ? (firstTokenTime - startTime) : (endTime - startTime),
+        ttft: firstTokenTime > 0 ? firstTokenTime - startTime : endTime - startTime,
         duration: endTime - startTime,
         speed: 0,
-        content: `Stream Error: ${error instanceof Error ? error.message : String(error)}`
+        content: `Stream Error: ${error instanceof Error ? error.message : String(error)}`,
       });
       throw error;
     }
 
     const endTime = Date.now();
     const duration = endTime - startTime;
-    const ttft = firstTokenTime > 0 ? (firstTokenTime - startTime) : duration;
+    const ttft = firstTokenTime > 0 ? firstTokenTime - startTime : duration;
 
     // 计算生成速度：如果有 usage 里的 token，用 token/s，否则用 字符/s
     let speed = 0;
     const generateDurationSec = (endTime - (firstTokenTime || startTime)) / 1000;
     if (generateDurationSec > 0) {
-      if (capturedUsage && capturedUsage.completion_tokens) {
+      if (capturedUsage?.completion_tokens) {
         speed = capturedUsage.completion_tokens / generateDurationSec;
       } else {
         const totalChars = accumulatedContent.length + accumulatedReasoning.length;
@@ -192,7 +202,7 @@ export class ObservableModelProvider implements ModelProvider {
       content: accumulatedContent,
       toolCalls: capturedToolCalls,
       finishReason: capturedFinishReason,
-      usage: capturedUsage
+      usage: capturedUsage,
     });
   }
 }

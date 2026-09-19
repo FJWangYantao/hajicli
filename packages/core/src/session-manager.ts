@@ -1,10 +1,10 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import { performance } from 'node:perf_hooks';
-import { ChatMessage } from './types.js';
-import { performanceMonitor } from './performance-monitor.js';
-import { replaceFileAtomically } from './atomic-file.js';
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
+import { replaceFileAtomically } from "./atomic-file.js";
+import { performanceMonitor } from "./performance-monitor.js";
+import type { ChatMessage } from "./types.js";
 
 const SESSION_FLUSH_DELAY_MS = 120;
 
@@ -24,10 +24,10 @@ interface PendingSessionWrite {
 function cloneMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
-    tool_calls: message.tool_calls?.map(toolCall => ({
+    tool_calls: message.tool_calls?.map((toolCall) => ({
       ...toolCall,
-      function: { ...toolCall.function }
-    }))
+      function: { ...toolCall.function },
+    })),
   };
 }
 
@@ -35,22 +35,30 @@ function sameMessages(left: ChatMessage[], right: ChatMessage[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((message, index) => {
     const candidate = right[index];
-    if (!candidate
-      || message.role !== candidate.role
-      || message.content !== candidate.content
-      || message.reasoning_content !== candidate.reasoning_content
-      || message.snapshotId !== candidate.snapshotId
-      || message.tool_call_id !== candidate.tool_call_id) return false;
+    if (
+      !candidate ||
+      message.role !== candidate.role ||
+      message.content !== candidate.content ||
+      message.reasoning_content !== candidate.reasoning_content ||
+      message.snapshotId !== candidate.snapshotId ||
+      message.tool_call_id !== candidate.tool_call_id
+    )
+      return false;
     const leftCalls = message.tool_calls || [];
     const rightCalls = candidate.tool_calls || [];
-    return leftCalls.length === rightCalls.length && leftCalls.every((toolCall, toolIndex) => {
-      const other = rightCalls[toolIndex];
-      return Boolean(other
-        && toolCall.id === other.id
-        && toolCall.type === other.type
-        && toolCall.function.name === other.function.name
-        && toolCall.function.arguments === other.function.arguments);
-    });
+    return (
+      leftCalls.length === rightCalls.length &&
+      leftCalls.every((toolCall, toolIndex) => {
+        const other = rightCalls[toolIndex];
+        return Boolean(
+          other &&
+            toolCall.id === other.id &&
+            toolCall.type === other.type &&
+            toolCall.function.name === other.function.name &&
+            toolCall.function.arguments === other.function.arguments,
+        );
+      })
+    );
   });
 }
 
@@ -59,7 +67,7 @@ export class SessionManager {
   private readonly sessionsDir: string;
   private currentSession: StoredSession;
   private lastQueuedMessages: ChatMessage[] = [];
-  private lastQueuedTitle = '';
+  private lastQueuedTitle = "";
   private readonly pendingWrites = new Map<string, PendingSessionWrite>();
   private writeChain: Promise<void> = Promise.resolve();
   private flushTimer: NodeJS.Timeout | null = null;
@@ -67,18 +75,18 @@ export class SessionManager {
   private readonly pendingWarnings: string[] = [];
 
   constructor(
-    sessionsDir = path.join(process.cwd(), '.haji', 'sessions'),
-    onWarning?: (message: string) => void
+    sessionsDir = path.join(process.cwd(), ".haji", "sessions"),
+    onWarning?: (message: string) => void,
   ) {
     this.sessionsDir = sessionsDir;
     this.warningHandler = onWarning;
     const now = new Date().toISOString();
     this.currentSession = {
       id: crypto.randomUUID(),
-      title: '新对话会话',
+      title: "新对话会话",
       createdAt: now,
       updatedAt: now,
-      messages: []
+      messages: [],
     };
     this.ensureDir();
   }
@@ -99,7 +107,7 @@ export class SessionManager {
     try {
       fs.mkdirSync(this.sessionsDir, { recursive: true });
     } catch (error) {
-      this.warn('会话目录创建失败', error);
+      this.warn("会话目录创建失败", error);
     }
   }
 
@@ -117,7 +125,7 @@ export class SessionManager {
   }
 
   public hasEffectiveMessages(messages: ChatMessage[] = []): boolean {
-    return messages.some(message => message.role === 'user' || message.role === 'assistant');
+    return messages.some((message) => message.role === "user" || message.role === "assistant");
   }
 
   public getCurrentSession(): StoredSession {
@@ -128,8 +136,9 @@ export class SessionManager {
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
     if (title) this.currentSession.title = title;
 
-    const unchanged = this.lastQueuedTitle === this.currentSession.title
-      && sameMessages(this.lastQueuedMessages, messages);
+    const unchanged =
+      this.lastQueuedTitle === this.currentSession.title &&
+      sameMessages(this.lastQueuedMessages, messages);
     if (unchanged) return;
 
     this.currentSession.messages = messages;
@@ -145,8 +154,8 @@ export class SessionManager {
       this.pendingWrites.set(filePath, {
         session: {
           ...this.currentSession,
-          messages: snapshot
-        }
+          messages: snapshot,
+        },
       });
     }
 
@@ -165,27 +174,33 @@ export class SessionManager {
     this.pendingWrites.clear();
     let writeFailed = false;
     if (operations.length > 0) {
-      this.writeChain = this.writeChain.then(async () => {
-        const startedAt = performance.now();
-        await fs.promises.mkdir(this.sessionsDir, { recursive: true });
-        for (const [filePath, operation] of operations) {
-          if (operation.remove) {
-            await fs.promises.rm(filePath, { force: true });
-            continue;
+      this.writeChain = this.writeChain
+        .then(async () => {
+          const startedAt = performance.now();
+          await fs.promises.mkdir(this.sessionsDir, { recursive: true });
+          for (const [filePath, operation] of operations) {
+            if (operation.remove) {
+              await fs.promises.rm(filePath, { force: true });
+              continue;
+            }
+            if (!operation.session) continue;
+            const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+            await fs.promises.writeFile(
+              tempPath,
+              JSON.stringify(operation.session, null, 2),
+              "utf8",
+            );
+            await replaceFileAtomically(tempPath, filePath);
           }
-          if (!operation.session) continue;
-          const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-          await fs.promises.writeFile(tempPath, JSON.stringify(operation.session, null, 2), 'utf8');
-          await replaceFileAtomically(tempPath, filePath);
-        }
-        performanceMonitor.record('session.flush', performance.now() - startedAt);
-      }).catch(error => {
-        writeFailed = true;
-        for (const [filePath, operation] of operations) {
-          if (!this.pendingWrites.has(filePath)) this.pendingWrites.set(filePath, operation);
-        }
-        this.warn('会话持久化失败，数据已保留并将在下次保存时重试', error);
-      });
+          performanceMonitor.record("session.flush", performance.now() - startedAt);
+        })
+        .catch((error) => {
+          writeFailed = true;
+          for (const [filePath, operation] of operations) {
+            if (!this.pendingWrites.has(filePath)) this.pendingWrites.set(filePath, operation);
+          }
+          this.warn("会话持久化失败，数据已保留并将在下次保存时重试", error);
+        });
     }
     await this.writeChain;
     if (!writeFailed && this.pendingWrites.size > 0) await this.flush();
@@ -195,7 +210,7 @@ export class SessionManager {
     try {
       const filePath = this.getSessionPath(id);
       if (!fs.existsSync(filePath)) return null;
-      const session = JSON.parse(fs.readFileSync(filePath, 'utf8')) as StoredSession;
+      const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
       this.currentSession = session;
       this.lastQueuedMessages = session.messages.map(cloneMessage);
       this.lastQueuedTitle = session.title;
@@ -208,20 +223,29 @@ export class SessionManager {
   public listSessions(): StoredSession[] {
     try {
       this.ensureDir();
-      const files = fs.readdirSync(this.sessionsDir).filter(file => file.startsWith('session_') && file.endsWith('.json'));
+      const files = fs
+        .readdirSync(this.sessionsDir)
+        .filter((file) => file.startsWith("session_") && file.endsWith(".json"));
       const sessions: StoredSession[] = [];
       for (const file of files) {
         const filePath = path.join(this.sessionsDir, file);
         try {
-          const session = JSON.parse(fs.readFileSync(filePath, 'utf8')) as StoredSession;
+          const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
           if (session?.id && this.hasEffectiveMessages(session.messages)) {
             sessions.push(session);
-          } else if (session && (!session.messages || !this.hasEffectiveMessages(session.messages))) {
-            try { fs.unlinkSync(filePath); } catch {}
+          } else if (
+            session &&
+            (!session.messages || !this.hasEffectiveMessages(session.messages))
+          ) {
+            try {
+              fs.unlinkSync(filePath);
+            } catch {}
           }
         } catch {}
       }
-      return sessions.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+      return sessions.sort(
+        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+      );
     } catch {
       return [];
     }
@@ -231,21 +255,22 @@ export class SessionManager {
     const now = new Date().toISOString();
     this.currentSession = {
       id: crypto.randomUUID(),
-      title: '新对话会话',
+      title: "新对话会话",
       createdAt: now,
       updatedAt: now,
-      messages: []
+      messages: [],
     };
     this.lastQueuedMessages = [];
-    this.lastQueuedTitle = '';
+    this.lastQueuedTitle = "";
     return this.currentSession;
   }
 
   public async generateTitleAsync(
     firstUserMsg: string,
-    titleSummarizer?: (prompt: string) => Promise<string>
+    titleSummarizer?: (prompt: string) => Promise<string>,
   ): Promise<string> {
-    const defaultTitle = firstUserMsg.length > 25 ? `${firstUserMsg.slice(0, 25)}...` : firstUserMsg;
+    const defaultTitle =
+      firstUserMsg.length > 25 ? `${firstUserMsg.slice(0, 25)}...` : firstUserMsg;
     if (!titleSummarizer) {
       this.currentSession.title = defaultTitle;
       this.saveCurrentSession(this.currentSession.messages);
@@ -255,7 +280,11 @@ export class SessionManager {
     try {
       const prompt = `请针对以下用户的第一条需求，总结出一个 10 以内的简短形象标题。注意：直接回答标题本身，不要包含任何标点符号、解释或多余字符。\n\n需求：${firstUserMsg}`;
       const generated = await titleSummarizer(prompt);
-      const cleanTitle = generated.trim().replace(/^["'《]+|["'》]+$/g, '').slice(0, 20) || defaultTitle;
+      const cleanTitle =
+        generated
+          .trim()
+          .replace(/^["'《]+|["'》]+$/g, "")
+          .slice(0, 20) || defaultTitle;
       this.currentSession.title = cleanTitle;
       this.saveCurrentSession(this.currentSession.messages);
       return cleanTitle;

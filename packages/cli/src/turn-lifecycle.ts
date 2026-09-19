@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@hajicli/core';
+import type { ChatMessage } from "@hajicli/core";
 
 export interface PendingUserTurnSplit {
   history: ChatMessage[];
@@ -13,7 +13,7 @@ export interface PendingUserTurnSplit {
 export function splitPendingUserTurn(messages: readonly ChatMessage[]): PendingUserTurnSplit {
   let pendingTurnStart = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === 'user') {
+    if (messages[index]?.role === "user") {
       pendingTurnStart = index;
       break;
     }
@@ -25,6 +25,6 @@ export function splitPendingUserTurn(messages: readonly ChatMessage[]): PendingU
 
   return {
     history: messages.slice(0, pendingTurnStart),
-    pendingTurn: messages.slice(pendingTurnStart)
+    pendingTurn: messages.slice(pendingTurnStart),
   };
 }

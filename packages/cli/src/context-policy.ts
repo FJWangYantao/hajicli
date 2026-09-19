@@ -1,4 +1,4 @@
-import { MODEL_CONTEXT_WINDOWS } from '@hajicli/plugins';
+import { MODEL_CONTEXT_WINDOWS } from "@hajicli/plugins";
 
 /**
  * 返回当前模型的上下文窗口。
@@ -6,7 +6,7 @@ import { MODEL_CONTEXT_WINDOWS } from '@hajicli/plugins';
  */
 export function getModelContextWindowTokens(
   modelValue: string,
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
 ): number {
   const configured = Number(environment.HAJI_CONTEXT_WINDOW_TOKENS);
   if (Number.isFinite(configured) && configured >= 1_000) return Math.round(configured);

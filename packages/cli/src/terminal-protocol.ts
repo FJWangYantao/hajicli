@@ -1,6 +1,6 @@
 export interface TerminalMouseEvent {
-  type: 'mouse';
-  action: 'down' | 'move' | 'up' | 'wheel';
+  type: "mouse";
+  action: "down" | "move" | "up" | "wheel";
   button: number;
   column: number;
   row: number;
@@ -8,20 +8,20 @@ export interface TerminalMouseEvent {
 }
 
 export interface TerminalKeyboardEvent {
-  type: 'keyboard';
+  type: "keyboard";
   data: string;
 }
 
 export interface TerminalPasteEvent {
-  type: 'paste';
+  type: "paste";
   text: string;
 }
 
 export type TerminalProtocolEvent = TerminalMouseEvent | TerminalKeyboardEvent | TerminalPasteEvent;
 
-const SGR_MOUSE_PREFIX = '\x1b[<';
-const PASTE_START = '\x1b[200~';
-const PASTE_END = '\x1b[201~';
+const SGR_MOUSE_PREFIX = "\x1b[<";
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
 const ANSI_SEQUENCE = /^\x1b\[[0-?]*[ -/]*[@-~]/;
 const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);(\d+);(\d+)([mM])/;
 
@@ -29,28 +29,33 @@ function isPrefixOf(value: string, target: string): boolean {
   return target.startsWith(value);
 }
 
-function decodeMouse(button: number, column: number, row: number, suffix: string): TerminalMouseEvent {
+function decodeMouse(
+  button: number,
+  column: number,
+  row: number,
+  suffix: string,
+): TerminalMouseEvent {
   if ((button & 64) !== 0) {
     return {
-      type: 'mouse',
-      action: 'wheel',
+      type: "mouse",
+      action: "wheel",
       button,
       column,
       row,
-      wheelRows: (button & 1) === 0 ? 3 : -3
+      wheelRows: (button & 1) === 0 ? 3 : -3,
     };
   }
 
-  if (suffix === 'm') {
-    return { type: 'mouse', action: 'up', button, column, row };
+  if (suffix === "m") {
+    return { type: "mouse", action: "up", button, column, row };
   }
 
   return {
-    type: 'mouse',
-    action: (button & 32) !== 0 ? 'move' : 'down',
+    type: "mouse",
+    action: (button & 32) !== 0 ? "move" : "down",
     button,
     column,
-    row
+    row,
   };
 }
 
@@ -59,12 +64,12 @@ function decodeMouse(button: number, column: number, row: number, suffix: string
  * never heuristically passed into readline as keyboard input.
  */
 export class TerminalProtocolParser {
-  private buffer = '';
-  private pasteText = '';
+  private buffer = "";
+  private pasteText = "";
   private inPaste = false;
 
   push(input: Buffer | string): TerminalProtocolEvent[] {
-    this.buffer += typeof input === 'string' ? input : input.toString('utf8');
+    this.buffer += typeof input === "string" ? input : input.toString("utf8");
     return this.parseAvailable();
   }
 
@@ -78,19 +83,19 @@ export class TerminalProtocolParser {
     }
 
     const pending = this.buffer;
-    this.buffer = '';
-    if (pending === '\x1b') {
-      return [{ type: 'keyboard', data: pending }];
+    this.buffer = "";
+    if (pending === "\x1b") {
+      return [{ type: "keyboard", data: pending }];
     }
     if (pending.startsWith(SGR_MOUSE_PREFIX) || isPrefixOf(pending, SGR_MOUSE_PREFIX)) {
       return [];
     }
-    return [{ type: 'keyboard', data: pending }];
+    return [{ type: "keyboard", data: pending }];
   }
 
   reset(): void {
-    this.buffer = '';
-    this.pasteText = '';
+    this.buffer = "";
+    this.pasteText = "";
     this.inPaste = false;
   }
 
@@ -110,8 +115,8 @@ export class TerminalProtocolParser {
 
         this.pasteText += this.buffer.slice(0, pasteEnd);
         this.buffer = this.buffer.slice(pasteEnd + PASTE_END.length);
-        events.push({ type: 'paste', text: this.pasteText });
-        this.pasteText = '';
+        events.push({ type: "paste", text: this.pasteText });
+        this.pasteText = "";
         this.inPaste = false;
         continue;
       }
@@ -135,12 +140,14 @@ export class TerminalProtocolParser {
           continue;
         }
 
-        events.push(decodeMouse(
-          Number.parseInt(match[1], 10),
-          Number.parseInt(match[2], 10),
-          Number.parseInt(match[3], 10),
-          match[4]
-        ));
+        events.push(
+          decodeMouse(
+            Number.parseInt(match[1], 10),
+            Number.parseInt(match[2], 10),
+            Number.parseInt(match[3], 10),
+            match[4],
+          ),
+        );
         this.buffer = this.buffer.slice(match[0].length);
         continue;
       }
@@ -148,24 +155,24 @@ export class TerminalProtocolParser {
         break;
       }
 
-      if (this.buffer[0] === '\x1b') {
+      if (this.buffer[0] === "\x1b") {
         const ansi = this.buffer.match(ANSI_SEQUENCE)?.[0];
         if (ansi) {
-          events.push({ type: 'keyboard', data: ansi });
+          events.push({ type: "keyboard", data: ansi });
           this.buffer = this.buffer.slice(ansi.length);
           continue;
         }
-        if (this.buffer.length === 1 || this.buffer === '\x1b[') {
+        if (this.buffer.length === 1 || this.buffer === "\x1b[") {
           break;
         }
-        events.push({ type: 'keyboard', data: this.buffer.slice(0, 2) });
+        events.push({ type: "keyboard", data: this.buffer.slice(0, 2) });
         this.buffer = this.buffer.slice(2);
         continue;
       }
 
-      const nextEscape = this.buffer.indexOf('\x1b');
+      const nextEscape = this.buffer.indexOf("\x1b");
       const end = nextEscape === -1 ? this.buffer.length : nextEscape;
-      events.push({ type: 'keyboard', data: this.buffer.slice(0, end) });
+      events.push({ type: "keyboard", data: this.buffer.slice(0, end) });
       this.buffer = this.buffer.slice(end);
     }
 

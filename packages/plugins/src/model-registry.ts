@@ -1,4 +1,4 @@
-export type ModelProviderName = 'deepseek' | 'volcengine';
+export type ModelProviderName = "deepseek" | "volcengine";
 
 export interface ModelDescriptor {
   readonly value: string;
@@ -12,51 +12,51 @@ export interface ModelDescriptor {
 /** Provider-owned model metadata consumed by the CLI and context policy. */
 export const MODEL_REGISTRY = [
   {
-    value: 'deepseek-v4-flash',
-    label: 'DeepSeek V4 Flash',
-    description: '快速 · 高性价比',
-    provider: 'deepseek',
+    value: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    description: "快速 · 高性价比",
+    provider: "deepseek",
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 8_192
+    maxOutputTokens: 8_192,
   },
   {
-    value: 'deepseek-v4-pro',
-    label: 'DeepSeek V4 Pro',
-    description: '更强 · 复杂任务',
-    provider: 'deepseek',
+    value: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    description: "更强 · 复杂任务",
+    provider: "deepseek",
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 8_192
+    maxOutputTokens: 8_192,
   },
   {
-    value: 'glm-5.2',
-    label: 'GLM 5.2',
-    description: '火山方舟 · 强力通用/代码模型',
-    provider: 'volcengine',
+    value: "glm-5.2",
+    label: "GLM 5.2",
+    description: "火山方舟 · 强力通用/代码模型",
+    provider: "volcengine",
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 16_384
+    maxOutputTokens: 16_384,
   },
   {
-    value: 'doubao-pro-32k',
-    label: 'Doubao Pro 32k',
-    description: '火山方舟 · 豆包大模型',
-    provider: 'volcengine',
+    value: "doubao-pro-32k",
+    label: "Doubao Pro 32k",
+    description: "火山方舟 · 豆包大模型",
+    provider: "volcengine",
     contextWindowTokens: 32_768,
-    maxOutputTokens: 8_192
+    maxOutputTokens: 8_192,
   },
   {
-    value: 'doubao-lite-32k',
-    label: 'Doubao Lite 32k',
-    description: '火山方舟 · 豆包轻量大模型',
-    provider: 'volcengine',
+    value: "doubao-lite-32k",
+    label: "Doubao Lite 32k",
+    description: "火山方舟 · 豆包轻量大模型",
+    provider: "volcengine",
     contextWindowTokens: 32_768,
-    maxOutputTokens: 4_096
-  }
+    maxOutputTokens: 4_096,
+  },
 ] as const satisfies readonly ModelDescriptor[];
 
 export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze(
-  Object.fromEntries(MODEL_REGISTRY.map(model => [model.value, model.contextWindowTokens]))
+  Object.fromEntries(MODEL_REGISTRY.map((model) => [model.value, model.contextWindowTokens])),
 );
 
 export function getModelMetadata(modelValue: string): ModelDescriptor | undefined {
-  return MODEL_REGISTRY.find(model => model.value === modelValue);
+  return MODEL_REGISTRY.find((model) => model.value === modelValue);
 }

@@ -56,19 +56,19 @@ export class TextSelectionModel {
     if (this.focus.startOffset < this.anchor.startOffset) {
       return {
         startOffset: this.focus.startOffset,
-        endOffset: this.anchor.endOffset
+        endOffset: this.anchor.endOffset,
       };
     }
     return {
       startOffset: this.anchor.startOffset,
-      endOffset: this.focus.endOffset
+      endOffset: this.focus.endOffset,
     };
   }
 
   selectedText(document: string): string {
     const range = this.range();
     if (!range || range.endOffset <= range.startOffset) {
-      return '';
+      return "";
     }
     return document.slice(range.startOffset, range.endOffset);
   }

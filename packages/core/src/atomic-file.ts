@@ -1,10 +1,10 @@
-import fs from 'node:fs/promises';
+import fs from "node:fs/promises";
 
-const TRANSIENT_REPLACE_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const TRANSIENT_REPLACE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
 const REPLACE_RETRY_DELAYS_MS = [0, 10, 25, 50] as const;
 
 function delay(milliseconds: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, milliseconds));
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 /**
@@ -21,10 +21,12 @@ export async function replaceFileAtomically(source: string, target: string): Pro
       return;
     } catch (error) {
       lastError = error;
-      if (!TRANSIENT_REPLACE_ERRORS.has((error as NodeJS.ErrnoException).code || '')) break;
+      if (!TRANSIENT_REPLACE_ERRORS.has((error as NodeJS.ErrnoException).code || "")) break;
     }
   }
 
-  try { await fs.rm(source, { force: true }); } catch {}
+  try {
+    await fs.rm(source, { force: true });
+  } catch {}
   throw lastError;
 }

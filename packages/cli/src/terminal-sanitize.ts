@@ -88,7 +88,7 @@ function consumeEscape(value: string, offset: number): number {
  * (including Chinese text and emoji) is preserved.
  */
 export function sanitizeTerminalText(value: string): string {
-  let output = '';
+  let output = "";
   let offset = 0;
 
   while (offset < value.length) {
@@ -112,17 +112,17 @@ export function sanitizeTerminalText(value: string): string {
     }
 
     if (code === 0x0d) {
-      output += '\n';
+      output += "\n";
       offset += value.charCodeAt(offset + 1) === 0x0a ? 2 : 1;
       continue;
     }
     if (code === 0x0a) {
-      output += '\n';
+      output += "\n";
       offset += 1;
       continue;
     }
     if (code === 0x09) {
-      output += '\t';
+      output += "\t";
       offset += 1;
       continue;
     }
@@ -144,16 +144,15 @@ export function sanitizeTerminalText(value: string): string {
  * The command itself remains useful in history: recalling it opens the masked
  * credential prompt instead of replaying the previous secret.
  */
-export function redactSensitiveCommand(
-  value: string,
-  replacement = '[API Key 已隐藏]'
-): string {
+export function redactSensitiveCommand(value: string, replacement = "[API Key 已隐藏]"): string {
   const match = /^(\s*\/provider\s+set\s+\S+)([\s\S]*)$/iu.exec(value);
   if (!match) return value;
   const args = match[2].trim().split(/\s+/u).filter(Boolean);
-  const scopeFlags = args.filter(arg => ['--project', '--global', '--user'].includes(arg.toLowerCase()));
-  const hasSecret = args.some(arg => !scopeFlags.includes(arg));
+  const scopeFlags = args.filter((arg) =>
+    ["--project", "--global", "--user"].includes(arg.toLowerCase()),
+  );
+  const hasSecret = args.some((arg) => !scopeFlags.includes(arg));
   if (!hasSecret) return value;
-  const scopeSuffix = scopeFlags.length > 0 ? ` ${scopeFlags.join(' ')}` : '';
+  const scopeSuffix = scopeFlags.length > 0 ? ` ${scopeFlags.join(" ")}` : "";
   return replacement ? `${match[1]} ${replacement}${scopeSuffix}` : `${match[1]}${scopeSuffix}`;
 }

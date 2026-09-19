@@ -1,37 +1,40 @@
-import { BaseTool, ToolDefinition, ToolExecutionContext } from '@hajicli/core';
-import { fetchWithNetworkPolicy } from './network.js';
+import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
+import { fetchWithNetworkPolicy } from "./network.js";
 
 /**
  * 网页搜索工具（类似 websearch）。
  */
 export class WebSearchTool implements BaseTool {
-  public readonly name = 'websearch';
+  public readonly name = "websearch";
 
   public readonly definition: ToolDefinition = {
-    type: 'function',
+    type: "function",
     function: {
-      name: 'websearch',
-      description: '在互联网上搜索指定关键字，并返回前 5-8 条搜索结果的标题、链接和正文摘要。',
+      name: "websearch",
+      description: "在互联网上搜索指定关键字，并返回前 5-8 条搜索结果的标题、链接和正文摘要。",
       parameters: {
-        type: 'object',
+        type: "object",
         properties: {
           query: {
-            type: 'string',
-            description: '要在网络上搜索的关键字。'
-          }
+            type: "string",
+            description: "要在网络上搜索的关键字。",
+          },
         },
-        required: ['query']
-      }
-    }
+        required: ["query"],
+      },
+    },
   };
 
   /**
    * 执行网络检索。
    */
-  public async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string> {
+  public async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
     const query = args.query as string;
     if (!query) {
-      return '错误: 缺少 query 参数。';
+      return "错误: 缺少 query 参数。";
     }
 
     try {
@@ -40,10 +43,11 @@ export class WebSearchTool implements BaseTool {
       const response = await fetchWithNetworkPolicy(url, {
         signal: context?.abortSignal,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
-        }
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+        },
       });
 
       if (!response.ok) {
@@ -62,28 +66,30 @@ export class WebSearchTool implements BaseTool {
       const links: { url: string; title: string }[] = [];
       const snippets: string[] = [];
 
-      let match;
-      while ((match = linkRegex.exec(html)) !== null) {
+      for (const match of html.matchAll(linkRegex)) {
         let rawUrl = match[1];
         // 如果是 DuckDuckGo 的跳转链接，可以提取真正的 URL
-        if (rawUrl.startsWith('//duckduckgo.com/l/?uddg=')) {
+        if (rawUrl.startsWith("//duckduckgo.com/l/?uddg=")) {
           const matchUrl = rawUrl.match(/uddg=([^&]+)/);
           if (matchUrl) {
             rawUrl = decodeURIComponent(matchUrl[1]);
           }
         }
-        if (rawUrl.startsWith('/')) {
-          rawUrl = 'https://lite.duckduckgo.com' + rawUrl;
+        if (rawUrl.startsWith("/")) {
+          rawUrl = `https://lite.duckduckgo.com${rawUrl}`;
         }
 
         // 清洗标题中的 HTML 标签
-        const cleanTitle = match[2].replace(/<[^>]+>/g, '').trim();
+        const cleanTitle = match[2].replace(/<[^>]+>/g, "").trim();
         links.push({ url: rawUrl, title: cleanTitle });
       }
 
-      while ((match = snippetRegex.exec(html)) !== null) {
+      for (const match of html.matchAll(snippetRegex)) {
         // 清洗摘要中的 HTML 标签和多余空白字符
-        const cleanSnippet = match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+        const cleanSnippet = match[1]
+          .replace(/<[^>]+>/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
         snippets.push(cleanSnippet);
       }
 
@@ -103,12 +109,12 @@ export class WebSearchTool implements BaseTool {
       // 截断超长结果以防止上下文溢出（限制 8000 字符）
       const maxOutputLength = 8000;
       if (result.length > maxOutputLength) {
-        result = result.substring(0, maxOutputLength) + '\n\n[输出已被截断，因为内容超过了 8000 字符限制]';
+        result = `${result.substring(0, maxOutputLength)}\n\n[输出已被截断，因为内容超过了 8000 字符限制]`;
       }
 
       return result;
     } catch (error) {
-      if (context?.abortSignal?.aborted) return '[网络搜索已中止]';
+      if (context?.abortSignal?.aborted) return "[网络搜索已中止]";
       return `网络搜索失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

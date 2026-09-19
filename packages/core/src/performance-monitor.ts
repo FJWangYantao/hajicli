@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 
 export interface PerformanceMetricSnapshot {
   count: number;
@@ -74,20 +74,23 @@ export class PerformanceMonitor {
       metrics[name] = {
         count: values.length,
         averageMs: round(sum / values.length),
-        p95Ms: round(sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * 0.95) - 1))]),
-        maxMs: round(sorted[sorted.length - 1])
+        p95Ms: round(
+          sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * 0.95) - 1))],
+        ),
+        maxMs: round(sorted[sorted.length - 1]),
       };
     }
 
     const histogram = this.eventLoopHistogram;
-    const nanosecondsToMilliseconds = (value: number): number => Number.isFinite(value) ? round(value / 1_000_000) : 0;
+    const nanosecondsToMilliseconds = (value: number): number =>
+      Number.isFinite(value) ? round(value / 1_000_000) : 0;
     const snapshot: PerformanceSnapshot = {
       eventLoop: {
         meanMs: histogram ? nanosecondsToMilliseconds(histogram.mean) : 0,
         p95Ms: histogram ? nanosecondsToMilliseconds(histogram.percentile(95)) : 0,
-        maxMs: histogram ? nanosecondsToMilliseconds(histogram.max) : 0
+        maxMs: histogram ? nanosecondsToMilliseconds(histogram.max) : 0,
       },
-      metrics
+      metrics,
     };
 
     if (reset) {

@@ -1,5 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import fs from "node:fs";
+import path from "node:path";
 import {
   isReasoningEffort,
   MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
@@ -8,9 +8,9 @@ import {
   MIN_SUBAGENT_MAX_TOKENS,
   MIN_SUBAGENT_MAX_TOOL_CALLS,
   type ReasoningEffort,
-  type SubagentRole
-} from '@hajicli/core';
-import type { ParsedSubagentCommand } from './agent-commands.js';
+  type SubagentRole,
+} from "@hajicli/core";
+import type { ParsedSubagentCommand } from "./agent-commands.js";
 
 /**
  * Subagent 预设存储模块。
@@ -41,36 +41,52 @@ export interface SubagentPreset {
   maxToolCalls?: number;
 }
 
-const SUBAGENT_ROLES: readonly SubagentRole[] = ['research', 'review', 'implement'];
+const SUBAGENT_ROLES: readonly SubagentRole[] = ["research", "review", "implement"];
 
 export function defaultSubagentPresetsPath(): string {
-  return path.join(process.cwd(), '.haji', 'subagent-presets.json');
+  return path.join(process.cwd(), ".haji", "subagent-presets.json");
 }
 
 /** 清洗单个预设：name 非法返回 undefined；其余字段按类型/枚举/范围校验，非法字段丢弃。 */
 function sanitizePreset(raw: Record<string, unknown>): SubagentPreset | undefined {
-  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
   if (!name) return undefined;
   const preset: SubagentPreset = { name };
-  if (typeof raw.role === 'string' && SUBAGENT_ROLES.includes(raw.role as SubagentRole)) {
+  if (typeof raw.role === "string" && SUBAGENT_ROLES.includes(raw.role as SubagentRole)) {
     preset.role = raw.role as SubagentRole;
   }
-  if (typeof raw.model === 'string' && raw.model.trim()) preset.model = raw.model.trim();
-  if (typeof raw.provider === 'string' && raw.provider.trim()) preset.provider = raw.provider.trim();
-  if (typeof raw.reasoningEffort === 'string' && isReasoningEffort(raw.reasoningEffort)) {
+  if (typeof raw.model === "string" && raw.model.trim()) preset.model = raw.model.trim();
+  if (typeof raw.provider === "string" && raw.provider.trim())
+    preset.provider = raw.provider.trim();
+  if (typeof raw.reasoningEffort === "string" && isReasoningEffort(raw.reasoningEffort)) {
     preset.reasoningEffort = raw.reasoningEffort;
   }
-  if (typeof raw.instructions === 'string' && raw.instructions.trim()) {
+  if (typeof raw.instructions === "string" && raw.instructions.trim()) {
     const instructions = raw.instructions.trim();
     if (instructions.length <= MAX_SUBAGENT_INSTRUCTIONS_LENGTH) preset.instructions = instructions;
   }
-  if (typeof raw.timeoutMs === 'number' && Number.isInteger(raw.timeoutMs) && raw.timeoutMs >= 100 && raw.timeoutMs <= 3_600_000) {
+  if (
+    typeof raw.timeoutMs === "number" &&
+    Number.isInteger(raw.timeoutMs) &&
+    raw.timeoutMs >= 100 &&
+    raw.timeoutMs <= 3_600_000
+  ) {
     preset.timeoutMs = raw.timeoutMs;
   }
-  if (typeof raw.maxTokens === 'number' && Number.isInteger(raw.maxTokens) && raw.maxTokens >= MIN_SUBAGENT_MAX_TOKENS && raw.maxTokens <= MAX_SUBAGENT_MAX_TOKENS) {
+  if (
+    typeof raw.maxTokens === "number" &&
+    Number.isInteger(raw.maxTokens) &&
+    raw.maxTokens >= MIN_SUBAGENT_MAX_TOKENS &&
+    raw.maxTokens <= MAX_SUBAGENT_MAX_TOKENS
+  ) {
     preset.maxTokens = raw.maxTokens;
   }
-  if (typeof raw.maxToolCalls === 'number' && Number.isInteger(raw.maxToolCalls) && raw.maxToolCalls >= MIN_SUBAGENT_MAX_TOOL_CALLS && raw.maxToolCalls <= MAX_SUBAGENT_MAX_TOOL_CALLS) {
+  if (
+    typeof raw.maxToolCalls === "number" &&
+    Number.isInteger(raw.maxToolCalls) &&
+    raw.maxToolCalls >= MIN_SUBAGENT_MAX_TOOL_CALLS &&
+    raw.maxToolCalls <= MAX_SUBAGENT_MAX_TOOL_CALLS
+  ) {
     preset.maxToolCalls = raw.maxToolCalls;
   }
   return preset;
@@ -88,20 +104,20 @@ function backupCorruptedPresetFile(presetPath: string): void {
 export function loadSubagentPresets(presetPath = defaultSubagentPresetsPath()): SubagentPreset[] {
   let raw: string;
   try {
-    raw = fs.readFileSync(presetPath, 'utf8');
+    raw = fs.readFileSync(presetPath, "utf8");
   } catch {
     // 文件不存在：正常空列表，无需备份
     return [];
   }
   try {
     const parsed = JSON.parse(raw) as { presets?: unknown };
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.presets)) {
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.presets)) {
       backupCorruptedPresetFile(presetPath);
       return [];
     }
     return parsed.presets
-      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map(item => sanitizePreset(item))
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      .map((item) => sanitizePreset(item))
       .filter((item): item is SubagentPreset => Boolean(item));
   } catch {
     // JSON 解析失败：先备份损坏文件，再按空列表处理
@@ -110,11 +126,14 @@ export function loadSubagentPresets(presetPath = defaultSubagentPresetsPath()): 
   }
 }
 
-export function saveSubagentPresets(presets: SubagentPreset[], presetPath = defaultSubagentPresetsPath()): boolean {
+export function saveSubagentPresets(
+  presets: SubagentPreset[],
+  presetPath = defaultSubagentPresetsPath(),
+): boolean {
   const tempPath = `${presetPath}.tmp`;
   try {
     fs.mkdirSync(path.dirname(presetPath), { recursive: true });
-    fs.writeFileSync(tempPath, JSON.stringify({ presets }, null, 2), 'utf8');
+    fs.writeFileSync(tempPath, JSON.stringify({ presets }, null, 2), "utf8");
     fs.renameSync(tempPath, presetPath);
     return true;
   } catch {
@@ -128,9 +147,14 @@ export function saveSubagentPresets(presets: SubagentPreset[], presetPath = defa
 }
 
 /** 按名称查找预设（大小写不敏感，name 防御性转换）。 */
-export function findSubagentPreset(presets: SubagentPreset[], name: string): SubagentPreset | undefined {
-  const lower = String(name ?? '').trim().toLowerCase();
-  return presets.find(preset => String(preset.name ?? '').toLowerCase() === lower);
+export function findSubagentPreset(
+  presets: SubagentPreset[],
+  name: string,
+): SubagentPreset | undefined {
+  const lower = String(name ?? "")
+    .trim()
+    .toLowerCase();
+  return presets.find((preset) => String(preset.name ?? "").toLowerCase() === lower);
 }
 
 /**
@@ -141,19 +165,21 @@ export function findSubagentPreset(presets: SubagentPreset[], name: string): Sub
 export function updateSubagentPreset(
   presets: SubagentPreset[],
   name: string,
-  patch: Partial<Omit<SubagentPreset, 'name'>>
+  patch: Partial<Omit<SubagentPreset, "name">>,
 ): SubagentPreset[] {
-  const lower = String(name ?? '').trim().toLowerCase();
-  const cleanPatch: Partial<Omit<SubagentPreset, 'name'>> = {};
+  const lower = String(name ?? "")
+    .trim()
+    .toLowerCase();
+  const cleanPatch: Partial<Omit<SubagentPreset, "name">> = {};
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) {
       (cleanPatch as Record<string, unknown>)[key] = value;
     }
   }
-  return presets.map(preset =>
-    String(preset.name ?? '').toLowerCase() === lower
+  return presets.map((preset) =>
+    String(preset.name ?? "").toLowerCase() === lower
       ? { ...preset, ...cleanPatch, name: preset.name }
-      : preset
+      : preset,
   );
 }
 
@@ -162,7 +188,10 @@ export function updateSubagentPreset(
  * 合并优先级：命令行显式参数 > 预设值；未显式指定且预设未提供时保持 undefined
  * （由调用方回退到主会话默认值）。
  */
-export function applySubagentPreset(parsed: ParsedSubagentCommand, preset: SubagentPreset): ParsedSubagentCommand {
+export function applySubagentPreset(
+  parsed: ParsedSubagentCommand,
+  preset: SubagentPreset,
+): ParsedSubagentCommand {
   return {
     ...parsed,
     role: parsed.role ?? preset.role,
@@ -172,6 +201,6 @@ export function applySubagentPreset(parsed: ParsedSubagentCommand, preset: Subag
     instructions: parsed.instructions ?? preset.instructions,
     timeoutMs: parsed.timeoutMs ?? preset.timeoutMs,
     maxTokens: parsed.maxTokens ?? preset.maxTokens,
-    maxToolCalls: parsed.maxToolCalls ?? preset.maxToolCalls
+    maxToolCalls: parsed.maxToolCalls ?? preset.maxToolCalls,
   };
 }

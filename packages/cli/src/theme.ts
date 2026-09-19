@@ -1,6 +1,6 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * TUI 主题模块。
@@ -43,7 +43,7 @@ export interface Theme {
 }
 
 /** 终端颜色能力，从完全无色到 24-bit 真彩色。 */
-export type ColorLevel = 'mono' | 'ansi16' | 'ansi256' | 'truecolor';
+export type ColorLevel = "mono" | "ansi16" | "ansi256" | "truecolor";
 
 /**
  * 纯函数检测终端颜色能力。显式的无色请求（非 TTY / NO_COLOR / TERM=dumb）
@@ -53,23 +53,28 @@ export type ColorLevel = 'mono' | 'ansi16' | 'ansi256' | 'truecolor';
 export function detectColorLevel(
   env: Readonly<Record<string, string | undefined>>,
   isTTY: boolean,
-  _platform?: NodeJS.Platform
+  _platform?: NodeJS.Platform,
 ): ColorLevel {
-  if (!isTTY || Object.prototype.hasOwnProperty.call(env, 'NO_COLOR')) return 'mono';
-  if (env.TERM?.toLowerCase() === 'dumb') return 'mono';
+  if (!isTTY || Object.hasOwn(env, "NO_COLOR")) return "mono";
+  if (env.TERM?.toLowerCase() === "dumb") return "mono";
 
   const colorTerm = env.COLORTERM?.toLowerCase();
   // win32 一律按 truecolor 处理：现代 Windows 控制台支持 24-bit VT，但
   // shells/launchers 不总是保留 WT_SESSION/COLORTERM；若回退 ANSI 16，深色
   // 主题背景会被映射到终端配色里的 "black"，往往比预期亮得多。老 conhost
   // 不解析 24-bit SGR 时会自行量化/降级渲染，乱码风险不高于既有 ANSI 16 回退。
-  if (_platform === 'win32' || env.WT_SESSION || colorTerm === 'truecolor' || colorTerm === '24bit') {
-    return 'truecolor';
+  if (
+    _platform === "win32" ||
+    env.WT_SESSION ||
+    colorTerm === "truecolor" ||
+    colorTerm === "24bit"
+  ) {
+    return "truecolor";
   }
-  if (env.TERM?.toLowerCase().includes('256color') || colorTerm?.includes('256color')) {
-    return 'ansi256';
+  if (env.TERM?.toLowerCase().includes("256color") || colorTerm?.includes("256color")) {
+    return "ansi256";
   }
-  return 'ansi16';
+  return "ansi16";
 }
 
 let activeColorLevel: ColorLevel | undefined;
@@ -77,7 +82,11 @@ let activeColorLevel: ColorLevel | undefined;
 /** 获取当前颜色能力；首次访问时根据进程环境检测。 */
 export function getColorLevel(): ColorLevel {
   if (!activeColorLevel) {
-    activeColorLevel = detectColorLevel(process.env, Boolean(process.stdout.isTTY), process.platform);
+    activeColorLevel = detectColorLevel(
+      process.env,
+      Boolean(process.stdout.isTTY),
+      process.platform,
+    );
   }
   return activeColorLevel;
 }
@@ -98,21 +107,21 @@ export const resetColorLevel = resetActiveColorLevel;
 
 /** 内置默认主题：HAJI 轨迹台，低干扰深色表面 + 克制紫色强调。 */
 const DEFAULT_THEME: Theme = {
-  background: '#101318',
-  userMsgBg: '#171b22',
-  foreground: '#d9dee7',
-  accent: '#a995d6',
-  muted: '#8f98a5',
-  red: '#e07a7a',
-  green: '#78b892',
-  yellow: '#d6a85f',
-  blue: '#82aadd',
-  magenta: '#b8a1df',
-  cyan: '#7dcfff',
-  brightGreen: '#91c7a6',
-  brightYellow: '#e2bb78',
-  brightBlue: '#9ab8e6',
-  brightCyan: '#9edcff'
+  background: "#101318",
+  userMsgBg: "#171b22",
+  foreground: "#d9dee7",
+  accent: "#a995d6",
+  muted: "#8f98a5",
+  red: "#e07a7a",
+  green: "#78b892",
+  yellow: "#d6a85f",
+  blue: "#82aadd",
+  magenta: "#b8a1df",
+  cyan: "#7dcfff",
+  brightGreen: "#91c7a6",
+  brightYellow: "#e2bb78",
+  brightBlue: "#9ab8e6",
+  brightCyan: "#9edcff",
 };
 
 /** Theme 接口的所有合法键，用于配置合并时过滤未知字段。 */
@@ -136,7 +145,7 @@ const ANSI16_PALETTE: readonly [number, number, number][] = [
   [0x00, 0x00, 0xff],
   [0xff, 0x00, 0xff],
   [0x00, 0xff, 0xff],
-  [0xff, 0xff, 0xff]
+  [0xff, 0xff, 0xff],
 ];
 
 /** 将 #RRGGBB 解析为 [r, g, b]；非法时返回 undefined。 */
@@ -157,7 +166,7 @@ function rgbToAnsi256(r: number, g: number, b: number): number {
   const red = Math.round((r / 255) * 5);
   const green = Math.round((g / 255) * 5);
   const blue = Math.round((b / 255) * 5);
-  return 16 + (36 * red) + (6 * green) + blue;
+  return 16 + 36 * red + 6 * green + blue;
 }
 
 function rgbToAnsi16(r: number, g: number, b: number): number {
@@ -165,7 +174,7 @@ function rgbToAnsi16(r: number, g: number, b: number): number {
   let nearestDistance = Number.POSITIVE_INFINITY;
   for (let index = 0; index < ANSI16_PALETTE.length; index += 1) {
     const [pr, pg, pb] = ANSI16_PALETTE[index];
-    const distance = ((r - pr) ** 2) + ((g - pg) ** 2) + ((b - pb) ** 2);
+    const distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
     if (distance < nearestDistance) {
       nearest = index;
       nearestDistance = distance;
@@ -182,50 +191,50 @@ function ansi16Code(index: number, background: boolean): number {
 /** 按当前颜色能力生成前景色 SGR；无色模式返回空串。 */
 export function fgSeq(hex: string): string {
   const level = getColorLevel();
-  if (level === 'mono') return '';
+  if (level === "mono") return "";
   const rgb = hexToRgb(hex);
-  if (!rgb) return '\x1b[39m';
-  if (level === 'truecolor') return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
-  if (level === 'ansi256') return `\x1b[38;5;${rgbToAnsi256(...rgb)}m`;
+  if (!rgb) return "\x1b[39m";
+  if (level === "truecolor") return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  if (level === "ansi256") return `\x1b[38;5;${rgbToAnsi256(...rgb)}m`;
   return `\x1b[${ansi16Code(rgbToAnsi16(...rgb), false)}m`;
 }
 
 /** 按当前颜色能力生成背景色 SGR；无色模式返回空串。 */
 export function bgSeq(hex: string): string {
   const level = getColorLevel();
-  if (level === 'mono') return '';
+  if (level === "mono") return "";
   const rgb = hexToRgb(hex);
-  if (!rgb) return '\x1b[49m';
-  if (level === 'truecolor') return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
-  if (level === 'ansi256') return `\x1b[48;5;${rgbToAnsi256(...rgb)}m`;
+  if (!rgb) return "\x1b[49m";
+  if (level === "truecolor") return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  if (level === "ansi256") return `\x1b[48;5;${rgbToAnsi256(...rgb)}m`;
   return `\x1b[${ansi16Code(rgbToAnsi16(...rgb), true)}m`;
 }
 
 /** 粗体 SGR 序列。 */
-const BOLD = '\x1b[1m';
+const BOLD = "\x1b[1m";
 
 function styleSeq(sequence: string): string {
-  return getColorLevel() === 'mono' ? '' : sequence;
+  return getColorLevel() === "mono" ? "" : sequence;
 }
 
 function userThemeConfigPath(): string {
-  return path.join(os.homedir(), '.haji', 'theme.json');
+  return path.join(os.homedir(), ".haji", "theme.json");
 }
 
 function projectThemeConfigPath(): string {
-  return path.join(process.cwd(), '.haji', 'theme.json');
+  return path.join(process.cwd(), ".haji", "theme.json");
 }
 
 /** 读取单个主题文件，仅保留合法 hex 字段；文件缺失/损坏返回空对象。 */
 function readThemeFile(filePath: string): Partial<Theme> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object') return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
     const source = parsed as Record<string, unknown>;
     const result: Partial<Theme> = {};
     for (const key of THEME_KEYS) {
       const value = source[key];
-      if (typeof value === 'string' && HEX_RE.test(value)) {
+      if (typeof value === "string" && HEX_RE.test(value)) {
         result[key] = value;
       }
     }
@@ -277,7 +286,7 @@ export function resetActiveTheme(): void {
  * 用于所有颜色函数的收尾，保证渲染过程中主题背景属性不被清除。
  */
 export function themeReset(): string {
-  if (getColorLevel() === 'mono') return '';
+  if (getColorLevel() === "mono") return "";
   const theme = getTheme();
   return `\x1b[0m${fgSeq(theme.foreground)}${bgSeq(theme.background)}`;
 }
@@ -294,19 +303,19 @@ export function themeFg(): string {
 
 /** 主题进入序列：设置前景与背景（用于进入 alt screen 后填充整屏）。 */
 export function themeEnter(): string {
-  if (getColorLevel() === 'mono') return '';
+  if (getColorLevel() === "mono") return "";
   const theme = getTheme();
   return `\x1b[0m${fgSeq(theme.foreground)}${bgSeq(theme.background)}`;
 }
 
 /** 主题退出序列：恢复终端默认前景与背景。 */
 export function themeExit(): string {
-  return getColorLevel() === 'mono' ? '' : '\x1b[0m';
+  return getColorLevel() === "mono" ? "" : "\x1b[0m";
 }
 
 function paintText(text: string, color: string, bold = false): string {
-  if (getColorLevel() === 'mono') return text;
-  return `${bold ? BOLD : ''}${fgSeq(color)}${text}${themeReset()}`;
+  if (getColorLevel() === "mono") return text;
+  return `${bold ? BOLD : ""}${fgSeq(color)}${text}${themeReset()}`;
 }
 
 /**
@@ -326,11 +335,12 @@ export const paint = {
   boldBlue: (text: string): string => paintText(text, getTheme().blue, true),
   muted: (text: string): string => paintText(text, getTheme().muted),
   cyan: (text: string): string => paintText(text, getTheme().cyan),
-  bold: (text: string): string => getColorLevel() === 'mono' ? text : `${BOLD}${text}${themeReset()}`,
+  bold: (text: string): string =>
+    getColorLevel() === "mono" ? text : `${BOLD}${text}${themeReset()}`,
   userMsg: (text: string): string => {
-    const lines = text.split('\n');
-    if (getColorLevel() === 'mono') {
-      return lines.map((line, idx) => idx === 0 ? ` ❯ ${line}` : `   ${line}`).join('\n');
+    const lines = text.split("\n");
+    if (getColorLevel() === "mono") {
+      return lines.map((line, idx) => (idx === 0 ? ` ❯ ${line}` : `   ${line}`)).join("\n");
     }
     const theme = getTheme();
     const accent = fgSeq(theme.accent);
@@ -338,18 +348,31 @@ export const paint = {
     // 整行背景填充：每行前置 bg，行尾用激活背景的 \x1b[K 清到行尾实现整行填满。
     // 首行用 accent 色 ❯ 前缀，续行用 3 空格缩进对齐 "❯ "。
     // 每行用 themeReset() 收尾，避免背景泄漏到后续渲染（wrapAnsi 跨行时会保留 bg 作为 activeStyle）。
-    return lines.map((line, idx) =>
-      idx === 0
-        ? `${bg}${BOLD}${accent} ❯ ${themeReset()}${bg}${line}\x1b[K${themeReset()}`
-        : `${bg}   ${line}\x1b[K${themeReset()}`
-    ).join('\n');
-  }
+    return lines
+      .map((line, idx) =>
+        idx === 0
+          ? `${bg}${BOLD}${accent} ❯ ${themeReset()}${bg}${line}\x1b[K${themeReset()}`
+          : `${bg}   ${line}\x1b[K${themeReset()}`,
+      )
+      .join("\n");
+  },
+};
+
+/**
+ * 兼容历史调用习惯的颜色集合：在 {@link paint} 基础上补充旧名别名，
+ * purple/boldPurple/gray 分别等价于 accent/boldAccent/muted。
+ */
+export const colors = {
+  ...paint,
+  purple: paint.accent,
+  boldPurple: paint.boldAccent,
+  gray: paint.muted,
 };
 
 /**
  * 用户消息背景色 SGR（供渲染层识别用户消息行）。模块级缓存，主题不变时复用。
  */
-let cachedUserMsgBgSeq = '';
+let cachedUserMsgBgSeq = "";
 function userMsgBgSeq(): string {
   const seq = bgSeq(getTheme().userMsgBg);
   if (!cachedUserMsgBgSeq || cachedUserMsgBgSeq !== seq) cachedUserMsgBgSeq = seq;
@@ -367,8 +390,8 @@ export function fillUserMsgRowEol(row: string): string {
   const bg = userMsgBgSeq();
   if (!bg) return row;
   if (!row.includes(bg)) return row;
-  if (row.includes('\x1b[K')) return row;
-  const lastReset = row.lastIndexOf('\x1b[0m');
+  if (row.includes("\x1b[K")) return row;
+  const lastReset = row.lastIndexOf("\x1b[0m");
   if (lastReset === -1) return `${row}\x1b[K`;
   return `${row.slice(0, lastReset)}\x1b[K${row.slice(lastReset)}`;
 }
@@ -399,14 +422,14 @@ export function buildAnsiStyles(): {
   brightCyan: string;
 } {
   const theme = getTheme();
-  const enabled = getColorLevel() !== 'mono';
+  const enabled = getColorLevel() !== "mono";
   return {
     reset: themeReset(),
     bold: styleSeq(BOLD),
-    dim: enabled ? '\x1b[2m' : '',
-    italic: enabled ? '\x1b[3m' : '',
-    underline: enabled ? '\x1b[4m' : '',
-    strikethrough: enabled ? '\x1b[9m' : '',
+    dim: enabled ? "\x1b[2m" : "",
+    italic: enabled ? "\x1b[3m" : "",
+    underline: enabled ? "\x1b[4m" : "",
+    strikethrough: enabled ? "\x1b[9m" : "",
     red: fgSeq(theme.red),
     green: fgSeq(theme.green),
     yellow: fgSeq(theme.yellow),
@@ -418,6 +441,6 @@ export function buildAnsiStyles(): {
     brightGreen: fgSeq(theme.brightGreen),
     brightYellow: fgSeq(theme.brightYellow),
     brightBlue: fgSeq(theme.brightBlue),
-    brightCyan: fgSeq(theme.brightCyan)
+    brightCyan: fgSeq(theme.brightCyan),
   };
 }

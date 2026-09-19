@@ -1,4 +1,4 @@
-export type SkillSource = 'user' | 'project';
+export type SkillSource = "user" | "project";
 
 export interface SkillEntry {
   name: string;
@@ -33,7 +33,7 @@ export interface SkillScanResult {
   issues: SkillValidationIssue[];
 }
 
-export type SkillResourceKind = 'reference' | 'script' | 'asset' | 'resource';
+export type SkillResourceKind = "reference" | "script" | "asset" | "resource";
 
 export interface SkillResourceItem {
   path: string;
@@ -51,7 +51,7 @@ export interface SkillResourceContent extends SkillResourceItem {
 }
 
 export interface SkillValidationIssue {
-  severity: 'error' | 'warning';
+  severity: "error" | "warning";
   message: string;
   skill?: string;
 }

@@ -12,7 +12,11 @@ export type ParseResult<T> = { ok: true; value: T } | { ok: false; message: stri
 const DECIMAL_INTEGER = /^[+-]?\d+$/;
 
 /** 解析可选整数输入：空串 → undefined（跳过/保持）；合法十进制整数 → 值；否则返回错误信息。 */
-export function parseOptionalInteger(raw: string, min: number, max: number): ParseResult<number | undefined> {
+export function parseOptionalInteger(
+  raw: string,
+  min: number,
+  max: number,
+): ParseResult<number | undefined> {
   const input = raw.trim();
   if (!input) return { ok: true, value: undefined };
   if (!DECIMAL_INTEGER.test(input)) {
@@ -27,7 +31,7 @@ export function parseOptionalInteger(raw: string, min: number, max: number): Par
 
 /** 任务描述校验：非空才合法。 */
 export function validateDescription(raw: string): string | null {
-  return raw.trim() ? null : '任务描述不能为空';
+  return raw.trim() ? null : "任务描述不能为空";
 }
 
 /** instructions 校验：空串允许（跳过），非空时受长度上限约束。 */
@@ -39,8 +43,13 @@ export function validateInstructionsInput(raw: string, maxLength: number): strin
 }
 
 /** 数值字段的向导提示模板（带当前值和跳过说明）。 */
-export function budgetPrompt(label: string, current: number | undefined, min: number, max: number): string {
-  const currentText = current !== undefined ? String(current) : '默认';
+export function budgetPrompt(
+  label: string,
+  current: number | undefined,
+  min: number,
+  max: number,
+): string {
+  const currentText = current !== undefined ? String(current) : "默认";
   return `${label}（当前：${currentText}，范围 ${min}-${max}，回车跳过，b 返回上一步）› `;
 }
 

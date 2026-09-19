@@ -15,13 +15,13 @@
  * 用于按 domain 聚合（仿文章 evolved-skill 的分组逻辑），便于注入时分类呈现。
  */
 export type InstinctDomain =
-  | 'workflow'           // 工作流模式（先读后改、检索→确认等）
-  | 'testing'            // 测试相关
-  | 'git'                // 版本控制
-  | 'code-style'         // 代码风格
-  | 'project-context'    // 项目上下文
-  | 'error-prevention'   // 错误预防（核心目标：降低工具出错率）
-  | 'other';
+  | "workflow" // 工作流模式（先读后改、检索→确认等）
+  | "testing" // 测试相关
+  | "git" // 版本控制
+  | "code-style" // 代码风格
+  | "project-context" // 项目上下文
+  | "error-prevention" // 错误预防（核心目标：降低工具出错率）
+  | "other";
 
 /**
  * 规则的来源路径。
@@ -29,7 +29,7 @@ export type InstinctDomain =
  * - llm：路径 B LLM 语义分析产出
  * - manual：用户通过 /instinct add 手工录入
  */
-export type InstinctSource = 'statistical' | 'llm' | 'manual';
+export type InstinctSource = "statistical" | "llm" | "manual";
 
 /**
  * 单条原子行为模式（对应文章的 Instinct）。
@@ -52,11 +52,11 @@ export interface Instinct {
   /** 累计被观测/强化次数。 */
   occurrenceCount: number;
   /** 加载时由目录推导的作用域（user=用户级跨项目，project=项目级）；不写入磁盘。 */
-  scope?: 'user' | 'project';
+  scope?: "user" | "project";
 }
 
 /** 记忆的类型分类。 */
-export type MemoryType = 'user' | 'project' | 'feedback';
+export type MemoryType = "user" | "project" | "feedback";
 
 /**
  * 记忆的生命周期状态。
@@ -64,7 +64,7 @@ export type MemoryType = 'user' | 'project' | 'feedback';
  * - active：已确认，进入召回
  * - archived：归档，不再注入但仍保留在磁盘（可恢复）
  */
-export type MemoryStatus = 'staging' | 'active' | 'archived';
+export type MemoryStatus = "staging" | "active" | "archived";
 
 /**
  * 单条事实/偏好记忆（对应文章的 Memory）。
@@ -83,7 +83,7 @@ export interface Memory {
   /** 召回用的关键词数组（从 name+content 提取的英文 token + 中文关键字符）。 */
   keywords: string[];
   /** 加载时由目录推导的作用域（user=用户级跨项目，project=项目级）；不写入磁盘。 */
-  scope?: 'user' | 'project';
+  scope?: "user" | "project";
 }
 
 /**

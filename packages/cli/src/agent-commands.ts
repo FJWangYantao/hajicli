@@ -1,13 +1,13 @@
 import {
+  isReasoningEffort,
+  MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
   MAX_SUBAGENT_MAX_TOKENS,
   MAX_SUBAGENT_MAX_TOOL_CALLS,
-  MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
   MIN_SUBAGENT_MAX_TOKENS,
   MIN_SUBAGENT_MAX_TOOL_CALLS,
-  isReasoningEffort,
-  ReasoningEffort,
-  SubagentRole
-} from '@hajicli/core';
+  type ReasoningEffort,
+  type SubagentRole,
+} from "@hajicli/core";
 
 export interface ParsedSubagentCommand {
   background: boolean;
@@ -38,7 +38,10 @@ export interface ParsedPresetCommand {
   maxToolCalls?: number;
 }
 
-function extractOption(source: string, name: string): { source: string; value?: string; error?: string } {
+function extractOption(
+  source: string,
+  name: string,
+): { source: string; value?: string; error?: string } {
   const marker = `--${name}`;
   let quote: '"' | "'" | undefined;
   for (let index = 0; index <= source.length - marker.length; index += 1) {
@@ -54,15 +57,16 @@ function extractOption(source: string, name: string): { source: string; value?: 
     if (source.slice(index, index + marker.length).toLowerCase() !== marker.toLowerCase()) continue;
     if (index > 0 && !/\s/.test(source[index - 1])) continue;
     const separator = source[index + marker.length];
-    if (separator !== '=' && !/\s/.test(separator || '')) continue;
+    if (separator !== "=" && !/\s/.test(separator || "")) continue;
 
     let valueStart = index + marker.length + 1;
-    if (separator !== '=') {
-      while (/\s/.test(source[valueStart] || '')) valueStart += 1;
+    if (separator !== "=") {
+      while (/\s/.test(source[valueStart] || "")) valueStart += 1;
     }
-    const valueQuote = source[valueStart] === '"' || source[valueStart] === "'"
-      ? source[valueStart] as '"' | "'"
-      : undefined;
+    const valueQuote =
+      source[valueStart] === '"' || source[valueStart] === "'"
+        ? (source[valueStart] as '"' | "'")
+        : undefined;
     if (valueQuote) valueStart += 1;
     let valueEnd = valueStart;
     if (valueQuote) {
@@ -78,7 +82,7 @@ function extractOption(source: string, name: string): { source: string; value?: 
     const removalEnd = valueQuote && source[valueEnd] === valueQuote ? valueEnd + 1 : valueEnd;
     return {
       source: `${source.slice(0, index)} ${source.slice(removalEnd)}`.trim(),
-      value
+      value,
     };
   }
   return { source };
@@ -107,15 +111,15 @@ function splitAtDoubleDash(source: string): { head: string; tail: string } {
       quote = character;
       continue;
     }
-    if (character === '-' && source[index + 1] === '-') {
-      const before = index === 0 ? ' ' : source[index - 1];
-      const after = index + 2 >= source.length ? ' ' : source[index + 2];
+    if (character === "-" && source[index + 1] === "-") {
+      const before = index === 0 ? " " : source[index - 1];
+      const after = index + 2 >= source.length ? " " : source[index + 2];
       if (/\s/.test(before) && /\s/.test(after)) {
         return { head: source.slice(0, index).trim(), tail: source.slice(index + 2).trim() };
       }
     }
   }
-  return { head: source, tail: '' };
+  return { head: source, tail: "" };
 }
 
 const DECIMAL_INTEGER = /^[+-]?\d+$/;
@@ -158,7 +162,7 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
       cursor += 1;
       const start = cursor;
       while (cursor < length && source[cursor] !== quote) cursor += 1;
-      if (cursor >= length) throw new Error('选项值引号未闭合');
+      if (cursor >= length) throw new Error("选项值引号未闭合");
       const value = source.slice(start, cursor);
       cursor += 1;
       return value;
@@ -166,7 +170,7 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
     return readToken();
   };
   const ensureNonEmpty = (value: string | undefined, option: string): string => {
-    const trimmed = (value ?? '').trim();
+    const trimmed = (value ?? "").trim();
     if (!trimmed) throw new Error(`--${option} 不能为空`);
     return trimmed;
   };
@@ -175,10 +179,10 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
   if (/^preset:/i.test(source)) {
     const presetPrefix = source.match(/^preset:(?:"([^"]*)"|'([^']*)'|([^\s]+))/i);
     if (!presetPrefix) {
-      throw new Error('preset: 名称不能为空（语法：preset:<名称>，如 preset:调研）');
+      throw new Error("preset: 名称不能为空（语法：preset:<名称>，如 preset:调研）");
     }
-    preset = (presetPrefix[1] || presetPrefix[2] || presetPrefix[3] || '').trim();
-    if (!preset) throw new Error('preset: 名称不能为空（语法：preset:<名称>，如 preset:调研）');
+    preset = (presetPrefix[1] || presetPrefix[2] || presetPrefix[3] || "").trim();
+    if (!preset) throw new Error("preset: 名称不能为空（语法：preset:<名称>，如 preset:调研）");
     cursor = presetPrefix[0].length;
   }
 
@@ -191,66 +195,78 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
     const tokenStart = cursor;
     const token = readToken();
     const lower = token.toLowerCase();
-    if (lower === 'bg' && !background) {
+    if (lower === "bg" && !background) {
       background = true;
       continue;
     }
-    if ((lower === 'research' || lower === 'review' || lower === 'implement') && !role) {
+    if ((lower === "research" || lower === "review" || lower === "implement") && !role) {
       role = lower;
       continue;
     }
-    if (token.startsWith('--')) {
-      const eqIndex = token.indexOf('=');
+    if (token.startsWith("--")) {
+      const eqIndex = token.indexOf("=");
       const name = (eqIndex >= 0 ? token.slice(2, eqIndex) : token.slice(2)).toLowerCase();
       const value = eqIndex >= 0 ? token.slice(eqIndex + 1) : readOptionValue();
       if (value === undefined) {
         throw new Error(`--${name} 缺少值`);
       }
       switch (name) {
-        case 'task': {
-          taskId = ensureNonEmpty(value, 'task');
+        case "task": {
+          taskId = ensureNonEmpty(value, "task");
           break;
         }
-        case 'preset': {
-          const presetValue = ensureNonEmpty(value, 'preset');
-          if (preset) throw new Error('不能同时使用 preset: 前缀与 --preset 选项');
+        case "preset": {
+          const presetValue = ensureNonEmpty(value, "preset");
+          if (preset) throw new Error("不能同时使用 preset: 前缀与 --preset 选项");
           preset = presetValue;
           break;
         }
-        case 'model': {
-          model = ensureNonEmpty(value, 'model');
+        case "model": {
+          model = ensureNonEmpty(value, "model");
           break;
         }
-        case 'provider': {
-          provider = ensureNonEmpty(value, 'provider');
+        case "provider": {
+          provider = ensureNonEmpty(value, "provider");
           break;
         }
-        case 'effort': {
-          const effortValue = ensureNonEmpty(value, 'effort').toLowerCase();
+        case "effort": {
+          const effortValue = ensureNonEmpty(value, "effort").toLowerCase();
           if (!isReasoningEffort(effortValue)) {
-            throw new Error('--effort 必须是 low、medium、high、xhigh 或 max');
+            throw new Error("--effort 必须是 low、medium、high、xhigh 或 max");
           }
           reasoningEffort = effortValue;
           break;
         }
-        case 'instructions': {
-          const instructionsValue = ensureNonEmpty(value, 'instructions');
+        case "instructions": {
+          const instructionsValue = ensureNonEmpty(value, "instructions");
           if (instructionsValue.length > MAX_SUBAGENT_INSTRUCTIONS_LENGTH) {
-            throw new Error(`--instructions 长度必须是 1 到 ${MAX_SUBAGENT_INSTRUCTIONS_LENGTH} 个字符`);
+            throw new Error(
+              `--instructions 长度必须是 1 到 ${MAX_SUBAGENT_INSTRUCTIONS_LENGTH} 个字符`,
+            );
           }
           instructions = instructionsValue;
           break;
         }
-        case 'timeout-ms': {
-          timeoutMs = parseOptionalRange(value, 'timeout-ms', 100, 3_600_000);
+        case "timeout-ms": {
+          timeoutMs = parseOptionalRange(value, "timeout-ms", 100, 3_600_000);
           break;
         }
-        case 'max-tokens': {
-          maxTokens = parseOptionalRange(value, 'max-tokens', MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS);
+        case "max-tokens": {
+          maxTokens = parseOptionalRange(
+            value,
+            "max-tokens",
+            MIN_SUBAGENT_MAX_TOKENS,
+            MAX_SUBAGENT_MAX_TOKENS,
+          );
           break;
         }
-        case 'max-tool-calls': {
-          maxToolCalls = parseOptionalRange(value, 'max-tool-calls', MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS);
+        case "max-tool-calls": {
+          maxToolCalls = parseOptionalRange(
+            value,
+            "max-tool-calls",
+            MIN_SUBAGENT_MAX_TOOL_CALLS,
+            MAX_SUBAGENT_MAX_TOOL_CALLS,
+          );
           break;
         }
         default: {
@@ -264,8 +280,8 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
     // 其他 token（bg/role 重复、普通文本、-foo 等）：视为描述开始
     description = source.slice(tokenStart).trim();
   }
-  description = description ?? '';
-  const fullDescription = [description, descriptionSuffix].filter(Boolean).join(' ');
+  description = description ?? "";
+  const fullDescription = [description, descriptionSuffix].filter(Boolean).join(" ");
 
   return {
     background,
@@ -279,11 +295,16 @@ export function parseSubagentCommand(raw: string): ParsedSubagentCommand {
     ...(provider ? { provider } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(instructions ? { instructions } : {}),
-    ...(preset ? { preset } : {})
+    ...(preset ? { preset } : {}),
   };
 }
 
-function parseOptionalRange(raw: string, name: string, min: number, max: number): number | undefined {
+function parseOptionalRange(
+  raw: string,
+  name: string,
+  min: number,
+  max: number,
+): number | undefined {
   if (raw === undefined) return undefined;
   if (!DECIMAL_INTEGER.test(raw.trim())) {
     throw new Error(`--${name} 必须是 ${min} 到 ${max} 之间的整数`);
@@ -304,12 +325,12 @@ export function parsePresetCommand(raw: string): ParsedPresetCommand {
   const trimmed = raw.trim();
   const nameMatch = trimmed.match(/^(?:"([^"]*)"|'([^']*)'|([^\s]+))/);
   if (!nameMatch || (!nameMatch[1] && !nameMatch[2] && !nameMatch[3])) {
-    throw new Error('预设名称不能为空');
+    throw new Error("预设名称不能为空");
   }
-  const name = (nameMatch[1] || nameMatch[2] || nameMatch[3] || '').trim();
-  if (!name) throw new Error('预设名称不能为空');
-  if (nameMatch[3] && nameMatch[3].startsWith('-')) {
-    throw new Error('预设名称不能以 - 开头');
+  const name = (nameMatch[1] || nameMatch[2] || nameMatch[3] || "").trim();
+  if (!name) throw new Error("预设名称不能为空");
+  if (nameMatch[3]?.startsWith("-")) {
+    throw new Error("预设名称不能以 - 开头");
   }
 
   let remaining = trimmed.slice(nameMatch[0].length).trim();
@@ -318,45 +339,42 @@ export function parsePresetCommand(raw: string): ParsedPresetCommand {
   let provider: string | undefined;
   let reasoningEffort: ReasoningEffort | undefined;
   let instructions: string | undefined;
-  let timeoutMs: number | undefined;
-  let maxTokens: number | undefined;
-  let maxToolCalls: number | undefined;
 
-  const roleOption = extractOptionOrThrow(remaining, 'role');
+  const roleOption = extractOptionOrThrow(remaining, "role");
   remaining = roleOption.source;
   if (roleOption.value !== undefined) {
     const value = roleOption.value.trim().toLowerCase();
-    if (!['research', 'review', 'implement'].includes(value)) {
-      throw new Error('--role 必须是 research、review 或 implement');
+    if (!["research", "review", "implement"].includes(value)) {
+      throw new Error("--role 必须是 research、review 或 implement");
     }
     role = value as SubagentRole;
   }
 
-  const modelOption = extractOptionOrThrow(remaining, 'model');
+  const modelOption = extractOptionOrThrow(remaining, "model");
   remaining = modelOption.source;
   if (modelOption.value !== undefined) {
     model = modelOption.value.trim();
-    if (!model) throw new Error('--model 不能为空');
+    if (!model) throw new Error("--model 不能为空");
   }
 
-  const providerOption = extractOptionOrThrow(remaining, 'provider');
+  const providerOption = extractOptionOrThrow(remaining, "provider");
   remaining = providerOption.source;
   if (providerOption.value !== undefined) {
     provider = providerOption.value.trim();
-    if (!provider) throw new Error('--provider 不能为空');
+    if (!provider) throw new Error("--provider 不能为空");
   }
 
-  const effortOption = extractOptionOrThrow(remaining, 'effort');
+  const effortOption = extractOptionOrThrow(remaining, "effort");
   remaining = effortOption.source;
   if (effortOption.value !== undefined) {
     const value = effortOption.value.trim().toLowerCase();
     if (!isReasoningEffort(value)) {
-      throw new Error('--effort 必须是 low、medium、high、xhigh 或 max');
+      throw new Error("--effort 必须是 low、medium、high、xhigh 或 max");
     }
     reasoningEffort = value;
   }
 
-  const instructionsOption = extractOptionOrThrow(remaining, 'instructions');
+  const instructionsOption = extractOptionOrThrow(remaining, "instructions");
   remaining = instructionsOption.source;
   if (instructionsOption.value !== undefined) {
     instructions = instructionsOption.value.trim();
@@ -365,21 +383,36 @@ export function parsePresetCommand(raw: string): ParsedPresetCommand {
     }
   }
 
-  const timeoutOption = extractOptionOrThrow(remaining, 'timeout-ms');
+  const timeoutOption = extractOptionOrThrow(remaining, "timeout-ms");
   remaining = timeoutOption.source;
-  timeoutMs = timeoutOption.value !== undefined ? parseOptionalRange(timeoutOption.value, 'timeout-ms', 100, 3_600_000) : undefined;
+  const timeoutMs =
+    timeoutOption.value !== undefined
+      ? parseOptionalRange(timeoutOption.value, "timeout-ms", 100, 3_600_000)
+      : undefined;
 
-  const maxTokensOption = extractOptionOrThrow(remaining, 'max-tokens');
+  const maxTokensOption = extractOptionOrThrow(remaining, "max-tokens");
   remaining = maxTokensOption.source;
-  maxTokens = maxTokensOption.value !== undefined
-    ? parseOptionalRange(maxTokensOption.value, 'max-tokens', MIN_SUBAGENT_MAX_TOKENS, MAX_SUBAGENT_MAX_TOKENS)
-    : undefined;
+  const maxTokens =
+    maxTokensOption.value !== undefined
+      ? parseOptionalRange(
+          maxTokensOption.value,
+          "max-tokens",
+          MIN_SUBAGENT_MAX_TOKENS,
+          MAX_SUBAGENT_MAX_TOKENS,
+        )
+      : undefined;
 
-  const maxToolCallsOption = extractOptionOrThrow(remaining, 'max-tool-calls');
+  const maxToolCallsOption = extractOptionOrThrow(remaining, "max-tool-calls");
   remaining = maxToolCallsOption.source;
-  maxToolCalls = maxToolCallsOption.value !== undefined
-    ? parseOptionalRange(maxToolCallsOption.value, 'max-tool-calls', MIN_SUBAGENT_MAX_TOOL_CALLS, MAX_SUBAGENT_MAX_TOOL_CALLS)
-    : undefined;
+  const maxToolCalls =
+    maxToolCallsOption.value !== undefined
+      ? parseOptionalRange(
+          maxToolCallsOption.value,
+          "max-tool-calls",
+          MIN_SUBAGENT_MAX_TOOL_CALLS,
+          MAX_SUBAGENT_MAX_TOOL_CALLS,
+        )
+      : undefined;
 
   if (remaining) {
     throw new Error(`无法识别的参数: ${remaining}`);
@@ -394,7 +427,7 @@ export function parsePresetCommand(raw: string): ParsedPresetCommand {
     ...(instructions ? { instructions } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
-    ...(maxToolCalls !== undefined ? { maxToolCalls } : {})
+    ...(maxToolCalls !== undefined ? { maxToolCalls } : {}),
   };
 }
 

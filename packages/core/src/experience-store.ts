@@ -1,8 +1,9 @@
-import fs from 'node:fs';
-import fsp from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import {
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { replaceFileAtomically } from "./atomic-file.js";
+import type {
   Instinct,
   InstinctDomain,
   InstinctSource,
@@ -10,9 +11,8 @@ import {
   MemoryStatus,
   MemoryType,
   ObservationStats,
-  ToolObservation
-} from './experience-types.js';
-import { replaceFileAtomically } from './atomic-file.js';
+  ToolObservation,
+} from "./experience-types.js";
 
 /**
  * 经验系统持久化与召回层。
@@ -81,9 +81,10 @@ export class ExperienceStore {
 
   constructor(options: ExperienceStoreOptions) {
     this.cwd = options.cwd;
-    this.userDir = options.userDir ?? path.join(os.homedir(), '.haji');
-    this.projectDir = options.projectDir ?? path.join(this.cwd, '.haji');
-    this.observationsFile = options.observationsFile ?? path.join(this.projectDir, 'observations.jsonl');
+    this.userDir = options.userDir ?? path.join(os.homedir(), ".haji");
+    this.projectDir = options.projectDir ?? path.join(this.cwd, ".haji");
+    this.observationsFile =
+      options.observationsFile ?? path.join(this.projectDir, "observations.jsonl");
   }
 
   // ─── 观测流 ──────────────────────────────────────────────────────────────
@@ -105,16 +106,18 @@ export class ExperienceStore {
     const batch = this.pendingObservations.splice(0);
     this.observationFlushChain = this.observationFlushChain.then(async () => {
       await this.ensureDir(path.dirname(this.observationsFile));
-      const lines = batch.map(o => JSON.stringify(this.compactObservation(o))).join('\n') + '\n';
+      const lines = `${batch.map((o) => JSON.stringify(this.compactObservation(o))).join("\n")}\n`;
       try {
-        await fsp.appendFile(this.observationsFile, lines, 'utf8');
+        await fsp.appendFile(this.observationsFile, lines, "utf8");
       } catch {
         // 落盘失败不抛——观测是尽力而为，不能阻塞主流程
         this.pendingObservations.unshift(...batch);
         return;
       }
       // 触发异步归档检查（不 await，避免阻塞退出）
-      this.maybeArchiveObservations().catch(() => { /* 归档失败忽略 */ });
+      this.maybeArchiveObservations().catch(() => {
+        /* 归档失败忽略 */
+      });
     });
     return this.observationFlushChain;
   }
@@ -129,8 +132,8 @@ export class ExperienceStore {
     const files = await this.collectObservationFiles();
     for (const file of files) {
       try {
-        const content = await fsp.readFile(file, 'utf8');
-        for (const line of content.split('\n')) {
+        const content = await fsp.readFile(file, "utf8");
+        for (const line of content.split("\n")) {
           const trimmed = line.trim();
           if (!trimmed) continue;
           try {
@@ -170,14 +173,17 @@ export class ExperienceStore {
       byToolMap.set(obs.toolName, entry);
     }
     const byTool = Array.from(byToolMap.values())
-      .filter(t => t.failed > 0)
+      .filter((t) => t.failed > 0)
       .sort((a, b) => b.failed - a.failed || b.total - a.total)
       .slice(0, 5);
 
     // 周趋势：近 7 天 vs 前 7 天（两个窗口各至少 10 个样本才可信）
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
-    let recentTotal = 0, recentFailed = 0, prevTotal = 0, prevFailed = 0;
+    let recentTotal = 0,
+      recentFailed = 0,
+      prevTotal = 0,
+      prevFailed = 0;
     for (const obs of observations) {
       const ageDays = (now - new Date(obs.ts).getTime()) / dayMs;
       if (ageDays <= 7) {
@@ -188,9 +194,10 @@ export class ExperienceStore {
         if (obs.failed) prevFailed += 1;
       }
     }
-    const weeklyTrend = recentTotal >= 10 && prevTotal >= 10
-      ? { recent: recentFailed / recentTotal, previous: prevFailed / prevTotal }
-      : null;
+    const weeklyTrend =
+      recentTotal >= 10 && prevTotal >= 10
+        ? { recent: recentFailed / recentTotal, previous: prevFailed / prevTotal }
+        : null;
 
     return {
       windowDays,
@@ -198,7 +205,7 @@ export class ExperienceStore {
       failed,
       failureRate: observations.length === 0 ? 0 : failed / observations.length,
       byTool,
-      weeklyTrend
+      weeklyTrend,
     };
   }
 
@@ -211,9 +218,9 @@ export class ExperienceStore {
   loadInstincts(includeDeprecated = false): Instinct[] {
     const merged = new Map<string, Instinct>();
     // 用户级先加载，项目级后加载并覆盖
-    const dirs: Array<{ dir: string; scope: 'user' | 'project' }> = [
-      { dir: this.userInstinctsDir(), scope: 'user' },
-      { dir: this.projectInstinctsDir(), scope: 'project' }
+    const dirs: Array<{ dir: string; scope: "user" | "project" }> = [
+      { dir: this.userInstinctsDir(), scope: "user" },
+      { dir: this.projectInstinctsDir(), scope: "project" },
     ];
     for (const { dir, scope } of dirs) {
       const entries = this.scanMarkdownFiles(dir);
@@ -224,7 +231,7 @@ export class ExperienceStore {
       }
     }
     const result = Array.from(merged.values());
-    return includeDeprecated ? result : result.filter(i => !i.deprecated);
+    return includeDeprecated ? result : result.filter((i) => !i.deprecated);
   }
 
   /**
@@ -232,7 +239,8 @@ export class ExperienceStore {
    * 默认写项目级（source=manual 时写用户级，便于跨项目偏好）。
    */
   async upsertInstinct(instinct: Instinct): Promise<void> {
-    const targetDir = instinct.source === 'manual' ? this.userInstinctsDir() : this.projectInstinctsDir();
+    const targetDir =
+      instinct.source === "manual" ? this.userInstinctsDir() : this.projectInstinctsDir();
     await this.ensureDir(targetDir);
     const fileName = `${instinct.domain}__${this.sanitizeId(instinct.id)}.md`;
     const filePath = path.join(targetDir, fileName);
@@ -252,11 +260,13 @@ export class ExperienceStore {
    * - 既有规则本次未触发：若超 90 天未观测则 -0.05
    * 返回更新后的完整规则列表与本次被强化的 id 集合。
    */
-  async evolveInstincts(detected: Instinct[]): Promise<{ updated: Instinct[]; reinforced: Set<string> }> {
+  async evolveInstincts(
+    detected: Instinct[],
+  ): Promise<{ updated: Instinct[]; reinforced: Set<string> }> {
     const existing = this.loadInstincts(true);
-    const existingMap = new Map(existing.map(i => [i.id, i]));
+    const existingMap = new Map(existing.map((i) => [i.id, i]));
     const reinforced = new Set<string>();
-    const detectedIds = new Set(detected.map(i => i.id));
+    const detectedIds = new Set(detected.map((i) => i.id));
     const now = new Date().toISOString();
 
     for (const det of detected) {
@@ -277,7 +287,7 @@ export class ExperienceStore {
           confidence: CONFIDENCE_INITIAL,
           occurrenceCount: 1,
           observedAt: now,
-          deprecated: false
+          deprecated: false,
         };
         existingMap.set(fresh.id, fresh);
       }
@@ -305,13 +315,13 @@ export class ExperienceStore {
    * 加载记忆，默认只读 active。两级目录合并，项目级覆盖用户级同名 id。
    * 返回条目带 scope 标记（user=用户级，project=项目级）。
    */
-  loadMemories(status: MemoryStatus | 'all' = 'active'): Memory[] {
+  loadMemories(status: MemoryStatus | "all" = "active"): Memory[] {
     const merged = new Map<string, Memory>();
-    const scopes: Array<{ dir: string; status: MemoryStatus; scope: 'user' | 'project' }> = [
-      { dir: path.join(this.userMemoryDir(), 'active'), status: 'active', scope: 'user' },
-      { dir: path.join(this.userMemoryDir(), 'staging'), status: 'staging', scope: 'user' },
-      { dir: path.join(this.projectMemoryDir(), 'active'), status: 'active', scope: 'project' },
-      { dir: path.join(this.projectMemoryDir(), 'staging'), status: 'active', scope: 'project' } // 项目级 staging 视作 active 覆盖
+    const scopes: Array<{ dir: string; status: MemoryStatus; scope: "user" | "project" }> = [
+      { dir: path.join(this.userMemoryDir(), "active"), status: "active", scope: "user" },
+      { dir: path.join(this.userMemoryDir(), "staging"), status: "staging", scope: "user" },
+      { dir: path.join(this.projectMemoryDir(), "active"), status: "active", scope: "project" },
+      { dir: path.join(this.projectMemoryDir(), "staging"), status: "active", scope: "project" }, // 项目级 staging 视作 active 覆盖
     ];
     for (const scope of scopes) {
       const entries = this.scanMarkdownFiles(scope.dir);
@@ -322,13 +332,13 @@ export class ExperienceStore {
       }
     }
     const all = Array.from(merged.values());
-    if (status === 'all') return all;
-    return all.filter(m => m.status === status);
+    if (status === "all") return all;
+    return all.filter((m) => m.status === status);
   }
 
   /** 把一条 memory 候选写入 staging 区（等用户 confirm）。 */
   async stageMemory(memory: Memory): Promise<void> {
-    const dir = path.join(this.projectMemoryDir(), 'staging');
+    const dir = path.join(this.projectMemoryDir(), "staging");
     await this.ensureDir(dir);
     const fileName = `${memory.type}__${this.sanitizeId(memory.id)}.md`;
     const filePath = path.join(dir, fileName);
@@ -340,8 +350,8 @@ export class ExperienceStore {
    * type=user 写用户级（跨项目偏好），其余类型写项目级。
    */
   async upsertMemory(memory: Memory): Promise<void> {
-    const baseDir = memory.type === 'user' ? this.userMemoryDir() : this.projectMemoryDir();
-    const dir = path.join(baseDir, 'active');
+    const baseDir = memory.type === "user" ? this.userMemoryDir() : this.projectMemoryDir();
+    const dir = path.join(baseDir, "active");
     await this.ensureDir(dir);
     const fileName = `${memory.type}__${this.sanitizeId(memory.id)}.md`;
     const filePath = path.join(dir, fileName);
@@ -353,17 +363,17 @@ export class ExperienceStore {
    * type=user 的候选落用户级 active（跨项目生效），其余落项目级。
    * 返回实际落点（'user' | 'project'），null 表示 staging 中未找到。
    */
-  async confirmMemory(id: string): Promise<'user' | 'project' | null> {
-    const stagingDir = path.join(this.projectMemoryDir(), 'staging');
+  async confirmMemory(id: string): Promise<"user" | "project" | null> {
+    const stagingDir = path.join(this.projectMemoryDir(), "staging");
     const entries = this.scanMarkdownFiles(stagingDir);
     for (const entry of entries) {
-      const parsed = this.parseMemoryFile(entry.content, 'staging');
+      const parsed = this.parseMemoryFile(entry.content, "staging");
       if (parsed && parsed.id === id) {
-        parsed.status = 'active';
+        parsed.status = "active";
         parsed.updatedAt = new Date().toISOString();
         await this.upsertMemory(parsed);
         await this.removeFile(entry.filePath);
-        return parsed.type === 'user' ? 'user' : 'project';
+        return parsed.type === "user" ? "user" : "project";
       }
     }
     return null;
@@ -371,17 +381,18 @@ export class ExperienceStore {
 
   /** 删除指定 id 的记忆（两级目录都清）。 */
   async forgetMemory(id: string): Promise<boolean> {
-    return this.deleteById(id,
-      path.join(this.userMemoryDir(), 'active'),
-      path.join(this.userMemoryDir(), 'staging'),
-      path.join(this.projectMemoryDir(), 'active'),
-      path.join(this.projectMemoryDir(), 'staging')
+    return this.deleteById(
+      id,
+      path.join(this.userMemoryDir(), "active"),
+      path.join(this.userMemoryDir(), "staging"),
+      path.join(this.projectMemoryDir(), "active"),
+      path.join(this.projectMemoryDir(), "staging"),
     );
   }
 
   /** active 库超限裁剪：按 confidence 升序淘汰多余条目。 */
   async pruneMemories(): Promise<number> {
-    const active = this.loadMemories('active');
+    const active = this.loadMemories("active");
     if (active.length <= MEMORY_ACTIVE_MAX) return 0;
     const sorted = active.sort((a, b) => a.confidence - b.confidence);
     const toRemove = sorted.slice(0, active.length - MEMORY_ACTIVE_MAX);
@@ -405,22 +416,22 @@ export class ExperienceStore {
    *   - 'already-user-level'：项目级无此 id，但用户级已存在（之前已提升过）
    *   - 'not-found'：两级目录都找不到
    */
-  async promoteInstinct(id: string): Promise<'promoted' | 'not-found' | 'already-user-level'> {
+  async promoteInstinct(id: string): Promise<"promoted" | "not-found" | "already-user-level"> {
     const projectDir = this.projectInstinctsDir();
     const userDir = this.userInstinctsDir();
     const projectFile = this.findFileById(id, projectDir);
     if (!projectFile) {
-      return this.findFileById(id, userDir) ? 'already-user-level' : 'not-found';
+      return this.findFileById(id, userDir) ? "already-user-level" : "not-found";
     }
-    const content = fs.readFileSync(projectFile, 'utf8');
+    const content = fs.readFileSync(projectFile, "utf8");
     const parsed = this.parseInstinctFile(content);
-    if (!parsed) return 'not-found';
-    parsed.source = 'manual'; // 防 evolve 回写项目级
+    if (!parsed) return "not-found";
+    parsed.source = "manual"; // 防 evolve 回写项目级
     await this.ensureDir(userDir);
     const fileName = `${parsed.domain}__${this.sanitizeId(parsed.id)}.md`;
     await this.atomicWrite(path.join(userDir, fileName), this.serializeInstinct(parsed));
     await this.removeFile(projectFile);
-    return 'promoted';
+    return "promoted";
   }
 
   /**
@@ -431,25 +442,25 @@ export class ExperienceStore {
    *
    * 返回值语义同 {@link promoteInstinct}。
    */
-  async promoteMemory(id: string): Promise<'promoted' | 'not-found' | 'already-user-level'> {
-    const projectActive = path.join(this.projectMemoryDir(), 'active');
-    const projectStaging = path.join(this.projectMemoryDir(), 'staging');
-    const userActive = path.join(this.userMemoryDir(), 'active');
+  async promoteMemory(id: string): Promise<"promoted" | "not-found" | "already-user-level"> {
+    const projectActive = path.join(this.projectMemoryDir(), "active");
+    const projectStaging = path.join(this.projectMemoryDir(), "staging");
+    const userActive = path.join(this.userMemoryDir(), "active");
     // 先在项目级 active 找，再在 staging 找（staging 的也会被提升为 active）
     const srcFile = this.findFileById(id, projectActive) ?? this.findFileById(id, projectStaging);
     if (!srcFile) {
-      return this.findFileById(id, userActive) ? 'already-user-level' : 'not-found';
+      return this.findFileById(id, userActive) ? "already-user-level" : "not-found";
     }
-    const content = fs.readFileSync(srcFile, 'utf8');
-    const parsed = this.parseMemoryFile(content, 'active');
-    if (!parsed) return 'not-found';
-    parsed.status = 'active';
+    const content = fs.readFileSync(srcFile, "utf8");
+    const parsed = this.parseMemoryFile(content, "active");
+    if (!parsed) return "not-found";
+    parsed.status = "active";
     parsed.updatedAt = new Date().toISOString();
     await this.ensureDir(userActive);
     const fileName = `${parsed.type}__${this.sanitizeId(parsed.id)}.md`;
     await this.atomicWrite(path.join(userActive, fileName), this.serializeMemory(parsed));
     await this.removeFile(srcFile);
-    return 'promoted';
+    return "promoted";
   }
 
   // ─── 召回（关键词匹配，无向量） ────────────────────────────────────────────
@@ -461,16 +472,18 @@ export class ExperienceStore {
    */
   recallInstincts(query: string, topK = 8, minConfidence = 0.7): Instinct[] {
     const queryTokens = tokenize(query);
-    const candidates = this.loadInstincts().filter(i => !i.deprecated && i.confidence >= minConfidence);
+    const candidates = this.loadInstincts().filter(
+      (i) => !i.deprecated && i.confidence >= minConfidence,
+    );
     return candidates
-      .map(i => ({
+      .map((i) => ({
         instinct: i,
-        score: jaccardSimilarity(queryTokens, tokenize(`${i.trigger} ${i.action} ${i.domain}`))
+        score: jaccardSimilarity(queryTokens, tokenize(`${i.trigger} ${i.action} ${i.domain}`)),
       }))
-      .filter(x => x.score > 0)
+      .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.instinct.confidence - a.instinct.confidence)
       .slice(0, topK)
-      .map(x => x.instinct);
+      .map((x) => x.instinct);
   }
 
   /**
@@ -478,37 +491,56 @@ export class ExperienceStore {
    */
   recallMemories(query: string, topK = 5): Memory[] {
     const queryTokens = tokenize(query);
-    const candidates = this.loadMemories('active');
+    const candidates = this.loadMemories("active");
     return candidates
-      .map(m => ({
+      .map((m) => ({
         memory: m,
-        score: jaccardSimilarity(queryTokens, new Set([...m.keywords, ...tokenize(`${m.name} ${m.content}`)]))
+        score: jaccardSimilarity(
+          queryTokens,
+          new Set([...m.keywords, ...tokenize(`${m.name} ${m.content}`)]),
+        ),
       }))
-      .filter(x => x.score > 0)
+      .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || b.memory.confidence - a.memory.confidence)
       .slice(0, topK)
-      .map(x => x.memory);
+      .map((x) => x.memory);
   }
 
   // ─── 内部辅助 ─────────────────────────────────────────────────────────────
 
-  private userInstinctsDir(): string { return path.join(this.userDir, 'instincts'); }
-  private projectInstinctsDir(): string { return path.join(this.projectDir, 'instincts'); }
-  private userMemoryDir(): string { return path.join(this.userDir, 'memory'); }
-  private projectMemoryDir(): string { return path.join(this.projectDir, 'memory'); }
+  private userInstinctsDir(): string {
+    return path.join(this.userDir, "instincts");
+  }
+  private projectInstinctsDir(): string {
+    return path.join(this.projectDir, "instincts");
+  }
+  private userMemoryDir(): string {
+    return path.join(this.userDir, "memory");
+  }
+  private projectMemoryDir(): string {
+    return path.join(this.projectDir, "memory");
+  }
 
   private async ensureDir(dir: string): Promise<void> {
-    try { await fsp.mkdir(dir, { recursive: true }); } catch { /* 并发创建忽略 */ }
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+    } catch {
+      /* 并发创建忽略 */
+    }
   }
 
   private async atomicWrite(filePath: string, content: string): Promise<void> {
     await this.ensureDir(path.dirname(filePath));
     const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     try {
-      await fsp.writeFile(tmp, content, 'utf8');
+      await fsp.writeFile(tmp, content, "utf8");
       await replaceFileAtomically(tmp, filePath);
     } catch (error) {
-      try { await fsp.rm(tmp, { force: true }); } catch { /* ignore */ }
+      try {
+        await fsp.rm(tmp, { force: true });
+      } catch {
+        /* ignore */
+      }
       throw error;
     }
   }
@@ -518,12 +550,14 @@ export class ExperienceStore {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       const result: Array<{ filePath: string; content: string }> = [];
       for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
         const filePath = path.join(dir, entry.name);
         try {
-          const content = fs.readFileSync(filePath, 'utf8');
+          const content = fs.readFileSync(filePath, "utf8");
           result.push({ filePath, content });
-        } catch { /* 读取失败跳过 */ }
+        } catch {
+          /* 读取失败跳过 */
+        }
       }
       return result;
     } catch {
@@ -532,7 +566,11 @@ export class ExperienceStore {
   }
 
   private async removeFile(filePath: string): Promise<void> {
-    try { await fsp.rm(filePath, { force: true }); } catch { /* ignore */ }
+    try {
+      await fsp.rm(filePath, { force: true });
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
@@ -542,9 +580,13 @@ export class ExperienceStore {
   private findFileById(id: string, dir: string): string | undefined {
     const sanitized = this.sanitizeId(id);
     let entries: string[];
-    try { entries = fs.readdirSync(dir); } catch { return undefined; }
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return undefined;
+    }
     for (const name of entries) {
-      if (!name.endsWith('.md')) continue;
+      if (!name.endsWith(".md")) continue;
       const match = name.match(/^(.+?)__(.+)\.md$/);
       if (match && match[2] === sanitized) return path.join(dir, name);
     }
@@ -556,7 +598,11 @@ export class ExperienceStore {
     let removed = false;
     for (const dir of dirs) {
       let entries: string[];
-      try { entries = fs.readdirSync(dir); } catch { continue; }
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue;
+      }
       for (const name of entries) {
         // 文件名格式 <type>__<id>.md，匹配 __ 后到 .md 前的部分
         const match = name.match(/^(.+?)__(.+)\.md$/);
@@ -571,18 +617,20 @@ export class ExperienceStore {
 
   private sanitizeId(id: string): string {
     // 仅保留字母数字、连字符、下划线，其余替换为 -
-    return id.replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 64);
+    return id.replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 64);
   }
 
   /** 序列化观测样本，对 args/output 做截断保护。 */
   private compactObservation(obs: ToolObservation): ToolObservation {
     const argsStr = safeStringify(obs.args);
-    const trimmedArgs = argsStr.length > ARGS_SERIALIZE_LIMIT
-      ? { _truncated: true, preview: argsStr.slice(0, ARGS_SERIALIZE_LIMIT) }
-      : obs.args;
-    const trimmedOutput = obs.output.length > ARGS_SERIALIZE_LIMIT
-      ? obs.output.slice(0, ARGS_SERIALIZE_LIMIT) + '…[truncated]'
-      : obs.output;
+    const trimmedArgs =
+      argsStr.length > ARGS_SERIALIZE_LIMIT
+        ? { _truncated: true, preview: argsStr.slice(0, ARGS_SERIALIZE_LIMIT) }
+        : obs.args;
+    const trimmedOutput =
+      obs.output.length > ARGS_SERIALIZE_LIMIT
+        ? `${obs.output.slice(0, ARGS_SERIALIZE_LIMIT)}…[truncated]`
+        : obs.output;
     return { ...obs, args: trimmedArgs as Record<string, unknown>, output: trimmedOutput };
   }
 
@@ -592,7 +640,9 @@ export class ExperienceStore {
     try {
       await fsp.access(this.observationsFile);
       files.push(this.observationsFile);
-    } catch { /* 主文件不存在忽略 */ }
+    } catch {
+      /* 主文件不存在忽略 */
+    }
     try {
       const dir = path.dirname(this.observationsFile);
       const entries = await fsp.readdir(dir);
@@ -601,7 +651,9 @@ export class ExperienceStore {
           files.push(path.join(dir, name));
         }
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return files;
   }
 
@@ -610,11 +662,15 @@ export class ExperienceStore {
    * 仿文章 observations_rotate.py 的策略。
    */
   private async maybeArchiveObservations(): Promise<void> {
-    let stat;
-    try { stat = await fsp.stat(this.observationsFile); } catch { return; }
+    let stat: fs.Stats | undefined;
+    try {
+      stat = await fsp.stat(this.observationsFile);
+    } catch {
+      return;
+    }
     if (stat.size < OBSERVATIONS_MAX_BYTES) return;
-    const content = await fsp.readFile(this.observationsFile, 'utf8');
-    const lines = content.split('\n').filter(Boolean);
+    const content = await fsp.readFile(this.observationsFile, "utf8");
+    const lines = content.split("\n").filter(Boolean);
     if (lines.length < OBSERVATIONS_MAX_LINES) return;
 
     // 按月份分组
@@ -637,11 +693,18 @@ export class ExperienceStore {
     }
     // 追加到各月归档文件
     for (const [month, monthLines] of byMonth) {
-      const archiveFile = path.join(path.dirname(this.observationsFile), `observations_${month}.jsonl`);
-      await fsp.appendFile(archiveFile, monthLines.join('\n') + '\n', 'utf8');
+      const archiveFile = path.join(
+        path.dirname(this.observationsFile),
+        `observations_${month}.jsonl`,
+      );
+      await fsp.appendFile(archiveFile, `${monthLines.join("\n")}\n`, "utf8");
     }
     // 主文件只保留近期数据
-    await fsp.writeFile(this.observationsFile, retained.join('\n') + (retained.length ? '\n' : ''), 'utf8');
+    await fsp.writeFile(
+      this.observationsFile,
+      retained.join("\n") + (retained.length ? "\n" : ""),
+      "utf8",
+    );
   }
 
   /**
@@ -661,7 +724,7 @@ export class ExperienceStore {
     for (const inst of instincts) {
       // 先清掉两级目录中该 id 的旧文件（容忍 domain 改名后的残文件）
       await this.removeInstinctFilesById(inst.id, projectDir, userDir);
-      const targetDir = inst.source === 'manual' ? userDir : projectDir;
+      const targetDir = inst.source === "manual" ? userDir : projectDir;
       const fileName = `${inst.domain}__${this.sanitizeId(inst.id)}.md`;
       await this.atomicWrite(path.join(targetDir, fileName), this.serializeInstinct(inst));
     }
@@ -672,9 +735,13 @@ export class ExperienceStore {
     const sanitized = this.sanitizeId(id);
     for (const dir of dirs) {
       let entries: string[];
-      try { entries = await fsp.readdir(dir); } catch { continue; }
+      try {
+        entries = await fsp.readdir(dir);
+      } catch {
+        continue;
+      }
       for (const name of entries) {
-        if (!name.endsWith('.md')) continue;
+        if (!name.endsWith(".md")) continue;
         const match = name.match(/^(.+?)__(.+)\.md$/);
         if (match && match[2] === sanitized) {
           await this.removeFile(path.join(dir, name));
@@ -693,29 +760,29 @@ export class ExperienceStore {
       `source: ${i.source}`,
       `deprecated: ${i.deprecated}`,
       `observedAt: ${JSON.stringify(i.observedAt)}`,
-      `occurrenceCount: ${i.occurrenceCount}`
-    ].join('\n');
+      `occurrenceCount: ${i.occurrenceCount}`,
+    ].join("\n");
     return `---\n${frontmatter}\n---\n## Trigger\n${i.trigger}\n\n## Action\n${i.action}\n`;
   }
 
   private parseInstinctFile(content: string): Instinct | null {
     const fm = parseFrontmatter(content);
     if (!fm) return null;
-    const body = content.slice(content.indexOf('---', 3) + 3).trim();
-    const trigger = extractSection(body, 'Trigger');
-    const action = extractSection(body, 'Action');
-    const id = String(fm.id || '');
+    const body = content.slice(content.indexOf("---", 3) + 3).trim();
+    const trigger = extractSection(body, "Trigger");
+    const action = extractSection(body, "Action");
+    const id = String(fm.id || "");
     if (!id || !trigger || !action) return null;
     return {
       id,
       trigger,
       action,
       confidence: Number(fm.confidence ?? CONFIDENCE_INITIAL),
-      domain: (String(fm.domain || 'other') as InstinctDomain),
-      source: (String(fm.source || 'statistical') as InstinctSource),
-      deprecated: String(fm.deprecated) === 'true',
+      domain: String(fm.domain || "other") as InstinctDomain,
+      source: String(fm.source || "statistical") as InstinctSource,
+      deprecated: String(fm.deprecated) === "true",
       observedAt: parseIsoString(fm.observedAt),
-      occurrenceCount: Number(fm.occurrenceCount || 0)
+      occurrenceCount: Number(fm.occurrenceCount || 0),
     };
   }
 
@@ -728,28 +795,28 @@ export class ExperienceStore {
       `confidence: ${m.confidence.toFixed(2)}`,
       `createdAt: ${JSON.stringify(m.createdAt)}`,
       `updatedAt: ${JSON.stringify(m.updatedAt)}`,
-      `keywords: ${JSON.stringify(m.keywords)}`
-    ].join('\n');
+      `keywords: ${JSON.stringify(m.keywords)}`,
+    ].join("\n");
     return `---\n${frontmatter}\n---\n${m.content}\n`;
   }
 
   private parseMemoryFile(content: string, defaultStatus: MemoryStatus): Memory | null {
     const fm = parseFrontmatter(content);
     if (!fm) return null;
-    const body = content.slice(content.indexOf('---', 3) + 3).trim();
-    const id = String(fm.id || '');
+    const body = content.slice(content.indexOf("---", 3) + 3).trim();
+    const id = String(fm.id || "");
     if (!id) return null;
-    const status = (String(fm.status || defaultStatus) as MemoryStatus);
+    const status = String(fm.status || defaultStatus) as MemoryStatus;
     return {
       id,
       name: String(fm.name || id),
-      type: (String(fm.type || 'project') as MemoryType),
+      type: String(fm.type || "project") as MemoryType,
       content: body,
       status,
       confidence: Number(fm.confidence ?? 0.6),
       createdAt: parseIsoString(fm.createdAt),
       updatedAt: parseIsoString(fm.updatedAt),
-      keywords: parseKeywordArray(fm.keywords)
+      keywords: parseKeywordArray(fm.keywords),
     };
   }
 }
@@ -800,20 +867,23 @@ function round2(n: number): number {
 
 /** 极简 YAML frontmatter 解析：只处理 `key: value` 与 `key: "value"` 形式。 */
 function parseFrontmatter(content: string): Record<string, unknown> | null {
-  if (!content.startsWith('---')) return null;
-  const end = content.indexOf('\n---', 3);
+  if (!content.startsWith("---")) return null;
+  const end = content.indexOf("\n---", 3);
   if (end < 0) return null;
   const block = content.slice(3, end);
   const result: Record<string, unknown> = {};
-  for (const line of block.split('\n')) {
+  for (const line of block.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const colon = trimmed.indexOf(':');
+    const colon = trimmed.indexOf(":");
     if (colon < 0) continue;
     const key = trimmed.slice(0, colon).trim();
     let value: string = trimmed.slice(colon + 1).trim();
     // 去引号
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     result[key] = value;
@@ -823,33 +893,33 @@ function parseFrontmatter(content: string): Record<string, unknown> | null {
 
 /** 从 Markdown 正文中提取指定二级标题下的内容（直到下一个同级标题或正文结束）。 */
 function extractSection(body: string, heading: string): string {
-  const lines = body.split('\n');
+  const lines = body.split("\n");
   let capturing = false;
   const result: string[] = [];
   for (const line of lines) {
-    if (line.startsWith('## ')) {
+    if (line.startsWith("## ")) {
       if (capturing) break; // 遇到下一个二级标题，结束捕获
       if (line.slice(3).trim() === heading) capturing = true;
     } else if (capturing) {
       result.push(line);
     }
   }
-  return result.join('\n').trim();
+  return result.join("\n").trim();
 }
 
 function parseIsoString(raw: unknown): string {
-  if (typeof raw !== 'string') return new Date().toISOString();
-  const trimmed = raw.replace(/^["']|["']$/g, '');
+  if (typeof raw !== "string") return new Date().toISOString();
+  const trimmed = raw.replace(/^["']|["']$/g, "");
   return trimmed || new Date().toISOString();
 }
 
 function parseKeywordArray(raw: unknown): string[] {
-  if (typeof raw !== 'string') return [];
-  const trimmed = raw.replace(/^\[|]$/g, '').trim();
+  if (typeof raw !== "string") return [];
+  const trimmed = raw.replace(/^\[|]$/g, "").trim();
   if (!trimmed) return [];
   try {
     const parsed = JSON.parse(`[${trimmed}]`);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
   } catch {
     return [];
   }

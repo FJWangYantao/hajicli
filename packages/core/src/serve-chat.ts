@@ -1,12 +1,12 @@
-import * as http from 'node:http';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { exec } from 'node:child_process';
-import { ModelProvider, BaseTool, ChatMessage, ToolCall } from './types.js';
-import { SessionTracker } from './trace-logger.js';
-import { ObservableModelProvider } from './observable-provider.js';
-import { validateToolCall } from './tool-call-validation.js';
+import { exec } from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as http from "node:http";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ObservableModelProvider } from "./observable-provider.js";
+import { validateToolCall } from "./tool-call-validation.js";
+import { SessionTracker } from "./trace-logger.js";
+import type { BaseTool, ChatMessage, ModelProvider, ToolCall } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,10 +24,10 @@ export async function startChatServer(
   tools: BaseTool[],
   systemPrompt: string,
   port: number = 3001,
-  openBrowser: boolean = true
+  openBrowser: boolean = true,
 ): Promise<void> {
-  const toolsMap = new Map(tools.map(t => [t.name, t]));
-  const toolDefinitions = tools.map(t => t.definition);
+  const toolsMap = new Map(tools.map((t) => [t.name, t]));
+  const toolDefinitions = tools.map((t) => t.definition);
 
   // 内存中缓存的活跃会话历史与轨迹追踪器
   interface ActiveSession {
@@ -38,15 +38,15 @@ export async function startChatServer(
   const activeSessions = new Map<string, ActiveSession>();
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url || '/', `http://localhost:${port}`);
+    const url = new URL(req.url || "/", `http://localhost:${port}`);
     const pathname = url.pathname;
 
     // 设置跨域头
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === 'OPTIONS') {
+    if (req.method === "OPTIONS") {
       res.writeHead(200);
       res.end();
       return;
@@ -54,25 +54,25 @@ export async function startChatServer(
 
     try {
       // 路由：访问对话主页
-      if (pathname === '/' || pathname === '/chat') {
-        let htmlPath = path.join(__dirname, 'chat.html');
+      if (pathname === "/" || pathname === "/chat") {
+        let htmlPath = path.join(__dirname, "chat.html");
         try {
           await fs.access(htmlPath);
         } catch {
           // 兜底尝试从源码目录加载
-          htmlPath = path.join(__dirname, '..', 'src', 'chat.html');
+          htmlPath = path.join(__dirname, "..", "src", "chat.html");
         }
 
-        const html = await fs.readFile(htmlPath, 'utf-8');
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        const html = await fs.readFile(htmlPath, "utf-8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
         return;
       }
 
       // 路由：API 流式对话接口
-      if (pathname === '/api/chat' && req.method === 'POST') {
+      if (pathname === "/api/chat" && req.method === "POST") {
         // 读取 Body 数据
-        let bodyRaw = '';
+        let bodyRaw = "";
         for await (const chunk of req) {
           bodyRaw += chunk;
         }
@@ -81,15 +81,15 @@ export async function startChatServer(
         try {
           payload = JSON.parse(bodyRaw);
         } catch {
-          res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('请求 Body 解析 JSON 失败');
+          res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("请求 Body 解析 JSON 失败");
           return;
         }
 
-        const userInput = (payload.message || '').trim();
+        const userInput = (payload.message || "").trim();
         if (!userInput) {
-          res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('输入消息不能为空');
+          res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("输入消息不能为空");
           return;
         }
 
@@ -101,8 +101,8 @@ export async function startChatServer(
           const tracker = new SessionTracker();
           session = {
             id: tracker.getSessionId(),
-            messages: [{ role: 'system', content: systemPrompt }],
-            tracker
+            messages: [{ role: "system", content: systemPrompt }],
+            tracker,
           };
           activeSessions.set(session.id, session);
         }
@@ -111,22 +111,22 @@ export async function startChatServer(
         const sessionProvider = new ObservableModelProvider(provider, session.tracker);
 
         // 记录用户消息到内存及 Trace
-        session.messages.push({ role: 'user', content: userInput });
+        session.messages.push({ role: "user", content: userInput });
         session.tracker.recordUserInput(userInput);
 
         // 设置流式响应头
         res.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'Transfer-Encoding': 'chunked'
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "Transfer-Encoding": "chunked",
         });
 
         // 启动 AI 代理循环（自动调用工具）
         let keepCalling = true;
         while (keepCalling) {
           let currentToolCalls: ToolCall[] | null = null;
-          let textContent = '';
+          let textContent = "";
           let finishReason: string | undefined;
 
           // 流式生成回复
@@ -135,34 +135,38 @@ export async function startChatServer(
             onToolCall: (tcs) => {
               currentToolCalls = tcs;
             },
-            onFinish: finish => {
+            onFinish: (finish) => {
               finishReason = finish.reason;
-            }
+            },
           });
 
           for await (const chunk of stream) {
             textContent += chunk;
             // 实时写回文本 Chunk
-            res.write(JSON.stringify({ type: 'text', content: chunk }) + '\n');
+            res.write(`${JSON.stringify({ type: "text", content: chunk })}\n`);
           }
 
           // 保存 AI 文本回复
-          const assistantMessage: ChatMessage = { role: 'assistant', content: textContent };
+          const assistantMessage: ChatMessage = { role: "assistant", content: textContent };
           const toolCalls = currentToolCalls as ToolCall[] | null;
-          const invalidToolCall = toolCalls?.map(toolCall => ({
-            toolCall,
-            validation: validateToolCall(toolCall)
-          })).find(item => !item.validation.valid);
+          const invalidToolCall = toolCalls
+            ?.map((toolCall) => ({
+              toolCall,
+              validation: validateToolCall(toolCall),
+            }))
+            .find((item) => !item.validation.valid);
           if (toolCalls && toolCalls.length > 0 && !invalidToolCall) {
             assistantMessage.tool_calls = toolCalls;
           }
           session.messages.push(assistantMessage);
 
           if (invalidToolCall) {
-            res.write(JSON.stringify({
-              type: 'error',
-              content: `已拦截未执行的不完整工具调用：${invalidToolCall.validation.error}${finishReason === 'length' ? '（输出达到长度上限）' : ''}`
-            }) + '\n');
+            res.write(
+              `${JSON.stringify({
+                type: "error",
+                content: `已拦截未执行的不完整工具调用：${invalidToolCall.validation.error}${finishReason === "length" ? "（输出达到长度上限）" : ""}`,
+              })}\n`,
+            );
             keepCalling = false;
             continue;
           }
@@ -176,9 +180,11 @@ export async function startChatServer(
               const args = validateToolCall(tc).arguments || {};
 
               // 实时通知前端：工具执行开始
-              res.write(JSON.stringify({ type: 'tool_start', name: toolName, arguments: args }) + '\n');
+              res.write(
+                `${JSON.stringify({ type: "tool_start", name: toolName, arguments: args })}\n`,
+              );
 
-              let toolOutput = '';
+              let toolOutput = "";
               const toolStartTime = Date.now();
 
               if (!targetTool) {
@@ -201,28 +207,30 @@ export async function startChatServer(
                 args,
                 true, // 自动授权
                 toolOutput,
-                toolDuration
+                toolDuration,
               );
 
               // 实时通知前端：工具执行结束与输出
-              res.write(JSON.stringify({
-                type: 'tool_end',
-                name: toolName,
-                output: toolOutput,
-                duration: toolDuration
-              }) + '\n');
+              res.write(
+                `${JSON.stringify({
+                  type: "tool_end",
+                  name: toolName,
+                  output: toolOutput,
+                  duration: toolDuration,
+                })}\n`,
+              );
 
               // 保存工具输出到会话上下文
               session.messages.push({
-                role: 'tool',
+                role: "tool",
                 tool_call_id: tc.id,
-                content: toolOutput
+                content: toolOutput,
               });
             }
             keepCalling = true;
           } else {
-            if (finishReason === 'length') {
-              res.write(JSON.stringify({ type: 'truncated', reason: 'length' }) + '\n');
+            if (finishReason === "length") {
+              res.write(`${JSON.stringify({ type: "truncated", reason: "length" })}\n`);
             }
             keepCalling = false;
           }
@@ -232,26 +240,31 @@ export async function startChatServer(
         await session.tracker.save();
 
         // 结束本次 HTTP 对话流
-        res.write(JSON.stringify({ type: 'done', sessionId: session.id }) + '\n');
+        res.write(`${JSON.stringify({ type: "done", sessionId: session.id })}\n`);
         res.end();
         return;
       }
 
       // 404
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found");
     } catch (err) {
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
       } else {
-        res.write(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }) + '\n');
+        res.write(
+          `${JSON.stringify({
+            type: "error",
+            message: err instanceof Error ? err.message : String(err),
+          })}\n`,
+        );
       }
       res.end(`Internal Server Error: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
   return new Promise<void>((resolve, reject) => {
-    server.on('error', (err) => {
+    server.on("error", (err) => {
       reject(err);
     });
 
@@ -261,10 +274,10 @@ export async function startChatServer(
       console.log(`   访问该地址即可开始交互式 AI 编程对话`);
 
       if (openBrowser) {
-        let cmd = '';
-        if (process.platform === 'win32') {
+        let cmd = "";
+        if (process.platform === "win32") {
           cmd = `start "" "${addr}"`;
-        } else if (process.platform === 'darwin') {
+        } else if (process.platform === "darwin") {
           cmd = `open "${addr}"`;
         } else {
           cmd = `xdg-open "${addr}"`;

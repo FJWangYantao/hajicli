@@ -1,11 +1,11 @@
-import { ChatMessage } from './types.js';
+import type { ChatMessage } from "./types.js";
 
 /** 生命周期 Hook 事件类型 */
 export type HookEvent =
-  | 'UserPromptSubmit'   // 用户发送消息后，发往 LLM 前
-  | 'PreToolUse'          // 模型发起工具调用后，工具真实执行前
-  | 'PostToolUse'         // 工具执行完成，返回模型前
-  | 'Stop';               // 会话循环准备退出前
+  | "UserPromptSubmit" // 用户发送消息后，发往 LLM 前
+  | "PreToolUse" // 模型发起工具调用后，工具真实执行前
+  | "PostToolUse" // 工具执行完成，返回模型前
+  | "Stop"; // 会话循环准备退出前
 
 /** 生命周期 Hook 上下文信息 */
 export interface HookContext {
@@ -27,7 +27,9 @@ export interface HookContext {
 }
 
 /** Hook 处理器函数定义：返回 string 代表拦截或修改，返回 void/null/undefined 代表放行 */
-export type HookHandler = (ctx: HookContext) => Promise<string | void | null> | string | void | null;
+// biome-ignore lint/suspicious/noConfusingVoidType: 联合中的 void 是为了接受无返回值的 Promise<void> 实现
+type HookResult = Promise<string | void | null> | string | void | null;
+export type HookHandler = (ctx: HookContext) => HookResult;
 
 /**
  * 生命周期 Hook 引擎。
@@ -38,7 +40,7 @@ export class HookEngine {
     UserPromptSubmit: [],
     PreToolUse: [],
     PostToolUse: [],
-    Stop: []
+    Stop: [],
   };
 
   /**

@@ -1,12 +1,12 @@
-import { execFileSync } from 'node:child_process';
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
+import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 interface SnapshotFile {
   path: string;
   blob: string;
-  kind: 'file' | 'symlink';
+  kind: "file" | "symlink";
   mode: number;
 }
 
@@ -69,20 +69,20 @@ export class SnapshotEngine {
   private readonly manifestsDir: string;
   private readonly blobsDir: string;
   private readonly journalsDir: string;
-  private scope = 'default';
+  private scope = "default";
   private warningHandler?: (message: string) => void;
   private readonly pendingWarnings: string[] = [];
 
   constructor(
     cwd: string = process.cwd(),
-    snapshotRoot = path.join(cwd, '.haji', 'snapshots'),
-    onWarning?: (message: string) => void
+    snapshotRoot = path.join(cwd, ".haji", "snapshots"),
+    onWarning?: (message: string) => void,
   ) {
     this.cwd = path.resolve(cwd);
     this.snapshotRoot = path.resolve(snapshotRoot);
-    this.manifestsDir = path.join(this.snapshotRoot, 'manifests');
-    this.blobsDir = path.join(this.snapshotRoot, 'blobs');
-    this.journalsDir = path.join(this.snapshotRoot, 'journals');
+    this.manifestsDir = path.join(this.snapshotRoot, "manifests");
+    this.blobsDir = path.join(this.snapshotRoot, "blobs");
+    this.journalsDir = path.join(this.snapshotRoot, "journals");
     this.warningHandler = onWarning;
   }
 
@@ -99,13 +99,13 @@ export class SnapshotEngine {
   }
 
   setScope(scope: string): void {
-    if (!/^[a-zA-Z0-9_-]+$/.test(scope)) throw new Error('无效的快照作用域');
+    if (!/^[a-zA-Z0-9_-]+$/.test(scope)) throw new Error("无效的快照作用域");
     this.scope = scope;
   }
 
   isGitRepo(): boolean {
     try {
-      return this.git(['rev-parse', '--is-inside-work-tree']).trim() === 'true';
+      return this.git(["rev-parse", "--is-inside-work-tree"]).trim() === "true";
     } catch {
       return false;
     }
@@ -113,7 +113,7 @@ export class SnapshotEngine {
 
   getCurrentHeadHash(): string | null {
     try {
-      return this.git(['rev-parse', '--verify', 'HEAD']).trim();
+      return this.git(["rev-parse", "--verify", "HEAD"]).trim();
     } catch {
       return null;
     }
@@ -128,7 +128,7 @@ export class SnapshotEngine {
   private createSnapshotAtHead(
     description: string,
     includedPaths: readonly string[] | undefined,
-    headHash: string | null
+    headHash: string | null,
   ): string | null {
     if (!headHash) return null;
 
@@ -136,9 +136,10 @@ export class SnapshotEngine {
       fs.mkdirSync(this.manifestsDir, { recursive: true });
       fs.mkdirSync(this.blobsDir, { recursive: true });
 
-      const snapshotPaths = includedPaths === undefined
-        ? this.listManagedPaths()
-        : [...new Set(includedPaths.map(file => this.normalizeRelativePath(file)))];
+      const snapshotPaths =
+        includedPaths === undefined
+          ? this.listManagedPaths()
+          : [...new Set(includedPaths.map((file) => this.normalizeRelativePath(file)))];
       const files: SnapshotFile[] = [];
       for (const relativePath of snapshotPaths) {
         if (this.isHajiRuntimePath(relativePath)) continue;
@@ -147,15 +148,16 @@ export class SnapshotEngine {
 
         const stat = fs.lstatSync(absolutePath);
         if (!stat.isFile() && !stat.isSymbolicLink()) continue;
-        const kind = stat.isSymbolicLink() ? 'symlink' : 'file';
-        const content = kind === 'symlink'
-          ? Buffer.from(fs.readlinkSync(absolutePath), 'utf8')
-          : fs.readFileSync(absolutePath);
+        const kind = stat.isSymbolicLink() ? "symlink" : "file";
+        const content =
+          kind === "symlink"
+            ? Buffer.from(fs.readlinkSync(absolutePath), "utf8")
+            : fs.readFileSync(absolutePath);
         files.push({
           path: relativePath,
           blob: this.storeBlob(content, kind),
           kind,
-          mode: stat.mode & 0o777
+          mode: stat.mode & 0o777,
         });
       }
 
@@ -166,12 +168,12 @@ export class SnapshotEngine {
         headHash,
         timestamp: Date.now(),
         description,
-        files
+        files,
       };
-      fs.writeFileSync(this.getManifestPath(id), JSON.stringify(manifest, null, 2), 'utf8');
+      fs.writeFileSync(this.getManifestPath(id), JSON.stringify(manifest, null, 2), "utf8");
       return id;
     } catch (error) {
-      this.warn('工作区快照创建失败，本次修改可能无法通过 /rewind 自动回退', error);
+      this.warn("工作区快照创建失败，本次修改可能无法通过 /rewind 自动回退", error);
       return null;
     }
   }
@@ -183,8 +185,8 @@ export class SnapshotEngine {
 
   beginMutation(anchorSnapshotId: string, paths?: readonly string[]): MutationCheckpoint | null {
     if (!this.readSnapshotMetadata(anchorSnapshotId)) return null;
-    const normalizedPaths = paths?.map(file => this.normalizeRelativePath(file));
-    const beforeSnapshotId = this.createSnapshot('before Haji tool mutation', normalizedPaths);
+    const normalizedPaths = paths?.map((file) => this.normalizeRelativePath(file));
+    const beforeSnapshotId = this.createSnapshot("before Haji tool mutation", normalizedPaths);
     return beforeSnapshotId ? { anchorSnapshotId, beforeSnapshotId, paths: normalizedPaths } : null;
   }
 
@@ -194,7 +196,11 @@ export class SnapshotEngine {
     const currentHeadHash = this.getCurrentHeadHash();
     if (!before || !currentHeadHash) return null;
     const headChanged = before.headHash !== currentHeadHash;
-    const afterSnapshotId = this.createSnapshotAtHead('after Haji tool mutation', checkpoint.paths, currentHeadHash);
+    const afterSnapshotId = this.createSnapshotAtHead(
+      "after Haji tool mutation",
+      checkpoint.paths,
+      currentHeadHash,
+    );
     if (!afterSnapshotId) return null;
     const after = this.readManifest(afterSnapshotId);
     if (!after || after.headHash !== currentHeadHash) return null;
@@ -212,7 +218,7 @@ export class SnapshotEngine {
       paths,
       headChanged,
       beforeHeadHash: before.headHash,
-      afterHeadHash: currentHeadHash
+      afterHeadHash: currentHeadHash,
     };
     const records = this.readJournal();
     records.push(record);
@@ -221,8 +227,8 @@ export class SnapshotEngine {
       recordId: record.id,
       headChanged,
       warning: headChanged
-        ? '[快照警告] 工具执行期间 Git HEAD 发生变化；本次 mutation 已记录并标记为不可自动回退。'
-        : undefined
+        ? "[快照警告] 工具执行期间 Git HEAD 发生变化；本次 mutation 已记录并标记为不可自动回退。"
+        : undefined,
     };
   }
 
@@ -233,21 +239,26 @@ export class SnapshotEngine {
   rollbackOwnedChanges(snapshotId: string): SnapshotRollbackResult {
     const target = this.readSnapshotMetadata(snapshotId);
     if (!target) {
-      return { ok: false, revertedPaths: [], preservedPaths: [], reason: '快照缺失或版本过旧' };
+      return { ok: false, revertedPaths: [], preservedPaths: [], reason: "快照缺失或版本过旧" };
     }
     if (this.getCurrentHeadHash() !== target.headHash) {
-      return { ok: false, revertedPaths: [], preservedPaths: [], reason: 'Git HEAD 已发生变化' };
+      return { ok: false, revertedPaths: [], preservedPaths: [], reason: "Git HEAD 已发生变化" };
     }
 
     const records = this.readJournal();
-    const candidates = records.filter(record => record.timestamp >= target.timestamp);
+    const candidates = records.filter((record) => record.timestamp >= target.timestamp);
     const revertedPaths = new Set<string>();
     const preservedPaths = new Set<string>();
 
     for (const record of [...candidates].reverse()) {
       const before = this.readManifest(record.beforeSnapshotId);
       const after = this.readManifest(record.afterSnapshotId);
-      if (!before || !after || before.headHash !== target.headHash || after.headHash !== target.headHash) {
+      if (
+        !before ||
+        !after ||
+        before.headHash !== target.headHash ||
+        after.headHash !== target.headHash
+      ) {
         for (const relativePath of record.paths) preservedPaths.add(relativePath);
         continue;
       }
@@ -268,12 +279,12 @@ export class SnapshotEngine {
     }
 
     if (candidates.length > 0) {
-      this.writeJournal(records.filter(record => record.timestamp < target.timestamp));
+      this.writeJournal(records.filter((record) => record.timestamp < target.timestamp));
     }
     return {
       ok: true,
       revertedPaths: [...revertedPaths].sort(),
-      preservedPaths: [...preservedPaths].sort()
+      preservedPaths: [...preservedPaths].sort(),
     };
   }
 
@@ -286,11 +297,16 @@ export class SnapshotEngine {
     const beforeFiles = this.fileMap(before);
     const afterFiles = this.fileMap(after);
     const paths = new Set([...beforeFiles.keys(), ...afterFiles.keys()]);
-    return [...paths].filter(relativePath => !this.sameFile(beforeFiles.get(relativePath), afterFiles.get(relativePath))).sort();
+    return [...paths]
+      .filter(
+        (relativePath) =>
+          !this.sameFile(beforeFiles.get(relativePath), afterFiles.get(relativePath)),
+      )
+      .sort();
   }
 
   private fileMap(manifest: SnapshotManifest): Map<string, SnapshotFile> {
-    return new Map(manifest.files.map(file => [file.path, file]));
+    return new Map(manifest.files.map((file) => [file.path, file]));
   }
 
   private sameFile(left: SnapshotFile | undefined, right: SnapshotFile | undefined): boolean {
@@ -303,11 +319,17 @@ export class SnapshotEngine {
     if (!expected) return !fs.existsSync(absolutePath);
     if (!fs.existsSync(absolutePath)) return false;
     const stat = fs.lstatSync(absolutePath);
-    if (expected.kind === 'symlink' ? !stat.isSymbolicLink() : !stat.isFile()) return false;
-    const content = expected.kind === 'symlink'
-      ? Buffer.from(fs.readlinkSync(absolutePath), 'utf8')
-      : fs.readFileSync(absolutePath);
-    const hash = crypto.createHash('sha256').update(expected.kind).update('\0').update(content).digest('hex');
+    if (expected.kind === "symlink" ? !stat.isSymbolicLink() : !stat.isFile()) return false;
+    const content =
+      expected.kind === "symlink"
+        ? Buffer.from(fs.readlinkSync(absolutePath), "utf8")
+        : fs.readFileSync(absolutePath);
+    const hash = crypto
+      .createHash("sha256")
+      .update(expected.kind)
+      .update("\0")
+      .update(content)
+      .digest("hex");
     return hash === expected.blob;
   }
 
@@ -329,35 +351,44 @@ export class SnapshotEngine {
       }
     }
     const content = fs.readFileSync(this.getBlobPath(target.blob));
-    if (target.kind === 'symlink') {
-      fs.symlinkSync(content.toString('utf8'), absolutePath);
+    if (target.kind === "symlink") {
+      fs.symlinkSync(content.toString("utf8"), absolutePath);
     } else {
       fs.writeFileSync(absolutePath, content, { mode: target.mode });
-      try { fs.chmodSync(absolutePath, target.mode); } catch {}
+      try {
+        fs.chmodSync(absolutePath, target.mode);
+      } catch {}
     }
   }
 
   private git(args: string[]): string {
-    return execFileSync('git', args, {
+    return execFileSync("git", args, {
       cwd: this.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8'
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
     });
   }
 
   private listManagedPaths(): string[] {
-    const output = this.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
-    return output.split('\0').filter(Boolean).map(file => this.normalizeRelativePath(file));
+    const output = this.git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+    return output
+      .split("\0")
+      .filter(Boolean)
+      .map((file) => this.normalizeRelativePath(file));
   }
 
   private isHajiRuntimePath(relativePath: string): boolean {
-    if (relativePath === '.haji/skills' || relativePath.startsWith('.haji/skills/')) return false;
-    return relativePath === '.haji' || relativePath.startsWith('.haji/');
+    if (relativePath === ".haji/skills" || relativePath.startsWith(".haji/skills/")) return false;
+    return relativePath === ".haji" || relativePath.startsWith(".haji/");
   }
 
   private normalizeRelativePath(value: string): string {
-    const normalized = value.replace(/\\/g, '/');
-    if (!normalized || path.posix.isAbsolute(normalized) || normalized.split('/').some(part => part === '..')) {
+    const normalized = value.replace(/\\/g, "/");
+    if (
+      !normalized ||
+      path.posix.isAbsolute(normalized) ||
+      normalized.split("/").some((part) => part === "..")
+    ) {
       throw new Error(`Invalid snapshot path: ${value}`);
     }
     return normalized;
@@ -365,7 +396,7 @@ export class SnapshotEngine {
 
   private resolveWorkspacePath(relativePath: string): string {
     const normalized = this.normalizeRelativePath(relativePath);
-    const resolved = path.resolve(this.cwd, ...normalized.split('/'));
+    const resolved = path.resolve(this.cwd, ...normalized.split("/"));
     if (resolved !== this.cwd && !resolved.startsWith(`${this.cwd}${path.sep}`)) {
       throw new Error(`Snapshot path escaped workspace: ${relativePath}`);
     }
@@ -373,14 +404,19 @@ export class SnapshotEngine {
   }
 
   private storeBlob(content: Buffer, kind: string): string {
-    const hash = crypto.createHash('sha256').update(kind).update('\0').update(content).digest('hex');
+    const hash = crypto
+      .createHash("sha256")
+      .update(kind)
+      .update("\0")
+      .update(content)
+      .digest("hex");
     const blobPath = this.getBlobPath(hash);
-    if (!fs.existsSync(blobPath)) fs.writeFileSync(blobPath, content, { flag: 'wx' });
+    if (!fs.existsSync(blobPath)) fs.writeFileSync(blobPath, content, { flag: "wx" });
     return hash;
   }
 
   private getBlobPath(hash: string): string {
-    if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid snapshot blob hash');
+    if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("Invalid snapshot blob hash");
     return path.join(this.blobsDir, hash);
   }
 
@@ -393,7 +429,7 @@ export class SnapshotEngine {
     const manifestPath = this.getManifestPath(id);
     if (!fs.existsSync(manifestPath)) return null;
     try {
-      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as SnapshotManifest;
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as SnapshotManifest;
       if (parsed.version !== 2 || parsed.id !== id || !Array.isArray(parsed.files)) return null;
       return parsed;
     } catch {
@@ -406,14 +442,14 @@ export class SnapshotEngine {
     const manifestPath = this.getManifestPath(id);
     if (!fs.existsSync(manifestPath)) return null;
     try {
-      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
         version?: number;
         id?: string;
         headHash?: string;
         timestamp?: number;
       };
       if ((parsed.version !== 1 && parsed.version !== 2) || parsed.id !== id) return null;
-      if (typeof parsed.headHash !== 'string' || typeof parsed.timestamp !== 'number') return null;
+      if (typeof parsed.headHash !== "string" || typeof parsed.timestamp !== "number") return null;
       return { id, headHash: parsed.headHash, timestamp: parsed.timestamp };
     } catch {
       return null;
@@ -428,8 +464,10 @@ export class SnapshotEngine {
     try {
       const filePath = this.getJournalPath();
       if (!fs.existsSync(filePath)) return [];
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as MutationRecord[];
-      return Array.isArray(parsed) ? parsed.filter(record => record?.version === 1 || record?.version === 2) : [];
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as MutationRecord[];
+      return Array.isArray(parsed)
+        ? parsed.filter((record) => record?.version === 1 || record?.version === 2)
+        : [];
     } catch {
       return [];
     }
@@ -437,13 +475,17 @@ export class SnapshotEngine {
 
   private writeJournal(records: MutationRecord[]): void {
     fs.mkdirSync(this.journalsDir, { recursive: true });
-    fs.writeFileSync(this.getJournalPath(), JSON.stringify(records, null, 2), 'utf8');
+    fs.writeFileSync(this.getJournalPath(), JSON.stringify(records, null, 2), "utf8");
   }
 
   private removeEmptyParents(startPath: string): void {
     let current = path.resolve(startPath);
     while (current !== this.cwd && current.startsWith(`${this.cwd}${path.sep}`)) {
-      try { fs.rmdirSync(current); } catch { break; }
+      try {
+        fs.rmdirSync(current);
+      } catch {
+        break;
+      }
       current = path.dirname(current);
     }
   }

@@ -1,5 +1,5 @@
-import { stdout } from 'node:process';
-import { MarkdownStreamRenderer } from './markdown-renderer.js';
+import { stdout } from "node:process";
+import { MarkdownStreamRenderer } from "./markdown-renderer.js";
 
 /** ANSI 转义码匹配正则 */
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -15,7 +15,7 @@ export class TuiRenderer {
   /** 聊天缓冲区：已提交的所有行 */
   private chatBuffer: string[] = [];
   /** 流式输出中尚未提交的行片段 */
-  private streamFragment = '';
+  private streamFragment = "";
   /** 流式 Markdown 渲染引擎 */
   private mdStreamRenderer = new MarkdownStreamRenderer();
   /** 当前流式输出是否启用 Markdown 格式化 */
@@ -66,17 +66,17 @@ export class TuiRenderer {
 
   /** 清除当前行（光标位置至行尾） */
   private clearEOL(): void {
-    stdout.write('\x1b[K');
+    stdout.write("\x1b[K");
   }
 
   /** 隐藏光标（减少绘制闪烁） */
   private hideCursor(): void {
-    stdout.write('\x1b[?25l');
+    stdout.write("\x1b[?25l");
   }
 
   /** 显示光标 */
   private showCursor(): void {
-    stdout.write('\x1b[?25h');
+    stdout.write("\x1b[?25h");
   }
 
   // ── 公共 API ──
@@ -87,18 +87,18 @@ export class TuiRenderer {
    * @param statusLine Logo 下方的状态提示行
    */
   init(logoText: string, statusLine: string): void {
-    const raw = logoText.split('\n');
+    const raw = logoText.split("\n");
     // 去除首尾空行以节省纵向空间
-    while (raw.length > 0 && raw[0].replace(ANSI_RE, '').trim() === '') {
+    while (raw.length > 0 && raw[0].replace(ANSI_RE, "").trim() === "") {
       raw.shift();
     }
-    while (raw.length > 0 && raw[raw.length - 1].replace(ANSI_RE, '').trim() === '') {
+    while (raw.length > 0 && raw[raw.length - 1].replace(ANSI_RE, "").trim() === "") {
       raw.pop();
     }
     this.logoLines = [...raw, statusLine];
 
     // 清屏并渲染 Logo
-    stdout.write('\x1b[2J');
+    stdout.write("\x1b[2J");
     this.hideCursor();
     for (let i = 0; i < this.logoLines.length; i++) {
       this.moveTo(i + 1, 1);
@@ -149,10 +149,10 @@ export class TuiRenderer {
   appendToChat(text: string, isMarkdown = false): void {
     if (isMarkdown) {
       const rendered = this.mdStreamRenderer.render(text, true);
-      const lines = rendered.split('\n');
+      const lines = rendered.split("\n");
       this.chatBuffer.push(...lines);
     } else {
-      const lines = text.split('\n');
+      const lines = text.split("\n");
       this.chatBuffer.push(...lines);
     }
     this.renderChatArea();
@@ -163,7 +163,7 @@ export class TuiRenderer {
    * @param isMarkdown 是否启用流式 Markdown 渲染
    */
   beginStream(isMarkdown = false): void {
-    this.streamFragment = '';
+    this.streamFragment = "";
     this.isMarkdownStream = isMarkdown;
     this.streamStartIndex = this.chatBuffer.length;
     this.mdStreamRenderer.reset();
@@ -176,13 +176,10 @@ export class TuiRenderer {
   streamChunk(chunk: string): void {
     if (this.isMarkdownStream) {
       const rendered = this.mdStreamRenderer.appendAndRender(chunk, false);
-      const lines = rendered.split('\n');
-      this.chatBuffer = [
-        ...this.chatBuffer.slice(0, this.streamStartIndex),
-        ...lines
-      ];
+      const lines = rendered.split("\n");
+      this.chatBuffer = [...this.chatBuffer.slice(0, this.streamStartIndex), ...lines];
     } else {
-      const parts = chunk.split('\n');
+      const parts = chunk.split("\n");
       this.streamFragment += parts[0];
       for (let i = 1; i < parts.length; i++) {
         this.chatBuffer.push(this.streamFragment);
@@ -203,16 +200,13 @@ export class TuiRenderer {
   /** 结束流式输出，将残余片段提交到缓冲区 */
   endStream(): void {
     if (this.isMarkdownStream) {
-      const rendered = this.mdStreamRenderer.appendAndRender('', true);
-      const lines = rendered.split('\n');
-      this.chatBuffer = [
-        ...this.chatBuffer.slice(0, this.streamStartIndex),
-        ...lines
-      ];
+      const rendered = this.mdStreamRenderer.appendAndRender("", true);
+      const lines = rendered.split("\n");
+      this.chatBuffer = [...this.chatBuffer.slice(0, this.streamStartIndex), ...lines];
       this.isMarkdownStream = false;
     } else if (this.streamFragment) {
       this.chatBuffer.push(this.streamFragment);
-      this.streamFragment = '';
+      this.streamFragment = "";
     }
     this.renderChatArea();
   }
@@ -234,7 +228,7 @@ export class TuiRenderer {
 
   /** 全量重绘（终端 resize 时调用） */
   fullRepaint(): void {
-    stdout.write('\x1b[2J');
+    stdout.write("\x1b[2J");
     this.hideCursor();
     for (let i = 0; i < this.logoLines.length; i++) {
       this.moveTo(i + 1, 1);
@@ -263,7 +257,7 @@ export class TuiRenderer {
 
   /** 计算字符串的视觉宽度（剔除 ANSI 转义码） */
   private visualWidth(str: string): number {
-    const plain = str.replace(ANSI_RE, '');
+    const plain = str.replace(ANSI_RE, "");
     let width = 0;
     for (const ch of plain) {
       const cp = ch.codePointAt(0) ?? 0;
@@ -274,25 +268,27 @@ export class TuiRenderer {
 
   /** 判断码位是否为东亚宽字符（CJK / Emoji） */
   private isWideChar(cp: number): boolean {
-    return cp >= 0x1100 && (
-      cp <= 0x115f
-      || cp === 0x2329 || cp === 0x232a
-      || (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f)
-      || (cp >= 0xac00 && cp <= 0xd7a3)
-      || (cp >= 0xf900 && cp <= 0xfaff)
-      || (cp >= 0xfe10 && cp <= 0xfe19)
-      || (cp >= 0xfe30 && cp <= 0xfe6f)
-      || (cp >= 0xff00 && cp <= 0xff60)
-      || (cp >= 0xffe0 && cp <= 0xffe6)
-      || (cp >= 0x1f300 && cp <= 0x1faff)
-      || (cp >= 0x20000 && cp <= 0x3fffd)
+    return (
+      cp >= 0x1100 &&
+      (cp <= 0x115f ||
+        cp === 0x2329 ||
+        cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe10 && cp <= 0xfe19) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x1f300 && cp <= 0x1faff) ||
+        (cp >= 0x20000 && cp <= 0x3fffd))
     );
   }
 
   /** 将单行按视觉宽度进行软换行 */
   private wrapSingleLine(line: string, maxWidth: number): string[] {
     const segments: string[] = [];
-    let current = '';
+    let current = "";
     let currentWidth = 0;
     const ansiPrefix = /^\x1b\[[0-?]*[ -/]*[@-~]/;
     let i = 0;
@@ -313,7 +309,7 @@ export class TuiRenderer {
 
       if (currentWidth + charWidth > maxWidth) {
         segments.push(current);
-        current = '';
+        current = "";
         currentWidth = 0;
       }
 
@@ -325,6 +321,6 @@ export class TuiRenderer {
     if (current) {
       segments.push(current);
     }
-    return segments.length > 0 ? segments : [''];
+    return segments.length > 0 ? segments : [""];
   }
 }

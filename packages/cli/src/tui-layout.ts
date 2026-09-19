@@ -1,8 +1,8 @@
-export type TuiLayoutMode = 'wide' | 'comfortable' | 'compact' | 'narrow' | 'minimal';
+export type TuiLayoutMode = "wide" | "comfortable" | "compact" | "narrow" | "minimal";
 
-export type TuiHeaderMode = 'full' | 'compact' | 'hidden';
+export type TuiHeaderMode = "full" | "compact" | "hidden";
 
-export type TuiStatusDetail = 'full' | 'compact' | 'minimal';
+export type TuiStatusDetail = "full" | "compact" | "minimal";
 
 export interface TuiLayout {
   mode: TuiLayoutMode;
@@ -28,44 +28,44 @@ interface TuiLayoutProfile {
 const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
   wide: {
     chatPadding: 3,
-    headerMode: 'full',
-    statusDetail: 'full',
+    headerMode: "full",
+    statusDetail: "full",
     panelRows: 8,
     showHints: true,
-    inputPaddingRows: 1
+    inputPaddingRows: 1,
   },
   comfortable: {
     chatPadding: 2,
-    headerMode: 'full',
-    statusDetail: 'full',
+    headerMode: "full",
+    statusDetail: "full",
     panelRows: 6,
     showHints: true,
-    inputPaddingRows: 1
+    inputPaddingRows: 1,
   },
   compact: {
     chatPadding: 1,
-    headerMode: 'compact',
-    statusDetail: 'compact',
+    headerMode: "compact",
+    statusDetail: "compact",
     panelRows: 4,
     showHints: true,
-    inputPaddingRows: 1
+    inputPaddingRows: 1,
   },
   narrow: {
     chatPadding: 1,
-    headerMode: 'compact',
-    statusDetail: 'minimal',
+    headerMode: "compact",
+    statusDetail: "minimal",
     panelRows: 2,
     showHints: false,
-    inputPaddingRows: 0
+    inputPaddingRows: 0,
   },
   minimal: {
     chatPadding: 0,
-    headerMode: 'hidden',
-    statusDetail: 'minimal',
+    headerMode: "hidden",
+    statusDetail: "minimal",
     panelRows: 0,
     showHints: false,
-    inputPaddingRows: 0
-  }
+    inputPaddingRows: 0,
+  },
 };
 
 function normalizeDimension(value: number, name: string): number {
@@ -76,18 +76,18 @@ function normalizeDimension(value: number, name: string): number {
 }
 
 export function resolveTuiLayoutMode(columns: number, rows: number): TuiLayoutMode {
-  const safeColumns = normalizeDimension(columns, 'columns');
-  const safeRows = normalizeDimension(rows, 'rows');
+  const safeColumns = normalizeDimension(columns, "columns");
+  const safeRows = normalizeDimension(rows, "rows");
 
-  if (safeColumns < 24 || safeRows < 10) return 'minimal';
-  if (safeColumns < 40) return 'narrow';
-  if (safeColumns < 60) return 'compact';
-  if (safeColumns < 100) return 'comfortable';
-  return 'wide';
+  if (safeColumns < 24 || safeRows < 10) return "minimal";
+  if (safeColumns < 40) return "narrow";
+  if (safeColumns < 60) return "compact";
+  if (safeColumns < 100) return "comfortable";
+  return "wide";
 }
 
 export function resolvePanelRowBudget(rows: number): number {
-  const safeRows = normalizeDimension(rows, 'rows');
+  const safeRows = normalizeDimension(rows, "rows");
   if (safeRows < 10) return 0;
   if (safeRows < 16) return 1;
   if (safeRows < 24) return 2;
@@ -97,31 +97,31 @@ export function resolvePanelRowBudget(rows: number): number {
 }
 
 export function resolveTuiLayout(columns: number, rows: number): TuiLayout {
-  const safeColumns = normalizeDimension(columns, 'columns');
-  const safeRows = normalizeDimension(rows, 'rows');
+  const safeColumns = normalizeDimension(columns, "columns");
+  const safeRows = normalizeDimension(rows, "rows");
   const mode = resolveTuiLayoutMode(safeColumns, safeRows);
   const profile = PROFILES[mode];
 
-  if (mode === 'minimal') {
+  if (mode === "minimal") {
     return {
       mode,
       safeWidth: safeColumns - 1,
       safeHeight: safeRows,
-      ...profile
+      ...profile,
     };
   }
 
   const short = safeRows < 16;
   const mediumHeight = safeRows < 24;
   const headerMode = short
-    ? 'hidden'
-    : mediumHeight && profile.headerMode === 'full'
-      ? 'compact'
+    ? "hidden"
+    : mediumHeight && profile.headerMode === "full"
+      ? "compact"
       : profile.headerMode;
   const statusDetail = short
-    ? 'minimal'
-    : mediumHeight && profile.statusDetail === 'full'
-      ? 'compact'
+    ? "minimal"
+    : mediumHeight && profile.statusDetail === "full"
+      ? "compact"
       : profile.statusDetail;
   return {
     mode,
@@ -132,6 +132,6 @@ export function resolveTuiLayout(columns: number, rows: number): TuiLayout {
     statusDetail,
     panelRows: Math.min(profile.panelRows, resolvePanelRowBudget(safeRows)),
     showHints: profile.showHints && !short,
-    inputPaddingRows: short ? 0 : profile.inputPaddingRows
+    inputPaddingRows: short ? 0 : profile.inputPaddingRows,
   };
 }

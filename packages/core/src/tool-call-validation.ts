@@ -1,4 +1,4 @@
-import { ChatMessage, ToolCall } from './types.js';
+import type { ChatMessage, ToolCall } from "./types.js";
 
 export interface ToolCallValidationResult {
   valid: boolean;
@@ -7,31 +7,35 @@ export interface ToolCallValidationResult {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Validates the protocol fields and JSON object expected for a function call. */
 export function validateToolCall(toolCall: ToolCall): ToolCallValidationResult {
-  if (!toolCall || typeof toolCall !== 'object') {
-    return { valid: false, error: '工具调用不是对象' };
+  if (!toolCall || typeof toolCall !== "object") {
+    return { valid: false, error: "工具调用不是对象" };
   }
-  if (typeof toolCall.id !== 'string' || !toolCall.id.trim()) {
-    return { valid: false, error: '工具调用缺少 id' };
+  if (typeof toolCall.id !== "string" || !toolCall.id.trim()) {
+    return { valid: false, error: "工具调用缺少 id" };
   }
-  if (toolCall.type !== 'function') {
+  if (toolCall.type !== "function") {
     return { valid: false, error: `工具调用类型无效: ${String(toolCall.type)}` };
   }
-  if (!toolCall.function || typeof toolCall.function.name !== 'string' || !toolCall.function.name.trim()) {
-    return { valid: false, error: '工具调用缺少函数名' };
+  if (
+    !toolCall.function ||
+    typeof toolCall.function.name !== "string" ||
+    !toolCall.function.name.trim()
+  ) {
+    return { valid: false, error: "工具调用缺少函数名" };
   }
-  if (typeof toolCall.function.arguments !== 'string') {
-    return { valid: false, error: '工具参数不是 JSON 字符串' };
+  if (typeof toolCall.function.arguments !== "string") {
+    return { valid: false, error: "工具参数不是 JSON 字符串" };
   }
 
   try {
     const parsed = JSON.parse(toolCall.function.arguments);
     if (!isRecord(parsed)) {
-      return { valid: false, error: '工具参数必须是 JSON 对象' };
+      return { valid: false, error: "工具参数必须是 JSON 对象" };
     }
     return { valid: true, arguments: parsed };
   } catch (error) {
@@ -56,7 +60,7 @@ export function findInvalidToolCall(messages: ChatMessage[]): {
           messageIndex,
           toolCallIndex,
           toolCall: toolCalls[toolCallIndex],
-          error: result.error || '未知工具调用错误'
+          error: result.error || "未知工具调用错误",
         };
       }
     }

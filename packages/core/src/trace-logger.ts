@@ -1,10 +1,10 @@
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
-import * as crypto from 'node:crypto';
-import { performance } from 'node:perf_hooks';
-import { ChatMessage, ToolCall } from './types.js';
-import { performanceMonitor } from './performance-monitor.js';
-import { replaceFileAtomically } from './atomic-file.js';
+import * as crypto from "node:crypto";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
+import { performance } from "node:perf_hooks";
+import { replaceFileAtomically } from "./atomic-file.js";
+import { performanceMonitor } from "./performance-monitor.js";
+import type { ChatMessage, ToolCall } from "./types.js";
 
 const TRACE_FLUSH_DELAY_MS = 40;
 const TRACE_MESSAGE_LIMIT = 12;
@@ -44,9 +44,9 @@ export interface TraceToolExecution {
 }
 
 export type TraceEvent =
-  | { type: 'user_input'; timestamp: string; content: string }
-  | { type: 'llm_call'; timestamp: string; data: TraceLlmCall }
-  | { type: 'tool_execution'; timestamp: string; data: TraceToolExecution };
+  | { type: "user_input"; timestamp: string; content: string }
+  | { type: "llm_call"; timestamp: string; data: TraceLlmCall }
+  | { type: "tool_execution"; timestamp: string; data: TraceToolExecution };
 
 export interface TraceSession {
   id: string;
@@ -74,17 +74,17 @@ function compactToolCall(toolCall: ToolCall): ToolCall {
     ...toolCall,
     function: {
       ...toolCall.function,
-      arguments: truncateText(toolCall.function.arguments, TRACE_ARGUMENT_LIMIT) || '{}'
-    }
+      arguments: truncateText(toolCall.function.arguments, TRACE_ARGUMENT_LIMIT) || "{}",
+    },
   };
 }
 
 function compactMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
-    content: truncateText(message.content) || '',
+    content: truncateText(message.content) || "",
     reasoning_content: truncateText(message.reasoning_content, 4_000),
-    tool_calls: message.tool_calls?.map(compactToolCall)
+    tool_calls: message.tool_calls?.map(compactToolCall),
   };
 }
 
@@ -95,12 +95,12 @@ function compactMessages(messages: ChatMessage[]): {
   if (messages.length <= TRACE_MESSAGE_LIMIT) {
     return { messages: messages.map(compactMessage), omittedMessageCount: 0 };
   }
-  const firstSystem = messages.find(message => message.role === 'system');
+  const firstSystem = messages.find((message) => message.role === "system");
   const tail = messages.slice(-(TRACE_MESSAGE_LIMIT - (firstSystem ? 1 : 0)));
   const selected = firstSystem && tail[0] !== firstSystem ? [firstSystem, ...tail] : tail;
   return {
     messages: selected.map(compactMessage),
-    omittedMessageCount: Math.max(0, messages.length - selected.length)
+    omittedMessageCount: Math.max(0, messages.length - selected.length),
   };
 }
 
@@ -111,25 +111,25 @@ function compactArguments(args: Record<string, unknown>): Record<string, unknown
     return {
       _traceTruncated: true,
       originalChars: serialized.length,
-      preview: serialized.slice(0, TRACE_ARGUMENT_LIMIT)
+      preview: serialized.slice(0, TRACE_ARGUMENT_LIMIT),
     };
   } catch {
-    return { _traceTruncated: true, preview: '[无法序列化工具参数]' };
+    return { _traceTruncated: true, preview: "[无法序列化工具参数]" };
   }
 }
 
 function compactEvent(event: TraceEvent): TraceEvent {
-  if (event.type === 'user_input') {
-    return { ...event, content: truncateText(event.content) || '' };
+  if (event.type === "user_input") {
+    return { ...event, content: truncateText(event.content) || "" };
   }
-  if (event.type === 'tool_execution') {
+  if (event.type === "tool_execution") {
     return {
       ...event,
       data: {
         ...event.data,
         arguments: compactArguments(event.data.arguments),
-        output: truncateText(event.data.output)
-      }
+        output: truncateText(event.data.output),
+      },
     };
   }
   const compacted = compactMessages(event.data.messages);
@@ -141,9 +141,9 @@ function compactEvent(event: TraceEvent): TraceEvent {
       messageCount: event.data.messages.length,
       omittedMessageCount: compacted.omittedMessageCount || undefined,
       reasoningContent: truncateText(event.data.reasoningContent),
-      content: truncateText(event.data.content) || '',
-      toolCalls: event.data.toolCalls?.map(compactToolCall)
-    }
+      content: truncateText(event.data.content) || "",
+      toolCalls: event.data.toolCalls?.map(compactToolCall),
+    },
   };
 }
 
@@ -160,8 +160,8 @@ export class SessionTracker {
   private readonly pendingWarnings: string[] = [];
 
   constructor(
-    tracesDir: string = path.join(process.cwd(), '.haji', 'traces'),
-    onWarning?: (message: string) => void
+    tracesDir: string = path.join(process.cwd(), ".haji", "traces"),
+    onWarning?: (message: string) => void,
   ) {
     this.tracesDir = tracesDir;
     this.warningHandler = onWarning;
@@ -171,12 +171,12 @@ export class SessionTracker {
       id,
       startTime: new Date().toISOString(),
       eventCount: 0,
-      modelUsed: 'unknown'
+      modelUsed: "unknown",
     };
     this.metaPath = path.join(tracesDir, `session_${id}.meta.json`);
     this.eventsPath = path.join(tracesDir, `session_${id}.events.jsonl`);
-    this.writeChain = this.initialize().catch(error => {
-      this.warn('Trace 初始化失败', error);
+    this.writeChain = this.initialize().catch((error) => {
+      this.warn("Trace 初始化失败", error);
     });
   }
 
@@ -199,7 +199,7 @@ export class SessionTracker {
 
   private async writeMeta(): Promise<void> {
     const tempPath = `${this.metaPath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.writeFile(tempPath, JSON.stringify(this.meta), 'utf8');
+    await fs.writeFile(tempPath, JSON.stringify(this.meta), "utf8");
     await replaceFileAtomically(tempPath, this.metaPath);
   }
 
@@ -207,9 +207,9 @@ export class SessionTracker {
     const startedAt = performance.now();
     const compacted = compactEvent(event);
     this.pendingLines.push(`${JSON.stringify(compacted)}\n`);
-    performanceMonitor.record('trace.serialize', performance.now() - startedAt);
+    performanceMonitor.record("trace.serialize", performance.now() - startedAt);
     this.meta.eventCount += 1;
-    if (compacted.type === 'llm_call' && this.meta.modelUsed === 'unknown') {
+    if (compacted.type === "llm_call" && this.meta.modelUsed === "unknown") {
       this.meta.modelUsed = compacted.data.model;
     }
     this.scheduleFlush();
@@ -233,23 +233,25 @@ export class SessionTracker {
     let writeFailed = false;
     let eventsAppended = false;
     if (lines.length > 0) {
-      this.writeChain = this.writeChain.then(async () => {
-        const startedAt = performance.now();
-        await fs.mkdir(this.tracesDir, { recursive: true });
-        await fs.appendFile(this.eventsPath, lines.join(''), 'utf8');
-        eventsAppended = true;
-        await this.writeMeta();
-        performanceMonitor.record('trace.flush', performance.now() - startedAt);
-      }).catch(error => {
-        writeFailed = true;
-        if (!eventsAppended) this.pendingLines.unshift(...lines);
-        this.warn(
-          eventsAppended
-            ? 'Trace 元数据持久化失败，事件数据已保存'
-            : 'Trace 事件持久化失败，数据已保留并将在下次保存时重试',
-          error
-        );
-      });
+      this.writeChain = this.writeChain
+        .then(async () => {
+          const startedAt = performance.now();
+          await fs.mkdir(this.tracesDir, { recursive: true });
+          await fs.appendFile(this.eventsPath, lines.join(""), "utf8");
+          eventsAppended = true;
+          await this.writeMeta();
+          performanceMonitor.record("trace.flush", performance.now() - startedAt);
+        })
+        .catch((error) => {
+          writeFailed = true;
+          if (!eventsAppended) this.pendingLines.unshift(...lines);
+          this.warn(
+            eventsAppended
+              ? "Trace 元数据持久化失败，事件数据已保存"
+              : "Trace 事件持久化失败，数据已保留并将在下次保存时重试",
+            error,
+          );
+        });
     }
     await this.writeChain;
     if (!writeFailed && this.pendingLines.length > 0) await this.flush();
@@ -260,11 +262,11 @@ export class SessionTracker {
   }
 
   public recordUserInput(content: string): void {
-    this.append({ type: 'user_input', timestamp: new Date().toISOString(), content });
+    this.append({ type: "user_input", timestamp: new Date().toISOString(), content });
   }
 
   public recordLlmCall(data: TraceLlmCall): void {
-    this.append({ type: 'llm_call', timestamp: data.timestamp, data });
+    this.append({ type: "llm_call", timestamp: data.timestamp, data });
   }
 
   public recordToolExecution(
@@ -273,13 +275,13 @@ export class SessionTracker {
     args: Record<string, unknown>,
     approved: boolean,
     output?: string,
-    duration?: number
+    duration?: number,
   ): void {
     const timestamp = new Date().toISOString();
     this.append({
-      type: 'tool_execution',
+      type: "tool_execution",
       timestamp,
-      data: { timestamp, toolCallId, name, arguments: args, approved, output, duration }
+      data: { timestamp, toolCallId, name, arguments: args, approved, output, duration },
     });
   }
 
@@ -292,66 +294,86 @@ export class SessionTracker {
 
   public static async readSession(
     id: string,
-    tracesDir: string = path.join(process.cwd(), '.haji', 'traces')
+    tracesDir: string = path.join(process.cwd(), ".haji", "traces"),
   ): Promise<TraceSession | null> {
     const metaPath = path.join(tracesDir, `session_${id}.meta.json`);
     const eventsPath = path.join(tracesDir, `session_${id}.events.jsonl`);
     try {
-      const meta = JSON.parse(await fs.readFile(metaPath, 'utf8')) as TraceMeta;
+      const meta = JSON.parse(await fs.readFile(metaPath, "utf8")) as TraceMeta;
       let events: TraceEvent[] = [];
       try {
-        const raw = await fs.readFile(eventsPath, 'utf8');
-        events = raw.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line) as TraceEvent);
+        const raw = await fs.readFile(eventsPath, "utf8");
+        events = raw
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as TraceEvent);
       } catch {}
       return { id: meta.id, startTime: meta.startTime, endTime: meta.endTime, events };
     } catch {}
 
     try {
-      return JSON.parse(await fs.readFile(path.join(tracesDir, `session_${id}.json`), 'utf8')) as TraceSession;
+      return JSON.parse(
+        await fs.readFile(path.join(tracesDir, `session_${id}.json`), "utf8"),
+      ) as TraceSession;
     } catch {
       return null;
     }
   }
 
   public static async listSessions(
-    tracesDir: string = path.join(process.cwd(), '.haji', 'traces')
-  ): Promise<Array<{ id: string; startTime: string; endTime?: string; eventCount: number; modelUsed: string }>> {
+    tracesDir: string = path.join(process.cwd(), ".haji", "traces"),
+  ): Promise<
+    Array<{
+      id: string;
+      startTime: string;
+      endTime?: string;
+      eventCount: number;
+      modelUsed: string;
+    }>
+  > {
     try {
       await fs.mkdir(tracesDir, { recursive: true });
       const files = await fs.readdir(tracesDir);
-      const list = new Map<string, { id: string; startTime: string; endTime?: string; eventCount: number; modelUsed: string }>();
+      const list = new Map<
+        string,
+        { id: string; startTime: string; endTime?: string; eventCount: number; modelUsed: string }
+      >();
 
-      for (const file of files.filter(name => /^session_[a-f0-9-]+\.meta\.json$/.test(name))) {
+      for (const file of files.filter((name) => /^session_[a-f0-9-]+\.meta\.json$/.test(name))) {
         try {
-          const meta = JSON.parse(await fs.readFile(path.join(tracesDir, file), 'utf8')) as TraceMeta;
+          const meta = JSON.parse(
+            await fs.readFile(path.join(tracesDir, file), "utf8"),
+          ) as TraceMeta;
           list.set(meta.id, {
             id: meta.id,
             startTime: meta.startTime,
             endTime: meta.endTime,
             eventCount: meta.eventCount,
-            modelUsed: meta.modelUsed
+            modelUsed: meta.modelUsed,
           });
         } catch {}
       }
 
-      for (const file of files.filter(name => /^session_[a-f0-9-]+\.json$/.test(name))) {
+      for (const file of files.filter((name) => /^session_[a-f0-9-]+\.json$/.test(name))) {
         try {
-          const data = JSON.parse(await fs.readFile(path.join(tracesDir, file), 'utf8')) as TraceSession;
+          const data = JSON.parse(
+            await fs.readFile(path.join(tracesDir, file), "utf8"),
+          ) as TraceSession;
           if (list.has(data.id)) continue;
-          const firstCall = data.events.find(event => event.type === 'llm_call');
+          const firstCall = data.events.find((event) => event.type === "llm_call");
           list.set(data.id, {
             id: data.id,
             startTime: data.startTime,
             endTime: data.endTime,
             eventCount: data.events.length,
-            modelUsed: firstCall?.type === 'llm_call' ? firstCall.data.model : 'unknown'
+            modelUsed: firstCall?.type === "llm_call" ? firstCall.data.model : "unknown",
           });
         } catch {}
       }
 
-      return [...list.values()].sort((left, right) => (
-        new Date(right.startTime).getTime() - new Date(left.startTime).getTime()
-      ));
+      return [...list.values()].sort(
+        (left, right) => new Date(right.startTime).getTime() - new Date(left.startTime).getTime(),
+      );
     } catch {
       return [];
     }

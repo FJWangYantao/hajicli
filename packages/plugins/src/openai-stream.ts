@@ -1,9 +1,9 @@
-import { CompletionOptions, ProviderError, ToolCall } from '@hajicli/core';
+import { type CompletionOptions, ProviderError, type ToolCall } from "@hajicli/core";
 
 interface StreamToolCallDelta {
   index?: number;
   id?: string;
-  type?: 'function';
+  type?: "function";
   function?: {
     name?: string;
     arguments?: string;
@@ -53,7 +53,7 @@ export interface OpenAIStreamParserOptions {
 
 function mergeToolCallDeltas(
   accumulated: Array<ToolCall | undefined>,
-  deltas: StreamToolCallDelta[] | undefined
+  deltas: StreamToolCallDelta[] | undefined,
 ): void {
   if (!deltas) return;
   for (const delta of deltas) {
@@ -61,12 +61,12 @@ function mergeToolCallDeltas(
     const current = accumulated[index];
     if (!current) {
       accumulated[index] = {
-        id: delta.id || '',
-        type: 'function',
+        id: delta.id || "",
+        type: "function",
         function: {
-          name: delta.function?.name || '',
-          arguments: delta.function?.arguments || ''
-        }
+          name: delta.function?.name || "",
+          arguments: delta.function?.arguments || "",
+        },
       };
       continue;
     }
@@ -83,7 +83,7 @@ function mergeToolCallDeltas(
  */
 export async function* parseOpenAICompatibleStream(
   response: Response,
-  parserOptions: OpenAIStreamParserOptions
+  parserOptions: OpenAIStreamParserOptions,
 ): AsyncGenerator<string, void, unknown> {
   const { completion, provider, emptyBodyMessage } = parserOptions;
   if (!response.body) {
@@ -91,17 +91,17 @@ export async function* parseOpenAICompatibleStream(
   }
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8');
+  const decoder = new TextDecoder("utf-8");
   const toolCalls: Array<ToolCall | undefined> = [];
-  let buffer = '';
+  let buffer = "";
   let finishReason: string | undefined;
   let streamDone = false;
 
   const consumeLine = (line: string): { content?: string; done?: boolean } => {
     const trimmed = line.trim();
     if (!trimmed) return {};
-    if (trimmed === 'data: [DONE]') return { done: true };
-    if (!trimmed.startsWith('data: ')) return {};
+    if (trimmed === "data: [DONE]") return { done: true };
+    if (!trimmed.startsWith("data: ")) return {};
 
     try {
       const data = JSON.parse(trimmed.slice(6)) as OpenAICompatibleStreamData;
@@ -109,11 +109,11 @@ export async function* parseOpenAICompatibleStream(
       if (choice?.finish_reason) finishReason = String(choice.finish_reason);
       mergeToolCallDeltas(toolCalls, choice?.delta?.tool_calls);
 
-      const reasoning = choice?.delta?.reasoning_content || '';
+      const reasoning = choice?.delta?.reasoning_content || "";
       if (reasoning) completion.onReasoning?.(reasoning);
       if (data.usage) completion.onUsage?.(data.usage);
 
-      const content = choice?.delta?.content || '';
+      const content = choice?.delta?.content || "";
       return content ? { content } : {};
     } catch {
       return {};
@@ -129,8 +129,8 @@ export async function* parseOpenAICompatibleStream(
       }
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
       for (const line of lines) {
         const event = consumeLine(line);
         if (event.done) {
@@ -147,7 +147,9 @@ export async function* parseOpenAICompatibleStream(
     }
 
     completion.onFinish?.({ reason: finishReason });
-    const completedToolCalls = toolCalls.filter((toolCall): toolCall is ToolCall => Boolean(toolCall));
+    const completedToolCalls = toolCalls.filter((toolCall): toolCall is ToolCall =>
+      Boolean(toolCall),
+    );
     if (completedToolCalls.length > 0) completion.onToolCall?.(completedToolCalls);
   } finally {
     reader.releaseLock();
