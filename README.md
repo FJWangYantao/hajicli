@@ -9,6 +9,7 @@ HAJI CLI 是一个面向本地代码工作的终端 AI 助手，支持流式对�
 - Node.js 20.18.1 或更高版本
 - pnpm 10.22.0
 - Windows Terminal 为主要支持终端；核心构建和测试也在 Linux CI 中执行
+- Rust 工具链（可选）：编译原生终端渲染引擎。未安装或不编译时自动回退内置 JS 实现，功能与测试不受影响
 
 ## 开发验证
 
@@ -18,7 +19,29 @@ pnpm test
 pnpm pack:check
 ```
 
-`pack:check` 会构建全部包，并拒绝包含 `.haji`、源码、测试或 `workspace:` 依赖的发布包。
+`pack:check` 会构建全部包（含原生模块，需要 Rust），并拒绝包含 `.haji`、源码、测试或 `workspace:` 依赖的发布包。
+
+## 安装与发布
+
+发布到 npm 后，用户无需克隆仓库即可使用：
+
+```powershell
+npm i -g hajicli
+haji
+```
+
+发布包内置 win32-x64、linux-x64、linux-arm64、darwin-x64、darwin-arm64 五个平台的原生终端引擎；未覆盖的平台（如 Alpine musl）自动回退内置 JS 实现，功能不受影响。
+
+发布流程（维护者）：
+
+1. 一次性准备：注册 npm 账号，生成 **Automation** 类型的 Access Token，存入仓库 Settings → Secrets and variables → Actions → `NPM_TOKEN`
+2. 更新 `packages/*/package.json` 的 `version` 并提交
+3. 推送 `v*` 标签触发 [release 工作流](.github/workflows/release.yml)：GitHub Actions 矩阵编译五个平台的原生模块，汇总校验通过后按依赖顺序发布 `@hajicli/core`、`@hajicli/plugins`、`hajicli`
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## 斜杠指令
 

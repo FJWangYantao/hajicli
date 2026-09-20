@@ -2,7 +2,7 @@
   "name": "hajicli-monorepo",
   "version": "1.0.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "description": "A lightweight terminal AI helper CLI tool",
   "packageManager": "pnpm@10.22.0",
   "engines": {
@@ -18,7 +18,7 @@
     "lint:fix": "biome check --write .",
     "test": "pnpm run build && node --test packages/cli/test/*.test.mjs",
     "check": "pnpm lint && pnpm test",
-    "pack:check": "pnpm run build && node scripts/verify-packages.mjs"
+    "pack:check": "pnpm run build:full && node scripts/verify-packages.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",

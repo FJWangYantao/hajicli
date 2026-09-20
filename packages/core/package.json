@@ -1,8 +1,14 @@
 {
   "name": "@hajicli/core",
   "version": "1.0.0",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "description": "Core library for hajicli providing interfaces and models config",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FJWangYantao/hajicli.git",
+    "directory": "packages/core"
+  },
+  "author": "TaoCaptain",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

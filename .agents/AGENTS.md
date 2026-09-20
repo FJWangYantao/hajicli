@@ -115,7 +115,7 @@
 | Package | 职责 | 不应包含 |
 |---|---|---|
 | `@hajicli/core` | 模型调用抽象、上下文管理、diff 计算、文件操作引擎 | CLI 相关逻辑、终端 UI 代码 |
-| `@hajicli/cli` | 命令解析、终端 UI 渲染、用户输入处理、会话管理 | 直接的模型 API 调用 |
+| `hajicli`（packages/cli，npm 包名） | 命令解析、终端 UI 渲染、用户输入处理、会话管理 | 直接的模型 API 调用 |
 | `@hajicli/plugins` | 模型提供商实现（OpenAI/Claude/Gemini）、工具扩展 | CLI 相关逻辑 |
 
 ### 5.2 依赖方向

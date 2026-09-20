@@ -1,0 +1,76 @@
+# 发布流程：
+# 1. 一次性准备：npm 账号 + 仓库 Secrets 中配置 NPM_TOKEN（Automation 类型）
+# 2. 更新三个 package.json 的版本号并提交
+# 3. 推送 v* 标签（如 v1.0.0）触发本工作流
+#
+# 手动触发（workflow_dispatch）只跑编译与校验，不发布，可用于测试矩阵。
+# macos-13 已于 2025-12 退役，darwin-x64 使用 macos-15-intel（预计可用至 2027 年秋）；
+# 届时可改为在 Apple Silicon 上 `rustup target add x86_64-apple-darwin` 交叉编译。
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest # win32-x64
+          - os: ubuntu-latest # linux-x64
+          - os: ubuntu-24.04-arm # linux-arm64
+          - os: macos-latest # darwin-arm64
+          - os: macos-15-intel # darwin-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/cli/native/terminal-engine
+      - name: Build native terminal engine
+        run: node scripts/build-native.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.os }}
+          path: packages/cli/dist/haji_terminal_engine.*.node
+          if-no-files-found: error
+
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Merge prebuilt native modules
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: packages/cli/dist
+          merge-multiple: true
+      - name: Verify release tarballs
+        run: node scripts/verify-packages.mjs
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/')
+        run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

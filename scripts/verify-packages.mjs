@@ -25,8 +25,12 @@ try {
     );
     if (tarballs.length !== 1) throw new Error(`${relativeDir} 未生成唯一发布包`);
 
-    const tarball = path.join(tempDir, tarballs[0]);
-    const { stdout: listOutput } = await execFileAsync(tar, ["-tf", tarball], { encoding: "utf8" });
+    const tarballName = tarballs[0];
+    // Windows 的 bsdtar 会把绝对路径里的 "C:" 解析成远程主机，改用临时目录内的相对路径
+    const { stdout: listOutput } = await execFileAsync(tar, ["-tf", tarballName], {
+      encoding: "utf8",
+      cwd: tempDir,
+    });
     const entries = listOutput.split(/\r?\n/).filter(Boolean);
     const forbidden = entries.filter(
       (entry) =>
@@ -47,8 +51,8 @@ try {
 
     const { stdout: manifestText } = await execFileAsync(
       tar,
-      ["-xOf", tarball, "package/package.json"],
-      { encoding: "utf8" },
+      ["-xOf", tarballName, "package/package.json"],
+      { encoding: "utf8", cwd: tempDir },
     );
     const manifest = JSON.parse(manifestText);
     for (const [name, version] of Object.entries(manifest.dependencies || {})) {

@@ -1,8 +1,14 @@
 {
   "name": "@hajicli/plugins",
   "version": "1.0.0",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "description": "API plugins and providers implementation for hajicli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FJWangYantao/hajicli.git",
+    "directory": "packages/plugins"
+  },
+  "author": "TaoCaptain",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
