@@ -75,7 +75,13 @@ import {
 } from "@hajicli/plugins";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
-import { handleEarlyCliArgs, LOGO } from "./cli-help.js";
+import {
+  buildHubMenus,
+  COMMAND_SURFACE,
+  getTopLevelSlashCommands,
+  handleEarlyCliArgs,
+  LOGO,
+} from "./cli-help.js";
 import { formatToolArgs, loadPreference, savePreference } from "./cli-runtime.js";
 import { getModelContextWindowTokens } from "./context-policy.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
@@ -692,28 +698,8 @@ async function main() {
     render: (frame) => ui.setActivity(frame),
   });
   markStartupStage("ui_ctor");
-  const slashCommands = [
-    { command: "/help", description: "显示帮助" },
-    { command: "/resume", description: "历史对话查看与热切换" },
-    { command: "/rewind", description: "历史节点撤销与代码回退" },
-    { command: "/subagent", description: "确定性启动前台或后台子代理" },
-    { command: "/preset", description: "查看 / 管理 subagent 预设（模型、强度、token 预算）" },
-    { command: "/agents", description: "查看、管理和中止子代理" },
-    { command: "/skills", description: "查看、重新扫描或校验 Skill" },
-    { command: "/skill", description: "按名称确定性加载 Skill" },
-    { command: "/memory", description: "查看、确认、添加或提升记忆（confirm/add/forget/promote）" },
-    { command: "/instinct", description: "查看、手动提炼或提升行为规则（distill/stats/promote）" },
-    { command: "/compact", description: "多层上下文压缩" },
-    { command: "/permission", description: "切换权限档次与安全阈值" },
-    { command: "/effort", description: "切换思考强度" },
-    { command: "/model", description: "选择模型与思考强度" },
-    { command: "/provider", description: "查看 / 切换 / 添加 / 配置模型提供商" },
-    { command: "/clear", description: "清空聊天与上下文" },
-    { command: "/perf", description: "查看或重置性能指标" },
-    { command: "/viewer", description: "打开 Trace 观测中心" },
-    { command: "/mcp", description: "查看 MCP server 与外部工具状态" },
-    { command: "/exit", description: "退出 haji" },
-  ];
+  // 底栏补全只展示顶层指令；被收纳的子指令保留直连能力（见 /help 与各枢纽菜单）。
+  const slashCommands = getTopLevelSlashCommands();
   ui.start();
   markStartupStage("ui_started");
   for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
@@ -1185,6 +1171,31 @@ async function main() {
     return ui.readSelection(options);
   };
 
+  // 枢纽指令：弹出细分菜单，选中项经待处理队列交给下一轮主循环分发（与 /rewind 回填同机制）。
+  // 旧指令全部保留为直连别名，这里只负责“进入大指令后再选择细分项”的一层入口。
+  const runHubMenu = async (hubName: string): Promise<void> => {
+    const menu = buildHubMenus(skillRegistry.list())[hubName];
+    if (!menu) {
+      ui.writeLine(colors.red(`未知指令入口: ${hubName}`));
+      return;
+    }
+    try {
+      const selection = await readSelectionSafely({
+        title: menu.title,
+        items: menu.items,
+        selectedValue: menu.items[0]?.value,
+      });
+      pendingInputs.push(selection.value);
+      ui.setQueue(pendingInputs);
+    } catch (error) {
+      if (error instanceof TerminalInputCancelledError) {
+        ui.writeLine(colors.gray("已取消。"));
+        return;
+      }
+      throw error;
+    }
+  };
+
   // 交互向导依赖：把 main() 的会话状态注入 subagent-wizard 模块。
   const wizardDeps: WizardDeps = {
     ui,
@@ -1391,7 +1402,8 @@ async function main() {
           const name = (separator < 0 ? raw : raw.slice(0, separator)).trim();
           const skillArgs = separator < 0 ? "" : raw.slice(separator).trim();
           if (!name) {
-            ui.writeLine(colors.red("用法: /skill <name> [任务参数]"));
+            // 无参数 → Skill 枢纽菜单：动态列出可用 Skill 与管理子命令。
+            await runHubMenu("skill");
             continue;
           }
           const entry = skillRegistry.get(name);
@@ -1441,6 +1453,11 @@ async function main() {
           }
         }
         if (command === "memory") {
+          if (parts.length === 1) {
+            // 无参数 → 经验系统枢纽菜单：记忆列表 / 行为规则 / 统计。
+            await runHubMenu("memory");
+            continue;
+          }
           const expCtx = {
             store: experienceStore,
             provider: () => provider,
@@ -2669,25 +2686,33 @@ async function main() {
           );
           continue;
         }
+        if (command === "config" || command === "agent" || command === "diag") {
+          // 枢纽入口：菜单选中项经待处理队列转发给下一轮主循环分发。
+          await runHubMenu(command);
+          continue;
+        }
         if (command === "help") {
+          // 从 COMMAND_SURFACE 生成指令表：枢纽加粗，成员子指令灰显缩进。
+          const commandRows: string[] = [];
+          for (const entry of COMMAND_SURFACE) {
+            const commandLabel = entry.command.padEnd(12);
+            commandRows.push(
+              entry.members
+                ? `  ${colors.boldPurple(commandLabel)}${entry.description}`
+                : `  ${colors.purple(commandLabel)}${entry.description}`,
+            );
+            for (const member of entry.members ?? []) {
+              commandRows.push(
+                `      ${colors.gray(member.command.padEnd(20))}${member.description}`,
+              );
+            }
+          }
           const helpLines = [
-            colors.bold("可用斜杠指令："),
-            `  ${colors.purple("/help")}        - 显示帮助手册`,
-            `  ${colors.purple("/subagent")}    - 启动子代理（可选 --model / --provider / --effort / --instructions / 资源限制）
-  ${colors.purple("/preset")}      - 查看 / 管理 subagent 预设（模型、强度、token 预算）`,
-            `  ${colors.purple("/agents")}      - 查看和管理 Agent（stop <id|all> / clear）`,
-            `  ${colors.purple("/skills")}      - 查看 Skill（reload 可重新扫描）`,
-            `  ${colors.purple("/skill")}       - 按名称加载 Skill，可追加任务参数`,
-            `  ${colors.purple("/memory")}      - 查看/确认/添加记忆（confirm <id> / add / forget / promote <id>）`,
-            `  ${colors.purple("/instinct")}    - 查看/提炼行为规则（distill / forget / promote / stats）`,
-            `  ${colors.purple("/permission")}  - 切换权限档次与安全阈值（当前：${permissionMode}）`,
-            `  ${colors.purple("/effort")}      - 切换思考强度（当前：${reasoningEffort}）`,
-            `  ${colors.purple("/model")}       - 选择模型（当前：${selectedModel}）`,
-            `  ${colors.purple("/provider")}    - 查看状态 / 切换 / 添加 / 配置提供商（默认全局，可加 --project）`,
-            `  ${colors.purple("/clear")}       - 清空聊天区与上下文`,
-            `  ${colors.purple("/perf")}        - 查看性能指标（reset 可清空采样）`,
-            `  ${colors.purple("/viewer")}      - 打开 Trace 观测中心`,
-            `  ${colors.purple("/exit")}        - 退出 haji 对话`,
+            colors.bold("可用斜杠指令（枢纽进入后选择细分项；子指令也可直接输入）："),
+            ...commandRows,
+            colors.gray(
+              `  权限=${permissionMode} · 强度=${reasoningEffort} · 模型=${selectedModel}`,
+            ),
             "",
             colors.bold("已注册的系统工具："),
             ...tools.map(

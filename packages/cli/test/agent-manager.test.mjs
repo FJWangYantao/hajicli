@@ -682,8 +682,9 @@ test("agent panel includes per-agent runtime configuration when provided", () =>
 
 test("CLI registers deterministic subagent and agent management commands", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(source, /command: "\/subagent"/);
-  assert.match(source, /command: "\/agents"/);
+  const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");
+  assert.match(surface, /command: "\/subagent"/);
+  assert.match(surface, /command: "\/agents"/);
   assert.match(source, /agentManager\.abortAll\(\)/);
   assert.match(source, /maxReadonlyConcurrency: 3/);
   assert.match(source, /refreshAgentVerificationContext\(messages\)/);

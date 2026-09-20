@@ -20,6 +20,20 @@ pnpm pack:check
 
 `pack:check` 会构建全部包，并拒绝包含 `.haji`、源码、测试或 `workspace:` 依赖的发布包。
 
+## 斜杠指令
+
+会话内按 `/` 只列出 11 个顶层指令：5 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作直接保留在顶层。进入枢纽后用方向键选择细分项；被收纳的子指令依旧可以直接输入完整指令调用。
+
+| 枢纽 | 细分项 |
+|---|---|
+| `/config` 模型与配置 | `/model`、`/effort`、`/permission`、`/provider` |
+| `/agent` 子代理管理 | `/subagent`、`/preset`、`/agents` |
+| `/skill` Skill 管理 | 可用 Skill（动态列出，选中即加载）、`/skills`、`/skills reload`、`/skills validate` |
+| `/memory` 经验系统 | `/memory list`、`/instinct`、`/instinct distill`、`/instinct stats` |
+| `/diag` 诊断与观测 | `/perf`、`/viewer`、`/mcp` |
+
+顶层直接保留：`/help`、`/compact`、`/clear`、`/resume`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。
+
 ## 模型配置
 
 ```powershell

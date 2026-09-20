@@ -395,8 +395,9 @@ test("L4 keeps Skill activation metadata but allows content to be reloaded", asy
 
 test("CLI exposes deterministic Skill commands and preserves tool-call pairing", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(source, /command: "\/skills"/);
-  assert.match(source, /command: "\/skill"/);
+  const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");
+  assert.match(surface, /command: "\/skills"/);
+  assert.match(surface, /command: "\/skill"/);
   assert.match(source, /parts\[1\]\?\.toLowerCase\(\) === "validate"/);
   assert.match(source, /new ListSkillResourcesTool\(skillRegistry\)/);
   assert.match(source, /new ReadSkillResourceTool\(skillRegistry\)/);
