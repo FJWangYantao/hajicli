@@ -106,6 +106,19 @@ export interface CompletionOptions {
   }) => void;
   /** 接收 Provider 返回的停止原因，例如 stop、tool_calls 或 length。 */
   onFinish?: (finish: { reason?: string }) => void;
+  /**
+   * 模型请求失败且将按指数退避自动重试时触发，用于在界面上提示重试进度。
+   */
+  onRetry?: (info: {
+    /** 即将进行的重试序号，从 1 开始。 */
+    attempt: number;
+    /** 最大重试次数。 */
+    maxRetries: number;
+    /** 本次重试前的等待毫秒数。 */
+    delayMs: number;
+    /** 触发重试的错误。 */
+    error: Error;
+  }) => void;
 }
 
 /**
@@ -151,6 +164,8 @@ export class ProviderError extends HajiError {
     message: string,
     public readonly provider: string,
     public readonly status?: number,
+    /** 显式指定是否可重试；未指定时由 isRetryableError 按 status/错误特征推断。 */
+    public readonly retryable?: boolean,
   ) {
     super(message, "PROVIDER_ERROR");
     this.name = "ProviderError";

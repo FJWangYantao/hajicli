@@ -10,6 +10,9 @@ import {
 import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
 import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
 
+/** 模型请求最大重试次数（首次失败后最多再重试 5 次，指数退避）。 */
+const MAX_RETRIES = 5;
+
 /**
  * 火山引擎方舟 (Volcengine Ark) 提供商配置接口。
  */
@@ -254,14 +257,22 @@ export class VolcengineProvider implements ModelProvider {
           }
           const isTimeout = error instanceof Error && error.name === "TimeoutError";
           const msg = isTimeout
-            ? "网络请求超时 (60s)，大模型 API 未在规定时间内响应。"
+            ? `网络请求超时（${Math.round(getModelTimeoutMs() / 1000)}s），火山引擎 API 未在规定时间内响应。`
             : error instanceof Error
               ? error.message
               : String(error);
-          throw new ProviderError(msg, "volcengine");
+          // 走到这里的一律是传输层瞬时故障（超时/连接失败等），显式标记可重试，
+          // 避免本地化消息无法被 isRetryableError 的关键词匹配而漏掉重试。
+          throw new ProviderError(msg, "volcengine", undefined, true);
         }
       },
-      { maxRetries: 3, initialDelayMs: 1000, providerName: "volcengine" },
+      {
+        maxRetries: MAX_RETRIES,
+        initialDelayMs: 1000,
+        providerName: "volcengine",
+        onRetry: (attempt, delay, error) =>
+          options.onRetry?.({ attempt, maxRetries: MAX_RETRIES, delayMs: delay, error }),
+      },
     );
   }
 }

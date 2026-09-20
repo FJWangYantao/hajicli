@@ -10,6 +10,9 @@ import {
 import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
 import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
 
+/** 模型请求最大重试次数（首次失败后最多再重试 5 次，指数退避）。 */
+const MAX_RETRIES = 5;
+
 export interface DeepSeekConfig {
   apiKey?: string;
   baseUrl?: string;
@@ -179,14 +182,22 @@ export class DeepSeekProvider implements ModelProvider {
           }
           const isTimeout = error instanceof Error && error.name === "TimeoutError";
           const msg = isTimeout
-            ? "网络请求超时 (60s)，DeepSeek API 未在规定时间内响应。"
+            ? `网络请求超时（${Math.round(getModelTimeoutMs() / 1000)}s），DeepSeek API 未在规定时间内响应。`
             : error instanceof Error
               ? error.message
               : String(error);
-          throw new ProviderError(msg, "deepseek");
+          // 走到这里的一律是传输层瞬时故障（超时/连接失败等），显式标记可重试，
+          // 避免本地化消息无法被 isRetryableError 的关键词匹配而漏掉重试。
+          throw new ProviderError(msg, "deepseek", undefined, true);
         }
       },
-      { maxRetries: 3, initialDelayMs: 1000, providerName: "deepseek" },
+      {
+        maxRetries: MAX_RETRIES,
+        initialDelayMs: 1000,
+        providerName: "deepseek",
+        onRetry: (attempt, delay, error) =>
+          options.onRetry?.({ attempt, maxRetries: MAX_RETRIES, delayMs: delay, error }),
+      },
     );
   }
 }

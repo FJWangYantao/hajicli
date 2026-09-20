@@ -2903,6 +2903,7 @@ async function main() {
         let currentToolCalls: ToolCall[] | null = null;
         let completionTokens: number | undefined;
         let finishReason: string | undefined;
+        let requestRetryCount = 0;
         const thinkingStartedAt = Date.now();
 
         let textContent = "";
@@ -2942,6 +2943,16 @@ async function main() {
           },
           onFinish: (finish) => {
             finishReason = finish.reason;
+          },
+          onRetry: ({ attempt, maxRetries, delayMs, error }) => {
+            if (isTurnAborted) return;
+            requestRetryCount = attempt;
+            const reason = Array.from(sanitizeTerminalText(error.message || String(error)))
+              .slice(0, 60)
+              .join("");
+            activityIndicator.progress(
+              `请求失败，${(delayMs / 1000).toFixed(1)}s 后第 ${attempt}/${maxRetries} 次重试：${reason}`,
+            );
           },
         });
 
@@ -2997,7 +3008,8 @@ async function main() {
               streamError instanceof Error ? streamError.message : String(streamError),
             );
             ui.writeLine();
-            ui.writeLine(colors.boldRed(`❌ 模型调用出错: ${errMsg}`));
+            const retryNote = requestRetryCount > 0 ? `（已自动重试 ${requestRetryCount} 次）` : "";
+            ui.writeLine(colors.boldRed(`❌ 模型调用出错${retryNote}: ${errMsg}`));
             ui.writeLine(
               colors.gray("提示: 请检查模型名称、API Key 是否正确，或使用 /model 切换其他模型。"),
             );

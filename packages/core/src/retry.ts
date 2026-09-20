@@ -15,9 +15,16 @@ export interface RetryOptions {
  * 判断指定错误或 HTTP 响应状态码是否应当触发重试。
  */
 export function isRetryableError(error: unknown, status?: number): boolean {
-  if (status) {
+  // 显式 retryable 标志优先：provider 包装错误时可能已判定过可重试性
+  // （如超时/连接错误被转成不含英文关键词的本地化消息）。
+  if (error instanceof ProviderError && error.retryable !== undefined) {
+    return error.retryable;
+  }
+  // 未显式传入 status 时，从 ProviderError 自身读取。
+  const effectiveStatus = status ?? (error instanceof ProviderError ? error.status : undefined);
+  if (effectiveStatus) {
     // 429 速率限制、500/502/503/504 服务端故障均可重试
-    return status === 429 || status >= 500;
+    return effectiveStatus === 429 || effectiveStatus >= 500;
   }
   if (error instanceof Error) {
     // 用户主动中断（AbortError）不应被视为可重试错误
