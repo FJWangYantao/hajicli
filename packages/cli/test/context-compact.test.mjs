@@ -19,7 +19,10 @@ import {
   validateToolCall,
 } from "@hajicli/core";
 import { MODEL_CONTEXT_WINDOWS, MODEL_REGISTRY } from "@hajicli/plugins";
-import { getModelContextWindowTokens } from "../dist/context-policy.js";
+import {
+  getModelContextWindowTokens,
+  normalizeContextWindowTokens,
+} from "../dist/context-policy.js";
 
 const messages = [
   { role: "system", content: "system rules" },
@@ -365,6 +368,31 @@ test("model context window accepts a validated environment override", () => {
     }),
     1_000_000,
   );
+});
+
+test("provider configured window overrides registry with env priority", () => {
+  assert.equal(getModelContextWindowTokens("unknown-model", {}, 300000), 300000);
+  assert.equal(getModelContextWindowTokens("deepseek-v4-flash", {}, 300000), 300000);
+  assert.equal(
+    getModelContextWindowTokens(
+      "deepseek-v4-flash",
+      { HAJI_CONTEXT_WINDOW_TOKENS: "131072" },
+      300000,
+    ),
+    131072,
+  );
+  assert.equal(getModelContextWindowTokens("deepseek-v4-flash", {}, 999), 1_000_000);
+  assert.equal(getModelContextWindowTokens("unknown-model", {}, "invalid"), 128_000);
+  assert.equal(getModelContextWindowTokens("unknown-model", {}, undefined), 128_000);
+  assert.equal(getModelContextWindowTokens("deepseek-v4-flash", {}, "262144.6"), 262145);
+});
+
+test("window normalization rejects invalid values", () => {
+  assert.equal(normalizeContextWindowTokens(300000), 300000);
+  assert.equal(normalizeContextWindowTokens("262144.6"), 262145);
+  assert.equal(normalizeContextWindowTokens(999), undefined);
+  assert.equal(normalizeContextWindowTokens("abc"), undefined);
+  assert.equal(normalizeContextWindowTokens(undefined), undefined);
 });
 
 test("model context windows come from the shared provider registry", () => {

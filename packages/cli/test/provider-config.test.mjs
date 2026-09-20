@@ -9,6 +9,7 @@ import {
   loadProviderConfig,
   loadProviderConfigScope,
   normalizeBaseUrl,
+  parseModelContextWindows,
   parseModelList,
   projectProviderConfigPath,
   providerConfigPath,
@@ -209,6 +210,70 @@ test("parseModelList splits by semicolon/comma and dedupes", () => {
   assert.deepEqual(parseModelList("  a ;  a ; b "), ["a", "b"]);
   assert.deepEqual(parseModelList(""), []);
   assert.deepEqual(parseModelList(";;;"), []);
+});
+
+test("parseModelContextWindows parses model=tokens pairs and reports invalid ones", () => {
+  assert.deepEqual(parseModelContextWindows("m1=300000; m2=200000"), {
+    windows: { m1: 300000, m2: 200000 },
+    invalid: [],
+  });
+  assert.deepEqual(parseModelContextWindows("deepseek/deepseek-v4.1-flash=300000"), {
+    windows: { "deepseek/deepseek-v4.1-flash": 300000 },
+    invalid: [],
+  });
+  // 同名后者覆盖前者，小数取整
+  assert.deepEqual(parseModelContextWindows("m1=300000;m1=200000;ok=131072.6"), {
+    windows: { m1: 200000, ok: 131073 },
+    invalid: [],
+  });
+  const mixed = parseModelContextWindows("bad;m=999;=300000;ok=131072");
+  assert.deepEqual(mixed.windows, { ok: 131072 });
+  assert.deepEqual(mixed.invalid, ["bad", "m=999", "=300000"]);
+  assert.deepEqual(parseModelContextWindows(""), { windows: {}, invalid: [] });
+});
+
+test("model context windows are saved, merged and cleaned", () => {
+  withIsolatedPaths(() => {
+    assert.equal(
+      saveProviderConfig("commandcode", {
+        apiKey: "sk-c",
+        models: ["deepseek/deepseek-v4.1-flash"],
+        modelContextWindows: { "deepseek/deepseek-v4.1-flash": 300000.4 },
+      }),
+      true,
+    );
+    const initial = loadProviderConfig();
+    assert.equal(
+      initial.providers.commandcode.modelContextWindows["deepseek/deepseek-v4.1-flash"],
+      300000,
+      "窗口值取整后保存",
+    );
+
+    // 部分更新其他字段时窗口保留
+    assert.equal(
+      saveProviderConfig("commandcode", { model: "deepseek/deepseek-v4.1-flash" }),
+      true,
+    );
+    const updated = loadProviderConfig();
+    assert.deepEqual(updated.providers.commandcode.modelContextWindows, {
+      "deepseek/deepseek-v4.1-flash": 300000,
+    });
+
+    // 无效值在保存时被清洗
+    assert.equal(
+      saveProviderConfig("commandcode", {
+        modelContextWindows: { a: 999, b: "abc", c: "262144.6", d: -5, e: 300000 },
+      }),
+      true,
+    );
+    const cleaned = loadProviderConfig();
+    assert.deepEqual(cleaned.providers.commandcode.modelContextWindows, { c: 262145, e: 300000 });
+
+    // 空对象清空该字段
+    assert.equal(saveProviderConfig("commandcode", { modelContextWindows: {} }), true);
+    const afterClear = loadProviderConfig();
+    assert.equal(afterClear.providers.commandcode.modelContextWindows, undefined);
+  });
 });
 
 test("validateProviderName rejects empty, whitespace and path characters", () => {

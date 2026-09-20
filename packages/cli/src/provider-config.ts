@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { fetchWithNetworkPolicy } from "@hajicli/plugins";
 
+import { normalizeContextWindowTokens } from "./context-policy.js";
+
 /**
  * Provider 快速配置模块。
  *
@@ -29,6 +31,8 @@ export interface ProviderEntry {
   model?: string;
   /** 自定义 provider 的模型列表；内置 provider 也可通过 /provider set 补充。 */
   models?: string[];
+  /** 指定模型的上下文窗口（tokens），键为模型名；用于自定义端点声明真实窗口，优先于内置注册表。 */
+  modelContextWindows?: Record<string, number>;
 }
 
 export interface ProviderConfig {
@@ -64,6 +68,34 @@ export function parseModelList(input: string): string[] {
         .filter(Boolean),
     ),
   ];
+}
+
+/**
+ * 解析用户输入的模型窗口列表：格式 `模型=tokens`，支持分号、逗号、中文分隔符。
+ * 无法解析或 tokens 小于 1000 的片段进入 invalid；合法项按模型名去重，后者覆盖前者。
+ */
+export function parseModelContextWindows(input: string): {
+  windows: Record<string, number>;
+  invalid: string[];
+} {
+  const windows: Record<string, number> = {};
+  const invalid: string[] = [];
+  const segments = input
+    .split(/[;；,，]/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  for (const segment of segments) {
+    const separator = segment.lastIndexOf("=");
+    const model = separator >= 0 ? segment.slice(0, separator).trim() : "";
+    const raw = separator >= 0 ? segment.slice(separator + 1).trim() : "";
+    const tokens = normalizeContextWindowTokens(raw);
+    if (!model || tokens === undefined) {
+      invalid.push(segment);
+      continue;
+    }
+    windows[model] = tokens;
+  }
+  return { windows, invalid };
 }
 
 export function userProviderConfigPath(): string {
@@ -157,6 +189,17 @@ export function saveProviderConfig(
         (item): item is string => typeof item === "string" && Boolean(item.trim()),
       );
       if (items.length > 0) out.models = items;
+    } else if (key === "modelContextWindows") {
+      const windows: Record<string, number> = {};
+      const source =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : {};
+      for (const [model, raw] of Object.entries(source)) {
+        const tokens = normalizeContextWindowTokens(raw);
+        if (model.trim() && tokens !== undefined) windows[model.trim()] = tokens;
+      }
+      if (Object.keys(windows).length > 0) out.modelContextWindows = windows;
     } else if (typeof value === "string" && value.trim()) {
       out[key] = value;
     }
