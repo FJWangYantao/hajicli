@@ -83,7 +83,7 @@ import {
   LOGO,
 } from "./cli-help.js";
 import { formatToolArgs, loadPreference, savePreference } from "./cli-runtime.js";
-import { getModelContextWindowTokens } from "./context-policy.js";
+import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import {
   MarkdownRenderThrottle,
@@ -99,6 +99,7 @@ import {
   PROVIDER_NAMES,
   type ProviderConfig,
   type ProviderConfigScope,
+  parseModelContextWindows,
   parseModelList,
   projectProviderConfigPath,
   providerConfigPath,
@@ -190,6 +191,13 @@ function providerLabel(name: string): string {
   if (name === "deepseek") return "🔵 DeepSeek";
   if (name === "volcengine") return "🌋 火山引擎";
   return `⚙️ ${name}`;
+}
+
+/** 将已配置的模型窗口格式化为展示文本；未配置时返回“未设置”。 */
+function formatModelContextWindows(windows?: Record<string, number>): string {
+  const entries = Object.entries(windows || {});
+  if (entries.length === 0) return "未设置";
+  return entries.map(([model, tokens]) => `${model}=${tokens}`).join("、");
 }
 
 async function main() {
@@ -312,10 +320,28 @@ async function main() {
     );
   };
 
+  // 读取 provider 配置按模型声明的上下文窗口（含合法性校验）；未声明或无效时返回 undefined。
+  const configuredContextWindow = (providerName: string, modelValue: string): number | undefined =>
+    normalizeContextWindowTokens(
+      providerConfig.providers[providerName]?.modelContextWindows?.[modelValue],
+    );
+
   // 构建可用模型列表：内置注册表（有 key）+ 自定义 provider 声明的模型
   const buildAvailableModels = () => [
-    ...(deepseekApiKey ? DEEPSEEK_MODELS : []),
-    ...(volcApiKey ? VOLCENGINE_MODELS : []),
+    ...(deepseekApiKey
+      ? DEEPSEEK_MODELS.map((m) => ({
+          ...m,
+          contextWindowTokens:
+            configuredContextWindow("deepseek", m.value) ?? m.contextWindowTokens,
+        }))
+      : []),
+    ...(volcApiKey
+      ? VOLCENGINE_MODELS.map((m) => ({
+          ...m,
+          contextWindowTokens:
+            configuredContextWindow("volcengine", m.value) ?? m.contextWindowTokens,
+        }))
+      : []),
     ...Object.entries(providerConfig.providers)
       .filter(([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey))
       .flatMap(([name, entry]) =>
@@ -324,7 +350,7 @@ async function main() {
           label: model,
           description: `自定义 · ${name}`,
           provider: name,
-          contextWindowTokens: 128_000,
+          contextWindowTokens: configuredContextWindow(name, model) ?? 128_000,
           maxOutputTokens: 8_192,
         })),
       ),
@@ -384,6 +410,14 @@ async function main() {
     !(modelOwnedByBuiltinOnly && detectedProviderName !== savedProvider)
       ? savedProvider
       : detectedProviderName;
+
+  // 当前模型上下文窗口：provider 配置按模型声明优先于内置注册表；环境变量始终最高。
+  const getSelectedContextWindowTokens = (): number =>
+    getModelContextWindowTokens(
+      selectedModel,
+      process.env,
+      configuredContextWindow(currentProviderName, selectedModel),
+    );
 
   // 确定初始思考强度：优先顺序 = 环境变量 > 上次保存偏好 > 默认 medium
   const configuredEffort = process.env.HAJI_REASONING_EFFORT?.trim().toLowerCase();
@@ -483,7 +517,7 @@ async function main() {
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
   hookEngine.register("UserPromptSubmit", async (ctx) => {
     if (!ctx.messages) return;
-    const thresholds = getContextCompactionThresholds(getModelContextWindowTokens(selectedModel));
+    const thresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
     const usedTokens = estimateMessagesTokens(ctx.messages, { includeSystem: true });
     if (usedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
     if (shouldTriggerAutoCompaction(usedTokens, thresholds, autoCompactionArmed)) {
@@ -1110,7 +1144,7 @@ async function main() {
     ui.setModelInfo(selectedModel, reasoningEffort, providerLabel(currentProviderName));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
-    ui.setContextUsage(tokens, getModelContextWindowTokens(selectedModel));
+    ui.setContextUsage(tokens, getSelectedContextWindowTokens());
   };
   updateStatusUI();
 
@@ -2086,9 +2120,7 @@ async function main() {
           });
           messages = result.messages;
           skillRegistry.restoreScopeFromMessages("main", messages);
-          const manualThresholds = getContextCompactionThresholds(
-            getModelContextWindowTokens(selectedModel),
-          );
+          const manualThresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
           autoCompactionArmed = result.compactedTokens <= manualThresholds.rearmTokens;
           refreshAgentVerificationContext(messages);
           sessionManager.saveCurrentSession(messages);
@@ -2443,12 +2475,34 @@ async function main() {
                 })
               ).trim();
               const models = modelsInput ? parseModelList(modelsInput) : undefined;
+              const windowsInput = (
+                await ui.readInput({
+                  prompt: `模型上下文窗口（当前: ${formatModelContextWindows(current.modelContextWindows)}，格式 模型=tokens 多个用分号分隔，留空保留）`,
+                })
+              ).trim();
+              let modelContextWindows: Record<string, number> | undefined;
+              if (windowsInput) {
+                const parsedWindows = parseModelContextWindows(windowsInput);
+                if (parsedWindows.invalid.length > 0) {
+                  ui.writeLine(
+                    colors.yellow(
+                      `⚠️ 已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
+                    ),
+                  );
+                }
+                if (Object.keys(parsedWindows.windows).length > 0) {
+                  modelContextWindows = parsedWindows.windows;
+                } else {
+                  ui.writeLine(colors.red("✗ 未解析出有效窗口，保持原有窗口配置不变。"));
+                }
+              }
               const ok = saveProviderConfig(
                 name,
                 {
                   apiKey: apiKey || undefined,
                   baseUrl: baseUrlToSave,
                   model: modelInput || undefined,
+                  modelContextWindows,
                   models,
                 },
                 configScope,
@@ -2551,7 +2605,10 @@ async function main() {
           }
 
           // 状态查看：/provider
-          const rows = [colors.bold("模型提供商状态：")];
+          const rows = [
+            colors.bold("模型提供商状态："),
+            colors.gray(`当前窗口：${getSelectedContextWindowTokens().toLocaleString()} tokens`),
+          ];
           const userConfig = loadProviderConfigScope("user");
           const projectConfig = loadProviderConfigScope("project");
           const sourceFor = (
