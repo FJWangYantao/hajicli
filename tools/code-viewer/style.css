@@ -126,12 +126,25 @@ mark { background: var(--mark-bg); color: inherit; border-radius: 2px; padding: 
   display: flex; align-items: center; gap: 6px;
   padding: 7px 8px 4px; color: var(--muted); font-size: 11.5px; font-weight: 600;
   cursor: pointer; user-select: none; letter-spacing: 0.3px;
+  position: sticky; top: 0; z-index: 2; background: var(--panel);
+  border-bottom: 1px solid transparent;
 }
 .group-h .arrow { transition: transform 0.15s; display: inline-block; width: 10px; }
 .group-h.closed .arrow { transform: rotate(-90deg); }
 .group-h .cnt { margin-left: auto; font-weight: 400; }
 .group-items { }
-.group.closed + .group-items { display: none; }
+.group-h.closed + .group-items { display: none; }
+/* 目录行:可折叠文件夹,数量角标显示其下文件数 */
+.dir-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 6px; cursor: pointer; user-select: none;
+  font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+}
+.dir-item:hover { background: var(--bg3); color: var(--text); }
+.dir-item .arrow { display: inline-block; width: 10px; font-size: 9px; transition: transform 0.15s; color: var(--muted); }
+.dir-item.closed .arrow { transform: rotate(-90deg); }
+.dir-item .dname { overflow: hidden; text-overflow: ellipsis; }
+.dir-item .cnt { margin-left: auto; font-size: 10px; }
 .file-item {
   display: flex; align-items: center; gap: 7px;
   padding: 4px 8px 4px 22px; border-radius: 6px; cursor: pointer;
@@ -144,6 +157,35 @@ mark { background: var(--mark-bg); color: inherit; border-radius: 2px; padding: 
 .file-item .loc { margin-left: auto; color: var(--muted); font-size: 10.5px; }
 .file-item .star { color: var(--yellow); font-size: 10px; }
 .file-item .markhit { outline: 1px solid var(--accent); }
+/* 分组头右侧的导览按钮(⌂):打开该层首页 */
+.ghome {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 5px; flex: 0 0 auto;
+}
+.ghome:hover { background: var(--bg3); color: var(--accent); }
+
+/* ---------- 分组导览页 ---------- */
+.group-home { padding: 28px 36px 48px; max-width: 1080px; }
+.group-home h1 { font-size: 22px; margin: 2px 0 6px; }
+.gh-crumb { color: var(--accent); font-size: 12px; letter-spacing: 1px; }
+.gh-stats { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
+.gh-arch { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; }
+.gh-arch p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.75; }
+.gh-arch-t { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; }
+.gh-files-t { margin: 18px 0 10px; }
+.gh-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
+.gh-flow .step { background: var(--bg3); border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px; font-size: 12px; color: var(--text); }
+.gh-flow .arr { color: var(--accent); font-size: 13px; }
+.gfile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.gfile { background: var(--bg2); border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; cursor: pointer; transition: border-color 0.12s; }
+.gfile:hover { border-color: var(--accent); }
+.gfile .fh { display: flex; align-items: baseline; gap: 8px; }
+.gfile .fn { font-family: Consolas, "Cascadia Mono", monospace; font-weight: 600; font-size: 13px; color: var(--text); word-break: break-all; }
+.gfile:hover .fn { color: var(--accent); }
+.gfile .fl { margin-left: auto; color: var(--muted); font-size: 10.5px; flex: 0 0 auto; }
+.gfile .fp { color: var(--muted); font-size: 10.5px; margin: 3px 0 7px; word-break: break-all; }
+.gfile .fd { font-size: 12.5px; line-height: 1.65; color: var(--text); }
+.gfile .star { color: var(--yellow); font-size: 11px; }
 
 #vsplit {
   flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5;
@@ -273,7 +315,7 @@ body.wrap .code .lc { white-space: pre-wrap; }
 .attr { color: var(--syn-attr); }
 .cl.hit { background: rgba(210, 153, 34, 0.14); }
 .cl.flash { animation: flashline 2.2s ease-out; }
-/* 函数块:悬停时整块浅色矩形背景 + 左侧强调条,锁定视觉焦点;单击弹出 AI 解释 */
+/* 代码块(函数/测试用例/配置段):悬停时整块浅色矩形背景 + 左侧强调条,锁定视觉焦点;单击弹出 AI 解释 */
 .code .fnb { display: block; position: relative; border-radius: 8px; cursor: pointer; transition: background 0.12s, box-shadow 0.12s; }
 .code .fnb:hover {
   background: rgba(163, 113, 247, 0.09);
@@ -472,3 +514,83 @@ body.wrap .code .lc { white-space: pre-wrap; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- macOS 桌面窗口外壳 ---------- */
+#app { height: auto; flex: 1 1 auto; min-height: 0; }
+#macdesk {
+  position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+  background:
+    radial-gradient(1100px 650px at 72% -8%, rgba(124, 92, 255, 0.20), transparent 60%),
+    radial-gradient(900px 600px at 12% 108%, rgba(56, 132, 255, 0.14), transparent 55%),
+    linear-gradient(160deg, #16192a 0%, #0b0d16 100%);
+}
+html[data-theme="light"] #macdesk {
+  background:
+    radial-gradient(1100px 650px at 72% -8%, rgba(124, 92, 255, 0.14), transparent 60%),
+    radial-gradient(900px 600px at 12% 108%, rgba(56, 132, 255, 0.12), transparent 55%),
+    linear-gradient(160deg, #e9ecf5 0%, #c6ccdb 100%);
+}
+#macbar {
+  flex: 0 0 30px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; font-size: 12px; color: #f2f3f7; user-select: none; z-index: 60;
+  background: rgba(24, 26, 40, 0.55); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+html[data-theme="light"] #macbar {
+  color: #2c3040; background: rgba(250, 251, 254, 0.6); border-color: rgba(0, 0, 0, 0.07);
+}
+.mb-l { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.mb-apple { font-size: 13px; }
+.mb-app { font-weight: 700; letter-spacing: 0.3px; }
+.mb-menu { display: flex; gap: 4px; opacity: 0.85; }
+.mb-menu span { padding: 2px 8px; border-radius: 5px; cursor: default; }
+.mb-menu span:hover { background: rgba(255, 255, 255, 0.16); }
+html[data-theme="light"] .mb-menu span:hover { background: rgba(0, 0, 0, 0.08); }
+#mac-clock { opacity: 0.85; font-variant-numeric: tabular-nums; }
+#macwin {
+  flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0;
+  margin: 8px 18px 16px; border-radius: 12px; overflow: hidden;
+  background: var(--bg); border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 6px 20px rgba(0, 0, 0, 0.35);
+  transition: margin 0.28s ease, border-radius 0.28s ease, transform 0.32s ease, opacity 0.28s ease;
+}
+html[data-theme="light"] #macwin { border-color: rgba(0, 0, 0, 0.14); box-shadow: 0 30px 80px rgba(35, 45, 90, 0.28); }
+#macwin.max { margin: 0; border-radius: 0; }
+#macwin.mini { transform: translateY(72vh) scale(0.05); opacity: 0; pointer-events: none; }
+#mactitle {
+  flex: 0 0 38px; display: flex; align-items: center; padding: 0 12px; position: relative;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  user-select: none; cursor: grab; z-index: 5;
+}
+#mactitle:active { cursor: grabbing; }
+.traffic { display: flex; align-items: center; gap: 8px; }
+.tl {
+  width: 12px; height: 12px; border-radius: 50%; padding: 0; cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; line-height: 1; font-weight: 700; color: rgba(0, 0, 0, 0.5);
+}
+.tl::before { opacity: 0; }
+.traffic:hover .tl::before { opacity: 1; }
+.tl.red { background: #ff5f57; }
+.tl.yellow { background: #febc2e; }
+.tl.green { background: #28c840; }
+.tl.red::before { content: "×"; margin-top: -1px; }
+.tl.yellow::before { content: "–"; }
+.tl.green::before { content: "⤢"; font-size: 8px; }
+.mac-doc {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  max-width: 46%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 12.5px; color: var(--muted); pointer-events: none;
+}
+#macdock {
+  position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 400;
+  padding: 6px 12px; border-radius: 15px;
+  background: rgba(40, 44, 66, 0.45); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.18); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+html[data-theme="light"] #macdock { background: rgba(255, 255, 255, 0.5); border-color: rgba(0, 0, 0, 0.1); }
+#macdock.hidden { display: none; }
+#macdock-btn { border: 0; background: none; font-size: 24px; cursor: pointer; line-height: 1; transition: transform 0.15s; }
+#macdock-btn:hover { transform: translateY(-3px); }
+@media (max-width: 900px) { #macwin { margin: 0; border-radius: 0; } #macbar { display: none; } }

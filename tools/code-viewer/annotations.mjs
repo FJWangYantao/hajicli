@@ -1546,3 +1546,33 @@ export const ANNOTATIONS = {
   ".github/workflows/ci.yml": { desc: "CI 工作流:Linux 上执行构建、lint 与全部测试。" },
   ".github/workflows/release.yml": { desc: "发布工作流:推 v* 标签触发——五平台矩阵编译原生模块,汇总校验后按 core→plugins→cli 顺序发布到 npm。" },
 };
+
+/* 分组导览页的架构说明(键名须与 GROUPS 的 name 完全一致;desc 必填,flow 可选) */
+export const GROUP_ARCH = {
+  "CLI · 终端交互层": {
+    desc: "终端交互层:index.ts 解析 argv 与配置后交给 cli-runtime 装配 Provider、引擎与 TUI;主循环里处理按键、输入框、面板渲染与斜杠命令,子代理、计划模式、hook 等用户可见流程都从这层发起。",
+    flow: ["index.ts 启动", "cli-runtime 装配", "TUI 主循环", "斜杠命令 / 子代理", "输出渲染"],
+  },
+  "Core · 引擎内核": {
+    desc: "引擎内核:管理消息轮回(Turn 生命周期)、流式输出、工具批量执行与中止、上下文压缩与快照/回溯。它是 CLI 与 Plugins 之间的中枢,不直接依赖终端 UI。",
+    flow: ["Turn 生命周期", "工具执行(批量/中止)", "上下文压缩", "快照与回溯"],
+  },
+  "Plugins · 工具与模型接入": {
+    desc: "工具与模型接入层:内置工具(bash/文件/grep/web 等)的实现与参数校验、多 Provider 适配(OpenAI 兼容/Anthropic/Ollama),以及 MCP 外部工具桥接。",
+    flow: ["工具实现与校验", "Provider 适配", "MCP 桥接"],
+  },
+  "Rust · 原生终端引擎": {
+    desc: "Rust 原生模块:terminal-engine 通过 napi 向 Node 侧暴露高性能终端能力(帧渲染/尺寸/事件),供 TUI 渲染引擎调用。",
+    flow: ["Rust 实现", "napi 绑定", "Node 侧调用"],
+  },
+  "Tests · 测试": {
+    desc: "node:test 测试套件:覆盖 CLI 行为、Core 引擎、插件工具的主要路径与回归场景,附 fixtures 场景与性能/安全校验,pnpm test 一键跑全量。",
+    flow: ["单元 / 集成用例", "fixtures 场景", "性能与安全校验"],
+  },
+  "Scripts · 构建脚本": {
+    desc: "构建与发布脚本:原生模块编译、类型检查、打包发布等流水线胶水代码。",
+  },
+  "配置与文档": {
+    desc: "仓库级配置与文档:workspace 清单、TypeScript/Biome/lint 配置、CI 与发布工作流、README 入口。",
+  },
+};

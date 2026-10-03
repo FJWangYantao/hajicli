@@ -16,6 +16,7 @@ const state = {
   wrap: localStorage.getItem("cv-wrap") === "1",
   sidebarHidden: false,
   collapsed: new Set(JSON.parse(localStorage.getItem("cv-collapsed") || "[]")),
+  dirCollapsed: new Set(JSON.parse(localStorage.getItem("cv-dircollapsed") || "[]")),
   floats: [],
 };
 
@@ -144,28 +145,90 @@ function groupOf(path) {
   const g = DATA.groups.find((gr) => path.startsWith(gr.prefix));
   return g ? g.name : "其他";
 }
+/* 组内文件 → 嵌套目录树(剥掉分组前缀,文件只挂 basename) */
+function buildDirTree(files, stripPrefix) {
+  const root = { dirs: new Map(), files: [] };
+  for (const f of files) {
+    let rel = f.path;
+    if (stripPrefix && rel.startsWith(stripPrefix)) rel = rel.slice(stripPrefix.length).replace(/^\//, "");
+    const segs = rel.split("/").filter(Boolean);
+    const name = segs.pop();
+    let node = root;
+    for (const s of segs) {
+      if (!node.dirs.has(s)) node.dirs.set(s, { dirs: new Map(), files: [] });
+      node = node.dirs.get(s);
+    }
+    node.files.push({ f, name });
+  }
+  return root;
+}
+/* 目录节点内文件总数(递归,用于目录行的数量角标) */
+function countFiles(node) {
+  let n = node.files.length;
+  for (const c of node.dirs.values()) n += countFiles(c);
+  return n;
+}
+/* 递归渲染目录:单链目录压缩为 a/b 一行;折叠时直接不渲染子树 */
+function dirRows(node, gName, dirPath, depth, filterActive, forceOpen) {
+  let html = "";
+  for (const [name, child] of node.dirs) {
+    let label = name;
+    let sub = child;
+    let cPath = dirPath ? dirPath + "/" + name : name;
+    while (sub.dirs.size === 1 && sub.files.length === 0) {
+      const [n2, c2] = [...sub.dirs][0];
+      label += "/" + n2;
+      cPath += "/" + n2;
+      sub = c2;
+    }
+    const key = gName + "∣" + cPath;
+    const closed = !filterActive && state.dirCollapsed.has(key) && !forceOpen.has(key);
+    const pad = 12 + depth * 13;
+    html += `<div class="dir-item${closed ? " closed" : ""}" data-dir="${esc(key)}" style="padding-left:${pad}px"><span class="arrow">▾</span><span class="dname">📁 ${esc(label)}</span><span class="cnt">${countFiles(sub)}</span></div>`;
+    if (!closed) html += dirRows(sub, gName, cPath, depth + 1, filterActive, forceOpen);
+  }
+  for (const { f, name } of node.files) {
+    const active = f.path === state.file ? " active" : "";
+    const star = f.segs && f.segs.length > 1 ? `<span class="star" title="含分段注解">★</span>` : "";
+    const hit = filterActive ? " markhit" : "";
+    const pad = 12 + depth * 13 + 12;
+    html += `<div class="file-item${active}${hit}" data-path="${esc(f.path)}" title="${esc(f.path)} (${f.loc} 行)" style="padding-left:${pad}px">${star}<span class="nm">${esc(name)}</span><span class="loc">${f.loc}</span></div>`;
+  }
+  return html;
+}
 function renderTree() {
   const tree = $("#tree");
   const filter = $("#tree-filter").value.trim().toLowerCase();
+  const filterActive = Boolean(filter);
   const groups = new Map();
   for (const f of FILES) {
     if (filter && !f.path.toLowerCase().includes(filter)) continue;
-    const g = groupOf(f.path);
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(f);
+    const g = DATA.groups.find((gr) => f.path.startsWith(gr.prefix));
+    const name = g ? g.name : "其他";
+    if (!groups.has(name)) groups.set(name, { prefix: g ? g.prefix : "", files: [] });
+    groups.get(name).files.push(f);
+  }
+  // 当前打开文件所在目录链强制展开(即使被折叠也能看到 active 文件)
+  const forceOpen = new Set();
+  if (state.file) {
+    const g = DATA.groups.find((gr) => state.file.startsWith(gr.prefix));
+    const gName = g ? g.name : "其他";
+    let rel = state.file;
+    if (g && rel.startsWith(g.prefix)) rel = rel.slice(g.prefix.length).replace(/^\//, "");
+    const segs = rel.split("/").filter(Boolean);
+    let acc = "";
+    for (let i = 0; i < segs.length - 1; i++) {
+      acc = acc ? acc + "/" + segs[i] : segs[i];
+      forceOpen.add(gName + "∣" + acc);
+    }
   }
   let html = "";
-  for (const [g, files] of groups) {
-    const closed = state.collapsed.has(g) ? " closed" : "";
+  for (const [g, { prefix, files }] of groups) {
+    const closed = !filterActive && state.collapsed.has(g) ? " closed" : "";
     const annotated = files.reduce((a, f) => a + (f.segs && f.segs.length > 1 ? 1 : 0), 0);
-    html += `<div class="group-h${closed}" data-group="${esc(g)}"><span class="arrow">▼</span>${esc(g)}<span class="cnt">${files.length} 文件${annotated ? ` · ${annotated}★` : ""}</span></div>`;
+    html += `<div class="group-h${closed}" data-group="${esc(g)}"><span class="arrow">▼</span>${esc(g)}<span class="cnt">${files.length} 文件${annotated ? ` · ${annotated}★` : ""}</span><button class="ghome" data-group="${esc(g)}" title="打开分组导览页">⌂</button></div>`;
     html += `<div class="group-items">`;
-    for (const f of files) {
-      const active = f.path === state.file ? " active" : "";
-      const star = f.segs && f.segs.length > 1 ? `<span class="star" title="含分段注解">★</span>` : "";
-      const hit = filter && (f.path.toLowerCase().includes(filter)) ? " markhit" : "";
-      html += `<div class="file-item${active}${hit}" data-path="${esc(f.path)}" title="${esc(f.path)} (${f.loc} 行)">${star}<span class="nm">${esc(f.path)}</span><span class="loc">${f.loc}</span></div>`;
-    }
+    html += dirRows(buildDirTree(files, prefix), g, "", 0, filterActive, forceOpen);
     html += `</div>`;
   }
   tree.innerHTML = html || `<div style="padding:16px;color:var(--muted)">没有匹配的文件</div>`;
@@ -178,6 +241,21 @@ function renderTree() {
       renderTree();
     })
   );
+  $$(".ghome", tree).forEach((b) =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openGroupHome(b.dataset.group);
+    })
+  );
+  $$(".dir-item", tree).forEach((el) =>
+    el.addEventListener("click", () => {
+      const k = el.dataset.dir;
+      if (state.dirCollapsed.has(k)) state.dirCollapsed.delete(k);
+      else state.dirCollapsed.add(k);
+      localStorage.setItem("cv-dircollapsed", JSON.stringify([...state.dirCollapsed]));
+      renderTree();
+    })
+  );
   $$(".file-item", tree).forEach((el) =>
     el.addEventListener("click", () => openFile(el.dataset.path))
   );
@@ -185,6 +263,7 @@ function renderTree() {
 
 /* ============ 总览页 ============ */
 function renderOverview() {
+  setMacTitle("📖 " + DATA.meta.title);
   const m = DATA.meta;
   const pkgs = DATA.overview.packages
     .map(
@@ -212,7 +291,8 @@ function renderOverview() {
     <h2>💡 使用提示</h2>
     <ul class="tips">
       <li><b>划选问 AI</b>:用鼠标划选任意代码,选区旁会浮出 <b>✨ AI 解释</b>——点开可拖动的 AI 助手浮窗。已配置模型(Ollama 本地 / DeepSeek / 火山方舟等 OpenAI 兼容端点,⚙️ 里设置)时流式逐点讲解;未配置时给离线即时分析。</li>
-      <li><b>点击函数直接解释</b>:鼠标悬停函数块出现「✨ 点击 AI 解释」提示,单击即弹出该函数的一句话功能说明(Markdown 渲染),无需划选。</li>
+      <li><b>点击代码块直接解释</b>:函数、测试用例、配置段落均自动分块,悬停浅色高亮锁定焦点,单击即弹出该块的一句话功能说明(Markdown 渲染),无需划选。</li>
+      <li><b>分组导览</b>:目录树每个分组标题右侧的 <b>⌂</b> 打开该层首页——这层的架构说明、主流程与全部文件的用途卡片,点卡片直达文件;地址栏 <kbd>#g:组名</kbd> 可直达。</li>
       <li><b>AI 陪读助手(右侧栏)</b>:一句话看不懂?在 AI 解释面板点 <b>📚 深度理解</b>,代码上下文与那句话会送入右侧陪读栏,导师分层深讲(职责→逐块逻辑→设计意图);底部输入框可继续追问,顶栏 <b>🧑‍🏫 陪读</b> 随时开关。</li>
       <li><b>悬停看注解</b>:鼠标滑过任意<b>代码块</b>会高亮该块并弹出它的中文注解气泡(停留片刻触发,移开/滚动即消失);悬停<b>函数</b>时整个函数以浅色矩形块选中,便于锁定视觉焦点。</li>
       <li><b>一段源码对应一段注解</b>:每个紫色卡片是下方代码段的中文讲解,点卡片右上角 <b>⛶</b> 可把注解拖出成浮动窗口,随意摆放对照阅读。</li>
@@ -230,9 +310,55 @@ function renderOverview() {
   );
 }
 
+/* ============ 分组导览页(每一层的首页:架构 + 文件卡片) ============ */
+function openGroupHome(name) {
+  const gr = DATA.groups.find((x) => x.name === name);
+  if (!gr) {
+    renderOverview();
+    return;
+  }
+  hideCodetip();
+  hoverBox = null;
+  state.file = null;
+  renderTree();
+  setMacTitle("分组导览 · " + name);
+  const files = FILES.filter((f) => groupOf(f.path) === name);
+  const locs = files.reduce((a, f) => a + f.loc, 0);
+  const starred = files.filter((f) => f.segs && f.segs.length > 1).length;
+  const arch = gr.arch;
+  const flowHtml =
+    arch && arch.flow && arch.flow.length
+      ? `<div class="gh-flow">${arch.flow
+          .map((s, i) => `${i ? '<span class="arr">→</span>' : ""}<span class="step">${esc(s)}</span>`)
+          .join("")}</div>`
+      : "";
+  const cards = files
+    .map((f) => {
+      const star = f.segs && f.segs.length > 1 ? `<span class="star" title="含分段注解">★</span>` : "";
+      const d = f.desc || (f.segs && f.segs[0] ? stripNoteHtml(f.segs[0].note) : "") || "（未注解）";
+      return `<div class="gfile" data-path="${esc(f.path)}" title="点击打开 ${esc(f.path)}">
+        <div class="fh">${star}<span class="fn">${esc(f.path.split("/").pop())}</span><span class="fl">${f.loc} 行</span></div>
+        <div class="fp">${esc(f.path)}</div>
+        <div class="fd">${esc(d.slice(0, 220))}${d.length > 220 ? "…" : ""}</div>
+      </div>`;
+    })
+    .join("");
+  $("#main").innerHTML = `<div class="group-home">
+    <div class="gh-crumb">📖 分组导览</div>
+    <h1>${esc(name)}</h1>
+    <div class="gh-stats">${files.length} 个文件 · ${locs.toLocaleString()} 行 · ${starred} 个含分段注解</div>
+    ${arch && arch.desc ? `<div class="gh-arch"><div class="gh-arch-t">🏗 这一层做什么</div><p>${esc(arch.desc)}</p>${flowHtml}</div>` : ""}
+    <div class="gh-arch-t gh-files-t">📄 文件总览(点击卡片进入)</div>
+    <div class="gfile-grid">${cards}</div>
+  </div>`;
+  $$(".gfile").forEach((c) => c.addEventListener("click", () => openFile(c.dataset.path)));
+  $("#main").scrollTop = 0;
+  location.hash = "g:" + name;
+}
+
 /* ============ 代码块渲染 ============ */
-/* 函数块检测:在给定行数组(0-based)内找出函数声明区间,用于悬停矩形高亮 */
-function computeFnRanges(lines, lang) {
+/* 函数/方法声明检测:在给定行数组(0-based)内找出声明区间,用于悬停矩形高亮 */
+function fnDeclRanges(lines, lang) {
   const ranges = [];
   const fnStart =
     lang === "rs"
@@ -266,6 +392,165 @@ function computeFnRanges(lines, lang) {
     }
   }
   return ranges;
+}
+/* 测试用例检测:test/it/describe/bench 调用按括号配对成块,让没有函数声明的测试文件也能分块可点 */
+function testCallRanges(lines) {
+  const re = /^\s{0,8}(?:await\s+)?(?:t\.)?(?:test|it|describe|bench)(?:\.(?:skip|only|todo|slow))?\s*\(/;
+  const ranges = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!re.test(lines[i])) {
+      i++;
+      continue;
+    }
+    // 括号配对找语句结束行(限 400 行兜底,防字符串干扰导致区间失控)
+    let depth = 0;
+    let opened = false;
+    let end = Math.min(i + 400, lines.length - 1);
+    outer: for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === "(") {
+          depth++;
+          opened = true;
+        } else if (ch === ")") {
+          depth--;
+          if (opened && depth <= 0) {
+            end = j;
+            break outer;
+          }
+        }
+      }
+    }
+    ranges.push([i, end]);
+    i = end + 1;
+  }
+  return ranges;
+}
+/* 归并两组区间:重叠时外层块优先(被包含的丢弃),交叉的向外扩展 */
+function mergeRanges(a, b) {
+  const all = [...a, ...b].sort((x, y) => x[0] - y[0] || y[1] - x[1]);
+  const out = [];
+  for (const r of all) {
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1]) {
+      if (r[1] > last[1]) last[1] = r[1];
+    } else out.push([r[0], r[1]]);
+  }
+  return out;
+}
+/* 配置/文档类文件的分段起点:JSON/YAML 顶层键、TOML 段落头、Markdown 标题 */
+function sectionStarts(lines, lang) {
+  const starts = [];
+  if (lang === "json") {
+    // 取所有缩进键中最小的缩进,即根对象的顶层键
+    let ind = null;
+    for (const l of lines) {
+      const m = /^(\s+)"[^"]*"\s*:/.exec(l);
+      if (m && (ind === null || m[1].length < ind.length)) ind = m[1];
+    }
+    if (ind === null) return starts;
+    const re = new RegExp("^" + ind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"[^"]*"\\s*:');
+    for (let i = 0; i < lines.length; i++) if (re.test(lines[i])) starts.push(i);
+  } else if (lang === "yml" || lang === "yaml") {
+    for (let i = 0; i < lines.length; i++) if (/^[^\s#-][^:]*:/.test(lines[i])) starts.push(i);
+  } else if (lang === "toml") {
+    for (let i = 0; i < lines.length; i++) if (/^\[\[?[^\]]+\]\]?\s*$/.test(lines[i])) starts.push(i);
+  } else if (lang === "md") {
+    for (let i = 0; i < lines.length; i++) if (/^#{1,4}\s/.test(lines[i])) starts.push(i);
+  }
+  return starts;
+}
+/* 起点列表 → 连续区间;首个起点前的非空正文单独成块(纯 { } 括号行不成块) */
+function sectionsFromStarts(lines, starts) {
+  if (!starts.length) return [];
+  const pre = lines.slice(0, starts[0]).filter((l) => l.trim());
+  const all = pre.length && !pre.every((l) => /^[\s{}\[\],]*$/.test(l)) ? [0, ...starts] : starts;
+  return all.map((s, i) => [s, (all[i + 1] === undefined ? lines.length : all[i + 1]) - 1]);
+}
+/* 兜底分块:按顶层语句切段,连续单行语句(导入/零散常量)自动合并,避免碎片化 */
+function stmtRanges(lines, lang) {
+  const cont = /^\s*(?:[})\];,]|else\b|catch\b|finally\b|elif\b|except\b|fi\b|done\b|esac\b)/;
+  let starts = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim() || !/^\S/.test(l) || cont.test(l)) continue;
+    starts.push(i);
+  }
+  if (!starts.length) return [];
+  if (starts[0] > 0 && lines.slice(0, starts[0]).some((l) => l.trim())) starts = [0, ...starts];
+  // 去掉块尾空行,让悬停矩形贴合实际内容
+  const ranges = starts
+    .map((s, i) => [s, (starts[i + 1] === undefined ? lines.length : starts[i + 1]) - 1])
+    .map(([s, e]) => {
+      while (e > s && !lines[e].trim()) e--;
+      return [s, e];
+    });
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    // 仅相邻的单行语句合并(空行隔开的不粘),防止吞掉紧随其后的注释
+    if (last && last[1] === last[0] && r[1] === r[0] && r[0] === last[1] + 1) last[1] = r[1];
+    else merged.push(r);
+  }
+  // 紧邻后续块的纯注释块(如声明前的单行 JSDoc)并入后续块
+  const isComment = commentTester(lang);
+  for (let i = merged.length - 2; i >= 0; i--) {
+    const [s, e] = merged[i];
+    if (
+      merged[i + 1][0] === e + 1 &&
+      lines.slice(s, e + 1).every((l) => !l.trim() || isComment(l))
+    ) {
+      merged[i + 1][0] = s;
+      merged.splice(i, 1);
+    }
+  }
+  return merged;
+}
+/* 行注释判定:// /* * 对所有语言;# 仅限以 # 为注释的语言(C 系的 # 是预处理指令) */
+function commentTester(lang) {
+  const hash = lang === "py" || lang === "pyi" || lang === "sh" || lang === "yaml" || lang === "yml" || lang === "toml";
+  const line = hash ? /^\s*(?:\/\/|\/\*|\*|#)/ : /^\s*(?:\/\/|\/\*|\*)/;
+  return (l) => line.test(l);
+}
+/* 空隙回填:既有块之间的空隙用顶层语句块补齐,让"函数+顶部导入"混合文件整段可点;
+   紧邻后续块的纯注释空隙(如函数前的 JSDoc)并入后续块,不单独成块 */
+function fillStmtGaps(lines, blocks, lang) {
+  const out = [...blocks];
+  const gaps = [];
+  let prev = -1;
+  for (let b = 0; b < blocks.length; b++) {
+    const [s, e] = blocks[b];
+    if (s > prev + 1) gaps.push([prev + 1, s - 1, b]);
+    prev = e;
+  }
+  if (prev < lines.length - 1) gaps.push([prev + 1, lines.length - 1, -1]);
+  const isComment = commentTester(lang);
+  for (const [gs, ge, bi] of gaps) {
+    const slice = lines.slice(gs, ge + 1);
+    const nonblank = slice.filter((l) => l.trim());
+    if (!nonblank.length) continue;
+    if (bi >= 0 && nonblank.every(isComment)) {
+      const firstNb = slice.findIndex((l) => l.trim());
+      blocks[bi][0] = gs + firstNb;
+      continue;
+    }
+    for (const [s, e] of stmtRanges(slice, lang)) out.push([s + gs, e + gs]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+/* 分块总入口:函数声明 + 测试调用优先合并并回填空隙;配置/文档按结构分段;再不行按顶层语句;最后整段一块 */
+function computeFnRanges(lines, lang) {
+  const decl = fnDeclRanges(lines, lang);
+  const tc = testCallRanges(lines);
+  if (decl.length || tc.length) return fillStmtGaps(lines, mergeRanges(decl, tc), lang);
+  if (lang === "json" || lang === "yml" || lang === "yaml" || lang === "toml" || lang === "md") {
+    const sec = sectionsFromStarts(lines, sectionStarts(lines, lang));
+    if (sec.length) return sec;
+  } else {
+    const st = stmtRanges(lines, lang);
+    if (st.length) return st;
+  }
+  return lines.filter((l) => l.trim()).length >= 6 ? [[0, lines.length - 1]] : [];
 }
 function codeBlockHTML(f, seg, segIdx) {
   const segLines = f.lines.slice(seg.start - 1, seg.end);
@@ -364,6 +649,7 @@ function openFile(path, opts) {
   hoverBox = null;
   state.file = path;
   renderTree();
+  setMacTitle("📄 " + path.split("/").pop());
   renderFile(f);
   $("#main").scrollTop = 0;
   location.hash = path;
@@ -889,7 +1175,6 @@ function ensureAIPanel() {
     }
   });
   // 底栏提供商快速切换已并入 ⚙️ 设置的预设菜单(本地代理 · 智谱 / DeepSeek)
-  baseInput.addEventListener("change", syncProviderSel);
   $(".as-save", aipanelEl).addEventListener("click", () => {
     saveAIConfig({
       baseUrl: baseInput.value.trim(),
@@ -1572,6 +1857,87 @@ function applyWrap() {
   document.body.classList.toggle("wrap", state.wrap);
   $("#btn-wrap").classList.toggle("on", state.wrap);
 }
+/* ============ macOS 窗口外壳(红绿灯 / 铺满 / 程序坞 / 时钟 / 标题栏拖动) ============ */
+function setMacTitle(t) {
+  const el = $("#mac-title");
+  if (el) el.textContent = t || "";
+}
+function macApplyMax(on) {
+  const win = $("#macwin");
+  if (win) win.classList.toggle("max", Boolean(on));
+}
+function initMacChrome() {
+  const win = $("#macwin");
+  if (!win) return;
+  // 默认铺满(体验最好),记住上次选择
+  macApplyMax(localStorage.getItem("cv-macmax") !== "0");
+  // 绿灯:窗口铺满 + 请求浏览器全屏;再点还原
+  $("#tl-green").addEventListener("click", async () => {
+    const on = !win.classList.contains("max");
+    macApplyMax(on);
+    localStorage.setItem("cv-macmax", on ? "1" : "0");
+    win.style.transform = "";
+    win.dataset.dx = 0;
+    win.dataset.dy = 0;
+    try {
+      if (on && !document.fullscreenElement) await document.documentElement.requestFullscreen();
+      else if (!on && document.fullscreenElement) await document.exitFullscreen();
+    } catch {}
+  });
+  // 红灯/黄灯:收起到程序坞,点程序坞图标恢复
+  const minimize = () => {
+    win.style.transform = "";
+    win.dataset.dx = 0;
+    win.dataset.dy = 0;
+    win.classList.add("mini");
+    $("#macdock").classList.remove("hidden");
+  };
+  $("#tl-red").addEventListener("click", minimize);
+  $("#tl-yellow").addEventListener("click", minimize);
+  $("#macdock-btn").addEventListener("click", () => {
+    win.classList.remove("mini");
+    $("#macdock").classList.add("hidden");
+  });
+  // 双击标题栏:切换铺满;拖动标题栏:窗口化时移动窗口
+  const title = $("#mactitle");
+  title.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".tl")) return;
+    $("#tl-green").click();
+  });
+  let drag = null;
+  title.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".tl") || win.classList.contains("max")) return;
+    drag = { x: e.clientX, y: e.clientY, dx: Number(win.dataset.dx || 0), dy: Number(win.dataset.dy || 0) };
+    title.setPointerCapture(e.pointerId);
+  });
+  title.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = drag.dx + e.clientX - drag.x;
+    const dy = drag.dy + e.clientY - drag.y;
+    win.dataset.dx = dx;
+    win.dataset.dy = dy;
+    win.style.transform = `translate(${dx}px, ${dy}px)`;
+  });
+  const endDrag = () => (drag = null);
+  title.addEventListener("pointerup", endDrag);
+  title.addEventListener("pointercancel", endDrag);
+  // F11 浏览器全屏时窗口同步铺满,退出时还原上次偏好
+  document.addEventListener("fullscreenchange", () => {
+    if (document.fullscreenElement) macApplyMax(true);
+    else macApplyMax(localStorage.getItem("cv-macmax") !== "0");
+  });
+  // 菜单栏时钟
+  const clock = $("#mac-clock");
+  if (clock) {
+    const tick = () => {
+      const d = new Date();
+      const wd = ["日", "一", "二", "三", "四", "五", "六"][d.getDay()];
+      clock.textContent = `${d.getMonth() + 1}月${d.getDate()}日 周${wd} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+    tick();
+    setInterval(tick, 15000);
+  }
+}
 function init() {
   // 工具栏
   $("#logo").addEventListener("click", () => {
@@ -1666,11 +2032,13 @@ function init() {
   applyMode();
   applyFs();
   applyWrap();
+  initMacChrome();
   renderTree();
 
-  // hash 直达
+  // hash 直达(文件路径或 g:组名 的分组导览)
   const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
-  if (hash && byPath.has(hash)) openFile(hash);
+  if (hash && hash.startsWith("g:")) openGroupHome(hash.slice(2));
+  else if (hash && byPath.has(hash)) openFile(hash);
   else renderOverview();
 
   // 统计

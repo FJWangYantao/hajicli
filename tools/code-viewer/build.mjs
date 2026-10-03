@@ -11,7 +11,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ANNOTATIONS, OVERVIEW } from "./annotations.mjs";
+import { ANNOTATIONS, OVERVIEW, GROUP_ARCH } from "./annotations.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const rel = (p) => join(root, p);
@@ -146,7 +146,7 @@ const DATA = {
     totalSegs,
     packages: GROUPS.length,
   },
-  groups: GROUPS.map((g) => ({ name: g.name, prefix: g.prefix })),
+  groups: GROUPS.map((g) => ({ name: g.name, prefix: g.prefix, arch: GROUP_ARCH[g.name] || null })),
   overview: {
     intro: OVERVIEW.intro,
     flow: OVERVIEW.flow,
@@ -177,7 +177,21 @@ ${css}
 </style>
 </head>
 <body>
-<div id="app">
+<div id="macdesk">
+  <div id="macbar">
+    <span class="mb-l"><span class="mb-apple">🍎</span><b class="mb-app">源码阅读器</b><span class="mb-menu"><span>文件</span><span>编辑</span><span>视图</span><span>前往</span><span>帮助</span></span></span>
+    <span class="mb-r"><span id="mac-clock"></span></span>
+  </div>
+  <div id="macwin">
+    <div id="mactitle">
+      <div class="traffic">
+        <button class="tl red" id="tl-red" title="收起到程序坞"></button>
+        <button class="tl yellow" id="tl-yellow" title="收起到程序坞"></button>
+        <button class="tl green" id="tl-green" title="全屏 / 还原"></button>
+      </div>
+      <div class="mac-doc" id="mac-title">📖 ${DATA.meta.title}</div>
+    </div>
+    <div id="app">
   <div id="toolbar">
     <span id="logo">📖 HAJI 源码阅读器<span class="sub">v${DATA.meta.generated}</span></span>
     <div id="searchwrap">
@@ -221,6 +235,9 @@ ${css}
       </div>
     </div>
   </div>
+</div>
+</div>
+<div id="macdock" class="hidden"><button id="macdock-btn" title="恢复窗口">📖</button></div>
 </div>
 <button id="totop" title="回到顶部">↑</button>
 <div id="toast"></div>
