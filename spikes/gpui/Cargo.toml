@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["canvas", "ime-input"]
+
+[profile.dev]
+# spike 不需要调试符号;关闭可大幅降低编译内存与耗时(本机 16GB 已限制 jobs=3)
+debug = 0
+
+[profile.release]
+# 压测 FPS 需要优化构建
+opt-level = 2

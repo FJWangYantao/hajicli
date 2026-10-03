@@ -1,0 +1,8 @@
+[package]
+name = "canvas-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# gpui-kit = 应用唯一依赖,re-export 了 GPUI + base + component + assets
+gpui-kit = "0.7"

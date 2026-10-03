@@ -1,0 +1,7 @@
+[package]
+name = "ime-input-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui-kit = "0.7"

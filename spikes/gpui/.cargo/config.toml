@@ -1,0 +1,4 @@
+# 本机 16GB 内存,GPUI 依赖树并行编译会 OOM(memory allocation failed)
+# 限制并行 rustc 数量;如内存仍吃紧可降到 2
+[build]
+jobs = 3
