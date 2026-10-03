@@ -1,6 +1,6 @@
 {
   "name": "@hajicli/plugins",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "description": "API plugins and providers implementation for hajicli",
   "repository": {
