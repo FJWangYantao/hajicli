@@ -212,7 +212,9 @@ function renderOverview() {
     <h2>💡 使用提示</h2>
     <ul class="tips">
       <li><b>划选问 AI</b>:用鼠标划选任意代码,选区旁会浮出 <b>✨ AI 解释</b>——点开可拖动的 AI 助手浮窗。已配置模型(Ollama 本地 / DeepSeek / 火山方舟等 OpenAI 兼容端点,⚙️ 里设置)时流式逐点讲解;未配置时给离线即时分析。</li>
-      <li><b>悬停看注解</b>:鼠标滑过任意<b>代码块</b>会高亮该块并弹出它的中文注解气泡(停留片刻触发,移开/滚动即消失);悬停单行还有行级高亮。</li>
+      <li><b>点击函数直接解释</b>:鼠标悬停函数块出现「✨ 点击 AI 解释」提示,单击即弹出该函数的一句话功能说明(Markdown 渲染),无需划选。</li>
+      <li><b>AI 陪读助手(右侧栏)</b>:一句话看不懂?在 AI 解释面板点 <b>📚 深度理解</b>,代码上下文与那句话会送入右侧陪读栏,导师分层深讲(职责→逐块逻辑→设计意图);底部输入框可继续追问,顶栏 <b>🧑‍🏫 陪读</b> 随时开关。</li>
+      <li><b>悬停看注解</b>:鼠标滑过任意<b>代码块</b>会高亮该块并弹出它的中文注解气泡(停留片刻触发,移开/滚动即消失);悬停<b>函数</b>时整个函数以浅色矩形块选中,便于锁定视觉焦点。</li>
       <li><b>一段源码对应一段注解</b>:每个紫色卡片是下方代码段的中文讲解,点卡片右上角 <b>⛶</b> 可把注解拖出成浮动窗口,随意摆放对照阅读。</li>
       <li><b>搜索</b>:顶部搜索框同时检索 <b>代码、注解、文件名</b>;按 <kbd>Ctrl</kbd>+<kbd>K</kbd> 或 <kbd>/</kbd> 聚焦,结果中 <kbd>↑</kbd><kbd>↓</kbd> 选择、<kbd>Enter</kbd> 跳转。</li>
       <li><b>拖动</b>:拖动左侧树与主区之间的分隔条调整宽度;「并排」模式下可拖动代码/注解分栏;注解卡片可双击标题浮出。</li>
@@ -229,16 +231,64 @@ function renderOverview() {
 }
 
 /* ============ 代码块渲染 ============ */
-function codeBlockHTML(f, seg, segIdx) {
-  const lines = f.lines.slice(seg.start - 1, seg.end);
-  const lang = langOf(f.path);
-  let rows = "";
-  for (let k = 0; k < lines.length; k++) {
-    const no = seg.start + k;
-    rows += `<div class="cl" id="L${no}"><span class="ln">${no}</span><span class="lc">${highlightLine(lines[k], lang)}</span></div>`;
+/* 函数块检测:在给定行数组(0-based)内找出函数声明区间,用于悬停矩形高亮 */
+function computeFnRanges(lines, lang) {
+  const ranges = [];
+  const fnStart =
+    lang === "rs"
+      ? /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+[\w$]/
+      : /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*[\w$]*\s*\(|^\s*(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>\s*\{|^\s*(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*=\s*(?:async\s*)?function\b|^\s+(?:(?:public|private|protected|static|readonly|override|\*)\s+)*(?:async\s+)?(?:get\s+|set\s+)?[\w$#]+\s*(?:<[^>]*>)?\([^)]*\)\s*:?[^{]*\{/;
+  const notFn = /^\s*(?:if|for|while|switch|catch|return|else|do|try)\b/;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.includes("{") && fnStart.test(line) && !notFn.test(line)) {
+      // 花括号配对找结束行(限 400 行兜底,防止字符串干扰导致区间失控)
+      let depth = 0;
+      let end = Math.min(i + 400, lines.length - 1);
+      for (let j = i; j < lines.length; j++) {
+        for (const ch of lines[j]) {
+          if (ch === "{") depth++;
+          else if (ch === "}") {
+            depth--;
+            if (depth === 0) {
+              end = j;
+              j = lines.length;
+              break;
+            }
+          }
+        }
+      }
+      ranges.push([i, end]);
+      i = end + 1;
+    } else {
+      i++;
+    }
   }
-  const folded = seg.end - seg.start >= 400 ? "" : "";
-  return `<div class="codebox${folded}" data-seg="${segIdx}">
+  return ranges;
+}
+function codeBlockHTML(f, seg, segIdx) {
+  const segLines = f.lines.slice(seg.start - 1, seg.end);
+  const lang = langOf(f.path);
+  const fnRanges = computeFnRanges(segLines, lang);
+  const rangeStart = new Map(fnRanges.map(([s]) => [s, true]));
+  const rangeEnd = new Map(fnRanges.map(([, e]) => [e, true]));
+  let rows = "";
+  let openFnb = false;
+  for (let k = 0; k < segLines.length; k++) {
+    const no = seg.start + k;
+    if (rangeStart.has(k)) {
+      rows += `<div class="fnb">`;
+      openFnb = true;
+    }
+    rows += `<div class="cl" id="L${no}"><span class="ln">${no}</span><span class="lc">${highlightLine(segLines[k], lang)}</span></div>`;
+    if (rangeEnd.has(k)) {
+      rows += `</div>`;
+      openFnb = false;
+    }
+  }
+  if (openFnb) rows += `</div>`;
+  return `<div class="codebox" data-seg="${segIdx}">
     <div class="c-head"><span class="t">L${seg.start}–L${seg.end}</span><span class="sp">
       <button class="fold" title="折叠/展开">▾</button>
       <button class="copyseg" title="复制此段代码">复制</button>
@@ -452,7 +502,6 @@ function showCodetip(segIdx, x, y) {
   tip.innerHTML = `<div class="t-head">
       <span class="t-title">${esc(seg.title)}</span>
       <span class="t-lines">L${seg.start}–L${seg.end}</span>
-      <span class="t-hint">⛶ 可浮出常驻</span>
     </div><div class="t-note">${seg.note}</div>`;
   tip.classList.add("show");
   // 锚定在鼠标右下 18px,放不下时翻到左侧/顶部
@@ -614,22 +663,20 @@ function saveAIConfig(cfg) {
 let selbtnEl = null;
 let aipanelEl = null;
 let aiAbort = null;
-let currentSelInfo = null;
+let currentSelInfo = null; // AI 面板当前正在解释的对象(仅由 openAIPanel 设置,选区变化不冲掉)
+let selectionInfo = null; // 划选按钮对应的实时选区
 
 function ensureSelBtn() {
   if (selbtnEl) return selbtnEl;
   selbtnEl = document.createElement("div");
   selbtnEl.className = "selbtn";
-  selbtnEl.innerHTML = `<button class="ai-explain">✨ AI 解释</button><button class="sel-copy">📋 复制</button>`;
+  selbtnEl.innerHTML = `<button class="ai-explain">✨ AI 解释</button>`;
   document.body.appendChild(selbtnEl);
   selbtnEl.addEventListener("mousedown", (e) => e.preventDefault()); // 保住选区
   $(".ai-explain", selbtnEl).addEventListener("click", () => {
     hideSelBtn();
-    if (currentSelInfo) openAIPanel(currentSelInfo);
-  });
-  $(".sel-copy", selbtnEl).addEventListener("click", () => {
-    if (currentSelInfo) copyText(currentSelInfo.text);
-    hideSelBtn();
+    const info = selectionInfo || currentSelInfo;
+    if (info) openAIPanel(info);
   });
   return selbtnEl;
 }
@@ -705,7 +752,7 @@ function bindSelectionAssistant() {
   ensureSelBtn();
   const update = () => {
     const info = readSelection();
-    currentSelInfo = info;
+    selectionInfo = info;
     if (!info) {
       hideSelBtn();
       return;
@@ -751,8 +798,10 @@ function ensureAIPanel() {
         <label>预设</label>
         <select class="as-preset">
           <option value="">自定义</option>
+          <option value="proxy-zhipu">本地代理 · 智谱 Coding Plan</option>
+          <option value="proxy-deepseek">本地代理 · DeepSeek</option>
           <option value="ollama">Ollama 本地 (localhost:11434)</option>
-          <option value="deepseek">DeepSeek 官方</option>
+          <option value="deepseek">DeepSeek 官方(直连)</option>
           <option value="volcengine">火山方舟 Ark</option>
         </select>
       </div>
@@ -770,8 +819,9 @@ function ensureAIPanel() {
     </div>
     <div class="ap-body"><div class="ap-out dim">在代码上划选一段文本,点选区旁的 ✨ AI 解释。</div></div>
     <div class="ap-foot">
-      <button class="tbtn ap-rerun">🔁 重新解释</button>
-      <button class="tbtn ap-setbtn">⚙️ 模型设置</button>
+      <button class="tbtn ap-rerun" title="重新生成一句话解释">🔁</button>
+      <button class="tbtn ap-deep" title="送入右侧陪读栏深入讲解">📚 深度理解</button>
+      <button class="tbtn ap-setbtn" title="模型设置(提供商/端点)">⚙️</button>
       <button class="tbtn ap-stop" style="display:none">⏹ 停止</button>
     </div>`;
   document.body.appendChild(aipanelEl);
@@ -806,6 +856,17 @@ function ensureAIPanel() {
   $(".ap-rerun", aipanelEl).addEventListener("click", () => {
     if (currentSelInfo) runExplain(currentSelInfo);
   });
+  $(".ap-deep", aipanelEl).addEventListener("click", () => {
+    if (!currentSelInfo) {
+      toast("先在代码上点击函数或划选片段");
+      return;
+    }
+    const outEl = $(".ap-out", aipanelEl);
+    const answer = outEl ? outEl.textContent.trim() : "";
+    // 离线分析/错误信息不作为"一句话解释"送入
+    const oneSentence = /^(【|模型调用失败)/.test(answer) ? "" : answer.slice(0, 200);
+    dockDeepDive(currentSelInfo, oneSentence);
+  });
   $(".ap-stop", aipanelEl).addEventListener("click", stopAIStream);
   // 设置表单
   const baseInput = $(".as-base", aipanelEl);
@@ -815,6 +876,8 @@ function ensureAIPanel() {
   modelInput.value = cfg.model || "";
   $(".as-preset", aipanelEl).addEventListener("change", (e) => {
     const presets = {
+      "proxy-zhipu": { baseUrl: "/ai-proxy", model: "glm-5.2" },
+      "proxy-deepseek": { baseUrl: "/ai-proxy/deepseek", model: "deepseek-v4-flash" },
       ollama: { baseUrl: "http://localhost:11434/v1", model: "qwen2.5-coder" },
       deepseek: { baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
       volcengine: { baseUrl: "https://ark.cn-beijing.volces.com/api/v3", model: "" },
@@ -825,6 +888,8 @@ function ensureAIPanel() {
       if (p.model) modelInput.value = p.model;
     }
   });
+  // 底栏提供商快速切换已并入 ⚙️ 设置的预设菜单(本地代理 · 智谱 / DeepSeek)
+  baseInput.addEventListener("change", syncProviderSel);
   $(".as-save", aipanelEl).addEventListener("click", () => {
     saveAIConfig({
       baseUrl: baseInput.value.trim(),
@@ -848,7 +913,14 @@ function ensureAIPanel() {
         [{ role: "user", content: "ping" }],
         { max_tokens: 1 }
       );
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        let msg = "HTTP " + res.status;
+        try {
+          const j = await res.json();
+          if (j.error && j.error.message) msg = j.error.message;
+        } catch {}
+        throw new Error(msg);
+      }
       status.textContent = "✓ 连接成功";
     } catch (err) {
       status.textContent = "✗ " + String((err && err.message) || err).slice(0, 60);
@@ -872,6 +944,7 @@ function setStatus(text, busy) {
   $(".ap-stop", aipanelEl).style.display = busy ? "" : "none";
 }
 function openAIPanel(info) {
+  currentSelInfo = info; // 统一登记当前解释对象(点击函数 / 划选两条路径都经过这里)
   const panel = ensureAIPanel();
   panel.classList.add("show");
   const range =
@@ -887,7 +960,101 @@ function openAIPanel(info) {
   runExplain(info);
 }
 
+/* ---------- 流式渲染节流:增量只累积进缓冲,按 ~90ms 合并整段重渲染 ----------
+ * 全量 md 重解析 + innerHTML 替换是主要开销,若每个 SSE 增量(常为 1~2 字)都渲染,
+ * 千级增量下总开销 O(n²),页面会明显卡顿;节流后渲染次数 ≈ 时长/90ms。
+ * 滚动采用智能跟随:用户向上滚离底部即停止跟随,滚回底部自动恢复。 */
+function followStateOf(el) {
+  if (!el) return null;
+  if (!el.__followState) {
+    const s = { follow: true };
+    el.addEventListener(
+      "scroll",
+      () => {
+        s.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+      },
+      { passive: true }
+    );
+    el.__followState = s;
+  }
+  return el.__followState;
+}
+function makeStreamRenderer(renderFn, scrollEl) {
+  let timer = null;
+  const follow = followStateOf(scrollEl);
+  const flushNow = () => {
+    timer = null;
+    renderFn();
+    if (scrollEl && follow && follow.follow) scrollEl.scrollTop = scrollEl.scrollHeight;
+  };
+  return {
+    schedule() {
+      if (timer) return;
+      timer = setTimeout(flushNow, 90);
+    },
+    flush() {
+      if (timer) clearTimeout(timer);
+      flushNow();
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
 /* ---------- 讲解执行:优先模型流式,否则离线分析 ---------- */
+/* 轻量 Markdown 渲染(AI 解释面板用):围栏代码块 → 转义 → 标题/列表/粗体/行内代码 */
+function mdToHtml(src) {
+  const blocks = [];
+  let text = String(src).replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    blocks.push(`<pre class="md-code"><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+    return `\u0000B${blocks.length - 1}\u0000`;
+  });
+  const inline = (s) =>
+    s
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+  let html = "";
+  let listType = null;
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+  for (const raw of esc(text).split(/\n/)) {
+    const line = raw.trimEnd();
+    const li = /^(?:[-*•·]|\d+[.、])\s+(.*)$/.exec(line);
+    if (li) {
+      const ordered = /^\d/.test(line);
+      const want = ordered ? "ol" : "ul";
+      if (listType !== want) {
+        closeList();
+        html += `<${want}>`;
+        listType = want;
+      }
+      html += `<li>${inline(li[1])}</li>`;
+      continue;
+    }
+    closeList();
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const lv = Math.min(h[1].length + 3, 6);
+      html += `<h${lv}>${inline(h[2])}</h${lv}>`;
+      continue;
+    }
+    if (!line.trim()) {
+      html += `<div class="md-sp"></div>`;
+      continue;
+    }
+    html += `<p>${inline(line)}</p>`;
+  }
+  closeList();
+  html = html.replace(/\u0000B(\d+)\u0000/g, (m, i) => blocks[Number(i)] || "");
+  return html || `<span class="dim">(空)</span>`;
+}
+
 function stripNoteHtml(html) {
   return html
     .replace(/<code>/g, "`")
@@ -938,7 +1105,7 @@ function buildExplainMessages(info) {
     {
       role: "system",
       content:
-        "你是资深代码讲解助手。用户给出从源码文件中选中的一段代码,请用中文讲解:1) 一句话概括这段代码做什么;2) 逐点讲解关键逻辑与数据流(引用具体标识符);3) 指出值得注意的边界情况或设计意图。用简短小标题和要点,不要大段复述代码。",
+        "你是代码讲解助手。只输出一句简洁的中文,概括选中代码(函数或逻辑块)的核心功能,不超过 60 字,直接说功能本身,不要任何前缀、标题或分点。仅当选中代码含有明显陷阱或边界情况时,才允许在句末追加一句不超过 30 字的提醒。禁止复述代码、禁止解释你的思考过程。",
     },
     {
       role: "user",
@@ -965,7 +1132,7 @@ async function runExplain(info) {
   stopAIStream();
   // 未配置模型 → 离线即时分析,并展开设置引导
   if (!cfg.baseUrl || !cfg.model) {
-    out.textContent = offlineExplain(info);
+    out.innerHTML = mdToHtml(offlineExplain(info));
     setStatus("离线分析", false);
     $(".aiset", panel).classList.add("show");
     return;
@@ -973,6 +1140,29 @@ async function runExplain(info) {
   out.textContent = "";
   setStatus("生成中…", true);
   aiAbort = new AbortController();
+  // 新一轮解释:回到顶部并恢复滚动跟随
+  const body = out.closest(".ap-body");
+  if (body) {
+    body.scrollTop = 0;
+    followStateOf(body).follow = true;
+  }
+  // 节流渲染:正文优先;只有思考时显示思考预览(只保留尾部,防超长)
+  let reasoningBuf = "";
+  let contentBuf = "";
+  const renderer = makeStreamRenderer(
+    () => {
+      if (contentBuf) {
+        out.innerHTML = mdToHtml(contentBuf);
+        setStatus(`生成中… ${contentBuf.length} 字`, true);
+      } else if (reasoningBuf) {
+        const tail =
+          reasoningBuf.length > 1500 ? "…(已省略前文)…\n" + reasoningBuf.slice(-1500) : reasoningBuf;
+        out.innerHTML = `<span class="dim">💭 思考中(${reasoningBuf.length} 字),正文输出后自动替换:\n\n${esc(tail)}</span>`;
+        setStatus(`思考中… ${reasoningBuf.length} 字`, true);
+      }
+    },
+    out.closest(".ap-body")
+  );
   try {
     const res = await fetch((cfg.baseUrl || "").replace(/\/+$/, "") + "/chat/completions", {
       method: "POST",
@@ -983,7 +1173,9 @@ async function runExplain(info) {
       body: JSON.stringify({
         model: cfg.model,
         stream: true,
-        temperature: 0.3,
+        temperature: 0.2,
+        max_tokens: 300,
+        thinking: { type: "disabled" },
         messages: buildExplainMessages(info),
       }),
       signal: aiAbort.signal,
@@ -999,7 +1191,6 @@ async function runExplain(info) {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    let got = 0;
     let done = false;
     while (!done) {
       const r = await reader.read();
@@ -1010,39 +1201,335 @@ async function runExplain(info) {
       for (const line of lines) {
         const t = line.trim();
         if (!t.startsWith("data:")) continue;
-        const d = t.slice(5).trim();
-        if (d === "[DONE]") {
+        const payload = t.slice(5).trim();
+        if (payload === "[DONE]") {
           done = true;
           break;
         }
         try {
-          const j = JSON.parse(d);
-          const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-          if (delta) {
-            out.textContent += delta;
-            got += delta.length;
-            setStatus(`生成中… ${got} 字`, true);
+          const j = JSON.parse(payload);
+          const delta = j.choices && j.choices[0] && j.choices[0].delta;
+          if (!delta) continue;
+          // DeepSeek v4 等推理模型先流式输出 reasoning_content(思考),后输出 content(正文)。
+          // 增量只进缓冲,渲染经 renderer 节流合并。
+          if (delta.reasoning_content) {
+            reasoningBuf += delta.reasoning_content;
+            renderer.schedule();
+          }
+          if (delta.content) {
+            contentBuf += delta.content;
+            renderer.schedule();
           }
         } catch {}
       }
     }
-    out.scrollTop = out.scrollHeight;
+    renderer.flush();
+    // 只有思考没有正文(异常截断)时,保留思考内容作为结果
+    if (!contentBuf && reasoningBuf) {
+      out.innerHTML = `<span class="dim">💭 模型只输出了思考过程(可能被截断):\n\n${esc(reasoningBuf)}</span>`;
+    }
     setStatus("完成", false);
   } catch (err) {
+    renderer.cancel();
     if (err && err.name === "AbortError") {
+      if (contentBuf) out.innerHTML = mdToHtml(contentBuf);
       setStatus("已停止", false);
     } else {
       const msg = String((err && err.message) || err);
       out.innerHTML =
         `<span class="ap-err">模型调用失败:${esc(msg)}</span>` +
         `<span class="ap-err">\n\n排查建议:\n· 本地 Ollama 需先设 OLLAMA_ORIGINS=* 再启动;\n· 在线端点需允许浏览器跨域(CORS),部分服务只允许服务端调用;\n· 检查 Base URL(以 /v1 结尾)、模型名与 API Key。\n\n下面先给出离线分析:\n\n</span>` +
-        esc(offlineExplain(info));
+        mdToHtml(offlineExplain(info));
       setStatus("失败,已回退离线分析", false);
     }
   } finally {
     aiAbort = null;
     $(".ap-stop", panel).style.display = "none";
   }
+}
+
+/* ============ 点击函数块 → AI 一句话解释 ============ */
+function fnbInfo(fnb) {
+  const rows = fnb.querySelectorAll(".cl");
+  if (!rows.length) return null;
+  const startLine = parseInt(rows[0].id.slice(1), 10);
+  const endLine = parseInt(rows[rows.length - 1].id.slice(1), 10);
+  if (!startLine || !endLine) return null;
+  const text = Array.from(rows)
+    .map((r) => {
+      const lc = r.querySelector(".lc");
+      return lc ? lc.textContent : "";
+    })
+    .join("\n");
+  if (!text.trim()) return null;
+  const box = fnb.closest(".codebox");
+  const segIdx = box ? Number(box.dataset.seg) : null;
+  const f = state.file ? byPath.get(state.file) : null;
+  return {
+    text,
+    file: state.file || "",
+    startLine,
+    endLine,
+    segIdx,
+    seg: f && segIdx !== null ? f.segs[segIdx] : null,
+    fileDesc: f ? f.desc : "",
+  };
+}
+function bindFnClick() {
+  $("#main").addEventListener("click", (e) => {
+    if (e.target.closest("button, .c-head, .selbtn, .aipanel, .floatwin, .annot, .codetip, .filehead")) return;
+    // 有文本选区时,这次点击属于选区流程(划选 → ✨ 按钮),不触发函数解释
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+    const fnb = e.target.closest(".fnb");
+    if (!fnb) return;
+    const info = fnbInfo(fnb);
+    if (info) {
+      hideSelBtn();
+      openAIPanel(info);
+    }
+  });
+}
+
+/* ============ 右侧 AI 陪读助手 ============ */
+let dockCtx = null; // 当前陪读代码上下文 {file,startLine,endLine,code,seg}
+let dockMessages = []; // 陪读会话历史
+let dockAbort = null;
+
+function dockEls() {
+  return {
+    dock: $("#aidock"),
+    thread: $("#ad-thread"),
+    status: $("#aidock .ad-status"),
+    q: $("#aidock .ad-q"),
+  };
+}
+function dockSetStatus(text, busy) {
+  const { status } = dockEls();
+  if (!status) return;
+  status.textContent = text || "";
+  status.classList.toggle("busy", Boolean(busy));
+  const stop = $(".ad-stop");
+  if (stop) stop.style.display = busy ? "" : "none";
+}
+function dockOpenToggle(force) {
+  const { dock } = dockEls();
+  const open = force !== undefined ? force : dock.classList.contains("hidden");
+  dock.classList.toggle("hidden", !open);
+  $("#btn-dock").classList.toggle("on", open);
+  localStorage.setItem("cv-dock", open ? "1" : "0");
+}
+function dockCard(cls) {
+  const { thread } = dockEls();
+  const card = document.createElement("div");
+  card.className = "ad-msg " + cls;
+  card.innerHTML = `<div class="ap-out"></div>`;
+  thread.appendChild(card);
+  thread.scrollTop = thread.scrollHeight;
+  return card.querySelector(".ap-out");
+}
+function dockTopicCard(info, oneSentence) {
+  const { thread } = dockEls();
+  const card = document.createElement("div");
+  card.className = "ad-topic";
+  const range = info.startLine ? `L${info.startLine}–L${info.endLine}` : "选区";
+  const meta = `📄 ${info.file.split("/").pop()} · ${range} · ${info.text.trim().split(/\n/).length} 行`;
+  card.textContent = oneSentence ? `${meta} — ${oneSentence}` : meta;
+  card.title = oneSentence || meta;
+  thread.appendChild(card);
+  thread.scrollTop = thread.scrollHeight;
+}
+function dockSystemPrompt() {
+  const c = dockCtx;
+  return (
+    "你是代码陪读导师,面向想深入理解源码的读者。当前讨论的代码:" +
+    c.file +
+    " L" +
+    c.startLine +
+    "–L" +
+    c.endLine +
+    "\n```\n" +
+    (c.code || "").slice(0, 6000) +
+    "\n```\n用中文讲解:清晰分层(整体职责 → 逐块关键逻辑 → 设计意图与边界),引用真实标识符,可用小标题/列表/短代码块,避免空话与整段复述代码。"
+  );
+}
+async function dockStream(messages, outEl) {
+  const cfg = loadAIConfig();
+  if (!cfg.baseUrl || !cfg.model) {
+    outEl.innerHTML = `<span class="ap-err">未配置模型:请在 AI 解释面板 ⚙️ 模型设置 里选择提供商(本地代理 /ai-proxy 已就绪)。</span>`;
+    dockSetStatus("", false);
+    return null;
+  }
+  if (dockAbort) dockAbort.abort();
+  dockAbort = new AbortController();
+  dockSetStatus("生成中…", true);
+  let reasoningBuf = "";
+  let contentBuf = "";
+  // 节流渲染:增量只累积,~90ms 合并重渲染 + 滚动跟随
+  const renderer = makeStreamRenderer(
+    () => {
+      if (contentBuf) {
+        outEl.innerHTML = mdToHtml(contentBuf);
+        dockSetStatus(`生成中… ${contentBuf.length} 字`, true);
+      } else if (reasoningBuf) {
+        outEl.innerHTML = `<span class="dim">💭 思考中(${reasoningBuf.length} 字)…</span>`;
+        dockSetStatus(`思考中… ${reasoningBuf.length} 字`, true);
+      }
+    },
+    outEl.closest(".ad-thread")
+  );
+  // 新一轮回答:恢复滚动跟随(用户此前可能上滚阅读)
+  const threadEl = outEl.closest(".ad-thread");
+  if (threadEl) followStateOf(threadEl).follow = true;
+  let done = false;
+  try {
+    const res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        stream: true,
+        temperature: 0.3,
+        max_tokens: 2000,
+        thinking: { type: "disabled" },
+        messages,
+      }),
+      signal: dockAbort.signal,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        msg = (j.error && j.error.message) || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (!done) {
+      const r = await reader.read();
+      if (r.done) break;
+      buf += dec.decode(r.value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith("data:")) continue;
+        const payload = t.slice(5).trim();
+        if (payload === "[DONE]") {
+          done = true;
+          break;
+        }
+        try {
+          const j = JSON.parse(payload);
+          const delta = j.choices && j.choices[0] && j.choices[0].delta;
+          if (!delta) continue;
+          if (delta.reasoning_content) {
+            reasoningBuf += delta.reasoning_content;
+            renderer.schedule();
+          }
+          if (delta.content) {
+            contentBuf += delta.content;
+            renderer.schedule();
+          }
+        } catch {}
+      }
+    }
+    renderer.flush();
+    if (!contentBuf && reasoningBuf) {
+      outEl.innerHTML = `<span class="dim">💭 模型只输出了思考过程:\n\n${esc(reasoningBuf)}</span>`;
+    } else if (!contentBuf) {
+      outEl.innerHTML = mdToHtml("(无输出)");
+    }
+    dockSetStatus("完成", false);
+    return contentBuf || null;
+  } catch (err) {
+    renderer.cancel();
+    if (err && err.name === "AbortError") {
+      if (contentBuf) outEl.innerHTML = mdToHtml(contentBuf);
+      dockSetStatus("已停止", false);
+      return contentBuf || null;
+    }
+    outEl.innerHTML = `<span class="ap-err">调用失败:${esc(String((err && err.message) || err))}</span>`;
+    dockSetStatus("失败", false);
+    return null;
+  } finally {
+    dockAbort = null;
+  }
+}
+async function dockDeepDive(info, oneSentence) {
+  dockOpenToggle(true);
+  if (dockAbort) dockAbort.abort();
+  dockCtx = { file: info.file, startLine: info.startLine, endLine: info.endLine, code: info.text, seg: info.seg };
+  dockMessages = [];
+  dockTopicCard(info, oneSentence);
+  const outEl = dockCard("ai");
+  const userMsg =
+    (oneSentence ? `已有的一句话解释:${oneSentence}\n` : "") +
+    "请深入讲解这段代码:整体职责 → 逐块关键逻辑(引用标识符)→ 设计意图与边界情况。读者觉得一句话解释不够,想要真正理解。";
+  dockMessages.push({ role: "user", content: userMsg });
+  const answer = await dockStream([{ role: "system", content: dockSystemPrompt() }, ...dockMessages], outEl);
+  if (answer) dockMessages.push({ role: "assistant", content: answer });
+}
+async function dockAsk(q) {
+  if (!dockCtx) {
+    toast("先点击函数或划选片段,再用「📚 深度理解」送入陪读");
+    return;
+  }
+  if (dockAbort) dockAbort.abort();
+  const userEl = dockCard("user");
+  userEl.textContent = q;
+  dockMessages.push({ role: "user", content: q });
+  const outEl = dockCard("ai");
+  const answer = await dockStream(
+    [{ role: "system", content: dockSystemPrompt() }, ...dockMessages.slice(-12)],
+    outEl
+  );
+  if (answer) dockMessages.push({ role: "assistant", content: answer });
+}
+function initDock() {
+  $("#btn-dock").addEventListener("click", () => dockOpenToggle());
+  $(".ad-close").addEventListener("click", () => dockOpenToggle(false));
+  const send = () => {
+    const { q } = dockEls();
+    const val = q.value.trim();
+    if (!val) return;
+    q.value = "";
+    dockAsk(val);
+  };
+  $(".ad-send").addEventListener("click", send);
+  $(".ad-stop").addEventListener("click", () => {
+    if (dockAbort) dockAbort.abort();
+  });
+  $(".ad-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+  // 拖宽
+  const sp = $("#asplit");
+  const dock = $("#aidock");
+  sp.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    sp.classList.add("drag");
+    const move = (ev) => {
+      const w = Math.min(window.innerWidth - 420, Math.max(280, window.innerWidth - ev.clientX));
+      dock.style.width = `${w}px`;
+    };
+    const up = () => {
+      sp.classList.remove("drag");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  if (localStorage.getItem("cv-dock") === "1") dockOpenToggle(true);
 }
 
 /* ============ 侧栏拖宽 ============ */
@@ -1173,6 +1660,8 @@ function init() {
   bindSidebarDrag();
   bindCodeHover();
   bindSelectionAssistant();
+  bindFnClick();
+  initDock();
   applyTheme();
   applyMode();
   applyFs();

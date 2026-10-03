@@ -13,3 +13,6 @@ scratch/
 .zcode/
 diff-*.txt
 docs/
+
+# 源码阅读器 AI 代理的本机密钥配置(绝不入库)
+tools/code-viewer/ai.config.local.json

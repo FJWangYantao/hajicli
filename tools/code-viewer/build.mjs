@@ -187,6 +187,7 @@ ${css}
       <div id="results"></div>
     </div>
     <button class="tbtn" id="btn-mode" title="切换 交错/并排 布局"></button>
+    <button class="tbtn" id="btn-dock" title="AI 陪读助手(右侧栏)">🧑‍🏫 陪读</button>
     <button class="tbtn" id="btn-theme"></button>
     <button class="tbtn" id="btn-fs-minus" title="减小代码字号">A-</button>
     <button class="tbtn" id="btn-fs-plus" title="增大代码字号">A+</button>
@@ -201,6 +202,24 @@ ${css}
     </div>
     <div id="vsplit" title="拖动调整宽度"></div>
     <div id="main"></div>
+    <div id="asplit" title="拖动调整宽度"></div>
+    <div id="aidock" class="hidden">
+      <div class="ad-head">
+        <span class="t">🧑‍🏫 AI 陪读</span>
+        <span class="ad-status"></span>
+        <button class="tbtn ad-close" title="收起">✕</button>
+      </div>
+      <div class="ad-thread" id="ad-thread">
+        <div class="ad-hint">点击函数或划选代码,在解释面板点「📚 深度理解」送入;底部可继续追问。</div>
+      </div>
+      <div class="ad-ask">
+        <textarea class="ad-q" placeholder="追问这段代码…(Enter 发送)"></textarea>
+        <div class="ad-askbtns">
+          <button class="tbtn ad-send">发送</button>
+          <button class="tbtn ad-stop" style="display:none" title="停止生成">⏹</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <button id="totop" title="回到顶部">↑</button>
