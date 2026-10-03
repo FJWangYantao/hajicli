@@ -143,28 +143,6 @@ export class BashTool implements BaseTool {
         child = undefined;
         resolve(value);
       };
-      const finishAfterProcessClose = (value: string) => {
-        const runningChild = child;
-        if (
-          !runningChild ||
-          runningChild.exitCode !== null ||
-          typeof runningChild.once !== "function"
-        ) {
-          finish(value);
-          return;
-        }
-        let closeTimeout: NodeJS.Timeout | undefined;
-        const closed = () => {
-          if (closeTimeout) clearTimeout(closeTimeout);
-          finish(value);
-        };
-        runningChild.once("close", closed);
-        closeTimeout = setTimeout(() => {
-          runningChild.removeListener?.("close", closed);
-          finish(value);
-        }, 750);
-        closeTimeout.unref?.();
-      };
       // 允许使用 10MB 的缓冲区，防止长输出崩掉
       child = this.commandExecutor(
         command,
@@ -214,10 +192,9 @@ export class BashTool implements BaseTool {
         if (settled || aborting) return;
         aborting = true;
         const runningChild = child;
-        if (!runningChild) {
-          finish(terminationLabel());
-          return;
-        }
+        // 立即返回中止标记：进程树清理转入后台尽力执行，终止提示不等待杀进程完成。
+        finish(terminationLabel());
+        if (!runningChild || runningChild.exitCode !== null) return;
 
         if (runningChild.pid && process.platform === "win32") {
           const rootPid = runningChild.pid;
@@ -272,21 +249,12 @@ export class BashTool implements BaseTool {
             ["/PID", String(rootPid), "/T", "/F"],
             { windowsHide: true, timeout: 3000 },
             (taskkillError) => {
-              if (settled) return;
-              if (!taskkillError) {
-                finishAfterProcessClose(terminationLabel());
-                return;
-              }
-
-              const taskkillCode =
-                (taskkillError as NodeJS.ErrnoException & { code?: string | number }).code ??
-                "unknown";
+              if (!taskkillError) return;
               this.fileExecutor(
                 "powershell.exe",
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", cleanupScript],
                 { windowsHide: true, timeout: 5000 },
                 (enumerationError, stdout) => {
-                  if (settled) return;
                   const descendantIds = enumerationError
                     ? []
                     : String(stdout || "")
@@ -294,37 +262,14 @@ export class BashTool implements BaseTool {
                         .split(",")
                         .map((value) => Number(value.trim()))
                         .filter((value) => Number.isInteger(value) && value > 0);
-                  const failedIds: number[] = [];
                   for (const descendantId of descendantIds) {
                     try {
                       this.processKiller(descendantId, "SIGTERM");
-                    } catch (error) {
-                      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-                        failedIds.push(descendantId);
-                      }
+                    } catch {
+                      // 后台兜底清理是尽力而为：进程已退出或信号失败都不再上报。
                     }
                   }
-                  const parentSignalSent = runningChild.kill("SIGTERM");
-                  if (
-                    !enumerationError &&
-                    descendantIds.length > 0 &&
-                    failedIds.length === 0 &&
-                    parentSignalSent
-                  ) {
-                    finishAfterProcessClose(
-                      `${terminationLabel()}\n提示: taskkill 失败 (code=${taskkillCode})，已通过进程枚举兜底清理。`,
-                    );
-                    return;
-                  }
-
-                  const enumerationCode = enumerationError
-                    ? ((enumerationError as NodeJS.ErrnoException & { code?: string | number })
-                        .code ?? "unknown")
-                    : "ok";
-                  finishAfterProcessClose(
-                    `${terminationLabel()}\n警告: taskkill 失败 (code=${taskkillCode})，进程树未能确认完整清理；` +
-                      `枚举状态: ${enumerationCode}，未清理 PID: ${failedIds.length > 0 ? failedIds.join(", ") : "未知"}。`,
-                  );
+                  runningChild.kill("SIGTERM");
                 },
               );
             },
@@ -332,12 +277,7 @@ export class BashTool implements BaseTool {
           return;
         }
 
-        const signalSent = runningChild.kill("SIGTERM");
-        finishAfterProcessClose(
-          signalSent
-            ? terminationLabel()
-            : `${terminationLabel()}\n警告: 进程终止信号发送失败，可能存在残留进程。`,
-        );
+        runningChild.kill("SIGTERM");
       };
       context?.abortSignal?.addEventListener("abort", abort, { once: true });
       if (timeoutMs !== undefined) {

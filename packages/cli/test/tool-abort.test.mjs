@@ -204,7 +204,7 @@ test("successful parent tools expose their verification evidence ID", async () =
   }
 });
 
-test("bash reports taskkill failure and attempts a fallback kill", async () => {
+test("bash aborts instantly and still cleans up the process tree in the background", async () => {
   const controller = new AbortController();
   const killSignals = [];
   const child = {
@@ -218,16 +218,18 @@ test("bash reports taskkill failure and attempts a fallback kill", async () => {
   const commandExecutor = () => child;
   const cleanupCalls = [];
   const killedPids = [];
+  const pendingPowerShellCallbacks = [];
   const fileExecutor = (file, _args, _options, callback) => {
     cleanupCalls.push(file);
-    queueMicrotask(() => {
-      if (file === "taskkill.exe") {
+    if (file === "taskkill.exe") {
+      queueMicrotask(() => {
         const error = Object.assign(new Error("access denied"), { code: 5 });
         callback(error, "", "");
-        return;
-      }
-      callback(null, "5002,5001\n", "");
-    });
+      });
+      return {};
+    }
+    // 挂起兜底链的回调，由测试主动放行，验证 resolve 不依赖它。
+    pendingPowerShellCallbacks.push(callback);
     return {};
   };
   const tool = new BashTool(commandExecutor, fileExecutor, (pid, signal) => {
@@ -242,8 +244,15 @@ test("bash reports taskkill failure and attempts a fallback kill", async () => {
   controller.abort();
   const output = await pending;
 
-  assert.match(output, /^\[命令已中止\]/);
-  assert.match(output, /taskkill 失败.*进程枚举兜底清理/);
+  // 中止标记立即返回，此时 PowerShell 兜底链还未放行、不可能已完成。
+  assert.equal(output, "[命令已中止]");
+  assert.equal(pendingPowerShellCallbacks.length, 1);
+  assert.deepEqual(killedPids, []);
+
+  for (const callback of pendingPowerShellCallbacks.splice(0)) {
+    callback(null, "5002,5001\n", "");
+  }
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(cleanupCalls, ["taskkill.exe", "powershell.exe"]);
   assert.deepEqual(killedPids, [
     [5002, "SIGTERM"],

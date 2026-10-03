@@ -596,8 +596,12 @@ async function main() {
   // Node 默认 Ctrl+C 直接终止跳过 finally，这里补一个最小收尾。
   let sigintHandling = false;
   process.on("SIGINT", async () => {
-    if (sigintHandling) return; // 防止连按导致重复执行
+    // 第二次 Ctrl+C：flush 可能挂住（如上游重试），直接强制退出。
+    if (sigintHandling) process.exit(130);
     sigintHandling = true;
+    // 看门狗：异步 flush 卡死时兜底强制退出；unref 不影响正常路径。
+    const watchdog = setTimeout(() => process.exit(130), 3000);
+    watchdog.unref?.();
     try {
       await experienceStore.flushObservations();
     } catch {
@@ -1272,6 +1276,7 @@ async function main() {
       });
   };
 
+  let fatalExit: unknown;
   try {
     markStartupStage("ready");
     while (true) {
@@ -2879,7 +2884,7 @@ async function main() {
         if (abortNoticeShown) return;
         abortNoticeShown = true;
         ui.writeLine();
-        ui.writeLine(colors.boldYellow("🛑 已终止。"));
+        ui.writeLine(colors.red("Runtime is terminated."));
       };
 
       const reclaimPrompt = () => {
@@ -3381,7 +3386,8 @@ async function main() {
     if (error instanceof TerminalInputCancelledError) {
       ui.writeLine(colors.gray("已取消输入。"));
     } else {
-      throw error;
+      // 延迟到 finally 清理完成后再抛出，避免强制退出吞掉崩溃堆栈。
+      fatalExit = error;
     }
   } finally {
     activityIndicator.stop();
@@ -3439,7 +3445,15 @@ async function main() {
     } finally {
       performanceMonitor.stop();
     }
+    // 确定性关机：MCP 子进程等句柄会阻止 Node 自然退出，而 process.on("exit")
+    // 的清理只在进程真正退出时才触发——自然退出被挂住时两者互相等待，进程会
+    // 永久残留并占用 Trace 端口。因此退出前必须显式清理；正常路径随后强制
+    // 退出，崩溃路径此时句柄已释放，自然退出也不会被挂住。
+    agentManager.abortAll();
+    mcpManager.stopAll();
   }
+  if (fatalExit !== undefined) throw fatalExit;
+  process.exit(0);
 }
 
 main();

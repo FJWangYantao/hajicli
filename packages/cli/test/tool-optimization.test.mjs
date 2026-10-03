@@ -12,6 +12,22 @@ import {
   WriteFileTool,
 } from "../../plugins/dist/index.js";
 
+// bash 中止后杀进程在后台进行，被终止的子进程可能短暂占用工作区目录。
+async function removeWorkspaceWithRetry(workspace) {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    try {
+      await fs.rm(workspace, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if ((error.code !== "EBUSY" && error.code !== "ENOTEMPTY") || Date.now() > deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 async function withWorkspace(run) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "haji-tools-"));
   const previousCwd = process.cwd();
@@ -26,7 +42,7 @@ async function withWorkspace(run) {
     await run(workspace);
   } finally {
     process.chdir(previousCwd);
-    await fs.rm(workspace, { recursive: true, force: true });
+    await removeWorkspaceWithRetry(workspace);
   }
 }
 
