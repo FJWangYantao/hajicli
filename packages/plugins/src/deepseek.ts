@@ -9,6 +9,7 @@ import {
 } from "@hajicli/core";
 import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
 import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
+import { AlwaysThinkingAdapter } from "./thinking-compat.js";
 
 /** 模型请求最大重试次数（首次失败后最多再重试 5 次，指数退避）。 */
 const MAX_RETRIES = 5;
@@ -23,6 +24,7 @@ export class DeepSeekProvider implements ModelProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultModel: string;
+  private readonly thinkingAdapter = new AlwaysThinkingAdapter();
 
   constructor(config: DeepSeekConfig = {}) {
     const apiKey = config.apiKey || process.env.DEEPSEEK_API_KEY;
@@ -138,66 +140,81 @@ export class DeepSeekProvider implements ModelProvider {
       payload.reasoning_effort = options.reasoningEffort;
     }
 
+    this.thinkingAdapter.applyKnown(String(payload.model), payload);
     options.onRequestStart?.();
-    return withExponentialBackoff(
-      async () => {
-        try {
-          const response = await fetchWithNetworkPolicy(
-            url,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${this.apiKey}`,
+    const run = () =>
+      withExponentialBackoff(
+        async () => {
+          try {
+            const response = await fetchWithNetworkPolicy(
+              url,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${this.apiKey}`,
+                },
+                body: JSON.stringify(payload),
+                signal: options.abortSignal,
               },
-              body: JSON.stringify(payload),
-              signal: options.abortSignal,
-            },
-            { timeoutMs: getModelTimeoutMs() },
-          );
+              { timeoutMs: getModelTimeoutMs() },
+            );
 
-          if (!response.ok) {
-            let errorMsg = `HTTP error! status: ${response.status}`;
-            try {
-              const errData = (await response.json()) as { error?: { message?: string } };
-              if (errData.error?.message) {
-                errorMsg = errData.error.message;
+            if (!response.ok) {
+              let errorMsg = `HTTP error! status: ${response.status}`;
+              try {
+                const errData = (await response.json()) as { error?: { message?: string } };
+                if (errData.error?.message) {
+                  errorMsg = errData.error.message;
+                }
+              } catch {
+                // 忽略解析错误
               }
-            } catch {
-              // 忽略解析错误
+              throw new ProviderError(errorMsg, "deepseek", response.status);
             }
-            throw new ProviderError(errorMsg, "deepseek", response.status);
-          }
 
-          return response;
-        } catch (error) {
-          if (error instanceof ProviderError) {
-            throw error;
+            return response;
+          } catch (error) {
+            if (error instanceof ProviderError) {
+              throw error;
+            }
+            if (options.abortSignal?.aborted) {
+              const reason = options.abortSignal.reason;
+              throw reason instanceof Error && reason.name === "TimeoutError"
+                ? reason
+                : normalizeAbortError(error);
+            }
+            const isTimeout = error instanceof Error && error.name === "TimeoutError";
+            const msg = isTimeout
+              ? `网络请求超时（${Math.round(getModelTimeoutMs() / 1000)}s），DeepSeek API 未在规定时间内响应。`
+              : error instanceof Error
+                ? error.message
+                : String(error);
+            // 走到这里的一律是传输层瞬时故障（超时/连接失败等），显式标记可重试，
+            // 避免本地化消息无法被 isRetryableError 的关键词匹配而漏掉重试。
+            throw new ProviderError(msg, "deepseek", undefined, true);
           }
-          if (options.abortSignal?.aborted) {
-            const reason = options.abortSignal.reason;
-            throw reason instanceof Error && reason.name === "TimeoutError"
-              ? reason
-              : normalizeAbortError(error);
-          }
-          const isTimeout = error instanceof Error && error.name === "TimeoutError";
-          const msg = isTimeout
-            ? `网络请求超时（${Math.round(getModelTimeoutMs() / 1000)}s），DeepSeek API 未在规定时间内响应。`
-            : error instanceof Error
-              ? error.message
-              : String(error);
-          // 走到这里的一律是传输层瞬时故障（超时/连接失败等），显式标记可重试，
-          // 避免本地化消息无法被 isRetryableError 的关键词匹配而漏掉重试。
-          throw new ProviderError(msg, "deepseek", undefined, true);
-        }
-      },
-      {
-        maxRetries: MAX_RETRIES,
-        initialDelayMs: 1000,
-        providerName: "deepseek",
-        onRetry: (attempt, delay, error) =>
-          options.onRetry?.({ attempt, maxRetries: MAX_RETRIES, delayMs: delay, error }),
-      },
-    );
+        },
+        {
+          maxRetries: MAX_RETRIES,
+          initialDelayMs: 1000,
+          providerName: "deepseek",
+          onRetry: (attempt, delay, error) =>
+            options.onRetry?.({ attempt, maxRetries: MAX_RETRIES, delayMs: delay, error }),
+        },
+      );
+    try {
+      return await run();
+    } catch (error) {
+      // "永远思考"模型拒绝 disabled thinking 或 medium/xhigh 档位；
+      // 参数适配后立即重试一次，并记住该模型，后续请求直接构造合法参数。
+      if (
+        error instanceof ProviderError &&
+        this.thinkingAdapter.absorb(String(payload.model), payload, error.status, error.message)
+      ) {
+        return await run();
+      }
+      throw error;
+    }
   }
 }

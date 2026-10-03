@@ -12,6 +12,7 @@ export * from "./read-tool.js";
 export * from "./skill-tool.js";
 export * from "./subagent-tool.js";
 export * from "./task-tool.js";
+export * from "./thinking-compat.js";
 export * from "./volcengine.js";
 export * from "./web-fetch-tool.js";
 export * from "./web-search-tool.js";
