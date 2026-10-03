@@ -160,3 +160,27 @@ test("projectinfo cache is bounded and evicts the oldest project", async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("projectinfo skips Rust target directory with transient rmeta artifacts", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "haji-project-rust-"));
+  const previousCwd = process.cwd();
+  try {
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.mkdir(path.join(root, "target", "debug", "deps", "rmetaXeaSft"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "main.rs"), "fn main() {}\n");
+    await fs.writeFile(path.join(root, "Cargo.toml"), "[package]\nname = \"x\"\n");
+    await fs.writeFile(
+      path.join(root, "target", "debug", "deps", "rmetaXeaSft", "lib.rmeta"),
+      "stale artifact\n",
+    );
+    process.chdir(root);
+    const output = await new ProjectInfoTool().execute({ includeGit: false });
+    assert.match(output, /^\[项目结构摘要\]/);
+    // target 不计入文件数，也不出现在配置/入口清单里。
+    assert.match(output, /文件数=2/);
+    assert.doesNotMatch(output, /target|rmeta/);
+  } finally {
+    process.chdir(previousCwd);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

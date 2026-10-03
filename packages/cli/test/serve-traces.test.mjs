@@ -4,6 +4,11 @@ import test from "node:test";
 
 import { startTraceServer } from "@hajicli/core";
 
+// startTraceServer 会打印 banner；并行测试下子进程 stdout 高压会干扰
+// node:test runner 的 IPC 反序列化，这里统一静音。
+const originalLog = console.log;
+console.log = () => {};
+
 /** 占住一个随机端口，返回 { port, release }。 */
 function occupyPort() {
   return new Promise((resolve, reject) => {
@@ -61,4 +66,8 @@ test("startTraceServer 首选端口空闲时原样使用", async () => {
   assert.equal(boundPort, port);
   const response = await fetch(`http://127.0.0.1:${boundPort}/api/sessions`);
   assert.equal(response.status, 200);
+});
+
+process.on("exit", () => {
+  console.log = originalLog;
 });

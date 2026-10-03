@@ -6,6 +6,8 @@ export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   "build",
   "out",
   ".gemini",
+  // Rust 构建产物：体量巨大且含 rustc 瞬态目录（deps/rmeta*），扫描既慢又易撞竞态。
+  "target",
 ];
 export const DEFAULT_EXCLUDED_EXTENSIONS = new Set([
   ".png",

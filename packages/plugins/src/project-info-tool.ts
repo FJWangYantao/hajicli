@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
@@ -135,7 +136,7 @@ function throwIfAborted(context?: ToolExecutionContext): void {
 async function listWorkspaceFiles(
   cwd: string,
   context?: ToolExecutionContext,
-): Promise<{ files: string[]; truncated: boolean }> {
+): Promise<{ files: string[]; truncated: boolean; skippedDirs: number }> {
   const args = ["--files", "--hidden", "--sort", "path"];
   for (const directory of DEFAULT_EXCLUDED_DIRS) args.push("--glob", `!${directory}/**`);
   const fastResult = await runRipgrepLines(args, cwd, MAX_SCANNED_FILES, context?.abortSignal);
@@ -145,14 +146,24 @@ async function listWorkspaceFiles(
         .map((file) => file.replace(/\\/g, "/"))
         .sort((left, right) => left.localeCompare(right)),
       truncated: fastResult.truncated,
+      skippedDirs: 0,
     };
   }
 
   const files: string[] = [];
   let truncated = false;
+  let skippedDirs = 0;
   const walk = async (directory: string) => {
     throwIfAborted(context);
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      // 瞬态目录（如 rustc 的 deps/rmeta*）会在扫描窗口内被创建又删除，
+      // 权限受限目录同理：跳过该目录，不让整个摘要失败。
+      skippedDirs += 1;
+      return;
+    }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       if (truncated) return;
@@ -166,7 +177,7 @@ async function listWorkspaceFiles(
     }
   };
   await walk(cwd);
-  return { files, truncated };
+  return { files, truncated, skippedDirs };
 }
 
 function isConfigFile(file: string): boolean {
@@ -339,6 +350,7 @@ function renderProjectInfo(
   cacheHit: boolean,
   depth: ProjectInfoDepth,
   git?: GitSummary,
+  skippedDirs = 0,
 ): string {
   const detailLimit = depth === "detailed" ? 30 : 10;
   const records: string[] = [
@@ -374,6 +386,8 @@ function renderProjectInfo(
   }
   if (info.fileScanTruncated)
     records.push(`提示：文件数超过扫描上限 ${MAX_SCANNED_FILES}，语言与目录统计为前缀样本。`);
+  if (skippedDirs > 0)
+    records.push(`提示：有 ${skippedDirs} 个目录读取失败（瞬态或权限受限）已跳过，统计略偏小。`);
 
   const bounded = takeWholeRecords(records, MAX_OUTPUT_LENGTH - 50);
   return `[项目结构摘要]\n${bounded.text}${bounded.truncated ? "\n提示：摘要已按输出预算截断。" : ""}`;
@@ -436,7 +450,7 @@ export class ProjectInfoTool implements BaseTool {
       }
       const git = options.includeGit ? await readGitSummary(cwd, context) : undefined;
       if (context?.abortSignal?.aborted) return "[项目摘要已中止]";
-      return renderProjectInfo(cwd, info, cacheHit, options.depth, git);
+      return renderProjectInfo(cwd, info, cacheHit, options.depth, git, listed.skippedDirs);
     } catch (error) {
       if (
         context?.abortSignal?.aborted ||
@@ -444,7 +458,8 @@ export class ProjectInfoTool implements BaseTool {
       ) {
         return "[项目摘要已中止]";
       }
-      return `项目摘要失败: ${error instanceof Error ? error.message : String(error)}`;
+      // 以「错误:」开头使失败被 isFailedToolOutput/trace/经验系统一致识别。
+      return `错误: 项目摘要扫描失败: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 }
