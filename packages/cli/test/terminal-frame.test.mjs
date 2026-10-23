@@ -216,7 +216,7 @@ test("renders transient activity on the fixed track above input without persisti
   assert.doesNotMatch(frame.ui.chatContent, /ACTIVITY_SENTINEL/);
 });
 
-test("renders animated observability with phase, meter, elapsed time and detail", () => {
+test("renders animated observability with phase, elapsed time and detail", () => {
   const chatContent = "CHAT_SENTINEL";
   const frame = renderFrame(80, 24, (ui) => {
     ui.chatContent = chatContent;
@@ -225,7 +225,6 @@ test("renders animated observability with phase, meter, elapsed time and detail"
       tone: "waiting",
       icon: "⠹",
       label: "执行工具",
-      meter: "··▱▰▱··",
       elapsed: "18s",
       detail: "grep: 读取结果",
       idleText: "13s 无新事件",
@@ -298,7 +297,6 @@ test("activity detail progressively compacts on narrow terminals", () => {
       tone: "waiting",
       icon: "⠹",
       label: "执行工具",
-      meter: "··▱▰▱··",
       elapsed: "18s",
       detail: "grep: a/very/long/path/source.ts",
       idleText: "13s 无新事件",
@@ -313,7 +311,7 @@ test("activity detail progressively compacts on narrow terminals", () => {
   assert.doesNotMatch(compact, /a\/very\/long\/path/);
   assert.match(narrow, /执行工具/);
   assert.match(narrow, /18s/);
-  assert.doesNotMatch(narrow, /等待新事件|··▱▰▱··/);
+  assert.doesNotMatch(narrow, /等待新事件/);
 });
 
 test("an animation tick repaints only the fixed activity row", () => {
@@ -326,7 +324,6 @@ test("an animation tick repaints only the fixed activity row", () => {
         tone: "active",
         icon: "✦",
         label: "思考中",
-        meter: "▰▱·····",
         elapsed: "1s",
       };
       ui.renderFrame();
@@ -335,7 +332,6 @@ test("an animation tick repaints only the fixed activity row", () => {
       ui.activityFrame = {
         ...ui.activityFrame,
         icon: "✧",
-        meter: "▱▰▱····",
         elapsed: "2s",
       };
       ui.renderFrame();
@@ -421,6 +417,124 @@ test("Escape cancels an active selector and still reaches the turn abort callbac
       assert.equal(ui.activeSelection, undefined);
       assert.equal(selectionError?.name, "TerminalInputCancelledError");
       assert.equal(abortCalls, 1);
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
+});
+
+test("the live tool tail renders below committed chat without entering the transcript", () => {
+  withFakeStdout(80, 24, () => {
+    const ui = createTerminalUI();
+    try {
+      ui.chatContent = "assistant text\n";
+      ui.setLiveTail("  ⠋ bash  make\n    │ compiling\n");
+      ui.writeLine("NOTE written while the tool runs");
+      ui.renderFrame();
+      const screen = ui.renderedScreenRows.map(stripAnsi).join("\n");
+      assert.match(
+        screen,
+        /assistant text\s+NOTE written while the tool runs\s+⠋ bash {2}make\s+│ compiling/,
+      );
+      assert.doesNotMatch(ui.chatContent, /compiling/);
+
+      ui.setLiveTail("");
+      ui.renderFrame();
+      assert.doesNotMatch(ui.renderedScreenRows.map(stripAnsi).join("\n"), /compiling/);
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
+});
+
+test("activity row drops the pulse meter and shows the interrupt hint on wide terminals", () => {
+  const activity = (ui) => {
+    ui.activityFrame = {
+      phase: "tool",
+      tone: "active",
+      icon: "⠋",
+      label: "运行 bash",
+      elapsed: "3s",
+    };
+  };
+  const wide = renderFrame(120, 30, activity).plainRows.join("\n");
+  const narrow = renderFrame(80, 24, activity).plainRows.join("\n");
+  assert.match(wide, /⠋ 运行 bash {2}3s +Esc 中止/);
+  assert.doesNotMatch(wide, /[▰▱]/);
+  assert.match(narrow, /⠋ 运行 bash {2}3s/);
+  assert.doesNotMatch(narrow, /Esc 中止/);
+});
+
+function permissionSelection(overrides = {}) {
+  const result = {};
+  return {
+    result,
+    selection: {
+      options: {
+        title: "需要授权 · AI 请求运行命令",
+        preview: ["for i in 1 2 3; do", "  echo $i", "done", "工作目录 ~/demo"],
+        items: [
+          { value: "once", label: "允许本次", hotkey: "y" },
+          { value: "session", label: "本会话内总是允许 bash", hotkey: "a" },
+          { value: "deny", label: "拒绝", hotkey: "n" },
+        ],
+        hint: "↑↓ 选择 · Enter 确认 · Esc 中止本轮",
+        confirmDelayMs: 300,
+        ...overrides,
+      },
+      openedAt: Date.now(),
+      selectedIndex: 0,
+      secondaryIndex: 0,
+      resolve(value) {
+        result.value = value.value;
+      },
+      reject(error) {
+        result.error = error;
+      },
+    },
+  };
+}
+
+test("permission card shows the full command preview above the choices", () => {
+  const { selection } = permissionSelection();
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.activeInput = undefined;
+    ui.activeSelection = selection;
+  });
+  const screen = frame.plainRows.join("\n");
+  assert.match(screen, /需要授权 · AI 请求运行命令 {2}↑↓ 选择 · Enter 确认 · Esc 中止本轮/);
+  assert.match(screen, /│ for i in 1 2 3; do\n│ {3}echo \$i\n│ done\n│ 工作目录 ~\/demo/);
+  assert.match(screen, /› 允许本次 \(y\)\n {2}本会话内总是允许 bash \(a\)\n {2}拒绝 \(n\)/);
+});
+
+test("permission card trims the preview on short terminals but keeps every choice", () => {
+  const { selection } = permissionSelection({
+    preview: Array.from({ length: 30 }, (_, index) => `line ${index}`),
+  });
+  const screen = renderFrame(80, 16, (ui) => {
+    ui.activeInput = undefined;
+    ui.activeSelection = selection;
+  }).plainRows.join("\n");
+  assert.match(screen, /│ … 另有 \d+ 行（窗口高度不足）/);
+  assert.match(screen, /允许本次[\s\S]*本会话内总是允许 bash[\s\S]*拒绝/);
+});
+
+test("permission hotkeys and Enter are ignored right after the card appears", () => {
+  withFakeStdout(80, 24, () => {
+    const ui = createTerminalUI();
+    try {
+      ui.activeInput = undefined;
+      const { selection, result } = permissionSelection();
+      ui.activeSelection = selection;
+      ui.handleSelectionKeypress("\r", { name: "return" });
+      ui.handleSelectionKeypress("y", { name: "y" });
+      assert.equal(result.value, undefined, "early keystrokes do not approve");
+      assert.ok(ui.activeSelection);
+
+      selection.openedAt = Date.now() - 1_000;
+      ui.handleSelectionKeypress("n", { name: "n" });
+      assert.equal(result.value, "deny");
+      assert.equal(ui.activeSelection, undefined);
     } finally {
       cleanupTerminalUI(ui);
     }

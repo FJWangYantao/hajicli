@@ -1,3 +1,9 @@
+import {
+  formatToolCell,
+  formatToolDuration,
+  type ToolCellStatus,
+  type ToolResultSummary,
+} from "./cli-runtime.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 
 export type ActivityPhase =
@@ -24,7 +30,6 @@ export interface ActivityFrame {
   tone: ActivityTone;
   icon: string;
   label: string;
-  meter: string;
   elapsed: string;
   detail?: string;
   idleText?: string;
@@ -45,7 +50,8 @@ const PHASE_ICONS: Readonly<Record<ActivityPhase, readonly string[]>> = {
   responding: ["▁▂▃", "▂▃▄", "▃▄▅", "▄▅▆", "▅▆▇", "▄▅▆", "▃▄▅", "▂▃▄"],
   tool: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
   batch: ["◐", "◓", "◑", "◒"],
-  permission: ["◆", "◇"],
+  // 等待用户确认时保持静止：动画会让人误以为程序仍在忙。
+  permission: ["◆"],
   compacting: ["◜", "◝", "◞", "◟"],
   stopping: ["■", "□"],
 };
@@ -69,17 +75,6 @@ export function formatActivityDuration(durationMs: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}m${String(remainingSeconds).padStart(2, "0")}s`;
-}
-
-function buildPulseMeter(tick: number, width = 7): string {
-  const cycle = Math.max(1, (width - 1) * 2);
-  const offset = ((tick % cycle) + cycle) % cycle;
-  const head = offset < width ? offset : cycle - offset;
-  return Array.from({ length: width }, (_, index) => {
-    if (index === head) return "▰";
-    if (Math.abs(index - head) === 1) return "▱";
-    return "·";
-  }).join("");
 }
 
 export function buildActivityFrame(
@@ -106,7 +101,6 @@ export function buildActivityFrame(
     tone,
     icon: icons[((tick % icons.length) + icons.length) % icons.length],
     label: state.label,
-    meter: buildPulseMeter(tick),
     elapsed: formatActivityDuration(elapsedMs),
     detail: state.detail,
     idleText:
@@ -158,6 +152,7 @@ export class ActivityIndicator {
     };
     this.tick = 0;
     this.emit(now);
+    if (phase === "permission") return;
     this.timer = this.schedule(() => {
       this.tick += 1;
       this.emit(this.now());
@@ -198,4 +193,188 @@ export class ActivityIndicator {
     this.cancel(this.timer);
     this.timer = undefined;
   }
+}
+
+const TOOL_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TOOL_OUTPUT_TAIL_LINES = 4;
+
+interface ToolRunEntry {
+  id: string;
+  toolName: string;
+  summary: string;
+  sourceLabel?: string;
+  status: ToolCellStatus | "pending";
+  startedAt: number;
+  durationMs?: number;
+  resultText?: string;
+  outputTail: string[];
+  partialLine: string;
+}
+
+interface ToolRunViewOptions {
+  /** 把实时区域文本交给界面；空串表示清除。 */
+  render: (text: string) => void;
+  getWidth: () => number;
+  now?: () => number;
+  intervalMs?: number;
+  schedule?: (callback: () => void, intervalMs: number) => ReturnType<typeof setInterval>;
+  cancel?: (timer: ReturnType<typeof setInterval>) => void;
+}
+
+/**
+ * 对话区底部的实时工具块：工具一开始执行就出现，运行中滚动显示输出尾部，
+ * 结束后原地变为 ✓/✕ 摘要；commit() 把整批结果按调用顺序交还给对话正文。
+ */
+export class ToolRunView {
+  private readonly renderText: (text: string) => void;
+  private readonly getWidth: () => number;
+  private readonly now: () => number;
+  private readonly intervalMs: number;
+  private readonly schedule: NonNullable<ToolRunViewOptions["schedule"]>;
+  private readonly cancel: NonNullable<ToolRunViewOptions["cancel"]>;
+  private readonly entries: ToolRunEntry[] = [];
+  private timer?: ReturnType<typeof setInterval>;
+  private tick = 0;
+
+  constructor(options: ToolRunViewOptions) {
+    this.renderText = options.render;
+    this.getWidth = options.getWidth;
+    this.now = options.now || Date.now;
+    this.intervalMs = Math.max(60, options.intervalMs || 120);
+    this.schedule =
+      options.schedule || ((callback, intervalMs) => setInterval(callback, intervalMs));
+    this.cancel = options.cancel || ((timer) => clearInterval(timer));
+  }
+
+  /** 按调用顺序登记一个工具；在 start() 之前不显示（例如仍在等待授权）。 */
+  register(id: string, toolName: string, summary: string, sourceLabel?: string): void {
+    if (this.find(id)) return;
+    this.entries.push({
+      id,
+      toolName,
+      summary,
+      sourceLabel,
+      status: "pending",
+      startedAt: this.now(),
+      outputTail: [],
+      partialLine: "",
+    });
+  }
+
+  start(id: string): void {
+    const entry = this.find(id);
+    if (entry?.status !== "pending") return;
+    entry.status = "running";
+    entry.startedAt = this.now();
+    this.ensureTimer();
+    this.flush();
+  }
+
+  output(id: string, chunk: string): void {
+    const entry = this.find(id);
+    if (entry?.status !== "running") return;
+    const text = `${entry.partialLine}${chunk}`.replace(/\r\n/g, "\n");
+    const lines = text.split("\n");
+    // 只用 \r 刷新、从不换行的进度输出不能让未完成行无限增长。
+    entry.partialLine = (lines.pop() ?? "").slice(-2048);
+    for (const line of lines) {
+      // 回车覆盖式进度条只保留最后一次刷新的内容。
+      const visible = cleanOutputLine(line);
+      if (!visible) continue;
+      entry.outputTail.push(visible);
+      if (entry.outputTail.length > TOOL_OUTPUT_TAIL_LINES) entry.outputTail.shift();
+    }
+    this.flush();
+  }
+
+  finish(id: string, result: ToolResultSummary, durationMs: number): void {
+    const entry = this.find(id);
+    if (!entry) return;
+    entry.status = result.status;
+    entry.resultText = result.text;
+    entry.durationMs = durationMs;
+    if (!this.entries.some((item) => item.status === "running")) this.clearTimer();
+    this.flush();
+  }
+
+  hasEntries(): boolean {
+    return this.entries.length > 0;
+  }
+
+  /** 返回已结束条目的最终文本（按登记顺序）并清空实时区域。 */
+  commit(): string {
+    const width = this.getWidth();
+    const text = this.entries
+      .filter((entry) => entry.status !== "pending" && entry.status !== "running")
+      .flatMap((entry) => this.formatEntry(entry, width))
+      .map((row) => `${row}\n`)
+      .join("");
+    this.reset();
+    return text;
+  }
+
+  reset(): void {
+    this.entries.length = 0;
+    this.clearTimer();
+    this.renderText("");
+  }
+
+  private find(id: string): ToolRunEntry | undefined {
+    return this.entries.find((entry) => entry.id === id);
+  }
+
+  private formatEntry(entry: ToolRunEntry, width: number): string[] {
+    if (entry.status === "pending") return [];
+    const running = entry.status === "running";
+    const outputTail = running
+      ? [...entry.outputTail, cleanOutputLine(entry.partialLine)]
+          .filter(Boolean)
+          .slice(-TOOL_OUTPUT_TAIL_LINES)
+      : undefined;
+    return formatToolCell({
+      status: entry.status,
+      toolName: entry.toolName,
+      summary: entry.summary,
+      sourceLabel: entry.sourceLabel,
+      width,
+      spinner: TOOL_SPINNER[this.tick % TOOL_SPINNER.length],
+      timing: running
+        ? formatActivityDuration(this.now() - entry.startedAt)
+        : entry.durationMs !== undefined && entry.status !== "rejected"
+          ? formatToolDuration(entry.durationMs)
+          : undefined,
+      resultText: entry.resultText,
+      outputTail,
+    });
+  }
+
+  private flush(): void {
+    const width = this.getWidth();
+    const rows = this.entries.flatMap((entry) => this.formatEntry(entry, width));
+    this.renderText(rows.length ? `${rows.join("\n")}\n` : "");
+  }
+
+  private ensureTimer(): void {
+    if (this.timer) return;
+    this.timer = this.schedule(() => {
+      this.tick += 1;
+      this.flush();
+    }, this.intervalMs);
+    this.timer.unref?.();
+  }
+
+  private clearTimer(): void {
+    if (!this.timer) return;
+    this.cancel(this.timer);
+    this.timer = undefined;
+  }
+}
+
+function cleanOutputLine(line: string): string {
+  const lastFrame =
+    line
+      .split("\r")
+      .filter((part) => part.trim())
+      .at(-1) || "";
+  return sanitizeTerminalText(lastFrame).replace(/\t/g, "  ").trimEnd();
 }

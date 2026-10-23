@@ -350,3 +350,51 @@ test("shared executor forwards tool progress without changing final output", asy
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("tool duration excludes the permission wait and start fires only after approval", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-tool-duration-"));
+  const events = [];
+  const hookEngine = new HookEngine();
+  hookEngine.register("PreToolUse", async (ctx) => {
+    events.push("permission");
+    // 模拟用户在授权卡片前停留了一段时间。
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return ctx.args?.deny ? "错误: 用户拒绝了此命令的执行请求。" : null;
+  });
+  const tool = {
+    name: "quick",
+    definition: definition("quick"),
+    getMutationScope() {
+      return "none";
+    },
+    async execute() {
+      events.push("execute");
+      return "done";
+    },
+  };
+  const executor = new SharedToolExecutor({
+    cwd,
+    tools: new Map([["quick", tool]]),
+    hookEngine,
+    permissionEngine: new PermissionEngine(),
+    snapshotEngine: new SnapshotEngine(cwd),
+    taskStore: new TaskStore(path.join(cwd, ".haji", "tasks")),
+    onToolStart: ({ toolName }) => events.push(`start:${toolName}`),
+  });
+
+  try {
+    const approved = await executor.execute("quick", {}, {});
+    assert.deepEqual(events, ["permission", "start:quick", "execute"]);
+    assert.ok(approved.duration < 100, `duration ${approved.duration}ms includes the wait`);
+    assert.equal(approved.rejected, undefined);
+
+    events.length = 0;
+    const denied = await executor.execute("quick", { deny: true }, {});
+    assert.deepEqual(events, ["permission"]);
+    assert.equal(denied.rejected, true);
+    assert.equal(denied.blocked, true);
+    assert.equal(denied.duration, 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

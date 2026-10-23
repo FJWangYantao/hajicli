@@ -14,8 +14,11 @@ import {
 
 export interface ToolExecutionResult {
   output: string;
+  /** 工具实际执行耗时；不含等待用户授权等前置钩子的时间。 */
   duration: number;
   blocked: boolean;
+  /** 被 PreToolUse 钩子拦截（用户拒绝或安全策略拒绝），工具本身未执行。 */
+  rejected?: boolean;
 }
 
 export interface SharedToolExecutorOptions {
@@ -26,6 +29,12 @@ export interface SharedToolExecutorOptions {
   snapshotEngine: SnapshotEngine;
   taskStore: TaskStore;
   setStatus?: (status?: string) => void;
+  /** 前置钩子（含授权）通过、工具即将真正执行时触发。 */
+  onToolStart?: (event: {
+    toolName: string;
+    args: Record<string, unknown>;
+    context: ToolExecutionContext;
+  }) => void;
   onToolProgress?: (event: {
     toolName: string;
     progress: ToolProgressEvent;
@@ -51,7 +60,6 @@ export class SharedToolExecutor {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    const startedAt = Date.now();
     const targetTool = this.options.tools.get(toolName);
     if (!targetTool) {
       return { output: `错误: 工具 "${toolName}" 未注册。`, duration: 0, blocked: true };
@@ -74,10 +82,10 @@ export class SharedToolExecutor {
     );
     if (preHookResult) {
       await this.post(toolName, args, preHookResult, context);
-      return { output: preHookResult, duration: Date.now() - startedAt, blocked: true };
+      return { output: preHookResult, duration: 0, blocked: true, rejected: true };
     }
     if (context.abortSignal?.aborted) {
-      return { output: "[工具执行已中止]", duration: Date.now() - startedAt, blocked: true };
+      return { output: "[工具执行已中止]", duration: 0, blocked: true };
     }
 
     const isOrchestrationTool =
@@ -124,7 +132,7 @@ export class SharedToolExecutor {
 
     const agentPrefix = context.agentId ? `[${context.agentId}] ` : "";
     if (!context.agentId && !context.suppressStatus)
-      this.options.setStatus?.(`${agentPrefix}正在执行 ${toolName}...`);
+      this.options.setStatus?.(`${agentPrefix}运行 ${toolName}`);
     let output: string;
     let mutationWarning: string | undefined;
     let lastProgressAt = 0;
@@ -135,6 +143,10 @@ export class SharedToolExecutor {
       lastProgressAt = now;
       this.options.onToolProgress?.({ toolName, progress, context });
     };
+    this.options.onToolStart?.({ toolName, args, context });
+    // 计时从这里开始：等待用户授权的时间不应计入工具耗时。
+    const startedAt = Date.now();
+    let finishedAt = startedAt;
     try {
       output = await performanceMonitor.measure("tool.execute", () =>
         targetTool.execute(args, {
@@ -146,6 +158,7 @@ export class SharedToolExecutor {
     } catch (error) {
       output = `执行出错: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
+      finishedAt = Date.now();
       if (checkpoint) {
         const mutationResult = performanceMonitor.measureSync("snapshot.complete_mutation", () =>
           this.options.snapshotEngine.completeMutation(checkpoint),
@@ -176,7 +189,7 @@ export class SharedToolExecutor {
     });
     return {
       output,
-      duration: Date.now() - startedAt,
+      duration: finishedAt - startedAt,
       blocked: failed,
     };
   }

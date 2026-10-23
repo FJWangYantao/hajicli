@@ -108,6 +108,8 @@ export interface TerminalSelectionItem {
   value: string;
   label: string;
   description?: string;
+  /** 单键直选（不区分大小写），例如授权卡片的 y / a / n。 */
+  hotkey?: string;
 }
 
 export interface TerminalSelectionAxis {
@@ -121,6 +123,12 @@ export interface TerminalSelectionOptions {
   items: readonly TerminalSelectionItem[];
   selectedValue?: string;
   secondary?: TerminalSelectionAxis;
+  /** 标题与选项之间的预览行（已着色），以左侧竖线成卡片显示，按宽度与高度裁剪。 */
+  preview?: readonly string[];
+  /** 覆盖标题右侧的默认按键提示。 */
+  hint?: string;
+  /** 选择器出现后的这段时间内忽略确认键，防止提前敲下的回车误确认。 */
+  confirmDelayMs?: number;
 }
 
 export interface TerminalSelectionResult {
@@ -144,6 +152,7 @@ interface ActiveInput {
 
 interface ActiveSelection {
   options: TerminalSelectionOptions;
+  openedAt?: number;
   selectedIndex: number;
   secondaryIndex: number;
   resolve: (value: TerminalSelectionResult) => void;
@@ -221,6 +230,8 @@ export class TerminalUI {
   private chatPageSize = 1;
   private status = "";
   private activityFrame?: ActivityFrame;
+  /** 渲染在已提交正文之后的实时区域，不写入 chatContent。 */
+  private liveTail = "";
   private permissionMode = "";
   private modelName = "";
   private providerName = "";
@@ -391,7 +402,7 @@ export class TerminalUI {
         })
         .join("  ");
       // 保留原始队列内容，实际截断在 render 时按最新终端宽度计算。
-      this.queueText = ` ${SEQ.boldYellow}⏳ 待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${formatted}${SEQ.reset}`;
+      this.queueText = ` ${SEQ.boldYellow}待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${formatted}${SEQ.reset}`;
     }
     this.scheduleRender();
   }
@@ -403,6 +414,10 @@ export class TerminalUI {
       Math.max(1, stdout.rows || 24),
     );
     return Math.max(1, layout.safeWidth - layout.chatPadding * 2);
+  }
+
+  isInteractive(): boolean {
+    return this.interactive;
   }
 
   isInputActive(): boolean {
@@ -728,6 +743,19 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
+  /**
+   * 设置对话区底部的实时区域（例如正在执行的工具块）。它始终渲染在已提交
+   * 正文之后，期间写入的普通消息会出现在它上方，不会被覆盖或打乱。
+   * 非交互模式不输出中间帧，最终结果由调用方写入正文。
+   */
+  setLiveTail(value: string): void {
+    if (value === this.liveTail) return;
+    // 首次出现时固定正文前缀，动画帧只需重排实时区域本身。
+    if (value && !this.liveTail) this.markStableChatPrefix();
+    this.liveTail = value;
+    if (this.interactive) this.scheduleRender();
+  }
+
   async readInput(options: ReadInputOptions = {}): Promise<string> {
     const prompt = options.prompt ?? this.options.inputPrompt;
     if (!this.interactive) {
@@ -801,6 +829,7 @@ export class TerminalUI {
     return new Promise<TerminalSelectionResult>((resolve, reject) => {
       this.activeSelection = {
         options,
+        openedAt: Date.now(),
         selectedIndex,
         secondaryIndex,
         resolve,
@@ -1248,9 +1277,9 @@ export class TerminalUI {
     }
 
     const { options } = activeSelection;
-    const navigation = options.secondary
-      ? "↑↓ 模型 · ←→ 强度 · Enter 确认"
-      : "↑↓ 选择 · Enter 确认";
+    const navigation =
+      options.hint ??
+      (options.secondary ? "↑↓ 模型 · ←→ 强度 · Enter 确认" : "↑↓ 选择 · Enter 确认");
     const rows = [
       `${SEQ.bold}${truncateText(options.title, width)}${SEQ.reset}  ${SEQ.muted}${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}${SEQ.reset}`,
     ];
@@ -1276,6 +1305,23 @@ export class TerminalUI {
       }
     }
 
+    if (options.preview?.length) {
+      // 至少给选项留出三行（或全部选项），其余高度给预览。
+      const reservedItemRows = Math.min(options.items.length, 3);
+      const previewBudget = Math.max(0, maxRows - rows.length - reservedItemRows);
+      const bar = `${SEQ.muted}│${SEQ.reset} `;
+      const lineWidth = Math.max(1, width - 2);
+      const preview = options.preview;
+      const fits = preview.length <= previewBudget;
+      const shown = fits ? preview : preview.slice(0, Math.max(0, previewBudget - 1));
+      for (const line of shown) rows.push(`${bar}${truncateAnsiText(line, lineWidth)}`);
+      if (!fits && previewBudget > 0) {
+        rows.push(
+          `${bar}${SEQ.muted}${truncateText(`… 另有 ${preview.length - shown.length} 行（窗口高度不足）`, lineWidth)}${SEQ.reset}`,
+        );
+      }
+    }
+
     const availableItemRows = Math.max(1, maxRows - rows.length);
     const firstVisibleIndex = Math.min(
       Math.max(0, activeSelection.selectedIndex - availableItemRows + 1),
@@ -1290,7 +1336,7 @@ export class TerminalUI {
       const itemIndex = firstVisibleIndex + offset;
       const item = visibleItems[offset];
       const label = truncateText(
-        `${item.label}${item.description ? `  ${item.description}` : ""}`,
+        `${item.label}${item.hotkey ? ` (${item.hotkey})` : ""}${item.description ? `  ${item.description}` : ""}`,
         Math.max(1, width - 2),
       );
       rows.push(
@@ -1436,7 +1482,6 @@ export class TerminalUI {
           : "";
     const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(" · ");
     const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
-    const animated = `${SEQ.accent}${frame.meter}${SEQ.reset}`;
     const suffix = `${SEQ.muted}${frame.elapsed}${detail ? ` · ${detail}` : ""}${SEQ.reset}`;
     if (width < 32) {
       return truncateAnsiText(`${primary}  ${SEQ.muted}${frame.elapsed}${SEQ.reset}`, width);
@@ -1444,11 +1489,19 @@ export class TerminalUI {
     if (width < 60) {
       const compactState = toneText ? ` · ${toneText}` : "";
       return truncateAnsiText(
-        `${primary}  ${animated}  ${SEQ.muted}${frame.elapsed}${compactState}${SEQ.reset}`,
+        `${primary}  ${SEQ.muted}${frame.elapsed}${compactState}${SEQ.reset}`,
         width,
       );
     }
-    return truncateAnsiText(`${primary}  ${animated}  ${suffix}`, width);
+    const row = `${primary}  ${suffix}`;
+    // 可中止的阶段在右侧常驻按键提示；空间不足时让位给左侧状态。
+    const interruptible = ["thinking", "responding", "tool", "batch"].includes(frame.phase);
+    const hint = "Esc 中止";
+    const hintWidth = terminalWidth(hint);
+    if (!interruptible || width < 100) return truncateAnsiText(row, width);
+    const fittedRow = truncateAnsiText(row, width - hintWidth - 2);
+    const padding = " ".repeat(Math.max(2, width - terminalWidth(fittedRow) - hintWidth));
+    return `${fittedRow}${padding}${SEQ.muted}${hint}${SEQ.reset}`;
   }
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
@@ -1693,7 +1746,9 @@ export class TerminalUI {
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
     const chatPadding = layout.chatPadding;
     const chatWidth = Math.max(1, width - chatPadding * 2);
-    const contentWithStatus = this.chatContent;
+    const contentWithStatus = this.liveTail
+      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith("\n") ? "\n" : ""}${this.liveTail}`
+      : this.chatContent;
     const contentChanged =
       contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
     const previousWrappedCount = this.cachedWrappedChat.length;
@@ -1943,7 +1998,22 @@ export class TerminalUI {
       this.scrollChat(-this.chatScrollOffset);
       return;
     }
+    const confirmLocked =
+      Date.now() - (activeSelection.openedAt ?? 0) < (activeSelection.options.confirmDelayMs ?? 0);
     if (key.name === "return" || key.name === "enter") {
+      if (confirmLocked) return;
+      this.finishSelection();
+      return;
+    }
+    const hotkeyIndex =
+      value && !key.ctrl && !key.meta
+        ? activeSelection.options.items.findIndex(
+            (item) => item.hotkey && item.hotkey.toLowerCase() === value.toLowerCase(),
+          )
+        : -1;
+    if (hotkeyIndex >= 0) {
+      if (confirmLocked) return;
+      activeSelection.selectedIndex = hotkeyIndex;
       this.finishSelection();
       return;
     }

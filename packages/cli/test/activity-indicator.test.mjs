@@ -5,7 +5,11 @@ import {
   ActivityIndicator,
   buildActivityFrame,
   formatActivityDuration,
+  ToolRunView,
 } from "../dist/activity-indicator.js";
+import { setActiveColorLevel } from "../dist/theme.js";
+
+setActiveColorLevel("mono");
 
 test("formats activity duration without noisy sub-second precision", () => {
   assert.equal(formatActivityDuration(-1), "0s");
@@ -32,7 +36,7 @@ test("activity frames expose active, waiting and stalled states", () => {
   assert.equal(stalled.tone, "stalled");
   assert.match(stalled.idleText, /31s 无新事件/);
   assert.notEqual(active.icon, waiting.icon);
-  assert.notEqual(active.meter, waiting.meter);
+  assert.equal("meter" in active, false, "the activity row carries a single animation");
 });
 
 test("permission is an explicit waiting phase instead of a false stall", () => {
@@ -94,4 +98,109 @@ test("indicator owns one timer and progress resets idle detection", () => {
   indicator.stop();
   assert.equal(cancelled, 2);
   assert.equal(frames.at(-1), undefined);
+});
+
+test("waiting for permission renders one static frame without an animation timer", () => {
+  let scheduled = 0;
+  const frames = [];
+  const indicator = new ActivityIndicator({
+    render: (frame) => frames.push(frame),
+    schedule: () => {
+      scheduled += 1;
+      return { unref() {} };
+    },
+    cancel: () => {},
+  });
+  indicator.start("permission", "等待授权");
+  assert.equal(scheduled, 0);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].icon, "◆");
+  indicator.stop();
+});
+
+function createToolRunView() {
+  let now = 0;
+  let tick;
+  let cancelled = 0;
+  const renders = [];
+  const view = new ToolRunView({
+    render: (text) => renders.push(text),
+    getWidth: () => 60,
+    now: () => now,
+    schedule: (callback) => {
+      tick = callback;
+      return { unref() {} };
+    },
+    cancel: () => {
+      cancelled += 1;
+      tick = undefined;
+    },
+  });
+  return {
+    view,
+    renders,
+    advance(ms) {
+      now += ms;
+      tick?.();
+    },
+    get ticking() {
+      return Boolean(tick);
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+
+test("tool run view hides calls until they start and streams an output tail", () => {
+  const harness = createToolRunView();
+  const { view, renders } = harness;
+  view.register("c1", "bash", "make all");
+  assert.equal(renders.length, 0, "a call waiting for permission is not shown");
+
+  view.start("c1");
+  assert.match(renders.at(-1), /^ {2}⠋ bash {2}make all +0s\n$/);
+  assert.ok(harness.ticking);
+
+  view.output("c1", "step 1\nstep 2\nstep 3\nstep 4\nstep 5\nprogress 10%\rprogress 90%");
+  const live = renders.at(-1).split("\n");
+  assert.deepEqual(live.slice(1, -1), [
+    "    │ step 3",
+    "    │ step 4",
+    "    │ step 5",
+    "    │ progress 90%",
+  ]);
+
+  harness.advance(3_000);
+  assert.match(renders.at(-1), /^ {2}⠙ bash {2}make all +3s/);
+
+  view.finish("c1", { status: "success", text: "5 行输出 · step 5" }, 6_049);
+  assert.equal(harness.ticking, false, "the spinner stops once nothing is running");
+  assert.match(renders.at(-1), /^ {2}✓ bash {2}make all +6\.0s\n {4}└ 5 行输出 · step 5\n$/);
+});
+
+test("tool run view commits finished cells in call order and clears the live area", () => {
+  const { view, renders } = createToolRunView();
+  view.register("a", "read", "a.ts");
+  view.register("b", "grep", '"x"');
+  view.register("c", "bash", "rm -rf build");
+  view.start("a");
+  view.start("b");
+  view.finish("b", { status: "success", text: "3 条结果" }, 4);
+  view.finish("a", { status: "success", text: "10 行" }, 7);
+  view.finish("c", { status: "rejected", text: "已拒绝执行" }, 0);
+
+  const committed = view.commit();
+  assert.deepEqual(committed.split("\n"), [
+    `  ✓ read  a.ts${" ".repeat(43)}7ms`,
+    "    └ 10 行",
+    `  ✓ grep  "x"${" ".repeat(44)}4ms`,
+    "    └ 3 条结果",
+    "  ⊘ bash  rm -rf build",
+    "    └ 已拒绝执行",
+    "",
+  ]);
+  assert.equal(renders.at(-1), "");
+  assert.equal(view.hasEntries(), false);
+  assert.equal(view.commit(), "", "pending and aborted calls never leak into the transcript");
 });

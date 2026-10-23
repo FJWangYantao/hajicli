@@ -16,6 +16,7 @@ import {
   formatPendingAgentVerificationContext,
   formatSubagentResult,
   getContextCompactionThresholds,
+  type HookContext,
   HookEngine,
   isFailedToolOutput,
   isPermissionMode,
@@ -73,7 +74,7 @@ import {
   WebSearchTool,
   WriteFileTool,
 } from "@hajicli/plugins";
-import { ActivityIndicator } from "./activity-indicator.js";
+import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
 import { parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
 import {
   buildHubMenus,
@@ -82,7 +83,15 @@ import {
   handleEarlyCliArgs,
   LOGO,
 } from "./cli-help.js";
-import { formatToolArgs, loadPreference, savePreference } from "./cli-runtime.js";
+import {
+  buildPermissionPreview,
+  formatToolCell,
+  formatToolDuration,
+  loadPreference,
+  savePreference,
+  summarizeToolCall,
+  summarizeToolResult,
+} from "./cli-runtime.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import {
@@ -451,40 +460,15 @@ async function main() {
       riskThreshold: ctx.riskThreshold as RiskLevel,
     });
 
-    const argsSummary = formatToolArgs(ctx.args || {});
-    const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : "";
-
     if (checkResult.action === "allow") {
       return null;
     }
     if (checkResult.action === "prompt") {
-      if (ui.isInputActive()) {
-        ui.cancelInput();
-      }
-      const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "AI";
-      activityIndicator.start("permission", "等待授权", `${requester} 请求执行 ${ctx.toolName}`);
-      let answer: string;
-      try {
-        answer = await ui.readInput({
-          prompt: `  ${colors.boldYellow(`⚠️  ${requester} 申请执行修改型工具：`)}${colors.purple(ctx.toolName!)}${displayArgs} ${colors.boldYellow("授权？(y/N)")} › `,
-        });
-      } finally {
-        activityIndicator.stop();
-      }
-      const approved = answer.trim().toLowerCase() === "y";
-      if (!approved) {
-        ui.writeLine(
-          `  ${colors.boldRed("✕")} ${colors.purple(ctx.toolName!)}${displayArgs} ${colors.gray("(已拒绝执行)")}`,
-        );
-        return "错误: 用户拒绝了此命令的执行请求。";
-      }
-      return null;
+      return requestToolPermission(ctx);
     }
     if (checkResult.action === "deny") {
+      // 拦截结果由工具块统一展示（⊘ + 原因），这里只返回给模型的说明。
       const autoDeniedReason = checkResult.reason || "Auto 分类器安全拦截";
-      ui.writeLine(
-        `  ${colors.boldRed("🛡️ [Auto安全拦截]")} ${colors.purple(ctx.toolName!)}${displayArgs} ${colors.red(`(评级: ${checkResult.riskLevel} - ${autoDeniedReason})`)}`,
-      );
       return `[安全引擎拒绝拦截] 命令 "${ctx.toolName}" 被 Auto 分类器检测为超出允许的危险阈值 (${checkResult.riskLevel})。拒绝原因: ${autoDeniedReason}。请重新分析用户意图，改用更安全的替代指令或步骤。`;
     }
     return null;
@@ -526,7 +510,7 @@ async function main() {
       autoCompactionArmed = false;
       ui.writeLine(
         colors.gray(
-          `🧹 上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
+          `上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
         ),
       );
       const result = await runCompactionPipeline(history, {
@@ -549,7 +533,7 @@ async function main() {
         ),
       );
       if (result.summaryMode === "fallback") {
-        ui.writeLine(colors.yellow("⚠️ 模型摘要失败，本次使用了本地降级摘要。"));
+        ui.writeLine(colors.yellow("! 模型摘要失败，本次使用了本地降级摘要。"));
       }
     }
   });
@@ -735,12 +719,16 @@ async function main() {
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
   });
+  const toolRunView = new ToolRunView({
+    render: (text) => ui.setLiveTail(text),
+    getWidth: () => ui.getContentWidth(),
+  });
   markStartupStage("ui_ctor");
   // 底栏补全只展示顶层指令；被收纳的子指令保留直连能力（见 /help 与各枢纽菜单）。
   const slashCommands = getTopLevelSlashCommands();
   ui.start();
   markStartupStage("ui_started");
-  for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+  for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`! ${warning}`));
   // 状态栏展示当前工作目录（模型名称右侧）。
   ui.setCurrentPath(process.cwd());
   // Logo 下方的启动信息行：provider · model · effort + 引导提示。
@@ -750,13 +738,13 @@ async function main() {
     colors.gray("输入 /help 查看命令，或直接开始对话"),
   ]);
   const showRuntimeWarning = (warning: string): void => {
-    ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+    ui.writeLine(colors.yellow(`! ${warning}`));
   };
   tracker.setWarningHandler(showRuntimeWarning);
   sessionManager.setWarningHandler(showRuntimeWarning);
   snapshotEngine.setWarningHandler(showRuntimeWarning);
   for (const warning of startupWarnings) showRuntimeWarning(warning);
-  for (const warning of initialSkillScan.warnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+  for (const warning of initialSkillScan.warnings) ui.writeLine(colors.yellow(`! ${warning}`));
 
   ui.setPermissionMode(permissionMode);
   let planReadyForReview = false;
@@ -805,7 +793,7 @@ async function main() {
   const agentManager = new AgentManager({
     maxReadonlyConcurrency: 3,
     onChange: syncAgentPanel,
-    onWarning: (warning) => ui.writeLine(colors.yellow(`⚠️ ${warning}`)),
+    onWarning: (warning) => ui.writeLine(colors.yellow(`! ${warning}`)),
     onNotification: (notification) => {
       if (!notification.background) return;
       const mark =
@@ -849,20 +837,16 @@ async function main() {
     snapshotEngine,
     taskStore,
     setStatus: (status) => {
-      if (status) activityIndicator.start("tool", "执行工具", status);
+      if (status) activityIndicator.start("tool", status);
       else activityIndicator.stop();
     },
-    onToolProgress: ({ toolName, progress, context }) => {
-      if (context.agentId) return;
-      const plain = sanitizeTerminalText(progress.chunk).trim();
-      const lastLine = plain.split(/\r?\n/).filter(Boolean).at(-1);
-      if (!lastLine) return;
-      const preview = lastLine.length > 120 ? `${lastLine.slice(0, 117)}...` : lastLine;
-      const batchPrefix =
-        context.batchSize && context.batchSize > 1
-          ? `[${(context.batchIndex || 0) + 1}/${context.batchSize}] `
-          : "";
-      activityIndicator.progress(`${batchPrefix}${toolName}: ${preview}`);
+    onToolStart: ({ context }) => {
+      // 授权通过后工具块才出现在对话区，等待授权期间只显示授权卡片。
+      if (!context.agentId && context.toolCallId) toolRunView.start(context.toolCallId);
+    },
+    onToolProgress: ({ context }) => {
+      // 输出内容由实时工具块展示；活动行只需知道仍有进展，避免误报“较久无进展”。
+      if (!context.agentId) activityIndicator.progress();
     },
     onTaskPlanChanged: (recentlyCompleted) => {
       syncTaskPlanUI(recentlyCompleted);
@@ -905,10 +889,19 @@ async function main() {
         ...context,
         toolCallId: toolCall.id,
       });
-      const resultMark = result.blocked ? colors.boldRed("✕") : colors.boldGreen("✓");
-      ui.writeLine(
-        `  ${resultMark} ${colors.gray(`[${context.agentId}]`)} ${colors.purple(toolCall.function.name)} ${colors.gray(`(${result.duration}ms)`)}`,
-      );
+      const outcome = summarizeToolResult(toolCall.function.name, result.output, result);
+      for (const row of formatToolCell({
+        status: outcome.status,
+        toolName: toolCall.function.name,
+        summary: summarizeToolCall(toolCall.function.name, args),
+        sourceLabel: `[${context.agentId}]`,
+        width: ui.getContentWidth(),
+        timing: outcome.status === "rejected" ? undefined : formatToolDuration(result.duration),
+        // 子代理成功的调用只保留一行，失败或被拒时才展开原因。
+        resultText: outcome.status === "success" ? undefined : outcome.text,
+      })) {
+        ui.writeLine(row);
+      }
       return result.output;
     },
     onEvent: (event) => {
@@ -950,7 +943,7 @@ async function main() {
         return;
       }
       if (event.type === "warning") {
-        ui.writeLine(colors.yellow(`⚠️ [${event.agentId}] ${event.message}`));
+        ui.writeLine(colors.yellow(`! [${event.agentId}] ${event.message}`));
         return;
       }
       if (event.type === "done") {
@@ -1200,13 +1193,81 @@ async function main() {
 
   const readSelectionSafely = async (
     options: Parameters<TerminalUI["readSelection"]>[0],
+    draftHandling: "queue" | "restore" = "queue",
   ): ReturnType<TerminalUI["readSelection"]> => {
     const draft = ui.cancelInput();
+    if (draftHandling === "restore") {
+      // 回合中途的选择（如授权卡片）结束后把未发送的草稿放回输入框，而不是当作新消息排队。
+      return ui.readSelection(options).finally(() => startBackgroundInput(draft));
+    }
     if (draft?.trim()) {
       pendingInputs.push(draft);
       ui.setQueue(pendingInputs);
     }
     return ui.readSelection(options);
+  };
+
+  const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
+  // “本会话内总是允许”只对当前会话有效；/clear、/resume 切换会话后自动失效。
+  let sessionToolGrants = { sessionId: "", tools: new Set<string>() };
+  const isToolGrantedForSession = (toolName: string): boolean =>
+    sessionToolGrants.sessionId === sessionManager.getCurrentSession().id &&
+    sessionToolGrants.tools.has(toolName);
+  const grantToolForSession = (toolName: string): void => {
+    const sessionId = sessionManager.getCurrentSession().id;
+    if (sessionToolGrants.sessionId !== sessionId) {
+      sessionToolGrants = { sessionId, tools: new Set() };
+    }
+    sessionToolGrants.tools.add(toolName);
+  };
+  const permissionVerb = (toolName: string): string =>
+    toolName === "bash"
+      ? "运行命令"
+      : toolName === "write"
+        ? "写入文件"
+        : toolName === "edit"
+          ? "编辑文件"
+          : `调用 ${toolName}`;
+
+  const promptToolPermission = async (ctx: HookContext): Promise<string | null> => {
+    const toolName = ctx.toolName || "";
+    const args = ctx.args || {};
+    if (isToolGrantedForSession(toolName)) return null;
+    const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "AI";
+    if (!ui.isInteractive()) {
+      const answer = await ui.readInput({
+        prompt: `${requester} 请求${permissionVerb(toolName)}：${summarizeToolCall(toolName, args)}，授权？(y/N) › `,
+      });
+      return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
+    }
+    const selection = await readSelectionSafely(
+      {
+        title: `需要授权 · ${requester} 请求${permissionVerb(toolName)}`,
+        preview: buildPermissionPreview(toolName, args, process.cwd()),
+        items: [
+          { value: "once", label: "允许本次", hotkey: "y" },
+          { value: "session", label: `本会话内总是允许 ${toolName}`, hotkey: "a" },
+          { value: "deny", label: "拒绝", hotkey: "n" },
+        ],
+        selectedValue: "once",
+        hint: "↑↓ 选择 · Enter 确认 · Esc 中止本轮",
+        confirmDelayMs: 300,
+      },
+      "restore",
+    );
+    if (selection.value === "deny") return USER_REJECTED_TOOL_OUTPUT;
+    if (selection.value === "session") {
+      grantToolForSession(toolName);
+      ui.writeLine(colors.gray(`  本会话内调用 ${toolName} 将不再询问。`));
+    }
+    return null;
+  };
+  // 并行的子代理可能同时请求授权，逐个弹出卡片，避免争用同一个选择器。
+  let permissionQueue: Promise<unknown> = Promise.resolve();
+  const requestToolPermission = (ctx: HookContext): Promise<string | null> => {
+    const pending = permissionQueue.then(() => promptToolPermission(ctx));
+    permissionQueue = pending.catch(() => undefined);
+    return pending;
   };
 
   // 枢纽指令：弹出细分菜单，选中项经待处理队列交给下一轮主循环分发（与 /rewind 回填同机制）。
@@ -1260,9 +1321,9 @@ async function main() {
     updateStatusUI();
   };
 
-  const startBackgroundInput = () => {
+  const startBackgroundInput = (initialValue?: string) => {
     if (ui.isInputActive()) return;
-    ui.readInput({ slashCommands })
+    ui.readInput({ slashCommands, initialValue })
       .then((input) => {
         const trimmed = input.trim();
         if (trimmed) {
@@ -1389,7 +1450,7 @@ async function main() {
                 : colors.red(`✕ Skill 校验失败：${summary}。`),
             );
             for (const issue of result.issues) {
-              const prefix = issue.severity === "error" ? "✕" : "⚠️";
+              const prefix = issue.severity === "error" ? "✕" : "!";
               const scope = issue.skill ? `[${issue.skill}] ` : "";
               ui.writeLine(
                 issue.severity === "error"
@@ -1404,7 +1465,7 @@ async function main() {
             await refreshSystemPromptPreservingContext();
             sessionManager.saveCurrentSession(messages);
             ui.writeLine(colors.green(`✓ 已重新扫描 ${result.skills.length} 个 Skill。`));
-            for (const warning of result.warnings) ui.writeLine(colors.yellow(`⚠️ ${warning}`));
+            for (const warning of result.warnings) ui.writeLine(colors.yellow(`! ${warning}`));
           }
           const loaded = new Map(
             skillRegistry.getLoaded("main").map((skill) => [skill.name, skill]),
@@ -1565,7 +1626,7 @@ async function main() {
                     ),
                   );
                 } else {
-                  ui.writeLine(colors.yellow("⚠️ 预设保存失败（请检查磁盘权限）。"));
+                  ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
                 }
               }
             } else if (parsed.preset) {
@@ -1737,7 +1798,7 @@ async function main() {
                   ),
                 );
               } else {
-                ui.writeLine(colors.yellow("⚠️ 预设保存失败（请检查磁盘权限）。"));
+                ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
               }
             } catch (error) {
               if (error instanceof TerminalInputCancelledError) {
@@ -1769,7 +1830,7 @@ async function main() {
             if (saveSubagentPresets(next)) {
               ui.writeLine(colors.green(`✓ 已删除预设：${existing.name}`));
             } else {
-              ui.writeLine(colors.yellow("⚠️ 删除失败（请检查磁盘权限）。"));
+              ui.writeLine(colors.yellow("! 删除失败（请检查磁盘权限）。"));
             }
             continue;
           }
@@ -1808,7 +1869,7 @@ async function main() {
                   ),
                 );
               } else {
-                ui.writeLine(colors.yellow("⚠️ 预设保存失败（请检查磁盘权限）。"));
+                ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
               }
             } catch (error) {
               if (error instanceof TerminalInputCancelledError) {
@@ -1901,14 +1962,14 @@ async function main() {
           sessionManager.saveCurrentSession(messages);
           updateStatusUI();
           ui.clearChat();
-          ui.writeLine(colors.green("🧹 已开启全新对话并重置上下文。"));
+          ui.writeLine(colors.green("✓ 已开启全新对话并重置上下文。"));
           continue;
         }
         if (command === "resume") {
           await sessionManager.flush();
           const sessions = sessionManager.listSessions();
           if (sessions.length === 0) {
-            ui.writeLine(colors.yellow("⚠️ 暂无存盘的历史对话记录。"));
+            ui.writeLine(colors.yellow("! 暂无存盘的历史对话记录。"));
             continue;
           }
 
@@ -1955,6 +2016,13 @@ async function main() {
                   `✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`,
                 ),
               );
+              // 工具结果并入对应调用的工具块显示，这里先按调用 id 建立索引。
+              const historyToolOutputs = new Map<string, string>();
+              for (const m of messages) {
+                if (m.role === "tool" && m.tool_call_id && typeof m.content === "string") {
+                  historyToolOutputs.set(m.tool_call_id, m.content);
+                }
+              }
               // 完整回显历史会话中的全量消息轨迹 (User / Assistant / Tool)
               for (const m of messages) {
                 if (m.role === "system") continue;
@@ -1974,30 +2042,35 @@ async function main() {
                   }
                   if (m.tool_calls && m.tool_calls.length > 0) {
                     for (const tc of m.tool_calls) {
-                      let argsObj = {};
+                      let argsObj: Record<string, unknown> = {};
                       try {
                         argsObj = JSON.parse(tc.function.arguments);
                       } catch {}
-                      const argsSummary = formatToolArgs(argsObj);
-                      const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : "";
-                      appendHistoryLine(`  ${colors.purple(tc.function.name)}${displayArgs}`);
+                      const output = historyToolOutputs.get(tc.id);
+                      const outcome =
+                        output === undefined
+                          ? undefined
+                          : summarizeToolResult(tc.function.name, output, {
+                              blocked: isFailedToolOutput(output),
+                              rejected: output === USER_REJECTED_TOOL_OUTPUT,
+                            });
+                      for (const row of formatToolCell({
+                        status: outcome?.status ?? "failed",
+                        toolName: tc.function.name,
+                        summary: summarizeToolCall(tc.function.name, argsObj),
+                        width: ui.getContentWidth(),
+                        resultText: outcome?.text ?? "无执行结果",
+                      })) {
+                        appendHistoryLine(row);
+                      }
                     }
                   }
                   appendHistoryLine();
-                } else if (m.role === "tool") {
-                  const isError =
-                    typeof m.content === "string" &&
-                    (m.content.startsWith("错误:") || m.content.startsWith("执行出错:"));
-                  if (isError) {
-                    appendHistoryLine(`  ${colors.boldRed("❌")} ${colors.red("工具执行出错")}`);
-                  } else {
-                    appendHistoryLine(`  ${colors.boldGreen("✓")} ${colors.gray("工具执行成功")}`);
-                  }
                 }
               }
               ui.replaceChat(historyOutput.join(""));
             } else {
-              ui.writeLine(colors.yellow("⚠️ 选中的会话为空或加载失败。"));
+              ui.writeLine(colors.yellow("! 选中的会话为空或加载失败。"));
             }
             continue;
           } catch (error) {
@@ -2018,7 +2091,7 @@ async function main() {
           }
 
           if (userMessageNodes.length === 0) {
-            ui.writeLine(colors.yellow("⚠️ 当前会话中暂无合法的用户对话节点可供回退。"));
+            ui.writeLine(colors.yellow("! 当前会话中暂无合法的用户对话节点可供回退。"));
             continue;
           }
 
@@ -2058,7 +2131,7 @@ async function main() {
               typeof targetMsgNode?.content === "string" ? targetMsgNode.content : "";
 
             if (!targetMsgNode?.snapshotId) {
-              ui.writeLine(colors.yellow("⚠️ 该历史节点没有安全代码快照，未执行任何回退。"));
+              ui.writeLine(colors.yellow("! 该历史节点没有安全代码快照，未执行任何回退。"));
               ui.writeLine(
                 colors.gray("旧会话节点无法精确恢复工作区；请从升级后的新消息开始使用 /rewind。"),
               );
@@ -2067,7 +2140,7 @@ async function main() {
 
             const rollbackResult = snapshotEngine.rollbackOwnedChanges(targetMsgNode.snapshotId);
             if (!rollbackResult.ok) {
-              ui.writeLine(colors.boldRed("❌ 代码快照恢复失败，消息历史与工作区均未修改。"));
+              ui.writeLine(colors.boldRed("✕ 代码快照恢复失败，消息历史与工作区均未修改。"));
               ui.writeLine(
                 colors.gray(rollbackResult.reason || "快照缺失，或当前 Git HEAD 已发生变化。"),
               );
@@ -2092,7 +2165,7 @@ async function main() {
             if (rollbackResult.preservedPaths.length > 0) {
               ui.writeLine(
                 colors.yellow(
-                  `⚠️ 已保留 ${rollbackResult.preservedPaths.length} 个后来被外部修改的文件，避免覆盖你的改动。`,
+                  `! 已保留 ${rollbackResult.preservedPaths.length} 个后来被外部修改的文件，避免覆盖你的改动。`,
                 ),
               );
               ui.writeLine(colors.gray(rollbackResult.preservedPaths.join(", ")));
@@ -2118,7 +2191,7 @@ async function main() {
           }
         }
         if (command === "compact") {
-          ui.writeLine(colors.boldPurple("🧹 正在执行四层上下文压缩管线..."));
+          ui.writeLine(colors.boldPurple("正在执行四层上下文压缩管线..."));
           const result = await runCompactionPipeline(messages, {
             forceL4: true,
             summaryProvider: summarizeMessagesForCompaction,
@@ -2145,7 +2218,7 @@ async function main() {
           );
           if (result.summaryMode === "fallback") {
             ui.writeLine(
-              colors.yellow("⚠️ 模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。"),
+              colors.yellow("! 模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。"),
             );
           }
           continue;
@@ -2491,7 +2564,7 @@ async function main() {
                 if (parsedWindows.invalid.length > 0) {
                   ui.writeLine(
                     colors.yellow(
-                      `⚠️ 已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
+                      `! 已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
                     ),
                   );
                 }
@@ -2717,9 +2790,7 @@ async function main() {
           planReadyForReview = false;
           planReviewSummaryRequested = false;
           ui.writeLine(
-            colors.green(
-              `🛡️  系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`,
-            ),
+            colors.green(`系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`),
           );
           if (permissionMode === "plan") {
             ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));
@@ -2884,7 +2955,7 @@ async function main() {
         if (abortNoticeShown) return;
         abortNoticeShown = true;
         ui.writeLine();
-        ui.writeLine(colors.red("Runtime is terminated."));
+        ui.writeLine(colors.red("✕ 已中止本轮"));
       };
 
       const reclaimPrompt = () => {
@@ -2958,7 +3029,7 @@ async function main() {
         if (repairedMessages !== messages) {
           messages = repairedMessages;
           sessionManager.saveCurrentSession(messages);
-          ui.writeLine(colors.yellow("⚠️ 已自动修复不完整的历史工具调用配对。"));
+          ui.writeLine(colors.yellow("! 已自动修复不完整的历史工具调用配对。"));
         }
         if (refreshAgentVerificationContext(messages)) sessionManager.saveCurrentSession(messages);
         startBackgroundInput();
@@ -3071,7 +3142,7 @@ async function main() {
             );
             ui.writeLine();
             const retryNote = requestRetryCount > 0 ? `（已自动重试 ${requestRetryCount} 次）` : "";
-            ui.writeLine(colors.boldRed(`❌ 模型调用出错${retryNote}: ${errMsg}`));
+            ui.writeLine(colors.boldRed(`✕ 模型调用出错${retryNote}: ${errMsg}`));
             ui.writeLine(
               colors.gray("提示: 请检查模型名称、API Key 是否正确，或使用 /model 切换其他模型。"),
             );
@@ -3099,9 +3170,9 @@ async function main() {
           const thinkingSeconds = Math.max(1, Math.round((Date.now() - thinkingStartedAt) / 1000));
           const tokenSummary =
             completionTokens === undefined
-              ? "token usage unavailable"
-              : `${completionTokens.toLocaleString("en-US")} tokens consumed`;
-          ui.writeLine(colors.gray(`Think ${thinkingSeconds} s, ${tokenSummary}.`));
+              ? ""
+              : ` · ${completionTokens.toLocaleString("en-US")} tokens`;
+          ui.writeLine(colors.gray(`  思考 ${thinkingSeconds}s${tokenSummary}`));
         } else if (!toolCalls || toolCalls.length === 0 || invalidToolCall) {
           // 无工具调用（或工具调用无效）时正文后补一个空行；
           // 有工具调用时由下方工具调用块前后的空行负责分隔，避免产生连续空行。
@@ -3129,7 +3200,7 @@ async function main() {
               : "工具参数可能因上游流中断而被截断。";
           ui.writeLine(
             colors.boldYellow(
-              `⚠️ 已拦截不完整的 ${toolName} 工具调用，未执行、未写入工具调用历史。`,
+              `! 已拦截不完整的 ${toolName} 工具调用，未执行、未写入工具调用历史。`,
             ),
           );
           ui.writeLine(colors.gray(`${invalidToolCall.validation.error} ${truncationHint}`));
@@ -3160,7 +3231,7 @@ async function main() {
               : "";
           ui.writeLine(
             colors.yellow(
-              `⚠️ 上游 Provider 以 length 结束${usedText}，本轮内容可能不完整；Haji 未设置单次输出上限。`,
+              `! 上游 Provider 以 length 结束${usedText}，本轮内容可能不完整；Haji 未设置单次输出上限。`,
             ),
           );
         }
@@ -3186,6 +3257,18 @@ async function main() {
           const batches = createToolCallBatches(toolCalls);
 
           for (const batch of batches) {
+            // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
+            for (const tc of batch.calls) {
+              const registeredArgs = (validateToolCall(tc).arguments || {}) as Record<
+                string,
+                unknown
+              >;
+              toolRunView.register(
+                tc.id,
+                tc.function.name,
+                summarizeToolCall(tc.function.name, registeredArgs),
+              );
+            }
             const executeCall = async (
               tc: ToolCall,
               batchIndex: number,
@@ -3195,7 +3278,14 @@ async function main() {
               }
               const toolName = tc.function.name;
               const targetTool = toolsMap.get(toolName);
-              if (!targetTool) return { tc, toolName, args: {}, duration: 0, unregistered: true };
+              if (!targetTool) {
+                toolRunView.finish(
+                  tc.id,
+                  { status: "failed", text: `工具 "${toolName}" 未注册` },
+                  0,
+                );
+                return { tc, toolName, args: {}, duration: 0, unregistered: true };
+              }
               const parsedToolCall = validateToolCall(tc);
               const args = (parsedToolCall.arguments || {}) as Record<string, unknown>;
               try {
@@ -3210,7 +3300,13 @@ async function main() {
                   suppressStatus: batch.parallel,
                   batchIndex,
                   batchSize: batch.calls.length,
+                  onProgress: (progress) => toolRunView.output(tc.id, progress.chunk),
                 });
+                toolRunView.finish(
+                  tc.id,
+                  summarizeToolResult(toolName, execution.output, execution),
+                  execution.duration,
+                );
                 return { tc, toolName, args, duration: execution.duration, execution };
               } catch (error) {
                 if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
@@ -3219,13 +3315,16 @@ async function main() {
             };
 
             if (batch.parallel) {
-              activityIndicator.start("batch", "并行执行", `${batch.calls.length} 个只读工具`);
+              activityIndicator.start("batch", `并行运行 ${batch.calls.length} 个工具`);
             }
             let batchRun: Awaited<ReturnType<typeof runToolCallBatch<ToolCall, BatchItemResult>>>;
             try {
               batchRun = await runToolCallBatch(batch, executeCall);
             } finally {
               if (batch.parallel) activityIndicator.stop();
+              // 整批结束后按调用顺序把工具块写入正文，实时区域随之清空。
+              const committedCells = toolRunView.commit();
+              if (committedCells) ui.writeChat(committedCells);
             }
             for (const result of batchRun.results) {
               const { tc, toolName, args, execution } = result;
@@ -3238,7 +3337,6 @@ async function main() {
                 continue;
               }
               if (result.unregistered || !execution) {
-                ui.writeLine(`❌ ${colors.red(`错误: 调用的工具 "${toolName}" 未注册。`)}`);
                 messages.push({
                   role: "tool",
                   tool_call_id: tc.id,
@@ -3250,19 +3348,6 @@ async function main() {
               }
 
               const toolOutput = execution.output;
-              const safeToolOutput = sanitizeTerminalText(toolOutput);
-              const argsSummary = sanitizeTerminalText(formatToolArgs(args));
-              const displayArgs = argsSummary ? `(${colors.cyan(argsSummary)})` : "";
-              if (execution.blocked || toolOutput.startsWith("执行出错:")) {
-                ui.writeLine(
-                  `  ${colors.boldRed("❌")} ${colors.purple(toolName)}${displayArgs} ${colors.red(`(${safeToolOutput})`)}`,
-                );
-              } else {
-                ui.writeLine(
-                  `  ${colors.boldGreen("✓")} ${colors.purple(toolName)}${displayArgs} ${colors.gray(`(${execution.duration}ms)`)}`,
-                );
-              }
-
               if (
                 permissionMode === "plan" &&
                 toolName === "taskcreate" &&
@@ -3300,7 +3385,7 @@ async function main() {
         } else {
           if (permissionMode === "plan" && planReadyForReview) {
             if (!textContent.trim()) {
-              ui.writeLine(colors.yellow("⚠️ 模型未输出可审阅的方案正文，本次不进入审批。"));
+              ui.writeLine(colors.yellow("! 模型未输出可审阅的方案正文，本次不进入审批。"));
               keepCalling = false;
             } else {
               try {
@@ -3365,7 +3450,7 @@ async function main() {
               const ids = unverifiedAgents.map((agent) => agent.id).join(", ");
               ui.writeLine(
                 colors.yellow(
-                  `⚠️ 子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`,
+                  `! 子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`,
                 ),
               );
               refreshAgentVerificationContext(messages);
@@ -3430,7 +3515,7 @@ async function main() {
           parts.push(`记忆候选 ${distillSummary.memoryCandidates}`);
         console.log(
           colors.gray(
-            `🧠 经验提炼：${parts.join(" / ")}${distillSummary.llmTriggered ? "" : "（LLM 未触发）"}`,
+            `经验提炼：${parts.join(" / ")}${distillSummary.llmTriggered ? "" : "（LLM 未触发）"}`,
           ),
         );
         if (distillSummary.memoryCandidates > 0) {
