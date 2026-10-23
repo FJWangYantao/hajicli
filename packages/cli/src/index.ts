@@ -79,10 +79,10 @@ import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
 import { formatAgentTokens, parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
 import {
   buildHubMenus,
+  buildLogo,
   buildSessionHelpLines,
   buildSlashCommandCatalog,
   handleEarlyCliArgs,
-  LOGO,
   suggestSimilarCommand,
 } from "./cli-help.js";
 import {
@@ -111,6 +111,7 @@ import {
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import {
   isBuiltinProvider,
+  listVisibleProviderNames,
   loadProviderConfig,
   loadProviderConfigScope,
   normalizeBaseUrl,
@@ -152,7 +153,8 @@ import {
   TerminalUI,
 } from "./terminal-input.js";
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
-import { colors } from "./theme.js";
+import { detectTerminalAppearance } from "./terminal-appearance.js";
+import { colors, setThemeAppearance } from "./theme.js";
 import { createToolCallBatches, runToolCallBatch } from "./tool-batch.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
@@ -243,6 +245,16 @@ async function main() {
   const cliArgs = process.argv.slice(2);
   handleEarlyCliArgs(cliArgs);
 
+  // 终端外观探测：haji 不再绘制整屏底色（背景交给终端，与 pi 一致），
+  // 因此必须先知道终端底色是深是浅，才能在前缀帧就用对调色板。
+  // 失败/超时一律回退深色，绝不阻断启动。
+  try {
+    setThemeAppearance(await detectTerminalAppearance());
+  } catch {
+    // 探测失败保持内置深色调色板。
+  }
+  markStartupStage("terminal_appearance");
+
   const providerConfig = loadProviderConfig();
   let volcApiKey =
     process.env.VOLC_API_KEY ||
@@ -265,7 +277,7 @@ async function main() {
   // 启动时清空终端屏幕，实现“置顶并开辟新页面”效果
   console.clear();
 
-  console.log(LOGO);
+  console.log(buildLogo());
   console.log(colors.gray("正在初始化大模型提供商、系统工具和 Trace 观测服务器..."));
 
   // 读取上次保存的偏好（模型 + 思考强度）
@@ -726,7 +738,7 @@ async function main() {
 
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
-    header: LOGO.trim(),
+    header: buildLogo().trim(),
     compactHeader: colors.boldPurple("HAJI"),
     inputPrompt: colors.boldAccent("› "),
     continuationPrompt: colors.muted("│ "),
@@ -2777,10 +2789,9 @@ async function main() {
               return "全局";
             return "默认";
           };
-          const allNames = [
-            ...PROVIDER_NAMES,
-            ...Object.keys(providerConfig.providers).filter((n) => !PROVIDER_NAMES.includes(n)),
-          ];
+          const allNames = listVisibleProviderNames(providerConfig, (name) =>
+            name === "deepseek" ? Boolean(deepseekApiKey) : Boolean(volcApiKey),
+          );
           for (const name of allNames) {
             const label = providerLabel(name);
             const entry = providerConfig.providers[name] || {};
@@ -2809,6 +2820,13 @@ async function main() {
               : entry.model || "默认";
             rows.push(
               `    模型: ${modelLabel} ${colors.gray(`[${sourceFor(name, ["models", "model"])}]`)}`,
+            );
+          }
+          if (allNames.filter((name) => isBuiltinProvider(name)).length < PROVIDER_NAMES.length) {
+            rows.push(
+              colors.gray(
+                "未配置 API Key 的内置 provider 不在此列出；可用 /provider set <名称> 重新配置。",
+              ),
             );
           }
           rows.push(

@@ -26,6 +26,7 @@ import {
   highlightAnsiColumns,
   layoutAnsiDocument,
   layoutInput,
+  normalizeTerminalOutput,
   SEQ,
   splitGraphemes,
   terminalWidth,
@@ -513,10 +514,11 @@ export class TerminalUI {
     stdin.resume();
     this.clipboardWriter.start();
     // 1002 负责拖动和滚轮，1006 统一为 SGR 坐标；禁用 1007，避免滚轮重复转成方向键。
+    // 整段用同步输出（2026）包起来：进备屏、清屏与模式切换不会在中间状态被扫描出来。
     stdout.write(
-      "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h" +
+      "\x1b[?2026h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049h" +
         themeEnter() +
-        "\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h",
+        "\x1b[2J\x1b[H\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?2026l",
     );
     stdout.on("resize", this.handleResize);
     stdout.on("drain", this.handleStdoutDrain);
@@ -695,12 +697,15 @@ export class TerminalUI {
   };
 
   writeChat(value: string): void {
+    // 渲染前归一化：制表符展开为固定宽度空列、泰/老挝 SARA AM 拆分，
+    // 否则终端真的制表位会把已测量的行宽推超、自动折行撑破布局。
+    const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      stdout.write(value);
+      stdout.write(text);
       return;
     }
 
-    this.chatContent += value;
+    this.chatContent += text;
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = "";
@@ -742,12 +747,13 @@ export class TerminalUI {
   }
 
   replaceChat(value: string): void {
+    const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      stdout.write(value);
+      stdout.write(text);
       return;
     }
 
-    this.chatContent = value.length > 200_000 ? value.slice(-160_000) : value;
+    this.chatContent = text.length > 200_000 ? text.slice(-160_000) : text;
     this.chatScrollOffset = 0;
     this.textSelection.clear();
     this.stopSelectionAutoScroll();
@@ -770,15 +776,16 @@ export class TerminalUI {
    * @param value 新的文本内容
    */
   updateChatFrom(offset: number, value: string): void {
+    const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      const delta = value.slice(Math.max(0, this.chatContent.length - offset));
+      const delta = text.slice(Math.max(0, this.chatContent.length - offset));
       if (delta) {
         stdout.write(delta);
       }
     }
 
     this.markStableChatPrefix(offset);
-    this.chatContent = this.chatContent.slice(0, offset) + value;
+    this.chatContent = this.chatContent.slice(0, offset) + text;
     if (this.chatContent.length > 200_000) {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = "";
@@ -1919,10 +1926,13 @@ export class TerminalUI {
       return;
     }
 
-    let frame = "\x1b[?25l";
+    // 同步输出（DECSET 2026）：一帧内的光标/擦除/重写/光标定位作为一个原子刷新交给
+    // 终端，避免逐条转义序列被扫描到一半时的撕裂与闪烁。不支持的终端会忽略该私模式。
+    let frame = "\x1b[?2026h\x1b[?25l";
     if (fullRefresh) frame += `${themeEnter()}\x1b[2J`;
     frame += screenUpdate;
     frame += cursorState;
+    frame += "\x1b[?2026l";
     const accepted = stdout.write(frame);
     this.renderedScreenRows = screenRows;
     this.renderedScreenWidth = width;

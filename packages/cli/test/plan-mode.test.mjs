@@ -176,8 +176,11 @@ test("the large HAJI logo remains until the first ordinary user message", () => 
     new URL("../src/terminal-input.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /console\.log\(LOGO\)/);
-  assert.match(source, /header: LOGO\.trim\(\),\s*compactHeader: colors\.boldPurple\("HAJI"\)/);
+  assert.match(source, /console\.log\(buildLogo\(\)\)/);
+  assert.match(
+    source,
+    /header: buildLogo\(\)\.trim\(\),\s*compactHeader: colors\.boldPurple\("HAJI"\)/,
+  );
   assert.match(
     source,
     /if \(!trimmedInput\.startsWith\("\/"\)\) \{\s*ui\.dismissStartupHeader\(\)/,

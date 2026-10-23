@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { hexGradient, mixHexOklab } from "./oklab.js";
+import { ensureContrast } from "./contrast.js";
 
 /**
  * TUI 主题模块。
@@ -105,9 +107,15 @@ export function resetActiveColorLevel(): void {
 export const setColorLevel = setActiveColorLevel;
 export const resetColorLevel = resetActiveColorLevel;
 
-/** 内置默认主题：HAJI 轨迹台，低干扰深色表面 + 克制紫色强调。 */
-const DEFAULT_THEME: Theme = {
-  background: "#101318",
+/**
+ * 终端明暗外观：决定使用哪套内置调色板。
+ * `background` 为空串时表示「不绘制整屏底色，沿用终端自身背景」（与 pi 一致）。
+ */
+export type ThemeAppearance = "dark" | "light";
+
+/** 内置深色调色板：HAJI 轨迹台，低干扰深色表面 + 克制紫色强调。 */
+const DARK_THEME: Theme = {
+  background: "",
   userMsgBg: "#171b22",
   foreground: "#d9dee7",
   accent: "#a995d6",
@@ -123,6 +131,36 @@ const DEFAULT_THEME: Theme = {
   brightBlue: "#9ab8e6",
   brightCyan: "#9edcff",
 };
+
+/**
+ * 内置浅色调色板：用于浅色终端（如白底 Windows Terminal / Kero）。
+ * 同样不绘制底色，只提供在白底上足够对比的前景与卡片色。
+ */
+const LIGHT_THEME: Theme = {
+  background: "",
+  userMsgBg: "#eceff4",
+  foreground: "#242b36",
+  accent: "#6b4fc4",
+  muted: "#5b6472",
+  red: "#b23a30",
+  green: "#1d7a4d",
+  yellow: "#8a6200",
+  blue: "#2a5bab",
+  magenta: "#8a3aa5",
+  cyan: "#0e6d8a",
+  brightGreen: "#248a57",
+  brightYellow: "#9d7100",
+  brightBlue: "#3a6dbe",
+  brightCyan: "#1a7f99",
+};
+
+const PALETTES: Readonly<Record<ThemeAppearance, Theme>> = {
+  dark: DARK_THEME,
+  light: LIGHT_THEME,
+};
+
+/** 向后兼容的默认主题别名（深色调色板）。 */
+const DEFAULT_THEME = DARK_THEME;
 
 /** Theme 接口的所有合法键，用于配置合并时过滤未知字段。 */
 const THEME_KEYS = Object.keys(DEFAULT_THEME) as readonly (keyof Theme)[];
@@ -157,6 +195,14 @@ function hexToRgb(hex: string): [number, number, number] | undefined {
   return [r, g, b];
 }
 
+/**
+ * 允许使用终端默认色的字段：空串表示交由终端决定。
+ * 只有背景支持该语义（与 pi 的主题 token 一致），其余字段仍必须是具体 hex。
+ */
+function isTerminalDefaultValue(key: keyof Theme, value: string): boolean {
+  return key === "background" && value === "";
+}
+
 function rgbToAnsi256(r: number, g: number, b: number): number {
   if (r === g && g === b) {
     if (r < 8) return 16;
@@ -188,10 +234,11 @@ function ansi16Code(index: number, background: boolean): number {
   return (background ? 100 : 90) + (index - 8);
 }
 
-/** 按当前颜色能力生成前景色 SGR；无色模式返回空串。 */
+/** 按当前颜色能力生成前景色 SGR；无色模式返回空串；空串色值表示终端默认前景。 */
 export function fgSeq(hex: string): string {
   const level = getColorLevel();
   if (level === "mono") return "";
+  if (hex === "") return "\x1b[39m";
   const rgb = hexToRgb(hex);
   if (!rgb) return "\x1b[39m";
   if (level === "truecolor") return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
@@ -199,10 +246,11 @@ export function fgSeq(hex: string): string {
   return `\x1b[${ansi16Code(rgbToAnsi16(...rgb), false)}m`;
 }
 
-/** 按当前颜色能力生成背景色 SGR；无色模式返回空串。 */
+/** 按当前颜色能力生成背景色 SGR；无色模式返回空串；空串色值表示终端默认背景。 */
 export function bgSeq(hex: string): string {
   const level = getColorLevel();
   if (level === "mono") return "";
+  if (hex === "") return "\x1b[49m";
   const rgb = hexToRgb(hex);
   if (!rgb) return "\x1b[49m";
   if (level === "truecolor") return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
@@ -234,7 +282,8 @@ function readThemeFile(filePath: string): Partial<Theme> {
     const result: Partial<Theme> = {};
     for (const key of THEME_KEYS) {
       const value = source[key];
-      if (typeof value === "string" && HEX_RE.test(value)) {
+      if (typeof value !== "string") continue;
+      if (isTerminalDefaultValue(key, value) || HEX_RE.test(value)) {
         result[key] = value;
       }
     }
@@ -245,22 +294,90 @@ function readThemeFile(filePath: string): Partial<Theme> {
 }
 
 /**
- * 加载并合并主题：项目级覆盖用户级，再覆盖内置默认。
- * 始终返回一个完整的 Theme 对象（所有字段均有值）。
+ * 文字类颜色（正文/弱化）与强调类颜色（语义色、品牌色）的最小 WCAG 对比度。
+ * 4.5:1 是 WCAG AA 的正文标准，3:1 用于大字与非文本图形。
  */
-export function loadTheme(): Theme {
-  const merged: Theme = { ...DEFAULT_THEME };
+const TEXT_MIN_CONTRAST = 4.5;
+const ACCENT_MIN_CONTRAST = 3;
+const TEXT_KEYS = ["foreground", "muted"] as const;
+const ACCENT_KEYS = [
+  "accent",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "brightGreen",
+  "brightYellow",
+  "brightBlue",
+  "brightCyan",
+] as const;
+
+/** 终端默认背景的最佳猜测：无法得知真实底色时用于对比度兜底。 */
+const ASSUMED_BACKGROUND: Readonly<Record<ThemeAppearance, string>> = {
+  dark: "#000000",
+  light: "#ffffff",
+};
+
+/**
+ * 可读性兜底：把文字与强调色拉到达标对比度。
+ * 参考背景优先用主题自己声明的底色，否则用终端外观对应的黑/白。
+ * 内置调色板本身已达标，因此该函数对它们是零改动。
+ */
+function referenceBackgroundFor(theme: Theme, appearance: ThemeAppearance): string {
+  return theme.background === "" ? ASSUMED_BACKGROUND[appearance] : theme.background;
+}
+
+function enforceReadableContrast(theme: Theme, appearance: ThemeAppearance): Theme {
+  const reference = referenceBackgroundFor(theme, appearance);
+  const result = { ...theme };
+  for (const key of TEXT_KEYS) {
+    result[key] = ensureContrast(result[key], reference, TEXT_MIN_CONTRAST);
+  }
+  for (const key of ACCENT_KEYS) {
+    result[key] = ensureContrast(result[key], reference, ACCENT_MIN_CONTRAST);
+  }
+  return result;
+}
+
+/**
+ * 加载并合并主题：项目级覆盖用户级，再覆盖指定外观的内置调色板。
+ * 始终返回一个完整的 Theme 对象（所有字段均有值；`background` 可为空串，
+ * 表示沿用终端默认背景）。
+ */
+export function loadTheme(appearance: ThemeAppearance = activeAppearance): Theme {
+  const merged: Theme = { ...PALETTES[appearance] };
   const user = readThemeFile(userThemeConfigPath());
   const project = readThemeFile(projectThemeConfigPath());
   for (const key of THEME_KEYS) {
     const override = project[key] ?? user[key];
-    if (override) merged[key] = override;
+    if (override !== undefined) merged[key] = override;
   }
-  return merged;
+  return enforceReadableContrast(merged, appearance);
 }
 
 /** 当前激活主题（模块级单例，首次访问时加载一次）。 */
 let activeTheme: Theme | undefined;
+
+/** 当前外观（深/浅），决定使用哪套内置调色板。 */
+let activeAppearance: ThemeAppearance = "dark";
+
+/** 读取当前生效的外观。 */
+export function getThemeAppearance(): ThemeAppearance {
+  return activeAppearance;
+}
+
+/**
+ * 切换明/暗外观并重建激活主题。
+ * 调用方负责在切换后触发一次全量重绘；外观未变化时返回 false。
+ */
+export function setThemeAppearance(appearance: ThemeAppearance): boolean {
+  if (appearance === activeAppearance && activeTheme) return false;
+  activeAppearance = appearance;
+  activeTheme = loadTheme(appearance);
+  return true;
+}
 
 /**
  * 获取当前激活主题；尚未加载时自动加载一次。
@@ -278,6 +395,12 @@ export function setActiveTheme(theme: Theme): void {
 
 /** 重置激活主题，下次 {@link getTheme} 重新从配置加载。 */
 export function resetActiveTheme(): void {
+  activeTheme = undefined;
+}
+
+/** 重置外观为深色（测试用）。 */
+export function resetThemeAppearance(): void {
+  activeAppearance = "dark";
   activeTheme = undefined;
 }
 
@@ -299,6 +422,29 @@ export function themeBg(): string {
 /** 仅主题前景色序列。 */
 export function themeFg(): string {
   return fgSeq(getTheme().foreground);
+}
+
+/**
+ * 朝参考背景混合出的 dim 派生色。
+ * 与 pi 一致：`dim = mix(color, background, 0.4)`，用真实颜色表达次要层级，
+ * 而不是依赖各家终端实现差异极大的 SGR 2（有的当亮度减半、有的直接忽略、
+ * 浅色底上还常常直接看不见）。
+ */
+export function dimHex(color: string, amount = 0.4): string {
+  return mixHexOklab(color, referenceBackgroundFor(getTheme(), getThemeAppearance()), amount);
+}
+
+/** dim 前景 SGR；默认作用于主题正文色。 */
+export function dimFgSeq(color: string = getTheme().foreground): string {
+  return fgSeq(dimHex(color));
+}
+
+/**
+ * 在 Oklab 感知均匀空间里生成 count 段渐变的前景色 SGR 序列。
+ * 用于像素 Logo、进度条、渐变分隔线；无色模式下每段都是空串。
+ */
+export function gradientFg(from: string, to: string, count: number): string[] {
+  return hexGradient(from, to, count).map((hex) => fgSeq(hex));
 }
 
 /** 主题进入序列：设置前景与背景（用于进入 alt screen 后填充整屏）。 */
@@ -426,7 +572,7 @@ export function buildAnsiStyles(): {
   return {
     reset: themeReset(),
     bold: styleSeq(BOLD),
-    dim: enabled ? "\x1b[2m" : "",
+    dim: dimFgSeq(),
     italic: enabled ? "\x1b[3m" : "",
     underline: enabled ? "\x1b[4m" : "",
     strikethrough: enabled ? "\x1b[9m" : "",

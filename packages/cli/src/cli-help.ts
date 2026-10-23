@@ -1,17 +1,29 @@
 import { getCliVersion } from "./cli-runtime.js";
 import type { SlashCommand } from "./terminal-input.js";
 import { splitGraphemes, terminalWidth } from "./terminal-text.js";
-import { colors } from "./theme.js";
+import { colors, getTheme, gradientFg, themeReset } from "./theme.js";
 
-// 像素画风格的大写 HAJI 启动 Logo
-export const LOGO = `
-${colors.boldPurple("██╗  ██╗  ██████╗      █████╗ ████████╗")}
-${colors.boldPurple("██║  ██║ ██╔═══██╗     ╚══██║ ╚══██╔══╝")}
-${colors.boldPurple("███████║ ████████║        ██║    ██║   ")}
-${colors.boldPurple("██╔══██║ ██╔═══██║   ██   ██║    ██║   ")}
-${colors.boldPurple("██║  ██║ ██║   ██║   ╚█████╔╝ ████████╗")}
-${colors.boldPurple("╚═╝  ╚═╝ ╚═╝   ╚═╝    ╚════╝  ╚═══════╝")}
-`;
+/** 像素画风格的大写 HAJI 字形（不含颜色）。 */
+const LOGO_GLYPHS: readonly string[] = [
+  "██╗  ██╗  ██████╗      █████╗ ████████╗",
+  "██║  ██║ ██╔═══██╗     ╚══██║ ╚══██╔══╝",
+  "███████║ ████████║        ██║    ██║   ",
+  "██╔══██║ ██╔═══██║   ██   ██║    ██║   ",
+  "██║  ██║ ██║   ██║   ╚█████╔╝ ████████╗",
+  "╚═╝  ╚═╝ ╚═╝   ╚═╝    ╚════╝  ╚═══════╝",
+];
+
+/**
+ * 构建启动 Logo：逐行取 Oklab 感知均匀渐变（accent → cyan）。
+ * 必须延迟到渲染时调用：终端明/暗外观在启动阶段才探测到，
+ * 模块级常量会把深色调色板固化下来。
+ */
+export function buildLogo(): string {
+  const theme = getTheme();
+  const colors = gradientFg(theme.accent, theme.cyan, LOGO_GLYPHS.length);
+  const body = LOGO_GLYPHS.map((line, index) => `${colors[index]}${line}${themeReset()}`);
+  return `\n${body.join("\n")}\n`;
+}
 
 /**
  * 指令面条目：顶层指令，或枢纽条目下的成员子指令。

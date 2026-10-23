@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  listVisibleProviderNames,
   loadProviderConfig,
   loadProviderConfigScope,
   normalizeBaseUrl,
@@ -57,6 +58,46 @@ test("provider config starts empty", () => {
     const config = loadProviderConfig();
     assert.deepEqual(config.providers.deepseek, {});
     assert.deepEqual(config.providers.volcengine, {});
+  });
+});
+
+test("visible provider list hides builtins without an API key", () => {
+  withIsolatedPaths(() => {
+    const config = loadProviderConfig();
+
+    // 没有任何 key：内置名不应被固定罗列（否则删除配置后重启仍会看到）
+    assert.deepEqual(
+      listVisibleProviderNames(config, () => false),
+      [],
+      "无 key 时列表为空",
+    );
+
+    // 仅 deepseek 有 key（含来自环境变量的情况，由调用方判定）
+    assert.deepEqual(
+      listVisibleProviderNames(config, (name) => name === "deepseek"),
+      ["deepseek"],
+    );
+
+    // 自定义 provider 无论有无 key 都按配置条目列出，且顺序稳定、不重复
+    assert.equal(saveProviderConfig("zhipu", { apiKey: "k-1", models: ["glm-5.3-flash"] }), true);
+    const withCustom = loadProviderConfig();
+    assert.deepEqual(listVisibleProviderNames(withCustom, () => true), [
+      "deepseek",
+      "volcengine",
+      "zhipu",
+    ]);
+    assert.deepEqual(listVisibleProviderNames(withCustom, () => false), ["zhipu"]);
+
+    // 隐藏只是展示层行为：内置名与写入路径保持不变，仍可重新配置
+    assert.deepEqual(withCustom.providers.deepseek, {});
+    assert.equal(saveProviderConfig("deepseek", { apiKey: "sk-new" }), true);
+    const reconfigured = loadProviderConfig();
+    assert.deepEqual(
+      listVisibleProviderNames(reconfigured, (name) =>
+        Boolean(reconfigured.providers[name]?.apiKey),
+      ),
+      ["deepseek", "zhipu"],
+    );
   });
 });
 

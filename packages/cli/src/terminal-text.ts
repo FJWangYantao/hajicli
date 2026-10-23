@@ -1,6 +1,14 @@
 import { tryNativeLayoutAnsiDocument, tryNativeWrapAnsi } from "./native-terminal-engine.js";
 import type { TextCell } from "./text-selection.js";
-import { bgSeq, fgSeq, getColorLevel, getTheme, themeBg, themeReset } from "./theme.js";
+import {
+  bgSeq,
+  dimFgSeq,
+  fgSeq,
+  getColorLevel,
+  getTheme,
+  themeBg,
+  themeReset,
+} from "./theme.js";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
@@ -55,6 +63,11 @@ export const SEQ = {
   },
 };
 const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
+/** 可见宽度缓存：长按帧渲染会对同一批行重复测量，命中率很高。 */
+const WIDTH_CACHE_LIMIT = 512;
+/** 超过该长度的字符串不入缓存，避免缓存替调用方长期持有整段文档。 */
+const WIDTH_CACHE_MAX_LENGTH = 4096;
+const widthCache = new Map<string, number>();
 const NATIVE_LAYOUT_MIN_LENGTH = 1024;
 /** 宽屏默认对话内边距；实际值由响应式布局策略决定。 */
 export const DEFAULT_CHAT_PADDING = 3;
@@ -143,6 +156,42 @@ export function buildViewportScrollUpdate(
   return regionScroll + buildScreenUpdate(shiftedRows, nextRows);
 }
 
+/** 制表符在此处展开成的固定宽度：任何制表位都不会把逻辑行推出已测量的列宽。 */
+export const TAB_WIDTH = 3;
+
+/**
+ * 渲染前的文本归一化（源自 pi-tui 的 normalizeTerminalOutput 的 tab 部分）：
+ *
+ * 制表符的显示宽度取决于终端制表位（通常 8 列），而测量只能按 1 列算，
+ * 含 tab 的行会被终端自动折行、撑破已测量的布局；统一展开为固定宽度的空格。
+ * ANSI 转义序列内部的字符不受影响。
+ *
+ * 注：pi-tui 同时会把泰/老挝的 SARA AM（U+0E33 / U+0EB3）拆成两个码位。
+ * 这里不做改写：原生 Rust 布局引擎（width 逐码位判定）与 JS 回退实现拆分后
+ * 会得出不同列宽，反而让两条渲染路径不一致；保留原字符并让宽度测量把
+ * 组合标记计为 0 列，两条路径就都能得到正确结果。
+ */
+export function normalizeTerminalOutput(value: string): string {
+  if (!value.includes("\t")) return value;
+
+  const spaces = " ".repeat(TAB_WIDTH);
+  let result = "";
+  let offset = 0;
+  while (offset < value.length) {
+    if (value[offset] === "\x1b") {
+      const sequence = ansiSequenceAt(value, offset);
+      if (sequence) {
+        result += sequence;
+        offset += sequence.length;
+        continue;
+      }
+    }
+    result += value[offset] === "\t" ? spaces : value[offset];
+    offset += 1;
+  }
+  return result;
+}
+
 export function splitGraphemes(value: string): string[] {
   // Most source code and terminal chrome is ASCII. Avoid the considerably
   // heavier Intl.Segmenter path when every UTF-16 code unit is one grapheme.
@@ -182,24 +231,67 @@ function isWide(codePoint: number): boolean {
   );
 }
 
+/**
+ * 开头的组合标记（Mn/Me）、格式字符（Cf）与默认可忽略字符：不占列宽。
+ * 覆盖手写区间没列全的脚本（泰/老挝、希伯来、阿拉伯变音符等）。
+ */
+const LEADING_ZERO_WIDTH_PATTERN = /^[\p{Mn}\p{Me}\p{Cf}\p{Default_Ignorable_Code_Point}]+/u;
+/** 单个字符是否就是不占列的组合标记（UTF-16 长度 1 的快路径用）。 */
+const SINGLE_MARK_PATTERN = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
+
 function measureGrapheme(grapheme: string): number {
   if (grapheme.length === 1) {
     const codePoint = grapheme.charCodeAt(0);
-    if (isZeroWidth(codePoint)) return 0;
+    if (isZeroWidth(codePoint) || SINGLE_MARK_PATTERN.test(grapheme)) return 0;
     return isWide(codePoint) ? 2 : 1;
   }
-  const codePoints = Array.from(grapheme, (character) => character.codePointAt(0) ?? 0);
+  // 先剔除开头的组合标记：单独的变音符/尼空词（如泰文 SARA AM 拆分后的 U+0E4D）
+  // 不占列，后面接基底字符时按基底字符计宽。
+  const visible = grapheme.replace(LEADING_ZERO_WIDTH_PATTERN, "");
+  if (visible === "") return 0;
+  const codePoints = Array.from(visible, (character) => character.codePointAt(0) ?? 0);
   if (codePoints.every(isZeroWidth)) {
     return 0;
   }
   return codePoints.some(isWide) ? 2 : 1;
 }
 
-export function terminalWidth(value: string): number {
+function measureWidth(value: string): number {
+  // 纯 ASCII 且不含 ESC 时，UTF-16 单元数就是显示宽度；跳过 ANSI 正则替换与逐段测量。
+  if (value.indexOf("\x1b") === -1 && ASCII_ONLY_PATTERN.test(value)) return value.length;
   return splitGraphemes(value.replace(ANSI_PATTERN, "")).reduce(
     (width, grapheme) => width + measureGrapheme(grapheme),
     0,
   );
+}
+
+/**
+ * 字符串的终端显示宽度（东亚宽字符占 2 列、ANSI 转义序列占 0 列）。
+ * 结果按原始字符串做 LRU 缓存：同一行在多帧之间反复测量时直接命中。
+ */
+export function terminalWidth(value: string): number {
+  if (value.length === 0) return 0;
+  const cached = widthCache.get(value);
+  if (cached !== undefined) {
+    // Map 保持插入顺序：删除后重插即为 LRU 触碰。
+    widthCache.delete(value);
+    widthCache.set(value, cached);
+    return cached;
+  }
+  const width = measureWidth(value);
+  if (value.length <= WIDTH_CACHE_MAX_LENGTH) {
+    if (widthCache.size >= WIDTH_CACHE_LIMIT) {
+      const oldest = widthCache.keys().next().value;
+      if (oldest !== undefined) widthCache.delete(oldest);
+    }
+    widthCache.set(value, width);
+  }
+  return width;
+}
+
+/** 清空宽度缓存（测试或主题/编码环境变化时使用）。 */
+export function clearTerminalWidthCache(): void {
+  widthCache.clear();
 }
 
 export function highlightAnsiColumns(

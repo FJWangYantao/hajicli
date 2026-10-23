@@ -152,6 +152,27 @@ export function loadProviderConfig(): ProviderConfig {
   return { providers };
 }
 
+/**
+ * 列出 `/provider` 状态视图应展示的 provider 名称。
+ *
+ * 内置 provider 只在解析到可用 API Key 时才列出（环境变量与配置文件任一来源皆可，
+ * 具体由调用方的 hasBuiltinKey 按实际解析结果判断）。若固定罗列内置名，用户删除配置
+ * 后重启仍会看到它，视角上就是“删不掉”。自定义 provider 仍按配置文件中的条目出现。
+ *
+ * 该函数只影响展示与选择，不改变 loadProviderConfig 的“内置名始终存在”语义，
+ * 因此 `/provider set deepseek` 等写入路径仍可随时重新配置被隐藏的内置 provider。
+ */
+export function listVisibleProviderNames(
+  config: ProviderConfig,
+  hasBuiltinKey: (name: ProviderName) => boolean,
+): ProviderName[] {
+  const visible: ProviderName[] = PROVIDER_NAMES.filter((name) => hasBuiltinKey(name));
+  for (const name of Object.keys(config.providers)) {
+    if (!isBuiltinProvider(name) && !visible.includes(name)) visible.push(name);
+  }
+  return visible;
+}
+
 function writeConfig(config: ProviderConfig, scope: ProviderConfigScope): boolean {
   const filePath = providerConfigPath(scope);
   try {
