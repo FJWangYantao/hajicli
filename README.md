@@ -45,17 +45,31 @@ git push origin v1.0.0
 
 ## 斜杠指令
 
-会话内按 `/` 只列出 11 个顶层指令：5 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作直接保留在顶层。进入枢纽后用方向键选择细分项；被收纳的子指令依旧可以直接输入完整指令调用。
+会话内按 `/` 列出 12 个顶层指令：5 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作（含 `/model`）直接保留在顶层。进入枢纽后用方向键选择细分项，选中后立即执行。
 
 | 枢纽 | 细分项 |
 |---|---|
-| `/config` 模型与配置 | `/model`、`/effort`、`/permission`、`/provider` |
+| `/config` 模型与配置 | `/permission`、`/provider` |
 | `/agent` 子代理管理 | `/subagent`、`/preset`、`/agents` |
 | `/skill` Skill 管理 | 可用 Skill（动态列出，选中即加载）、`/skills`、`/skills reload`、`/skills validate` |
 | `/memory` 经验系统 | `/memory list`、`/instinct`、`/instinct distill`、`/instinct stats` |
 | `/diag` 诊断与观测 | `/perf`、`/viewer`、`/mcp` |
 
-顶层直接保留：`/help`、`/compact`、`/clear`、`/resume`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。
+顶层直接保留：`/help`、`/model`、`/compact`、`/clear`、`/resume`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。`/effort` 与 `/model` 的思考强度轴重复，不再出现在菜单中，但仍可直接输入或补全。
+
+补全规则：
+
+- 继续输入字母后会模糊搜索**全部**指令、子命令与可手动调用的 Skill，不必记住指令在哪个枢纽下：`/mo` → `/model`，`/perm` → `/permission`，`/reload` → `/skills reload`，`/rev` → `/skill review`。非顶层候选会在说明后标注所属枢纽。
+- 指令后敲空格列出它的子命令（如 `/provider ` → `add` / `set` / `unset`）；已输入参数时显示参数格式提示（如 `/memory confirm <id>`）。
+- `Tab` 只补全不执行；`Enter` 执行选中项，需要必填参数的指令（如 `/memory confirm`）只填入并等待输入参数。输入已是完整指令时，`Enter` 直接执行输入本身。
+- 输错指令时会提示最接近的指令（如 `/mdoel` → “你是不是想输入 /model？”）。
+- 指令不会作为用户消息气泡显示，只在对话区留一行灰色回显；经枢纽菜单执行的指令合并为一行（如 `› /config › /provider`）。
+
+运行中的反馈：
+
+- 状态栏显示权限档次（计划 / 默认 / 自动编辑 / 自动 / 全放行）、模型与思考强度、工作区（家目录缩写为 `~`）和当前 git 分支。
+- 思考与生成进度统一以 tokens 计；每轮结束后显示一行小结：耗时、模型输出 tokens 与工具调用次数。
+- 工具结果按类型给出摘要（编辑显示 `+新增 −删除` 行数，写入显示大小与行数，命令失败时优先显示首个报错行）；按 `Ctrl+O` 展开最后一批工具调用的完整输出。
 
 ## 模型配置
 
@@ -149,6 +163,8 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 ```powershell
 $env:HAJI_ALLOW_OUTSIDE_WORKSPACE = '1'
 ```
+
+`default` 与 `accept-edit` 模式下，可静态确认为只读的命令无需审批：`ls`、`pwd`、`cat`/`head`/`tail`/`wc`、`rg`、`git status|diff|log|show|blame|rev-parse|ls-files`、只列出分支的 `git branch` 以及对应的 PowerShell 查询命令。含命令组合、重定向、变量展开或替换的命令，以及指向工作区外（绝对路径、`~`、`..`、经符号链接逃逸）的路径参数一律仍需审批。授权卡片中的“本会话内总是允许”按命令前缀生效（如 `npm test`、`git commit`），不会一次放行全部命令；无法按前缀安全匹配的组合命令只提供单次允许。
 
 不要在不可信项目中使用 `bypass-permissions`。会话、Trace、快照和计划数据位于 `.haji`，发布包不会包含这些运行时数据。
 

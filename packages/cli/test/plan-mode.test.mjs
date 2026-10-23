@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { PERMISSION_MODES, PermissionEngine, SystemPromptManager, TaskStore } from "@hajicli/core";
+import {
+  isReadOnlyShellCommand,
+  PERMISSION_MODES,
+  PermissionEngine,
+  SystemPromptManager,
+  TaskStore,
+} from "@hajicli/core";
 import {
   ALL_TASKS_COMPLETE_MARKER,
   PLAN_READY_MARKER,
@@ -184,4 +190,59 @@ test("the large HAJI logo remains until the first ordinary user message", () => 
     /const headerInfo =[\s\S]*?this\.startupHeaderVisible && layout\.headerMode === "full" \? this\.headerInfo : \[\]/,
   );
   assert.match(terminalSource, /\.\.\.wrapAnsi\(header, width\),\s*\.\.\.\(headerInfo\.length/);
+});
+
+test("strict read-only shell commands skip approval outside Plan Mode", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "haji-ro-"));
+  try {
+    fs.writeFileSync(path.join(workspace, "a.txt"), "hi");
+    for (const command of [
+      "ls -la",
+      "git status",
+      "git log --oneline -5",
+      "git branch",
+      "cat a.txt",
+      "rg foo src",
+      "Get-ChildItem",
+    ]) {
+      assert.ok(isReadOnlyShellCommand(command, workspace), command);
+    }
+    for (const command of [
+      "npm test",
+      "ls; rm -rf .",
+      "cat a.txt > b.txt",
+      "cat $HOME/x",
+      "cat ~/.ssh/id_rsa",
+      "cat /etc/passwd",
+      "cat ../secret",
+      "cat *.txt",
+      "git branch -D main",
+      "git diff --output=x",
+      "git -c core.pager=sh log",
+      "rg --pre sh foo",
+      "tail -f log.txt",
+      "type C:\\secret",
+    ]) {
+      assert.ok(!isReadOnlyShellCommand(command, workspace), command);
+    }
+    // 指向工作区外的符号链接不能被 cat 自动读取。
+    try {
+      fs.symlinkSync(os.homedir(), path.join(workspace, "home-link"));
+      assert.ok(!isReadOnlyShellCommand("cat home-link/.bashrc", workspace));
+      assert.ok(isReadOnlyShellCommand("ls home-link", workspace));
+    } catch (error) {
+      if (error.code !== "EPERM") throw error;
+    }
+
+    const engine = new PermissionEngine();
+    const evaluate = (mode, command) =>
+      engine.evaluate({ mode, toolName: "bash", args: { command }, userIntent: "" });
+    assert.equal((await evaluate("default", "git status")).action, "allow");
+    assert.equal((await evaluate("accept-edit", "ls")).action, "allow");
+    assert.equal((await evaluate("default", "npm test")).action, "prompt");
+    // Plan 模式仍按原规则禁止 bash。
+    assert.equal((await evaluate("plan", "ls")).action, "deny");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });

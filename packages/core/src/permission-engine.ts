@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import {
   type RiskLevel,
   type SecurityAssessment,
@@ -86,6 +88,103 @@ export class PermissionError extends HajiError {
   }
 }
 
+/** 只读 shell 命令（首个词，小写）：只查看文件或目录，不产生副作用。 */
+const READ_ONLY_SHELL_COMMANDS = new Set([
+  "ls",
+  "dir",
+  "pwd",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "type",
+  "rg",
+  "get-childitem",
+  "get-content",
+  "get-location",
+  "test-path",
+]);
+
+/** 只读的 git 子命令。 */
+const GIT_READ_ONLY_SUBCOMMANDS = new Set([
+  "status",
+  "diff",
+  "log",
+  "show",
+  "blame",
+  "rev-parse",
+  "ls-files",
+  "branch",
+]);
+
+/** `git branch` 只在列出分支时视为只读（带分支名会创建/删除分支）。 */
+const GIT_BRANCH_LIST_FLAGS = new Set(["-a", "-r", "-l", "-v", "-vv", "--list", "--show-current"]);
+
+/** 会输出文件内容的命令：其路径参数还需解析符号链接，确认仍在工作区内。 */
+const CONTENT_READING_SHELL_COMMANDS = new Set(["cat", "head", "tail", "type", "get-content"]);
+
+/**
+ * 路径（解析符号链接后）是否位于工作区内。目标不存在时按最近的已存在上级目录判断，
+ * 防止经由指向工作区外的符号链接目录访问其下的文件。
+ */
+function isInsideWorkspace(target: string, cwd: string): boolean {
+  try {
+    const root = fs.realpathSync(cwd);
+    let existing = path.resolve(cwd, target);
+    while (!fs.existsSync(existing)) {
+      const parent = path.dirname(existing);
+      if (parent === existing) return false;
+      existing = parent;
+    }
+    const real = fs.realpathSync(existing);
+    return real === root || real.startsWith(`${root}${path.sep}`);
+  } catch {
+    return false;
+  }
+}
+
+/** 会写文件、执行外部程序或无限等待的参数（如 `git diff --output`、`rg --pre`、`tail -f`）。 */
+const UNSAFE_SHELL_FLAG_RE = /^--?(?:output|pre|pre-glob|ext-diff|exec|follow|f)(?:=|$)/i;
+
+/**
+ * 判断 bash 命令是否为可静态确认的只读查询。规则刻意保守：
+ * - 不允许任何命令组合、重定向、替换、变量展开或换行；
+ * - 首个词必须在白名单内（git 只允许查询类子命令）；
+ * - 路径参数只能是工作区内的相对路径（拒绝绝对路径、`~` 与 `..`），输出文件内容的命令
+ *   还会解析符号链接，避免绕过文件工具的工作区边界读取工作区外的内容。
+ * 无法确认时返回 false，交由正常审批流程处理。
+ */
+export function isReadOnlyShellCommand(command: string, cwd: string = process.cwd()): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || trimmed.length > 300) return false;
+  if (/[;&|<>`$\r\n(){}]/.test(trimmed)) return false;
+  const [head, ...rest] = trimmed.split(/\s+/);
+  const name = head.toLowerCase();
+  let args = rest;
+  if (name === "git") {
+    const subcommand = rest[0]?.toLowerCase();
+    if (!subcommand || !GIT_READ_ONLY_SUBCOMMANDS.has(subcommand)) return false;
+    args = rest.slice(1);
+    if (subcommand === "branch" && args.some((arg) => !GIT_BRANCH_LIST_FLAGS.has(arg))) {
+      return false;
+    }
+  } else if (!READ_ONLY_SHELL_COMMANDS.has(name)) {
+    return false;
+  }
+  for (const arg of args) {
+    if (UNSAFE_SHELL_FLAG_RE.test(arg)) return false;
+    if (arg.startsWith("-")) continue;
+    const unquoted = arg.replace(/^["']+|["']+$/g, "");
+    if (/^[\\/~]/.test(unquoted) || /^[a-z]:/i.test(unquoted)) return false;
+    if (unquoted.split(/[\\/]/).includes("..")) return false;
+    if (CONTENT_READING_SHELL_COMMANDS.has(name)) {
+      // 通配符可能展开到指向工作区外的符号链接，无法静态确认。
+      if (/[*?[\]]/.test(unquoted) || !isInsideWorkspace(unquoted, cwd)) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * 核心权限引擎类。
  */
@@ -168,6 +267,15 @@ export class PermissionEngine {
 
     // 2. 只读型工具：在任何模式下均自动允许
     if (this.isReadOnlyTool(toolName)) {
+      return { action: "allow", riskLevel: "safe" };
+    }
+
+    // 只读 shell 查询（ls、git status 等）与只读工具同等对待，无需审批。
+    if (
+      toolName.toLowerCase() === "bash" &&
+      typeof args.command === "string" &&
+      isReadOnlyShellCommand(args.command)
+    ) {
       return { action: "allow", riskLevel: "safe" };
     }
 

@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { performanceMonitor } from "@hajicli/core";
 import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
+import { findSlashArgHint, matchSlashCommands } from "./cli-help.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   type TerminalMouseEvent,
@@ -103,6 +104,14 @@ export interface ReadInputOptions {
 export interface SlashCommand {
   command: string;
   description: string;
+  /** 所属枢纽名（如“模型与配置”），模糊搜索命中非顶层条目时作为来源标签显示。 */
+  group?: string;
+  /** 参数格式提示（如 `<id>`），显示在补全标签之后。 */
+  argHint?: string;
+  /** 参数为必填：Enter 只把指令填入输入框，等待补充参数。 */
+  argRequired?: boolean;
+  /** 只输入 `/` 时列出的顶层条目。 */
+  topLevel?: boolean;
 }
 
 export interface TerminalSelectionItem {
@@ -146,6 +155,8 @@ interface ActiveInput {
   preferredColumn?: number;
   slashCommands: readonly SlashCommand[];
   selectedCommandIndex: number;
+  /** 用户是否用方向键主动挑选过补全项；未挑选时 Enter 优先执行已完整输入的指令。 */
+  commandNavigated?: boolean;
   historyNavigationActive: boolean;
   resolve: (value: string) => void;
   reject: (error: Error) => void;
@@ -208,6 +219,10 @@ export function shouldRestartBackgroundInput(value: string): boolean {
 
 function isRealCtrlU(value: string, key: readline.Key): boolean {
   return value === "\x15" && key.ctrl === true && key.name === "u";
+}
+
+function isRealCtrlO(value: string, key: readline.Key): boolean {
+  return value === "\x0f" && key.ctrl === true && key.name === "o";
 }
 
 function isRealCtrlT(value: string, key: readline.Key): boolean {
@@ -288,6 +303,7 @@ export class TerminalUI {
   private originalRawMode = false;
   private onShiftTabCallback?: () => void;
   private onEscCallback?: () => void;
+  private onExpandOutputCallback?: () => void;
   private queueText = "";
   private cachedContentWithStatus = "";
   private cachedWrappedWidth = 0;
@@ -421,6 +437,11 @@ export class TerminalUI {
     this.onEscCallback = callback;
   }
 
+  /** 注册 Ctrl+O（展开上一批工具的完整输出）回调。 */
+  onExpandOutput(callback?: () => void): void {
+    this.onExpandOutputCallback = callback;
+  }
+
   setQueue(items: string[]): void {
     if (items.length === 0) {
       this.queueText = "";
@@ -482,7 +503,11 @@ export class TerminalUI {
     }
 
     this.originalRawMode = Boolean(stdin.isRaw);
-    readline.emitKeypressEvents(this.keyInput);
+    // 单独的 Esc 默认要等 500ms 才判定（期间的下一个键会被并成 Alt+键，Esc 后紧跟回车
+    // 会变成“确认”）。终端转义序列总是整块到达，50ms 足以区分。
+    readline.emitKeypressEvents(this.keyInput, {
+      escapeCodeTimeout: 50,
+    } as unknown as readline.Interface);
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
     stdin.resume();
@@ -1166,6 +1191,10 @@ export class TerminalUI {
 
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
     if (this.toggleTaskPanel(value, key)) return;
+    if (isRealCtrlO(value, key) && !this.activeSelection) {
+      this.onExpandOutputCallback?.();
+      return;
+    }
 
     if (this.activeSelection) {
       this.handleSelectionKeypress(value, key);
@@ -1265,15 +1294,7 @@ export class TerminalUI {
     if (activeInput.sensitive || activeInput.historyNavigationActive) {
       return [];
     }
-    const value = activeInput.graphemes.join("");
-    if (!/^\/[^\s]*$/u.test(value)) {
-      return [];
-    }
-
-    const prefix = value.toLowerCase();
-    return activeInput.slashCommands.filter((item) =>
-      item.command.toLowerCase().startsWith(prefix),
-    );
+    return matchSlashCommands(activeInput.graphemes.join(""), activeInput.slashCommands);
   }
 
   private getCommandSuggestionRows(width: number, maxRows: number): string[] {
@@ -1282,21 +1303,51 @@ export class TerminalUI {
       return [];
     }
 
-    const suggestions = this.getCommandSuggestions(activeInput).slice(0, maxRows);
+    const suggestions = this.getCommandSuggestions(activeInput);
     if (suggestions.length === 0) {
-      return [];
+      // 已输入参数时显示一行参数格式提示（不可选择）。
+      const hint =
+        activeInput.sensitive || activeInput.historyNavigationActive
+          ? undefined
+          : findSlashArgHint(activeInput.graphemes.join(""), activeInput.slashCommands);
+      if (!hint) return [];
+      return [
+        `  ${SEQ.muted}${fitText(`${hint.command} ${hint.argHint}  ${hint.description}`, Math.max(1, width - 2))}${SEQ.reset}`,
+      ];
     }
 
     activeInput.selectedCommandIndex = Math.min(
       activeInput.selectedCommandIndex,
       suggestions.length - 1,
     );
+    // 候选多于可见行数时，窗口跟随选中项滚动。
+    const visibleCount = Math.min(maxRows, suggestions.length);
+    const windowStart = Math.min(
+      Math.max(0, activeInput.selectedCommandIndex - visibleCount + 1),
+      suggestions.length - visibleCount,
+    );
+    const visible = suggestions.slice(windowStart, windowStart + visibleCount);
 
     return formatMenuRows(
-      suggestions.map((item) => ({ label: item.command, description: item.description })),
-      activeInput.selectedCommandIndex,
+      visible.map((item) => ({
+        label: item.argHint ? `${item.command} ${item.argHint}` : item.command,
+        description: item.group ? `${item.description} · ${item.group}` : item.description,
+      })),
+      activeInput.selectedCommandIndex - windowStart,
       width,
     );
+  }
+
+  /**
+   * 把选中的补全项写入输入框；需要参数的指令末尾补一个空格，便于继续输入。
+   */
+  private applyCommandSuggestion(activeInput: ActiveInput, item: SlashCommand): void {
+    const text = item.argHint ? `${item.command} ` : item.command;
+    activeInput.graphemes = splitGraphemes(text);
+    activeInput.cursorIndex = activeInput.graphemes.length;
+    activeInput.preferredColumn = undefined;
+    activeInput.selectedCommandIndex = 0;
+    activeInput.commandNavigated = false;
   }
 
   private getSelectionRows(width: number, maxRows: number): string[] {
@@ -1308,7 +1359,9 @@ export class TerminalUI {
     const { options } = activeSelection;
     const navigation =
       options.hint ??
-      (options.secondary ? "↑↓ 模型 · ←→ 强度 · Enter 确认" : "↑↓ 选择 · Enter 确认");
+      (options.secondary
+        ? `↑↓ 选择 · ←→ ${options.secondary.label} · Enter 确认 · Esc 取消`
+        : "↑↓ 选择 · Enter 确认 · Esc 取消");
     const rows = [
       `${SEQ.bold}${truncateText(options.title, width)}${SEQ.reset}  ${SEQ.muted}${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}${SEQ.reset}`,
     ];
@@ -1402,11 +1455,11 @@ export class TerminalUI {
 
   private buildStatusBar(width: number, detail: TuiStatusDetail = "full"): string {
     const modeLabels: Record<string, string> = {
-      plan: "PLAN",
-      default: "DEFAULT",
-      "accept-edit": "EDIT",
-      auto: "AUTO",
-      "bypass-permissions": "BYPASS",
+      plan: "计划",
+      default: "默认",
+      "accept-edit": "自动编辑",
+      auto: "自动",
+      "bypass-permissions": "全放行",
     };
     const modeLabel = modeLabels[this.permissionMode] || this.permissionMode.toUpperCase();
     const permText = this.permissionMode ? `[${modeLabel}]` : "";
@@ -1934,6 +1987,7 @@ export class TerminalUI {
     activeInput.cursorIndex += inserted.length;
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
+    activeInput.commandNavigated = false;
     activeInput.historyNavigationActive = false;
     this.scheduleRender(true);
   }
@@ -1994,6 +2048,7 @@ export class TerminalUI {
     activeInput.cursorIndex = activeInput.graphemes.length;
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
+    activeInput.commandNavigated = false;
     activeInput.historyNavigationActive = this.inputHistory.isBrowsing();
     this.scheduleRender(true);
   }
@@ -2101,9 +2156,20 @@ export class TerminalUI {
         this.insert("\n");
       } else {
         const suggestions = this.getCommandSuggestions(activeInput);
-        if (suggestions.length > 0) {
+        const typed = activeInput.graphemes.join("").trim().toLowerCase();
+        const typedIsCommand = activeInput.slashCommands.some(
+          (item) => item.command.toLowerCase() === typed,
+        );
+        // 未用方向键挑选且输入已是完整指令时直接执行输入本身（如 “/provider ” 不会误选子命令）。
+        if (suggestions.length > 0 && (activeInput.commandNavigated || !typedIsCommand)) {
           const selected =
             suggestions[Math.min(activeInput.selectedCommandIndex, suggestions.length - 1)];
+          if (selected.argRequired) {
+            // 必填参数的指令只填入，等待用户补充参数。
+            this.applyCommandSuggestion(activeInput, selected);
+            this.scheduleRender(true);
+            return;
+          }
           activeInput.graphemes = splitGraphemes(selected.command);
           activeInput.cursorIndex = activeInput.graphemes.length;
         }
@@ -2126,6 +2192,7 @@ export class TerminalUI {
           activeInput.cursorIndex = 0;
           activeInput.preferredColumn = undefined;
           activeInput.selectedCommandIndex = 0;
+          activeInput.commandNavigated = false;
           activeInput.historyNavigationActive = false;
           this.scheduleRender(true);
           return;
@@ -2141,6 +2208,7 @@ export class TerminalUI {
           activeInput.cursorIndex = 0;
           activeInput.preferredColumn = undefined;
           activeInput.selectedCommandIndex = 0;
+          activeInput.commandNavigated = false;
           activeInput.historyNavigationActive = false;
           this.scheduleRender(true);
         });
@@ -2154,6 +2222,7 @@ export class TerminalUI {
         activeInput.cursorIndex -= 1;
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
+        activeInput.commandNavigated = false;
         activeInput.historyNavigationActive = false;
         this.scheduleRender(true);
       }
@@ -2167,6 +2236,7 @@ export class TerminalUI {
         activeInput.graphemes.splice(activeInput.cursorIndex, 1);
         activeInput.preferredColumn = undefined;
         activeInput.selectedCommandIndex = 0;
+        activeInput.commandNavigated = false;
         activeInput.historyNavigationActive = false;
         this.scheduleRender(true);
       }
@@ -2190,6 +2260,7 @@ export class TerminalUI {
         const direction = key.name === "up" ? -1 : 1;
         activeInput.selectedCommandIndex =
           (activeInput.selectedCommandIndex + direction + suggestions.length) % suggestions.length;
+        activeInput.commandNavigated = true;
         this.scheduleRender(true);
         return;
       }
@@ -2232,6 +2303,7 @@ export class TerminalUI {
       activeInput.cursorIndex = deleteFrom;
       activeInput.preferredColumn = undefined;
       activeInput.selectedCommandIndex = 0;
+      activeInput.commandNavigated = false;
       activeInput.historyNavigationActive = false;
       this.scheduleRender(true);
       return;
@@ -2245,6 +2317,16 @@ export class TerminalUI {
     }
 
     if (key.name === "tab") {
+      const suggestions = this.getCommandSuggestions(activeInput);
+      if (suggestions.length > 0) {
+        // Tab 只补全，不执行。
+        this.applyCommandSuggestion(
+          activeInput,
+          suggestions[Math.min(activeInput.selectedCommandIndex, suggestions.length - 1)],
+        );
+        this.scheduleRender(true);
+        return;
+      }
       this.insert("  ");
       return;
     }

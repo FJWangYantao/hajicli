@@ -7,11 +7,16 @@ import test from "node:test";
 import {
   buildPermissionPreview,
   describeModelError,
+  findGitHeadPath,
+  formatExpandedToolOutput,
   formatReasoningPreview,
   formatToolArgs,
   formatToolCell,
   formatToolDuration,
+  formatWorkspaceLabel,
+  getPermissionGrant,
   loadPreference,
+  readGitBranch,
   savePreference,
   summarizeToolCall,
   summarizeToolResult,
@@ -226,4 +231,81 @@ test("reasoning preview shows the last wrapped rows within the width", () => {
   assert.match(rows.map((row) => row.replace(/^ {2}┊ /, "")).join(""), /最后一步：检查输出。$/);
   assert.doesNotMatch(preview, /\x1b/, "no stray escape codes in no-color mode");
   assert.equal(formatReasoningPreview("  \n ", 40), "");
+});
+
+test("session grants scope bash approvals to a command prefix", () => {
+  assert.deepEqual(getPermissionGrant("bash", { command: "npm test -- --watch" }), {
+    key: "bash:npm test",
+    scope: "npm test 开头的命令",
+  });
+  assert.equal(getPermissionGrant("bash", { command: "python scripts/a.py" })?.key, "bash:python");
+  // 旗标不作为子命令；组合/重定向命令无法按前缀安全授权。
+  assert.equal(getPermissionGrant("bash", { command: "git -C x status" })?.key, "bash:git");
+  assert.equal(getPermissionGrant("bash", { command: "npm test && rm -rf ." }), undefined);
+  assert.equal(getPermissionGrant("bash", { command: "echo hi > a.txt" }), undefined);
+  assert.equal(getPermissionGrant("edit", { path: "a.ts" })?.scope, "编辑文件");
+  assert.equal(getPermissionGrant("mcp_x_y", {})?.key, "mcp_x_y");
+});
+
+test("edit and write summaries report line counts from the call arguments", () => {
+  const edit = summarizeToolResult(
+    "edit",
+    "[文件精准编辑成功]\n路径: a.ts",
+    { blocked: false },
+    { oldText: "a\nb", newText: "a\nb\nc\n" },
+  );
+  assert.equal(edit.text, "已替换 1 处 · +3 −2 行");
+  assert.equal(
+    summarizeToolResult("edit", "[文件精准编辑成功]", { blocked: false }).text,
+    "已替换 1 处",
+  );
+  const write = summarizeToolResult(
+    "write",
+    "[文件写入成功]\n大小: 2048 字节",
+    { blocked: false },
+    { content: "x\ny\n" },
+  );
+  assert.equal(write.text, "已写入 2.0 KB · 2 行");
+});
+
+test("expanded tool output caps lines and strips terminal escapes", () => {
+  const output = Array.from({ length: 10 }, (_, index) => `line ${index}\x1b[31m`).join("\n");
+  const rows = formatExpandedToolOutput("bash", "ls -la", output, 80, 3);
+  assert.equal(rows.length, 5);
+  assert.match(rows[0], /bash {2}ls -la/);
+  assert.match(rows[1], /│ line 0$/);
+  assert.match(rows.at(-1), /另有 7 行未显示/);
+  assert.doesNotMatch(rows.join("\n"), /\x1b\[31m/);
+});
+
+test("workspace label abbreviates home and shows the git branch", () => {
+  const home = os.homedir();
+  assert.equal(formatWorkspaceLabel(path.join(home, "proj"), "main"), `~${path.sep}proj (main)`);
+  assert.equal(formatWorkspaceLabel("/srv/app"), "/srv/app");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "haji-git-"));
+  try {
+    const nested = path.join(tmp, "a", "b");
+    fs.mkdirSync(path.join(tmp, ".git"), { recursive: true });
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".git", "HEAD"), "ref: refs/heads/feature/x\n");
+    const headPath = findGitHeadPath(nested);
+    assert.equal(headPath, path.join(tmp, ".git", "HEAD"));
+    assert.equal(readGitBranch(headPath), "feature/x");
+    fs.writeFileSync(path.join(tmp, ".git", "HEAD"), "0123456789abcdef\n");
+    assert.equal(readGitBranch(headPath), "0123456");
+    assert.equal(readGitBranch(undefined), undefined);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("failed bash summaries surface the first error line instead of trailing noise", () => {
+  const summary = summarizeToolResult(
+    "bash",
+    "[命令执行结果 - 退出码 1；耗时 5ms]\n--- 标准错误 (stderr，保留头尾) ---\nnpm ERR! Missing script: test\nnpm ERR! A complete log of this run can be found in: /tmp/x.log\n",
+    { blocked: false },
+  );
+  assert.equal(summary.status, "failed");
+  assert.match(summary.text, /退出码 1 · 2 行输出 · npm ERR! Missing script: test$/);
 });

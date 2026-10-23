@@ -133,6 +133,57 @@ export function summarizeToolCall(toolName: string, args: Record<string, unknown
   }
 }
 
+/** 首个词之后还要带上子命令才有区分度的命令行工具（如 `npm test` 与 `npm publish`）。 */
+const SUBCOMMAND_CLIS = new Set([
+  "git",
+  "npm",
+  "pnpm",
+  "yarn",
+  "npx",
+  "bun",
+  "deno",
+  "cargo",
+  "go",
+  "dotnet",
+  "docker",
+  "kubectl",
+  "pip",
+  "uv",
+]);
+
+export interface PermissionGrant {
+  /** 会话授权表中的键：bash 为命令前缀，其余为工具名。 */
+  key: string;
+  /** 授权范围的描述（如“npm test 开头的命令”），用于卡片选项与确认提示。 */
+  scope: string;
+}
+
+/**
+ * 计算“本会话内总是允许”的授权范围：bash 按命令前缀授权（`npm test`、`ls` 等），
+ * 不再一次放行全部 shell 命令；含组合/重定向/替换的命令无法按前缀安全匹配，返回 undefined
+ * （只能单次允许）。其余工具按工具名授权。
+ */
+export function getPermissionGrant(
+  toolName: string,
+  args: Record<string, unknown>,
+): PermissionGrant | undefined {
+  if (toolName === "bash") {
+    const command = typeof args.command === "string" ? args.command.trim() : "";
+    if (!command || /[;&|<>`$\r\n]/.test(command)) return undefined;
+    const tokens = command.split(/\s+/);
+    const withSubcommand =
+      SUBCOMMAND_CLIS.has(tokens[0].toLowerCase()) && tokens[1] && !tokens[1].startsWith("-");
+    const prefix = sanitizeTerminalText(
+      withSubcommand ? `${tokens[0]} ${tokens[1]}` : tokens[0],
+    ).toLowerCase();
+    return { key: `bash:${prefix}`, scope: `${prefix} 开头的命令` };
+  }
+  if (toolName === "write" || toolName === "edit") {
+    return { key: toolName, scope: toolName === "write" ? "写入文件" : "编辑文件" };
+  }
+  return { key: toolName, scope: toolName };
+}
+
 export type ToolCellStatus = "running" | "success" | "failed" | "rejected";
 
 export interface ToolResultSummary {
@@ -152,6 +203,11 @@ function firstLine(value: string): string {
       .map((line) => line.trim())
       .find(Boolean) || ""
   );
+}
+
+/** 文本行数（末尾换行不计为新的一行）。 */
+function countTextLines(text: string): number {
+  return text ? text.replace(/\r?\n$/, "").split(/\r?\n/).length : 0;
 }
 
 function formatBytes(bytes: number): string {
@@ -174,8 +230,12 @@ function summarizeBashOutput(output: string): ToolResultSummary | undefined {
         !line.startsWith("--- 标准错误") &&
         line !== "(命令执行完成，无控制台输出)",
     );
-  const lastLine = oneLine(bodyLines.at(-1) || "");
   const failed = exitCode !== "0";
+  // 失败时首个报错行通常比最后一行（多为日志路径等收尾信息）更有信息量。
+  const errorLine = failed
+    ? bodyLines.find((line) => /\b(?:error|failed|fatal|exception)\b|\berr!|错误|失败/i.test(line))
+    : undefined;
+  const lastLine = oneLine(errorLine || bodyLines.at(-1) || "");
   const outputText = bodyLines.length
     ? `${bodyLines.length} 行输出${lastLine ? ` · ${lastLine}` : ""}`
     : "无输出";
@@ -193,6 +253,7 @@ export function summarizeToolResult(
   toolName: string,
   output: string,
   outcome: { blocked: boolean; rejected?: boolean },
+  args: Record<string, unknown> = {},
 ): ToolResultSummary {
   const body = sanitizeTerminalText(output.replace(VERIFICATION_EVIDENCE_RE, ""));
   if (body.startsWith("[安全引擎拒绝拦截]")) {
@@ -237,9 +298,21 @@ export function summarizeToolResult(
   }
   const writtenBytes = body.match(/^大小: (\d+) 字节$/m);
   if (body.startsWith("[文件写入成功]") && writtenBytes) {
-    return { status: "success", text: `已写入 ${formatBytes(Number(writtenBytes[1]))}` };
+    const lines = typeof args.content === "string" ? countTextLines(args.content) : 0;
+    return {
+      status: "success",
+      text: `已写入 ${formatBytes(Number(writtenBytes[1]))}${lines > 0 ? ` · ${lines} 行` : ""}`,
+    };
   }
-  if (body.startsWith("[文件精准编辑成功]")) return { status: "success", text: "已替换 1 处" };
+  if (body.startsWith("[文件精准编辑成功]")) {
+    if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
+      return { status: "success", text: "已替换 1 处" };
+    }
+    return {
+      status: "success",
+      text: `已替换 1 处 · +${countTextLines(args.newText)} −${countTextLines(args.oldText)} 行`,
+    };
+  }
 
   const lineCount = body.split(/\r?\n/).filter((line) => line.trim()).length;
   const summary = oneLine(head.replace(/^\[(.*)\]$/, "$1"));
@@ -247,6 +320,35 @@ export function summarizeToolResult(
     status: "success",
     text: lineCount > 1 ? `${summary} · 共 ${lineCount} 行` : summary,
   };
+}
+
+/**
+ * Ctrl+O 展开的完整工具输出：标题行（工具名 + 调用主语）+ 灰色正文，超长时截断并注明行数。
+ * 返回已着色的行，由调用方写入对话区。
+ */
+export function formatExpandedToolOutput(
+  toolName: string,
+  summary: string,
+  output: string,
+  width: number,
+  maxLines = 300,
+): string[] {
+  const body = sanitizeTerminalText(output.replace(VERIFICATION_EVIDENCE_RE, ""))
+    .replace(/\r\n/g, "\n")
+    .replace(/\t/g, "  ")
+    .replace(/\n+$/, "");
+  const lines = body ? body.split("\n") : ["（无输出）"];
+  const shown = lines.slice(0, Math.max(1, maxLines));
+  const rows = [
+    `${TOOL_CELL_INDENT}${colors.bold(toolName)}  ${fitText(summary, Math.max(1, width - terminalWidth(toolName) - 6))}`,
+    ...shown.map((line) => `${TOOL_CELL_INDENT}${colors.gray(`│ ${line}`)}`),
+  ];
+  if (lines.length > shown.length) {
+    rows.push(
+      `${TOOL_CELL_INDENT}${colors.gray(`… 另有 ${lines.length - shown.length} 行未显示（完整记录见 /viewer）`)}`,
+    );
+  }
+  return rows;
 }
 
 /** 工具耗时：亚秒显示毫秒，一分钟内保留一位小数。 */
@@ -331,6 +433,54 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     rows.push(`${TOOL_CELL_INDENT}  ${colors.gray("└")} ${styled}`);
   }
   return rows;
+}
+
+/**
+ * 查找工作区所属 git 仓库的 HEAD 文件（向上逐级查找 .git；兼容 worktree/submodule
+ * 的 `gitdir:` 文件）。找不到时返回 undefined。
+ */
+export function findGitHeadPath(cwd: string): string | undefined {
+  let dir = path.resolve(cwd);
+  while (true) {
+    const dotGit = path.join(dir, ".git");
+    try {
+      const stat = fs.statSync(dotGit);
+      if (stat.isDirectory()) return path.join(dotGit, "HEAD");
+      if (stat.isFile()) {
+        const gitDir = fs
+          .readFileSync(dotGit, "utf8")
+          .match(/^gitdir:\s*(.+)$/m)?.[1]
+          ?.trim();
+        if (gitDir) return path.join(path.resolve(dir, gitDir), "HEAD");
+      }
+    } catch {
+      // 当前层没有 .git，继续向上查找。
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** 读取当前分支名；分离 HEAD 时返回 7 位提交号，读取失败返回 undefined。 */
+export function readGitBranch(headPath: string | undefined): string | undefined {
+  if (!headPath) return undefined;
+  try {
+    const head = fs.readFileSync(headPath, "utf8").trim();
+    const ref = head.match(/^ref:\s*refs\/heads\/(.+)$/)?.[1];
+    if (ref) return sanitizeTerminalText(ref);
+    return /^[0-9a-f]{7,}$/i.test(head) ? head.slice(0, 7) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 状态栏展示的工作区：家目录缩写为 ~，并附上当前 git 分支。 */
+export function formatWorkspaceLabel(cwd: string, branch?: string): string {
+  const home = os.homedir();
+  const shown =
+    cwd === home || cwd.startsWith(`${home}${path.sep}`) ? `~${cwd.slice(home.length)}` : cwd;
+  return branch ? `${shown} (${branch})` : shown;
 }
 
 function displayPath(target: string, cwd: string): string {

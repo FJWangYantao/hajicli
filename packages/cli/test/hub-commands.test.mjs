@@ -4,8 +4,12 @@ import test from "node:test";
 import {
   buildHubMenus,
   buildSessionHelpLines,
+  buildSlashCommandCatalog,
   COMMAND_SURFACE,
+  findSlashArgHint,
   getTopLevelSlashCommands,
+  matchSlashCommands,
+  suggestSimilarCommand,
 } from "../dist/cli-help.js";
 import { terminalWidth } from "../dist/terminal-text.js";
 import { setActiveColorLevel } from "../dist/theme.js";
@@ -16,6 +20,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
   const commands = getTopLevelSlashCommands().map((entry) => entry.command);
   assert.deepEqual(commands, [
     "/help",
+    "/model",
     "/config",
     "/agent",
     "/skill",
@@ -27,9 +32,8 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/rewind",
     "/exit",
   ]);
-  // 被收纳的子指令不再出现在补全列表里（仍可直连调用）。
+  // 被收纳的子指令不在一层列表里（继续输入后可模糊搜索到，也可直连调用）。
   const nested = [
-    "/model",
     "/effort",
     "/permission",
     "/provider",
@@ -50,9 +54,10 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
 test("each hub maps its members to menu items without re-entering itself", () => {
   const menus = buildHubMenus();
   assert.deepEqual(Object.keys(menus).sort(), ["agent", "config", "diag", "memory", "skill"]);
+  // /model 已提升到顶层；/effort 与 /model 的强度轴重复，只保留直连与补全，不进菜单。
   assert.deepEqual(
     menus.config.items.map((item) => item.value),
-    ["/model", "/effort", "/permission", "/provider"],
+    ["/permission", "/provider"],
   );
   assert.deepEqual(
     menus.agent.items.map((item) => item.value),
@@ -127,4 +132,45 @@ test("session help lists commands, shortcuts and tool names without tool essays"
   const start = narrow.findIndex((line) => line.includes("PgUp / PgDn"));
   const column = narrow[start].indexOf("翻阅");
   assert.ok(narrow[start + 1].startsWith(" ".repeat(column)), narrow[start + 1]);
+});
+
+test("slash completion lists top-level on / and fuzzy-searches every command after", () => {
+  const catalog = buildSlashCommandCatalog([
+    { name: "review", description: "代码审查", userInvocable: true },
+    { name: "internal", description: "模型内部使用", userInvocable: false },
+  ]);
+  const match = (input) => matchSlashCommands(input, catalog).map((entry) => entry.command);
+
+  assert.deepEqual(
+    match("/"),
+    getTopLevelSlashCommands().map((entry) => entry.command),
+  );
+  // 被收纳的指令可以直接搜到：/mo → /model，/perm → /permission。
+  assert.equal(match("/mo")[0], "/model");
+  assert.equal(match("/perm")[0], "/permission");
+  // 子序列模糊匹配。
+  assert.ok(match("/mdl").includes("/model"));
+  // 子命令与 Skill 可按第二个词搜到；model-only Skill 不出现。
+  assert.ok(match("/reload").includes("/skills reload"));
+  assert.ok(match("/rev").includes("/skill review"));
+  assert.ok(!match("/int").includes("/skill internal"));
+  // 敲空格后只补全该指令的子命令。
+  assert.deepEqual(match("/provider "), ["/provider add", "/provider set", "/provider unset"]);
+  assert.deepEqual(match("/memory c"), ["/memory confirm"]);
+  // 完整输入的指令排在首位；已带参数时不再给出会覆盖参数的补全。
+  assert.equal(match("/memory")[0], "/memory");
+  assert.deepEqual(match("/memory confirm abc"), []);
+  assert.equal(findSlashArgHint("/memory confirm abc", catalog)?.argHint, "<id>");
+  assert.equal(findSlashArgHint("hello", catalog), undefined);
+  // 未标注顶层的简单列表在只输入 “/” 时整体展示。
+  assert.equal(matchSlashCommands("/", [{ command: "/a", description: "a" }]).length, 1);
+});
+
+test("unknown commands suggest the closest known command", () => {
+  const catalog = buildSlashCommandCatalog();
+  assert.equal(suggestSimilarCommand("mdoel", catalog), "/model");
+  assert.equal(suggestSimilarCommand("comapct", catalog), "/compact");
+  assert.equal(suggestSimilarCommand("provder", catalog), "/provider");
+  assert.equal(suggestSimilarCommand("instin", catalog), "/instinct");
+  assert.equal(suggestSimilarCommand("zzzzzz", catalog), undefined);
 });

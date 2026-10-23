@@ -13,6 +13,7 @@ import {
   ExperienceStore,
   ExperiencesPromptPart,
   estimateMessagesTokens,
+  estimateTextTokens,
   formatPendingAgentVerificationContext,
   formatSubagentResult,
   getContextCompactionThresholds,
@@ -75,21 +76,27 @@ import {
   WriteFileTool,
 } from "@hajicli/plugins";
 import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
-import { parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
+import { formatAgentTokens, parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
 import {
   buildHubMenus,
   buildSessionHelpLines,
-  getTopLevelSlashCommands,
+  buildSlashCommandCatalog,
   handleEarlyCliArgs,
   LOGO,
+  suggestSimilarCommand,
 } from "./cli-help.js";
 import {
   buildPermissionPreview,
   describeModelError,
+  findGitHeadPath,
+  formatExpandedToolOutput,
   formatReasoningPreview,
   formatToolCell,
   formatToolDuration,
+  formatWorkspaceLabel,
+  getPermissionGrant,
   loadPreference,
+  readGitBranch,
   savePreference,
   summarizeToolCall,
   summarizeToolResult,
@@ -202,6 +209,13 @@ function providerLabel(name: string): string {
   if (name === "deepseek") return "🔵 DeepSeek";
   if (name === "volcengine") return "🌋 火山引擎";
   return `⚙️ ${name}`;
+}
+
+/** 状态栏用的提供商名称：不带图标，避免与启动信息重复且节省宽度。 */
+function providerPlainLabel(name: string): string {
+  if (name === "deepseek") return "DeepSeek";
+  if (name === "volcengine") return "火山引擎";
+  return name;
 }
 
 /** 将已配置的模型窗口格式化为展示文本；未配置时返回“未设置”。 */
@@ -726,13 +740,15 @@ async function main() {
     getWidth: () => ui.getContentWidth(),
   });
   markStartupStage("ui_ctor");
-  // 底栏补全只展示顶层指令；被收纳的子指令保留直连能力（见 /help 与各枢纽菜单）。
-  const slashCommands = getTopLevelSlashCommands();
+  // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
+  let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
   ui.start();
   markStartupStage("ui_started");
   for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`! ${warning}`));
-  // 状态栏展示当前工作目录（模型名称右侧）。
-  ui.setCurrentPath(process.cwd());
+  // 状态栏展示当前工作目录与 git 分支（模型名称右侧）。git HEAD 位置只查找一次，
+  // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
+  const gitHeadPath = findGitHeadPath(process.cwd());
+  ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
   // Logo 下方的启动信息行：provider · model · effort + 引导提示。
   // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
   ui.setHeaderInfo([
@@ -891,7 +907,7 @@ async function main() {
         ...context,
         toolCallId: toolCall.id,
       });
-      const outcome = summarizeToolResult(toolCall.function.name, result.output, result);
+      const outcome = summarizeToolResult(toolCall.function.name, result.output, result, args);
       for (const row of formatToolCell({
         status: outcome.status,
         toolName: toolCall.function.name,
@@ -1140,7 +1156,8 @@ async function main() {
   };
 
   const updateStatusUI = () => {
-    ui.setModelInfo(selectedModel, reasoningEffort, providerLabel(currentProviderName));
+    ui.setModelInfo(selectedModel, reasoningEffort, providerPlainLabel(currentProviderName));
+    ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
     ui.setContextUsage(tokens, getSelectedContextWindowTokens());
@@ -1192,6 +1209,34 @@ async function main() {
   // 待处理并发消息队列
   const pendingInputs: string[] = [];
   const deferredInputDrafts: string[] = [];
+  // 最近一批工具的完整输出，供 Ctrl+O 展开查看（回合进行中不插入，避免打断流式输出）。
+  let lastToolBatchOutputs: Array<{ toolName: string; summary: string; output: string }> = [];
+  ui.onExpandOutput(() => {
+    if (foregroundAbortSignal) return;
+    if (lastToolBatchOutputs.length === 0) {
+      ui.writeLine(colors.gray("  暂无可展开的工具输出。"));
+      return;
+    }
+    ui.writeLine();
+    // 总行数有上限：一次展开过多会把较早的对话挤出对话区缓冲。
+    const linesPerTool = Math.max(40, Math.floor(400 / lastToolBatchOutputs.length));
+    for (const item of lastToolBatchOutputs) {
+      for (const row of formatExpandedToolOutput(
+        item.toolName,
+        item.summary,
+        item.output,
+        ui.getContentWidth(),
+        linesPerTool,
+      )) {
+        ui.writeLine(row);
+      }
+    }
+    ui.writeLine();
+  });
+  // 枢纽菜单选中的指令：下一轮主循环立即执行，优先于排队的草稿，且不单独回显。
+  let hubForwardedCommand: string | undefined;
+  // 最近一条指令回显在对话区中的位置，枢纽转发时原地合并为 “› /config › /model”。
+  let lastCommandEcho: { start: number; end: number; text: string } | undefined;
 
   const readSelectionSafely = async (
     options: Parameters<TerminalUI["readSelection"]>[0],
@@ -1211,16 +1256,22 @@ async function main() {
 
   const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
   // “本会话内总是允许”只对当前会话有效；/clear、/resume 切换会话后自动失效。
-  let sessionToolGrants = { sessionId: "", tools: new Set<string>() };
-  const isToolGrantedForSession = (toolName: string): boolean =>
-    sessionToolGrants.sessionId === sessionManager.getCurrentSession().id &&
-    sessionToolGrants.tools.has(toolName);
-  const grantToolForSession = (toolName: string): void => {
+  // bash 按命令前缀授权（见 getPermissionGrant），其余工具按工具名授权。
+  let sessionToolGrants = { sessionId: "", keys: new Set<string>() };
+  const isToolGrantedForSession = (toolName: string, args: Record<string, unknown>): boolean => {
+    const grant = getPermissionGrant(toolName, args);
+    return Boolean(
+      grant &&
+        sessionToolGrants.sessionId === sessionManager.getCurrentSession().id &&
+        sessionToolGrants.keys.has(grant.key),
+    );
+  };
+  const grantToolForSession = (grantKey: string): void => {
     const sessionId = sessionManager.getCurrentSession().id;
     if (sessionToolGrants.sessionId !== sessionId) {
-      sessionToolGrants = { sessionId, tools: new Set() };
+      sessionToolGrants = { sessionId, keys: new Set() };
     }
-    sessionToolGrants.tools.add(toolName);
+    sessionToolGrants.keys.add(grantKey);
   };
   const permissionVerb = (toolName: string): string =>
     toolName === "bash"
@@ -1234,7 +1285,7 @@ async function main() {
   const promptToolPermission = async (ctx: HookContext): Promise<string | null> => {
     const toolName = ctx.toolName || "";
     const args = ctx.args || {};
-    if (isToolGrantedForSession(toolName)) return null;
+    if (isToolGrantedForSession(toolName, args)) return null;
     const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "AI";
     if (!ui.isInteractive()) {
       const answer = await ui.readInput({
@@ -1242,13 +1293,16 @@ async function main() {
       });
       return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
     }
+    const grant = getPermissionGrant(toolName, args);
     const selection = await readSelectionSafely(
       {
         title: `需要授权 · ${requester} 请求${permissionVerb(toolName)}`,
         preview: buildPermissionPreview(toolName, args, process.cwd()),
         items: [
           { value: "once", label: "允许本次", hotkey: "y" },
-          { value: "session", label: `本会话内总是允许 ${toolName}`, hotkey: "a" },
+          ...(grant
+            ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }]
+            : []),
           { value: "deny", label: "拒绝", hotkey: "n" },
         ],
         selectedValue: "once",
@@ -1258,9 +1312,9 @@ async function main() {
       "restore",
     );
     if (selection.value === "deny") return USER_REJECTED_TOOL_OUTPUT;
-    if (selection.value === "session") {
-      grantToolForSession(toolName);
-      ui.writeLine(colors.gray(`  本会话内调用 ${toolName} 将不再询问。`));
+    if (selection.value === "session" && grant) {
+      grantToolForSession(grant.key);
+      ui.writeLine(colors.gray(`  本会话内 ${grant.scope} 将不再询问。`));
     }
     return null;
   };
@@ -1272,7 +1326,7 @@ async function main() {
     return pending;
   };
 
-  // 枢纽指令：弹出细分菜单，选中项经待处理队列交给下一轮主循环分发（与 /rewind 回填同机制）。
+  // 枢纽指令：弹出细分菜单，选中项交给下一轮主循环立即分发（不进入待处理队列）。
   // 旧指令全部保留为直连别名，这里只负责“进入大指令后再选择细分项”的一层入口。
   const runHubMenu = async (hubName: string): Promise<void> => {
     const menu = buildHubMenus(skillRegistry.list())[hubName];
@@ -1286,13 +1340,10 @@ async function main() {
         items: menu.items,
         selectedValue: menu.items[0]?.value,
       });
-      pendingInputs.push(selection.value);
-      ui.setQueue(pendingInputs);
+      hubForwardedCommand = selection.value;
     } catch (error) {
-      if (error instanceof TerminalInputCancelledError) {
-        ui.writeLine(colors.gray("已取消。"));
-        return;
-      }
+      // Esc 取消枢纽菜单是有意操作，不再往对话区写“已取消”。
+      if (error instanceof TerminalInputCancelledError) return;
       throw error;
     }
   };
@@ -1344,8 +1395,15 @@ async function main() {
     markStartupStage("ready");
     while (true) {
       injectAgentNotifications();
+      // /skills reload 等操作会改变可调用的 Skill，每轮刷新补全目录。
+      slashCommands = buildSlashCommandCatalog(skillRegistry.list());
       let userInput: string;
-      if (deferredInputDrafts.length > 0) {
+      let forwardedFromHub = false;
+      if (hubForwardedCommand !== undefined) {
+        userInput = hubForwardedCommand;
+        hubForwardedCommand = undefined;
+        forwardedFromHub = true;
+      } else if (deferredInputDrafts.length > 0) {
         const draft = deferredInputDrafts.shift()!;
         ui.cancelInput();
         userInput = await ui.readInput({ slashCommands, initialValue: draft });
@@ -1370,9 +1428,22 @@ async function main() {
       }
 
       const promptDisplayStartOffset = ui.getChatLength();
-      ui.writeLine();
-      ui.writeLine(colors.userMsg(redactSensitiveCommand(sanitizeTerminalText(trimmedInput))));
-      ui.writeLine();
+      const displayInput = redactSensitiveCommand(sanitizeTerminalText(trimmedInput));
+      if (trimmedInput.startsWith("/")) {
+        // 指令不作为用户消息气泡显示，只留一行灰色回显作为结果的上下文。
+        const previousEcho =
+          forwardedFromHub && lastCommandEcho?.end === ui.getChatLength()
+            ? lastCommandEcho
+            : undefined;
+        const echoText = previousEcho ? `${previousEcho.text} › ${displayInput}` : displayInput;
+        const echoStart = previousEcho ? previousEcho.start : ui.getChatLength();
+        ui.updateChatFrom(echoStart, `\n${colors.gray(`› ${echoText}`)}\n`);
+        lastCommandEcho = { start: echoStart, end: ui.getChatLength(), text: echoText };
+      } else {
+        ui.writeLine();
+        ui.writeLine(colors.userMsg(displayInput));
+        ui.writeLine();
+      }
 
       // 解析斜杠内置命令
       if (trimmedInput.startsWith("/")) {
@@ -2052,10 +2123,15 @@ async function main() {
                       const outcome =
                         output === undefined
                           ? undefined
-                          : summarizeToolResult(tc.function.name, output, {
-                              blocked: isFailedToolOutput(output),
-                              rejected: output === USER_REJECTED_TOOL_OUTPUT,
-                            });
+                          : summarizeToolResult(
+                              tc.function.name,
+                              output,
+                              {
+                                blocked: isFailedToolOutput(output),
+                                rejected: output === USER_REJECTED_TOOL_OUTPUT,
+                              },
+                              argsObj,
+                            );
                       for (const row of formatToolCell({
                         status: outcome?.status ?? "failed",
                         toolName: tc.function.name,
@@ -2853,7 +2929,14 @@ async function main() {
         }
 
         if (!forwardedPrompt || !manualSkillExchange) {
-          ui.writeLine(colors.red(`未知命令: /${command}。输入 /help 查看帮助。`));
+          const suggestion = suggestSimilarCommand(command, slashCommands);
+          ui.writeLine(
+            colors.red(
+              suggestion
+                ? `未知命令: /${command}。你是不是想输入 ${suggestion}？`
+                : `未知命令: /${command}。输入 /help 查看帮助。`,
+            ),
+          );
           continue;
         }
       }
@@ -3004,6 +3087,11 @@ async function main() {
 
       let keepCalling = true;
       let malformedToolRecoveryAttempts = 0;
+      // 回合小结：耗时、模型输出 tokens（以 Provider 统计为准）与工具调用次数。
+      const turnStartedAt = Date.now();
+      let turnOutputTokens: number | undefined;
+      let turnToolCalls = 0;
+      let turnFailed = false;
       while (keepCalling) {
         const repairedMessages = repairToolCallPairs(messages);
         if (repairedMessages !== messages) {
@@ -3021,6 +3109,9 @@ async function main() {
 
         let textContent = "";
         let reasoningContent = "";
+        // 流式过程中的 token 数按增量估算（不重复扫描全文），与回合结束后的统计口径一致。
+        let reasoningTokens = 0;
+        let responseTokens = 0;
 
         // TTFT、推理与流式回复共用一条可观测活动状态。
         let isThinking = true;
@@ -3058,7 +3149,8 @@ async function main() {
           onReasoning: (content: string) => {
             if (isTurnAborted) return;
             reasoningContent += content;
-            activityIndicator.progress(`已接收 ${reasoningContent.length} 字推理内容`);
+            reasoningTokens += estimateTextTokens(content);
+            activityIndicator.progress(`推理约 ${formatAgentTokens(reasoningTokens)} tokens`);
             const now = Date.now();
             if (!isResponding && now - reasoningPreviewAt >= 50) {
               reasoningPreviewAt = now;
@@ -3068,6 +3160,7 @@ async function main() {
           },
           onUsage: (usage) => {
             completionTokens = usage.completion_tokens;
+            turnOutputTokens = (turnOutputTokens ?? 0) + usage.completion_tokens;
           },
           onFinish: (finish) => {
             finishReason = finish.reason;
@@ -3095,7 +3188,8 @@ async function main() {
             }
 
             textContent += chunk;
-            activityIndicator.progress(`已生成 ${textContent.length} 字`);
+            responseTokens += estimateTextTokens(chunk);
+            activityIndicator.progress(`已生成约 ${formatAgentTokens(responseTokens)} tokens`);
             // Reparse at most once per frame; the final pass below always renders the complete answer.
             if (markdownRenderThrottle.shouldRender(Date.now(), textContent.length)) {
               const renderedMarkdown = mdStreamRenderer.render(textContent, false);
@@ -3132,6 +3226,7 @@ async function main() {
           } else {
             commitPromptForRequest();
             activityIndicator.stop();
+            turnFailed = true;
             // 捕获 Provider 调用错误，展示友好提示而非崩溃
             const described = describeModelError(streamError);
             ui.writeLine();
@@ -3231,6 +3326,7 @@ async function main() {
 
         // 处理工具调用逻辑
         if (toolCalls && toolCalls.length > 0) {
+          turnToolCalls += toolCalls.length;
           // 工具调用块前空一行：与上方思考/正文分隔；工具调用相互之间不空行
           ui.writeBlankLine();
           type ToolExecutionResult = Awaited<ReturnType<typeof toolExecutor.execute>>;
@@ -3297,7 +3393,7 @@ async function main() {
                 });
                 toolRunView.finish(
                   tc.id,
-                  summarizeToolResult(toolName, execution.output, execution),
+                  summarizeToolResult(toolName, execution.output, execution, args),
                   execution.duration,
                 );
                 return { tc, toolName, args, duration: execution.duration, execution };
@@ -3319,6 +3415,13 @@ async function main() {
               const committedCells = toolRunView.commit();
               if (committedCells) ui.writeChat(committedCells);
             }
+            lastToolBatchOutputs = batchRun.results
+              .filter((result) => result.execution)
+              .map((result) => ({
+                toolName: result.toolName,
+                summary: summarizeToolCall(result.toolName, result.args),
+                output: result.execution?.output ?? "",
+              }));
             for (const result of batchRun.results) {
               const { tc, toolName, args, execution } = result;
               if (result.skipped) {
@@ -3457,6 +3560,16 @@ async function main() {
         sessionManager.saveCurrentSession(messages);
       }
       stopActiveTurnVisuals();
+      if (!isTurnAborted && !turnFailed) {
+        const summary = [
+          `完成 · ${formatToolDuration(Date.now() - turnStartedAt)}`,
+          turnOutputTokens !== undefined
+            ? `输出 ${formatAgentTokens(turnOutputTokens)} tokens`
+            : "",
+          turnToolCalls > 0 ? `${turnToolCalls} 次工具调用（Ctrl+O 展开最后一批输出）` : "",
+        ].filter(Boolean);
+        ui.writeLine(colors.gray(`  ${summary.join(" · ")}`));
+      }
       ui.onEsc();
       foregroundAbortSignal = undefined;
     }
