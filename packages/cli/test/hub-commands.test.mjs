@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildHubMenus, COMMAND_SURFACE, getTopLevelSlashCommands } from "../dist/cli-help.js";
+import {
+  buildHubMenus,
+  buildSessionHelpLines,
+  COMMAND_SURFACE,
+  getTopLevelSlashCommands,
+} from "../dist/cli-help.js";
+import { terminalWidth } from "../dist/terminal-text.js";
+import { setActiveColorLevel } from "../dist/theme.js";
+
+setActiveColorLevel("mono");
 
 test("top-level completion list narrows to hubs and high-frequency actions", () => {
   const commands = getTopLevelSlashCommands().map((entry) => entry.command);
@@ -90,4 +99,32 @@ test("command surface keeps hubs and nested members in one source", () => {
       assert.ok(member.description.length > 0);
     }
   }
+});
+
+test("session help lists commands, shortcuts and tool names without tool essays", () => {
+  const options = {
+    permissionMode: "default",
+    reasoningEffort: "medium",
+    model: "deepseek-v4-flash",
+    toolNames: ["bash", "read", "taskcreate"],
+  };
+  for (const width of [50, 100]) {
+    const lines = buildSessionHelpLines({ ...options, width });
+    const text = lines.join("\n");
+    for (const line of lines) assert.ok(terminalWidth(line) <= width, `${width}: ${line}`);
+    assert.doesNotMatch(text, /⚙/);
+    assert.match(text, /^快捷键$/m);
+    assert.match(text, /Esc +中止当前回合/);
+    assert.match(text, /^ {2}bash {2}read {2}taskcreate$/m);
+    if (width >= 100) {
+      assert.match(text, /权限 default · 强度 medium · 模型 deepseek-v4-flash/);
+    }
+    for (const entry of COMMAND_SURFACE) assert.ok(text.includes(entry.command), entry.command);
+  }
+
+  // 说明列折行时续行与第一行说明对齐，而不是顶格。
+  const narrow = buildSessionHelpLines({ ...options, width: 50 });
+  const start = narrow.findIndex((line) => line.includes("PgUp / PgDn"));
+  const column = narrow[start].indexOf("翻阅");
+  assert.ok(narrow[start + 1].startsWith(" ".repeat(column)), narrow[start + 1]);
 });

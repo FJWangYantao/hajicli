@@ -103,8 +103,11 @@ export function buildActivityFrame(
     label: state.label,
     elapsed: formatActivityDuration(elapsedMs),
     detail: state.detail,
+    // 本阶段从未有过进展时，空闲时长与已用时长相同，不再重复显示。
     idleText:
-      !isPermission && tone !== "active" ? `${formatActivityDuration(idleMs)} 无新事件` : undefined,
+      !isPermission && tone !== "active" && state.lastProgressAt > state.startedAt
+        ? `${formatActivityDuration(idleMs)} 无新进展`
+        : undefined,
   };
 }
 

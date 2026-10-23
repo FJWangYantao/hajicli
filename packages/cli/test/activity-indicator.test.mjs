@@ -32,9 +32,9 @@ test("activity frames expose active, waiting and stalled states", () => {
 
   assert.equal(active.tone, "active");
   assert.equal(waiting.tone, "waiting");
-  assert.match(waiting.idleText, /13s 无新事件/);
+  assert.match(waiting.idleText, /13s 无新进展/);
   assert.equal(stalled.tone, "stalled");
-  assert.match(stalled.idleText, /31s 无新事件/);
+  assert.match(stalled.idleText, /31s 无新进展/);
   assert.notEqual(active.icon, waiting.icon);
   assert.equal("meter" in active, false, "the activity row carries a single animation");
 });
@@ -203,4 +203,17 @@ test("tool run view commits finished cells in call order and clears the live are
   assert.equal(renders.at(-1), "");
   assert.equal(view.hasEntries(), false);
   assert.equal(view.commit(), "", "pending and aborted calls never leak into the transcript");
+});
+
+test("idle time is omitted when nothing has happened since the phase started", () => {
+  const frame = buildActivityFrame(
+    { phase: "thinking", label: "思考中", detail: "模型尚未响应", startedAt: 0, lastProgressAt: 0 },
+    0,
+    13_000,
+    12_000,
+    30_000,
+  );
+  assert.equal(frame.tone, "waiting");
+  assert.equal(frame.idleText, undefined, "elapsed already shows the same duration");
+  assert.equal(frame.elapsed, "13s");
 });

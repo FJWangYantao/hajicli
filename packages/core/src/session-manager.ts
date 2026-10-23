@@ -63,6 +63,28 @@ function sameMessages(left: ChatMessage[], right: ChatMessage[]): boolean {
 }
 
 /** In-memory session state with debounced, atomic background persistence. */
+/**
+ * 清理模型生成的会话标题：取第一行非空文本，去掉 Markdown 标记、“标题：”前缀、
+ * 引号书名号与收尾标点，最多保留 20 个字符；清理后为空时返回 fallback。
+ */
+export function cleanGeneratedTitle(raw: string, fallback: string): string {
+  const firstLine =
+    raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? "";
+  const cleaned = firstLine
+    .replace(/^(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+|>\s*)+/, "")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*+|`+|~~/g, "")
+    .replace(/^(?:标题|title)\s*[:：]\s*/i, "")
+    .replace(/^["'“”‘’《「『【\s]+|["'“”‘’》」』】\s]+$/g, "")
+    .replace(/[。.!！?？:：;；,，、\s]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(cleaned).slice(0, 20).join("") || fallback;
+}
+
 export class SessionManager {
   private readonly sessionsDir: string;
   private currentSession: StoredSession;
@@ -280,11 +302,7 @@ export class SessionManager {
     try {
       const prompt = `请针对以下用户的第一条需求，总结出一个 10 以内的简短形象标题。注意：直接回答标题本身，不要包含任何标点符号、解释或多余字符。\n\n需求：${firstUserMsg}`;
       const generated = await titleSummarizer(prompt);
-      const cleanTitle =
-        generated
-          .trim()
-          .replace(/^["'《]+|["'》]+$/g, "")
-          .slice(0, 20) || defaultTitle;
+      const cleanTitle = cleanGeneratedTitle(generated, defaultTitle);
       this.currentSession.title = cleanTitle;
       this.saveCurrentSession(this.currentSession.messages);
       return cleanTitle;

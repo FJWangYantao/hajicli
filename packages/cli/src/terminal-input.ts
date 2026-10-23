@@ -20,6 +20,7 @@ import {
   buildViewportScrollUpdate,
   cellAtColumn,
   DEFAULT_CHAT_PADDING,
+  fitText,
   getSelectionAutoScrollRows,
   highlightAnsiColumns,
   layoutAnsiDocument,
@@ -211,6 +212,35 @@ function isRealCtrlU(value: string, key: readline.Key): boolean {
 
 function isRealCtrlT(value: string, key: readline.Key): boolean {
   return value === "\x14" && key.ctrl === true && key.name === "t";
+}
+
+interface MenuRow {
+  label: string;
+  description?: string;
+}
+
+/**
+ * 菜单行（斜杠补全与选择器共用）：标签列按最宽项对齐，说明灰显并在超宽时以省略号截断；
+ * 选中项用 ▸ 标记，与输入提示符 › 区分。
+ */
+function formatMenuRows(items: readonly MenuRow[], selectedIndex: number, width: number): string[] {
+  const contentWidth = Math.max(1, width - 2);
+  const labelWidth = Math.min(
+    Math.max(0, ...items.map((item) => terminalWidth(item.label))),
+    Math.max(8, Math.floor(contentWidth * 0.45)),
+  );
+  return items.map((item, index) => {
+    const selected = index === selectedIndex;
+    const label = fitText(item.label, labelWidth);
+    const padding = " ".repeat(Math.max(0, labelWidth - terminalWidth(label)));
+    const descriptionWidth = contentWidth - labelWidth - 2;
+    const description =
+      item.description && descriptionWidth >= 4 ? fitText(item.description, descriptionWidth) : "";
+    const marker = selected ? `${SEQ.boldAccent}▸ ` : "  ";
+    const labelStyle = selected ? SEQ.boldAccent : "";
+    const descriptionStyle = selected ? "" : SEQ.muted;
+    return `${marker}${labelStyle}${label}${SEQ.reset}${description ? `${padding}  ${descriptionStyle}${description}${SEQ.reset}` : ""}`;
+  });
 }
 
 export class TerminalUI {
@@ -1262,12 +1292,11 @@ export class TerminalUI {
       suggestions.length - 1,
     );
 
-    return suggestions.map((item, index) => {
-      const label = truncateText(`${item.command}  ${item.description}`, Math.max(1, width - 2));
-      return index === activeInput.selectedCommandIndex
-        ? `${SEQ.boldAccent}› ${label}${SEQ.reset}`
-        : `${SEQ.muted}  ${label}${SEQ.reset}`;
-    });
+    return formatMenuRows(
+      suggestions.map((item) => ({ label: item.command, description: item.description })),
+      activeInput.selectedCommandIndex,
+      width,
+    );
   }
 
   private getSelectionRows(width: number, maxRows: number): string[] {
@@ -1332,19 +1361,16 @@ export class TerminalUI {
       firstVisibleIndex + availableItemRows,
     );
 
-    for (let offset = 0; offset < visibleItems.length; offset += 1) {
-      const itemIndex = firstVisibleIndex + offset;
-      const item = visibleItems[offset];
-      const label = truncateText(
-        `${item.label}${item.hotkey ? ` (${item.hotkey})` : ""}${item.description ? `  ${item.description}` : ""}`,
-        Math.max(1, width - 2),
-      );
-      rows.push(
-        itemIndex === activeSelection.selectedIndex
-          ? `${SEQ.boldAccent}› ${label}${SEQ.reset}`
-          : `${SEQ.muted}  ${label}${SEQ.reset}`,
-      );
-    }
+    rows.push(
+      ...formatMenuRows(
+        visibleItems.map((item) => ({
+          label: `${item.label}${item.hotkey ? ` (${item.hotkey})` : ""}`,
+          description: item.description,
+        })),
+        activeSelection.selectedIndex - firstVisibleIndex,
+        width,
+      ),
+    );
 
     return rows.slice(0, maxRows);
   }
@@ -1394,27 +1420,6 @@ export class TerminalUI {
     const permColor = permText ? permColorMap[this.permissionMode] || SEQ.muted : "";
     const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : "";
 
-    let modelStr = "";
-    if (detail !== "minimal" && this.modelName) {
-      modelStr = [
-        detail === "full" ? this.providerName : "",
-        this.modelName,
-        this.reasoningEffort ? this.reasoningEffort.toUpperCase() : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
-    }
-    const modelLimit =
-      detail === "full"
-        ? Math.max(8, Math.min(36, Math.floor(width * 0.38)))
-        : Math.max(6, Math.min(22, Math.floor(width * 0.36)));
-    const modelAnsi = modelStr
-      ? `${SEQ.bold}${SEQ.cyan}${truncateText(modelStr, modelLimit)}${SEQ.reset}`
-      : "";
-
-    const baseLeftAnsi = [permAnsi, modelAnsi].filter(Boolean).join("  ");
-    const baseLeftWidth = terminalWidth(baseLeftAnsi);
-
     const used = this.usedTokens;
     const max = this.maxTokens;
     const ratio = Math.min(1, Math.max(0, used / max));
@@ -1437,6 +1442,30 @@ export class TerminalUI {
     const valueText = detail === "full" ? numText : percentText;
     const rightAnsi = `${colorCode}${barStr}${SEQ.reset}${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${valueText}${SEQ.reset}`;
     const rightWidth = terminalWidth(rightAnsi);
+
+    // 模型区按实际剩余空间分配（路径优先级最低，排在它之后）。
+    const modelLimit = Math.max(
+      6,
+      Math.min(detail === "full" ? 48 : 40, width - terminalWidth(permAnsi) - rightWidth - 4),
+    );
+    // 空间不足时依次舍弃提供商、截短模型名，思考强度始终完整保留。
+    let modelStr = "";
+    if (detail !== "minimal" && this.modelName) {
+      const effort = this.reasoningEffort.toLowerCase();
+      const candidates = [
+        detail === "full" ? [this.providerName, this.modelName, effort] : [],
+        [this.modelName, effort],
+      ].map((parts) => parts.filter(Boolean).join(" · "));
+      modelStr =
+        candidates.find((candidate) => candidate && terminalWidth(candidate) <= modelLimit) ||
+        (effort
+          ? `${fitText(this.modelName, Math.max(1, modelLimit - terminalWidth(effort) - 3))} · ${effort}`
+          : fitText(this.modelName, modelLimit));
+    }
+    const modelAnsi = modelStr ? `${SEQ.bold}${SEQ.cyan}${modelStr}${SEQ.reset}` : "";
+
+    const baseLeftAnsi = [permAnsi, modelAnsi].filter(Boolean).join("  ");
+    const baseLeftWidth = terminalWidth(baseLeftAnsi);
 
     let pathAnsi = "";
     if (detail === "full" && this.currentPath) {
@@ -1474,12 +1503,8 @@ export class TerminalUI {
             : frame.phase === "permission"
               ? SEQ.yellow
               : SEQ.cyan;
-    const toneText =
-      frame.tone === "stalled"
-        ? "较久无进展"
-        : frame.tone === "waiting" && frame.phase !== "permission"
-          ? "等待新事件"
-          : "";
+    // 等待与停滞已由颜色区分；只有停滞时补一个文字提示，避免同一状态重复描述。
+    const toneText = frame.tone === "stalled" ? "等待较久" : "";
     const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(" · ");
     const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
     const suffix = `${SEQ.muted}${frame.elapsed}${detail ? ` · ${detail}` : ""}${SEQ.reset}`;

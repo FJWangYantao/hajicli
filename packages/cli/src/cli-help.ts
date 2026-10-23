@@ -1,4 +1,5 @@
 import { getCliVersion } from "./cli-runtime.js";
+import { splitGraphemes, terminalWidth } from "./terminal-text.js";
 import { colors } from "./theme.js";
 
 // 像素画风格的大写 HAJI 启动 Logo
@@ -137,6 +138,145 @@ export function buildHubMenus(skills: readonly HubSkillEntry[] = []): Record<str
     menus[entry.command.slice(1)] = { title: entry.description, items };
   }
   return menus;
+}
+
+/** 会话内快捷键：与 terminal-input 的按键处理保持一致。 */
+export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: string }> = [
+  { keys: "Enter", description: "发送消息" },
+  { keys: "Shift+Enter / Ctrl+J", description: "输入框内换行" },
+  { keys: "Esc", description: "中止当前回合（未发出的 prompt 会收回输入框）" },
+  { keys: "Shift+Tab", description: "循环切换权限模式" },
+  { keys: "↑ / ↓", description: "浏览输入历史" },
+  { keys: "PgUp / PgDn", description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 回到底部" },
+  { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
+  { keys: "鼠标拖选 + Ctrl+C", description: "复制选中文本；无选中时 Ctrl+C 退出" },
+];
+
+/** 按显示宽度折行：英文尽量在空格处断开，中文逐字断开。 */
+function wrapPlainText(text: string, width: number): string[] {
+  const safeWidth = Math.max(1, width);
+  const rows: string[] = [];
+  let row = "";
+  for (const grapheme of splitGraphemes(text)) {
+    if (terminalWidth(row + grapheme) <= safeWidth) {
+      row += grapheme;
+      continue;
+    }
+    const breakAt = row.lastIndexOf(" ");
+    if (grapheme !== " " && /^[\x21-\x7e]$/.test(grapheme) && breakAt > 0) {
+      rows.push(row.slice(0, breakAt));
+      row = `${row.slice(breakAt + 1)}${grapheme}`;
+    } else {
+      rows.push(row);
+      row = grapheme === " " ? "" : grapheme;
+    }
+  }
+  if (row) rows.push(row);
+  return rows.length > 0 ? rows : [""];
+}
+
+/** 两列对齐：标签列定宽，说明列超宽时悬挂缩进折行，窄屏下说明另起一行。 */
+function formatHelpRow(
+  indent: string,
+  label: string,
+  description: string,
+  labelWidth: number,
+  width: number,
+  styleLabel: (text: string) => string,
+): string[] {
+  const indentWidth = terminalWidth(indent);
+  const descriptionWidth = width - indentWidth - labelWidth - 2;
+  if (descriptionWidth < 12) {
+    return [
+      `${indent}${styleLabel(label)}`,
+      ...wrapPlainText(description, width - indentWidth - 2).map((row) => `${indent}  ${row}`),
+    ];
+  }
+  const padding = " ".repeat(Math.max(0, labelWidth - terminalWidth(label)) + 2);
+  const continuation = " ".repeat(indentWidth + labelWidth + 2);
+  return wrapPlainText(description, descriptionWidth).map((row, index) =>
+    index === 0 ? `${indent}${styleLabel(label)}${padding}${row}` : `${continuation}${row}`,
+  );
+}
+
+export interface SessionHelpOptions {
+  width: number;
+  permissionMode: string;
+  reasoningEffort: string;
+  model: string;
+  toolNames: readonly string[];
+}
+
+/**
+ * 会话内 /help：指令表 + 快捷键 + 当前状态 + 工具名清单。工具说明是写给模型的，
+ * 篇幅长且对用户无用，这里只列名称。
+ */
+export function buildSessionHelpLines(options: SessionHelpOptions): string[] {
+  const width = Math.max(20, options.width);
+  const commandWidth = Math.max(...COMMAND_SURFACE.map((entry) => terminalWidth(entry.command)));
+  const memberWidth = Math.max(
+    ...COMMAND_SURFACE.flatMap((entry) => entry.members ?? []).map((member) =>
+      terminalWidth(member.command),
+    ),
+  );
+  const lines = [colors.bold("指令")];
+  for (const entry of COMMAND_SURFACE) {
+    lines.push(
+      ...formatHelpRow(
+        "  ",
+        entry.command,
+        entry.description,
+        commandWidth,
+        width,
+        entry.members ? colors.boldPurple : colors.purple,
+      ),
+    );
+    for (const member of entry.members ?? []) {
+      lines.push(
+        ...formatHelpRow(
+          "    ",
+          member.command,
+          member.description,
+          memberWidth,
+          width,
+          colors.gray,
+        ),
+      );
+    }
+  }
+  lines.push(
+    ...wrapPlainText("枢纽指令进入后可选择细分项，细分指令也可以直接输入。", width - 2).map(
+      (row) => `  ${colors.gray(row)}`,
+    ),
+    "",
+  );
+
+  const shortcutWidth = Math.max(...SESSION_SHORTCUTS.map((item) => terminalWidth(item.keys)));
+  lines.push(colors.bold("快捷键"));
+  for (const shortcut of SESSION_SHORTCUTS) {
+    lines.push(
+      ...formatHelpRow(
+        "  ",
+        shortcut.keys,
+        shortcut.description,
+        shortcutWidth,
+        width,
+        colors.cyan,
+      ),
+    );
+  }
+  lines.push("", colors.bold("当前"));
+  lines.push(
+    ...wrapPlainText(
+      `权限 ${options.permissionMode} · 强度 ${options.reasoningEffort} · 模型 ${options.model}`,
+      width - 2,
+    ).map((row) => `  ${row}`),
+  );
+  lines.push("", colors.bold(`可用工具（${options.toolNames.length}）`));
+  lines.push(
+    ...wrapPlainText(options.toolNames.join("  "), width - 2).map((row) => `  ${colors.gray(row)}`),
+  );
+  return lines;
 }
 
 /** 把指令面渲染为 CLI --help 使用的对齐文本（不含颜色）。 */

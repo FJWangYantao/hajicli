@@ -227,13 +227,14 @@ test("renders animated observability with phase, elapsed time and detail", () =>
       label: "执行工具",
       elapsed: "18s",
       detail: "grep: 读取结果",
-      idleText: "13s 无新事件",
+      idleText: "13s 无新进展",
     };
   });
 
   const screen = frame.plainRows.join("\n");
   assert.match(screen, /执行工具/);
-  assert.match(screen, /等待新事件/);
+  assert.match(screen, /18s · 13s 无新进展 · grep: 读取结果/);
+  assert.doesNotMatch(screen, /等待新事件/, "tone is conveyed by color, not repeated text");
   assert.match(screen, /18s/);
   assert.match(screen, /grep: 读取结果/);
   assert.equal(frame.ui.chatContent, chatContent);
@@ -299,19 +300,24 @@ test("activity detail progressively compacts on narrow terminals", () => {
       label: "执行工具",
       elapsed: "18s",
       detail: "grep: a/very/long/path/source.ts",
-      idleText: "13s 无新事件",
+      idleText: "13s 无新进展",
     };
+  };
+  const stalled = (ui) => {
+    createActivity(ui);
+    ui.activityFrame.tone = "stalled";
   };
   const wide = renderFrame(80, 24, createActivity).plainRows.join("\n");
   const compact = renderFrame(50, 24, createActivity).plainRows.join("\n");
   const narrow = renderFrame(30, 24, createActivity).plainRows.join("\n");
 
   assert.match(wide, /grep: a\/very\/long\/path/);
-  assert.match(compact, /等待新事件/);
+  assert.match(compact, /执行工具 {2}18s/);
   assert.doesNotMatch(compact, /a\/very\/long\/path/);
+  assert.match(renderFrame(50, 24, stalled).plainRows.join("\n"), /执行工具 {2}18s · 等待较久/);
   assert.match(narrow, /执行工具/);
   assert.match(narrow, /18s/);
-  assert.doesNotMatch(narrow, /等待新事件/);
+  assert.doesNotMatch(renderFrame(30, 24, stalled).plainRows.join("\n"), /等待较久/);
 });
 
 test("an animation tick repaints only the fixed activity row", () => {
@@ -504,7 +510,7 @@ test("permission card shows the full command preview above the choices", () => {
   const screen = frame.plainRows.join("\n");
   assert.match(screen, /需要授权 · AI 请求运行命令 {2}↑↓ 选择 · Enter 确认 · Esc 中止本轮/);
   assert.match(screen, /│ for i in 1 2 3; do\n│ {3}echo \$i\n│ done\n│ 工作目录 ~\/demo/);
-  assert.match(screen, /› 允许本次 \(y\)\n {2}本会话内总是允许 bash \(a\)\n {2}拒绝 \(n\)/);
+  assert.match(screen, /▸ 允许本次 \(y\)\n {2}本会话内总是允许 bash \(a\)\n {2}拒绝 \(n\)/);
 });
 
 test("permission card trims the preview on short terminals but keeps every choice", () => {
@@ -539,4 +545,58 @@ test("permission hotkeys and Enter are ignored right after the card appears", ()
       cleanupTerminalUI(ui);
     }
   });
+});
+
+test("status bar shrinks the path before cutting the model or effort", () => {
+  const frame = renderFrame(100, 30, (ui) => {
+    ui.providerName = "🔵 DeepSeek";
+    ui.modelName = "deepseek-v4-flash";
+    ui.reasoningEffort = "medium";
+    ui.currentPath = "/tmp/a/very/long/workspace/path/that/does/not/fit/anywhere/demo";
+  });
+  const statusRow = frame.plainRows.at(-1);
+  assert.match(statusRow, /🔵 DeepSeek · deepseek-v4-flash · medium {2}…/);
+  assert.match(statusRow, /demo/);
+
+  const narrow = renderFrame(50, 24, (ui) => {
+    ui.modelName = "a-very-long-custom-model-name-v2";
+    ui.reasoningEffort = "xhigh";
+  }).plainRows.at(-1);
+  assert.match(narrow, /a-very-long-custom.*… · xhigh/);
+});
+
+test("slash suggestions align descriptions and mark the selection with ▸", () => {
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.activeInput.graphemes = ["/"];
+    ui.activeInput.cursorIndex = 1;
+    ui.activeInput.slashCommands = [
+      { command: "/help", description: "显示帮助手册" },
+      { command: "/compact", description: "多层上下文压缩" },
+    ];
+  });
+  const screen = frame.plainRows.join("\n");
+  assert.match(screen, /▸ \/help {5}显示帮助手册\n {2}\/compact {2}多层上下文压缩/);
+});
+
+test("selector items are truncated with an ellipsis", () => {
+  const frame = renderFrame(40, 24, (ui) => {
+    ui.activeInput = undefined;
+    ui.activeSelection = {
+      options: {
+        title: "模型与配置",
+        items: [
+          {
+            value: "e",
+            label: "/effort",
+            description: "切换思考强度（low/medium/high/xhigh/max）",
+          },
+        ],
+      },
+      selectedIndex: 0,
+      secondaryIndex: 0,
+      resolve() {},
+      reject() {},
+    };
+  });
+  assert.match(frame.plainRows.join("\n"), /▸ \/effort {2}切换思考强度.*…/);
 });

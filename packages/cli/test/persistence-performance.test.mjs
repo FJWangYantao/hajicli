@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { SessionManager, SessionTracker } from "@hajicli/core";
+import { cleanGeneratedTitle, SessionManager, SessionTracker } from "@hajicli/core";
 
 test("session persistence skips duplicate snapshots but saves new messages", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-session-perf-"));
@@ -131,4 +131,13 @@ test("trace bounds large LLM payloads while preserving call metadata", async () 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("generated session titles drop markdown, labels and trailing punctuation", () => {
+  assert.equal(cleanGeneratedTitle("## 分析结果\n项目使用 **pnpm**", "默认"), "分析结果");
+  assert.equal(cleanGeneratedTitle("**项目结构分析**。", "默认"), "项目结构分析");
+  assert.equal(cleanGeneratedTitle("标题：《重构权限卡片》", "默认"), "重构权限卡片");
+  assert.equal(cleanGeneratedTitle("修复 write_file 工具", "默认"), "修复 write_file 工具");
+  assert.equal(cleanGeneratedTitle("  \n ", "默认"), "默认");
+  assert.equal(cleanGeneratedTitle("长".repeat(30), "默认").length, 20);
 });

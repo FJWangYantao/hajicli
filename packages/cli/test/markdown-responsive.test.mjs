@@ -66,3 +66,44 @@ test("wide code blocks keep the complete frame at width 80", () => {
   assert.match(lines[1], /^│ .* │$/u);
   assert.match(lines.at(-1), /^└─+┘$/u);
 });
+
+test("wide code blocks wrap long lines inside the frame instead of truncating them", () => {
+  const renderer = new MarkdownStreamRenderer(() => 48);
+  const longCode =
+    "export function summarize(name: string, args: Record<string, unknown>): string {";
+  const rendered = stripAnsi(renderer.render(`\`\`\`ts\n${longCode}\n}\n\`\`\``, true));
+  const rows = rendered.split("\n");
+
+  assert.equal(rendered.includes("…"), false);
+  assert.match(rows[2], /^│↪/u, "continuation rows are marked");
+  const joined = rows
+    .slice(1, -1)
+    .map((row) => row.replace(/^│[ ↪]/u, "").replace(/ *│$/u, ""))
+    .join("");
+  assert.equal(joined.includes(longCode), true, "every character of the code survives");
+  const frameWidth = rows[0].length;
+  for (const row of rows) assert.equal(row.length, frameWidth, `misaligned row: ${row}`);
+});
+
+test("links render as text plus address and never mangle underscores", () => {
+  const renderer = new MarkdownStreamRenderer(() => 80);
+  const rendered = stripAnsi(
+    renderer.render(
+      "见 [Node 文档](https://nodejs.org/api/tty.html)，变量 write_file_tool，地址 https://x.com/a_b_c 和 <https://a.b/c>。*强调*",
+      true,
+    ),
+  );
+  assert.equal(
+    rendered,
+    "见 Node 文档 https://nodejs.org/api/tty.html，变量 write_file_tool，地址 https://x.com/a_b_c 和 https://a.b/c。强调",
+  );
+});
+
+test("table cells keep only the link text so columns stay aligned", () => {
+  const renderer = new MarkdownStreamRenderer(() => 80);
+  const rendered = stripAnsi(
+    renderer.render("| 名称 | 链接 |\n|---|---|\n| a | [文档](https://e.com/x_y) |", true),
+  );
+  assert.match(rendered, /│ a {4}│ 文档 │/);
+  assert.doesNotMatch(rendered, /https:/);
+});

@@ -78,13 +78,15 @@ import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
 import { parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
 import {
   buildHubMenus,
-  COMMAND_SURFACE,
+  buildSessionHelpLines,
   getTopLevelSlashCommands,
   handleEarlyCliArgs,
   LOGO,
 } from "./cli-help.js";
 import {
   buildPermissionPreview,
+  describeModelError,
+  formatReasoningPreview,
   formatToolCell,
   formatToolDuration,
   loadPreference,
@@ -153,7 +155,7 @@ const VOLCENGINE_MODELS = MODEL_REGISTRY.filter((model) => model.provider === "v
 
 const EFFORT_OPTIONS = REASONING_EFFORTS.map((value) => ({
   value,
-  label: value.toUpperCase(),
+  label: value,
   description: (
     {
       low: "快速",
@@ -2826,36 +2828,14 @@ async function main() {
         }
         if (command === "help") {
           // 从 COMMAND_SURFACE 生成指令表：枢纽加粗，成员子指令灰显缩进。
-          const commandRows: string[] = [];
-          for (const entry of COMMAND_SURFACE) {
-            const commandLabel = entry.command.padEnd(12);
-            commandRows.push(
-              entry.members
-                ? `  ${colors.boldPurple(commandLabel)}${entry.description}`
-                : `  ${colors.purple(commandLabel)}${entry.description}`,
-            );
-            for (const member of entry.members ?? []) {
-              commandRows.push(
-                `      ${colors.gray(member.command.padEnd(20))}${member.description}`,
-              );
-            }
-          }
-          const helpLines = [
-            colors.bold("可用斜杠指令（枢纽进入后选择细分项；子指令也可直接输入）："),
-            ...commandRows,
-            colors.gray(
-              `  权限=${permissionMode} · 强度=${reasoningEffort} · 模型=${selectedModel}`,
-            ),
-            "",
-            colors.bold("已注册的系统工具："),
-            ...tools.map(
-              (t) =>
-                `  ⚙️  ${colors.blue(t.name.padEnd(20))} : ${t.definition.function.description}`,
-            ),
-            "",
-            "",
-          ];
-          ui.writeChat(helpLines.join("\n"));
+          const helpLines = buildSessionHelpLines({
+            width: ui.getContentWidth(),
+            permissionMode,
+            reasoningEffort,
+            model: selectedModel,
+            toolNames: tools.map((tool) => tool.name),
+          });
+          ui.writeChat(`${helpLines.join("\n")}\n\n`);
           continue;
         }
         if (command === "viewer") {
@@ -3045,9 +3025,18 @@ async function main() {
         // TTFT、推理与流式回复共用一条可观测活动状态。
         let isThinking = true;
         let isResponding = false;
-        activityIndicator.start("thinking", "思考中", "等待模型首个事件");
+        activityIndicator.start("thinking", "思考中", "模型尚未响应");
+        // 思考过程预览：在对话区底部滚动显示最新几行推理，回复开始或回合结束时清除。
+        let reasoningPreviewShown = false;
+        let reasoningPreviewAt = 0;
+        const clearReasoningPreview = () => {
+          if (!reasoningPreviewShown) return;
+          reasoningPreviewShown = false;
+          ui.setLiveTail("");
+        };
         stopActiveTurnVisuals = () => {
           isThinking = false;
+          clearReasoningPreview();
           activityIndicator.stop();
         };
         const mdStreamRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
@@ -3070,6 +3059,12 @@ async function main() {
             if (isTurnAborted) return;
             reasoningContent += content;
             activityIndicator.progress(`已接收 ${reasoningContent.length} 字推理内容`);
+            const now = Date.now();
+            if (!isResponding && now - reasoningPreviewAt >= 50) {
+              reasoningPreviewAt = now;
+              ui.setLiveTail(formatReasoningPreview(reasoningContent, ui.getContentWidth()));
+              reasoningPreviewShown = true;
+            }
           },
           onUsage: (usage) => {
             completionTokens = usage.completion_tokens;
@@ -3095,6 +3090,7 @@ async function main() {
             if (!isResponding) {
               isThinking = false;
               isResponding = true;
+              clearReasoningPreview();
               activityIndicator.transition("responding", "生成回复", "正在接收模型输出");
             }
 
@@ -3137,15 +3133,12 @@ async function main() {
             commitPromptForRequest();
             activityIndicator.stop();
             // 捕获 Provider 调用错误，展示友好提示而非崩溃
-            const errMsg = sanitizeTerminalText(
-              streamError instanceof Error ? streamError.message : String(streamError),
-            );
+            const described = describeModelError(streamError);
             ui.writeLine();
             const retryNote = requestRetryCount > 0 ? `（已自动重试 ${requestRetryCount} 次）` : "";
-            ui.writeLine(colors.boldRed(`✕ 模型调用出错${retryNote}: ${errMsg}`));
-            ui.writeLine(
-              colors.gray("提示: 请检查模型名称、API Key 是否正确，或使用 /model 切换其他模型。"),
-            );
+            ui.writeLine(colors.boldRed(`✕ ${described.title}${retryNote}`));
+            if (described.detail) ui.writeLine(colors.gray(`  ${described.detail}`));
+            ui.writeLine(`  ${colors.yellow("提示")} ${described.hint}`);
             ui.writeLine();
           }
           keepCalling = false;

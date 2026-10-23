@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
-import { terminalWidth, truncateText } from "./terminal-text.js";
+import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { colors } from "./theme.js";
 
 const DEFAULT_PREFERENCES_PATH = path.join(process.cwd(), ".haji", "preferences.json");
@@ -52,13 +52,6 @@ export function formatToolArgs(args: Record<string, unknown>, maxLength = 45): s
     })
     .join(", ");
   return formatted.length > maxLength ? `${formatted.slice(0, maxLength - 3)}...` : formatted;
-}
-
-/** 按终端显示宽度截断，超出时以省略号收尾。 */
-export function fitText(value: string, width: number): string {
-  if (width <= 0) return "";
-  if (terminalWidth(value) <= width) return value;
-  return `${truncateText(value, Math.max(0, width - 1))}…`;
 }
 
 /** 把任意参数值压成一行可安全显示的纯文本。 */
@@ -407,6 +400,97 @@ export function buildPermissionPreview(
   return entries
     .slice(0, 10)
     .map(([key, value]) => `${colors.gray(`${key}:`)} ${fitText(oneLine(value), 200)}`);
+}
+
+/**
+ * 思考过程预览：取推理文本末尾按宽度折行后的最后几行，灰色显示在对话区底部。
+ * 返回实时区域文本（以换行结尾）；没有可显示内容时返回空串。
+ */
+export function formatReasoningPreview(reasoning: string, width: number, maxRows = 3): string {
+  const tail = sanitizeTerminalText(reasoning.slice(-800)).replace(/\s+/g, " ").trim();
+  if (!tail) return "";
+  // 输入是纯文本，去掉 wrapAnsi 在每行末尾补的复位序列，无色模式下也不残留转义。
+  const rows = wrapAnsi(tail, Math.max(8, width - 6))
+    .slice(-maxRows)
+    .map((row) => row.replace(/\x1b\[0m$/, ""));
+  return `${rows.map((row) => `  ${colors.gray(`┊ ${row}`)}`).join("\n")}\n`;
+}
+
+export interface ModelErrorDescription {
+  /** 一句话的错误类别（含 HTTP 状态码时附在后面）。 */
+  title: string;
+  /** 上游返回的原始说明。 */
+  detail: string;
+  /** 针对该类错误的下一步操作。 */
+  hint: string;
+}
+
+/**
+ * 按 HTTP 状态码与错误文本把模型调用失败归类，给出对应的下一步提示，
+ * 而不是对所有错误都建议“检查 API Key”。
+ */
+export function describeModelError(error: unknown): ModelErrorDescription {
+  const detail = sanitizeTerminalText(
+    error instanceof Error ? error.message : String(error),
+  ).trim();
+  const rawStatus =
+    error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
+  const status = typeof rawStatus === "number" ? rawStatus : undefined;
+  const text = detail.toLowerCase();
+  const label = (title: string) => (status ? `${title}（${status}）` : title);
+  const describe = (title: string, hint: string): ModelErrorDescription => ({
+    title: label(title),
+    detail,
+    hint,
+  });
+
+  if (
+    status === 401 ||
+    status === 403 ||
+    /unauthori[sz]ed|authenticat|invalid api key|incorrect api key|api key is missing/.test(text)
+  ) {
+    return describe("认证失败", "API Key 无效、已过期或缺失：运行 /provider 重新配置后重试。");
+  }
+  if (status === 402 || /insufficient (balance|quota)|quota exceeded|billing|余额不足/.test(text)) {
+    return describe("账户额度不足", "到模型平台检查余额或套餐后重新发送。");
+  }
+  if (status === 429 || /rate limit|too many requests|限流/.test(text)) {
+    return describe("请求过于频繁", "已触发上游限流：稍等片刻再重新发送，或用 /model 换一个模型。");
+  }
+  if (
+    /maximum context|context (length|window)|too many tokens|token limit|上下文.{0,6}(超出|过长)/.test(
+      text,
+    )
+  ) {
+    return describe(
+      "上下文超出模型窗口",
+      "运行 /compact 压缩上下文后重新发送，或换用窗口更大的模型。",
+    );
+  }
+  if (
+    status === 404 ||
+    /model.{0,40}(not found|does not exist|not exist|unavailable)|模型不存在/.test(text)
+  ) {
+    return describe(
+      "模型不可用",
+      "当前提供商没有这个模型：用 /model 切换，或用 /provider 检查配置的模型名。",
+    );
+  }
+  if (
+    (error instanceof Error && error.name === "ConnectionError") ||
+    /econn|enotfound|etimedout|eai_again|socket hang up|fetch failed|network|timed? ?out|超时|无法连接|无法解析/.test(
+      text,
+    )
+  ) {
+    return describe("网络连接失败", "检查网络与代理（HAJI_PROXY / HTTPS_PROXY）后重新发送。");
+  }
+  if (
+    (status !== undefined && status >= 500) ||
+    /overloaded|service unavailable|bad gateway|internal server error/.test(text)
+  ) {
+    return describe("模型服务暂时不可用", "上游服务异常，稍后重新发送即可。");
+  }
+  return describe("模型调用出错", "检查模型名称与 API Key，或用 /config 切换模型与提供商。");
 }
 
 export function getCliVersion(): string {

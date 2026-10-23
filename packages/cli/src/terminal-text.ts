@@ -265,6 +265,13 @@ export function truncateText(value: string, width: number): string {
   return result;
 }
 
+/** 按终端显示宽度截断纯文本，超出时以省略号收尾。 */
+export function fitText(value: string, width: number): string {
+  if (width <= 0) return "";
+  if (terminalWidth(value) <= width) return value;
+  return `${truncateText(value, Math.max(0, width - 1))}…`;
+}
+
 export function truncateAnsiText(value: string, width: number): string {
   if (width <= 0) return "";
   if (terminalWidth(value) <= width) return value;

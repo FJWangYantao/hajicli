@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   buildPermissionPreview,
+  describeModelError,
+  formatReasoningPreview,
   formatToolArgs,
   formatToolCell,
   formatToolDuration,
@@ -181,4 +183,47 @@ test("permission preview shows the complete command and the files being written"
 
   const edit = buildPermissionPreview("edit", { path: "a.ts", oldText: "x", newText: "y" }, "/");
   assert.deepEqual(edit, ["a.ts", "- x", "+ y"]);
+});
+
+test("model errors are classified with a specific next step", () => {
+  const providerError = (message, status) => Object.assign(new Error(message), { status });
+  const cases = [
+    [
+      providerError("Authentication Fails, Your api key is invalid", 401),
+      /^认证失败（401）$/,
+      /\/provider/,
+    ],
+    [providerError("Insufficient Balance", 402), /^账户额度不足/, /余额/],
+    [providerError("Rate limit reached", 429), /^请求过于频繁/, /稍等/],
+    [
+      new Error("This model's maximum context length is 65536 tokens"),
+      /^上下文超出模型窗口$/,
+      /\/compact/,
+    ],
+    [providerError("Model Not Exist", 400), /^模型不可用/, /\/model/],
+    [
+      Object.assign(new Error("无法连接目标服务（ECONNREFUSED）"), { name: "ConnectionError" }),
+      /^网络连接失败$/,
+      /HAJI_PROXY/,
+    ],
+    [providerError("Service Unavailable", 503), /^模型服务暂时不可用/, /稍后/],
+    [new Error("something odd"), /^模型调用出错$/, /\/config/],
+  ];
+  for (const [error, title, hint] of cases) {
+    const described = describeModelError(error);
+    assert.match(described.title, title, error.message);
+    assert.match(described.hint, hint, error.message);
+    assert.equal(described.detail, error.message);
+  }
+});
+
+test("reasoning preview shows the last wrapped rows within the width", () => {
+  const reasoning = `${"先确认需求。".repeat(30)}\n最后一步：检查输出。`;
+  const preview = formatReasoningPreview(reasoning, 40);
+  const rows = preview.split("\n").filter(Boolean);
+  assert.equal(rows.length, 3);
+  for (const row of rows) assert.ok(terminalWidth(row) <= 40, row);
+  assert.match(rows.map((row) => row.replace(/^ {2}┊ /, "")).join(""), /最后一步：检查输出。$/);
+  assert.doesNotMatch(preview, /\x1b/, "no stray escape codes in no-color mode");
+  assert.equal(formatReasoningPreview("  \n ", 40), "");
 });

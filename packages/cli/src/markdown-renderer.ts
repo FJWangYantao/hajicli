@@ -6,6 +6,7 @@
 
 import { performanceMonitor } from "@hajicli/core";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
+import { wrapAnsi } from "./terminal-text.js";
 import { buildAnsiStyles } from "./theme.js";
 
 /**
@@ -67,6 +68,14 @@ const KEYWORDS = new Set([
 ]);
 
 /** Limits expensive full Markdown reparses while model chunks arrive rapidly. */
+/** [text](url) 与 ![alt](url)；地址中允许一层括号（如维基百科链接）。 */
+const MARKDOWN_LINK_RE = /(!)?\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g;
+/** <https://...> 形式的自动链接。 */
+const AUTOLINK_RE = /<(https?:\/\/[^\s>]+)>/g;
+/** 正文中的裸 URL；末尾的中英文标点不计入地址。 */
+const BARE_URL_RE =
+  /https?:\/\/[^\s<>()（）\uE000\uE001]*[^\s<>()（）.,;:!?'"，。；：！？、\uE000\uE001]/g;
+
 export class MarkdownRenderThrottle {
   private lastRenderAt = Number.NEGATIVE_INFINITY;
 
@@ -392,13 +401,28 @@ export class MarkdownStreamRenderer {
   /**
    * 渲染行内样式（粗体、斜体、删除线、行内代码）。
    */
-  private renderInlineStyles(text: string): string {
+  private renderInlineStyles(text: string, compactLinks = false): string {
+    // 行内代码、链接与裸 URL 先替换为占位符，避免其中的 _ * 被当作强调语法改写。
+    const protectedSegments: string[] = [];
+    const protect = (rendered: string): string => {
+      protectedSegments.push(rendered);
+      return `\uE000${protectedSegments.length - 1}\uE001`;
+    };
     let result = text;
 
     // 行内代码 `code`
     result = result.replace(/`([^`]+)`/g, (_match, code) => {
-      return `${ANSI.yellow}${code}${ANSI.reset}`;
+      return protect(`${ANSI.yellow}${code}${ANSI.reset}`);
     });
+
+    // 链接 [text](url)、图片 ![alt](url)、自动链接 <url> 与裸 URL
+    result = result.replace(MARKDOWN_LINK_RE, (_match, image, label, url) =>
+      protect(this.renderLink(image ? `图片: ${label || url}` : label || url, url, compactLinks)),
+    );
+    result = result.replace(AUTOLINK_RE, (_match, url) =>
+      protect(this.renderLink(url, url, compactLinks)),
+    );
+    result = result.replace(BARE_URL_RE, (url) => protect(this.renderLink(url, url, compactLinks)));
 
     // 粗体 **text** 或 __text__
     result = result.replace(/(\*\*|__)(.*?)\1/g, (_match, _p1, p2) => {
@@ -406,8 +430,9 @@ export class MarkdownStreamRenderer {
     });
 
     // 斜体 *text* 或 _text_
-    result = result.replace(/(\*|_)(.*?)\1/g, (_match, _p1, p2) => {
-      return `${ANSI.italic}${p2}${ANSI.reset}`;
+    // 与 stripMarkdown 相同的边界规则：snake_case 标识符中的下划线不会被当作斜体。
+    result = result.replace(/(^|[^\w])(\*|_)(?!\s)(.+?)\2(?=[^\w]|$)/g, (_match, lead, _p2, p3) => {
+      return `${lead}${ANSI.italic}${p3}${ANSI.reset}`;
     });
 
     // 删除线 ~~text~~
@@ -415,7 +440,20 @@ export class MarkdownStreamRenderer {
       return `${ANSI.strikethrough}${p1}${ANSI.reset}`;
     });
 
-    return result;
+    return result.replace(
+      /\uE000(\d+)\uE001/g,
+      (_match, index) => protectedSegments[Number(index)] ?? "",
+    );
+  }
+
+  /**
+   * 链接显示为下划线文字，并在其后以灰色附上地址（文字即地址时只显示一次）；
+   * 地址保持原样输出，便于终端自动识别为可点击链接。表格内只保留文字以免撑宽列。
+   */
+  private renderLink(label: string, url: string, compact: boolean): string {
+    const text = `${ANSI.underline}${ANSI.blue}${label}${ANSI.reset}`;
+    if (compact || label === url) return text;
+    return `${text} ${ANSI.gray}${url}${ANSI.reset}`;
   }
 
   /**
@@ -520,11 +558,16 @@ export class MarkdownStreamRenderer {
         styled = this.highlightCodeLine(line);
       }
 
-      const truncated = this.truncateVisual(styled, innerWidth);
-      const padLen = Math.max(0, innerWidth - this.getTextWidth(truncated));
-      output.push(
-        `${ANSI.gray}│${ANSI.reset} ${truncated}${" ".repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`,
-      );
+      // 超宽行在卡片内折行（续行以 ↪ 标记），不截断，保证代码可完整阅读与复制。
+      const segments =
+        this.getTextWidth(styled) > innerWidth ? wrapAnsi(styled, innerWidth) : [styled];
+      segments.forEach((segment, index) => {
+        const padLen = Math.max(0, innerWidth - this.getTextWidth(segment));
+        const gutter = index === 0 ? " " : `${ANSI.gray}↪${ANSI.reset}`;
+        output.push(
+          `${ANSI.gray}│${ANSI.reset}${gutter}${segment}${ANSI.reset}${" ".repeat(padLen)} ${ANSI.gray}│${ANSI.reset}`,
+        );
+      });
     }
 
     // 代码块底栏边框 └────────────────┘
@@ -604,6 +647,11 @@ export class MarkdownStreamRenderer {
     let result = text;
     // 行内代码 `code`
     result = result.replace(/`([^`]+)`/g, "$1");
+    // 链接与图片只保留文字（与表格内 renderInlineStyles 的紧凑链接一致）
+    result = result.replace(MARKDOWN_LINK_RE, (_match, image, label, url) =>
+      image ? `图片: ${label || url}` : label || url,
+    );
+    result = result.replace(AUTOLINK_RE, "$1");
     // 粗体 **text** 或 __text__
     result = result.replace(/(\*\*|__)(.*?)\1/g, "$2");
     // 斜体 *text* 或 _text_（要求两侧有非字母下划线界限，避免把代码变量 write_file 当作斜体误删）
@@ -724,7 +772,7 @@ export class MarkdownStreamRenderer {
     const headerCells = [];
     for (let c = 0; c < colCount; c++) {
       const rawText = headerRow[c] || "";
-      const styledText = this.renderInlineStyles(rawText);
+      const styledText = this.renderInlineStyles(rawText, true);
       const truncatedText = this.truncateVisual(styledText, colWidths[c]);
       const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
       headerCells.push(
@@ -747,7 +795,7 @@ export class MarkdownStreamRenderer {
         const cells = [];
         for (let c = 0; c < colCount; c++) {
           const rawText = row[c] || "";
-          const styledText = this.renderInlineStyles(rawText);
+          const styledText = this.renderInlineStyles(rawText, true);
           const truncatedText = this.truncateVisual(styledText, colWidths[c]);
           const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
           cells.push(` ${truncatedText}${" ".repeat(padLen)} `);
