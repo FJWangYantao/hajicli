@@ -37,6 +37,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/effort",
     "/permission",
     "/provider",
+    "/permissions",
     "/subagent",
     "/preset",
     "/agents",
@@ -57,7 +58,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   // /model 已提升到顶层；/effort 与 /model 的强度轴重复，只保留直连与补全，不进菜单。
   assert.deepEqual(
     menus.config.items.map((item) => item.value),
-    ["/permission", "/provider"],
+    ["/permission", "/provider", "/permissions"],
   );
   assert.deepEqual(
     menus.agent.items.map((item) => item.value),

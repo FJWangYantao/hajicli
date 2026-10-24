@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
  * @param openBrowser - 是否自动在浏览器中打开可视化控制台。
  * @param keepAlive - 是否让该服务阻止 Node.js 进程自然退出。
  * @param maxPortSearch - 首选端口被占用（如上一会话进程未退出）时向后尝试的额外端口数。
+ * @param logger - 提示性输出的目标（默认 console.log）；无头模式下传入 stderr 改道。
  * @returns 实际监听的端口。
  */
 export async function startTraceServer(
@@ -21,6 +22,7 @@ export async function startTraceServer(
   openBrowser: boolean = true,
   keepAlive: boolean = true,
   maxPortSearch: number = 10,
+  logger: (message: string) => void = (message) => console.log(message),
 ): Promise<number> {
   const tracesDir = path.join(process.cwd(), ".haji", "traces");
 
@@ -125,8 +127,8 @@ export async function startTraceServer(
     }
 
     const addr = `http://localhost:${boundPort}`;
-    console.log(`\n📊 hajicli 可观测性 Trace 服务器已在本地运行: ${addr}`);
-    console.log(`   Trace 记录目录: ${tracesDir}\n`);
+    logger(`\n📊 hajicli 可观测性 Trace 服务器已在本地运行: ${addr}`);
+    logger(`   Trace 记录目录: ${tracesDir}\n`);
 
     if (openBrowser) {
       let cmd = "";
@@ -139,7 +141,7 @@ export async function startTraceServer(
       }
       exec(cmd, (err) => {
         if (err) {
-          console.log(`   [提示] 自动打开浏览器失败，请手动访问: ${addr}`);
+          logger(`   [提示] 自动打开浏览器失败，请手动访问: ${addr}`);
         }
       });
     }

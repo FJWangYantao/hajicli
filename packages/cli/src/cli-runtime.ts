@@ -244,6 +244,30 @@ export function getPermissionGrant(
   return { key: toolName, scope: toolName };
 }
 
+export interface PermissionCardItem {
+  value: string;
+  label: string;
+  hotkey: string;
+}
+
+/**
+ * 构造授权卡片的选项列表：允许本次 / 本会话内总是允许（有明确授权范围时）/
+ * 永久允许·本项目 / 永久允许·全局 / 拒绝。永久允许跨会话写入 permissions.json。
+ */
+export function buildPermissionCardItems(grant: PermissionGrant | undefined): PermissionCardItem[] {
+  return [
+    { value: "once", label: "允许本次", hotkey: "y" },
+    ...(grant ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }] : []),
+    ...(grant
+      ? [
+          { value: "always-project", label: `永久允许 ${grant.scope}（本项目）`, hotkey: "p" },
+          { value: "always-user", label: `永久允许 ${grant.scope}（全局）`, hotkey: "g" },
+        ]
+      : []),
+    { value: "deny", label: "拒绝", hotkey: "n" },
+  ];
+}
+
 export type ToolCellStatus = "running" | "success" | "failed" | "rejected";
 
 export interface ToolResultSummary {
