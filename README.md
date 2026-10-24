@@ -35,6 +35,8 @@ pnpm pack:check
 
 `pack:check` 会构建全部包（含原生模块，需要 Rust），并拒绝包含 `.haji`、源码、测试或 `workspace:` 依赖的发布包。
 
+包结构、子系统工程导览见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 安装与发布
 
 发布到 npm 后，用户无需克隆仓库即可使用：

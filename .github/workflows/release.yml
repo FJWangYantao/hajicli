@@ -1,7 +1,7 @@
 # 发布流程：
 # 1. 一次性准备：npm 账号 + 仓库 Secrets 中配置 NPM_TOKEN（Automation 类型）
-# 2. 更新三个 package.json 的版本号并提交
-# 3. 推送 v* 标签（如 v1.0.0）触发本工作流
+# 2. 更新四处 package.json（根 + 三个包）的版本号并提交（verify-packages 会硬校验一致）
+# 3. 推送与版本一致的 v* 标签（如 v1.0.0）触发本工作流
 #
 # 手动触发（workflow_dispatch）只跑编译与校验，不发布，可用于测试矩阵。
 # macos-13 已于 2025-12 退役，darwin-x64 使用 macos-15-intel（预计可用至 2027 年秋）；
@@ -51,6 +51,8 @@ jobs:
   publish:
     needs: native
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 创建 GitHub Release 需要
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -74,3 +76,8 @@ jobs:
         run: pnpm -r publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release with generated notes
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

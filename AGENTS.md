@@ -2,6 +2,7 @@
 
 pnpm workspace monorepo：`packages/core`（`@hajicli/core`）、`packages/plugins`（`@hajicli/plugins`）、
 `packages/cli`（发布包名 `hajicli`，bin 为 `haji`）。TypeScript strict + project references。
+整体架构与各子系统导览见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 常用命令
 
@@ -68,7 +69,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 ## 代码风格与提交
 
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。
-- 纯逻辑优先抽成可测函数放进现有 `*-config.ts` / `*-policy.ts` 一类模块，`index.ts` 的巨型 `main()` 只做编排。
+- 纯逻辑优先抽成可测函数放进现有 `*-config.ts` / `*-policy.ts` 一类模块，`index.ts` 的 `main()` 只做编排。
+  斜杠命令按家族放 `provider-commands.ts` / `subagent-commands.ts` / `session-commands.ts`，经 `*CommandContext`
+  访问器注入会话状态（可变 let 绑定必须走 getter/setter，不能拷贝值）；新增命令族时照此模式新建模块。
 - `dist/` 未入库（`.gitignore` 中 `dist/`），提交时不包含构建产物。
 - 新增交互逻辑尽量配一条 `packages/cli/test/*.test.mjs` 用例；测试通过临时目录 + 覆盖 `HOME`/`USERPROFILE`
   做路径隔离（参考 `provider-config.test.mjs` 的 `withIsolatedPaths`），不要读写真实 `~/.haji`。
