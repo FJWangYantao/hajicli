@@ -67,6 +67,8 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - `SharedToolExecutor`（cli）统一执行：HookEngine `PreToolUse`（权限评估 → 授权卡片 / Auto 分类器拦截）→ 执行 → `PostToolUse`（Trace 记录、经验观测采集、Git 快照）。
 - `PermissionEngine`（core）按 `permissionMode`（plan / default / accept-edit / auto / bypass-permissions）+ `riskThreshold`（Auto 档危险阈值）决策；只读工具（含 MCP `readOnly: true`）自动放行。
 - 会话级授权按 key 记忆（bash 按命令前缀），切换会话即失效。
+- 跨会话持久授权（`permission-rules.ts`）：授权卡片可选「永久允许·本项目 / 全局」，写入 `.haji/permissions.json` / `~/.haji/permissions.json`（键与会话级同形态）；PreToolUse 在权限引擎评估前命中即放行（plan / bypass 两档不查表）。`/permissions` 列出并删除规则。
+- 无头单次模式 `haji -p "prompt"`（`headless.ts`）：跳过 logo 与交互主循环，跑完一个回合直接进入退出清理；TerminalUI 以 `forceNonInteractive` 强制走 stdout 直写降级，提示性输出一律改道 stderr（stdout 只含模型正文与工具块）。`--permission-mode` 可指定档位（plan 自动按 default 执行）；未命中放行规则的工具调用在 stdin 为 TTY 时 y/N 确认，管道/CI 下自动拒绝。退出码：回合完成 0 / 启动错误 1 / SIGINT 130。
 
 ## 子代理
 

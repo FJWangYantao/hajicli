@@ -178,9 +178,10 @@ test("the large HAJI logo remains until the first ordinary user message", () => 
     "utf8",
   );
   assert.match(source, /console\.log\(buildLogo\(\)\)/);
+  // 无头模式下 compactHeader 置空（stdout 只留正文），交互模式仍是单行 HAJI。
   assert.match(
     source,
-    /header: buildLogo\(\)\.trim\(\),\s*compactHeader: colors\.boldPurple\("HAJI"\)/,
+    /header: buildLogo\(\)\.trim\(\),\s*\/\/ 无头模式下[^\n]*\n\s*compactHeader: headlessRequest \? "" : colors\.boldPurple\("HAJI"\)/,
   );
   assert.match(
     source,

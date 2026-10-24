@@ -67,6 +67,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - provider 写盘只有 `provider-config.ts` 一条路径（`saveProviderConfig` / `unsetProviderConfig`），
   两者都是"读盘—改—整体写回"，作用域默认 `user`，`--project` 才写项目级。
 - API Key 明文存 `.haji/config.json`（已被 `.gitignore` 忽略）。涉及该文件的日志、报错、测试输出**不得打印明文 key**。
+- 跨会话持久授权在 `permission-rules.ts`（`.haji/permissions.json` / `~/.haji/permissions.json`），
+  键形态复用 `getPermissionGrant`（`bash:npm test` 前缀 / 工具名）；PreToolUse 早查命中即放行，
+  但 plan / bypass 两档不查表。管理入口 `/permissions`（列表+删除）。
+  无头模式 `haji -p "<prompt>"`（`--permission-mode` 可指定档位）复用同一套放行逻辑。
 
 ## 代码风格与提交
 

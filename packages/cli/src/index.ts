@@ -80,6 +80,7 @@ import {
   suggestSimilarCommand,
 } from "./cli-help.js";
 import {
+  buildPermissionCardItems,
   buildPermissionPreview,
   findGitHeadPath,
   formatExpandedToolOutput,
@@ -95,7 +96,16 @@ import {
 } from "./cli-runtime.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
+import { parseHeadlessArgs } from "./headless.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
+import {
+  isToolAllowedPersistently,
+  loadAllPermissionRules,
+  type PermissionRuleEntry,
+  type PermissionRuleScope,
+  removePermissionRule,
+  savePermissionRule,
+} from "./permission-rules.js";
 import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
   isBuiltinProvider,
@@ -157,6 +167,18 @@ async function main() {
   markStartupStage("node_boot");
   const cliArgs = process.argv.slice(2);
   handleEarlyCliArgs(cliArgs);
+  // 无头单次模式（haji -p "prompt"）：跑完一个回合后退出，不进入交互主循环。
+  const headlessParse = parseHeadlessArgs(cliArgs);
+  if (headlessParse.error) {
+    console.error(colors.failLine(headlessParse.error));
+    process.exit(1);
+  }
+  const headlessRequest = headlessParse.request;
+  // 无头模式下所有提示性输出改道 stderr，stdout 只保留模型正文与工具块。
+  const progressLog = (message: string): void => {
+    if (headlessRequest) console.error(message);
+    else console.log(message);
+  };
 
   // 终端外观探测：haji 不再绘制整屏底色（背景交给终端，与 pi 一致），
   // 因此必须先知道终端底色是深是浅，才能在前缀帧就用对调色板。
@@ -187,11 +209,13 @@ async function main() {
     process.exit(1);
   }
 
-  // 启动时清空终端屏幕，实现“置顶并开辟新页面”效果
-  console.clear();
+  if (!headlessRequest) {
+    // 启动时清空终端屏幕，实现“置顶并开辟新页面”效果
+    console.clear();
 
-  console.log(buildLogo());
-  console.log(colors.gray("正在初始化大模型提供商、系统工具和 Trace 观测服务器..."));
+    console.log(buildLogo());
+    console.log(colors.gray("正在初始化大模型提供商、系统工具和 Trace 观测服务器..."));
+  }
 
   // 读取上次保存的偏好（模型 + 思考强度）
   const savedPreference = loadPreference();
@@ -338,6 +362,9 @@ async function main() {
     "medium";
 
   const permissionEngine = new PermissionEngine();
+  // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
+  // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
+  let permissionRules = loadAllPermissionRules();
   let permissionMode: PermissionMode = isPermissionMode(savedPreference?.permissionMode)
     ? savedPreference?.permissionMode
     : "default";
@@ -346,6 +373,14 @@ async function main() {
       ? savedPreference?.riskThreshold
       : "medium"
   ) as RiskLevel;
+  if (headlessRequest?.permissionMode) {
+    permissionMode = headlessRequest.permissionMode;
+  }
+  if (headlessRequest && permissionMode === "plan") {
+    // 无头模式没有 Plan 审批交互（选择器会静默取默认项），plan 档自动按 default 执行。
+    permissionMode = "default";
+    console.error(colors.warnLine("无头模式不支持 Plan 审批，权限档位已按 default 执行。"));
+  }
 
   const hookEngine = new HookEngine();
   const snapshotEngine = new SnapshotEngine(process.cwd());
@@ -353,8 +388,19 @@ async function main() {
 
   // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
   hookEngine.register("PreToolUse", async (ctx) => {
+    const mode = ctx.permissionMode as PermissionMode;
+    // 用户明确“永久允许”过的命令/工具优先于权限引擎直接放行（含 Auto 分类器拦截）。
+    // plan 模式是只读硬限制、bypass 本就全放行，这两种档位不查持久规则。
+    if (mode !== "plan" && mode !== "bypass-permissions") {
+      const persistentHit = isToolAllowedPersistently(
+        ctx.toolName || "",
+        ctx.args || {},
+        permissionRules,
+      );
+      if (persistentHit) return null;
+    }
     const checkResult = await permissionEngine.evaluate({
-      mode: ctx.permissionMode as PermissionMode,
+      mode,
       toolName: ctx.toolName!,
       args: ctx.args || {},
       userIntent: ctx.userIntent || "",
@@ -498,7 +544,7 @@ async function main() {
   const initialSkillScan = await skillRegistry.scan();
   markStartupStage("skill_scan");
   // 在进入全屏 TUI 前启动服务，避免后台日志破坏固定布局。
-  await startTraceServer(3000, false, false).catch((error) => {
+  await startTraceServer(3000, false, false, 10, progressLog).catch((error) => {
     const detail = error instanceof Error ? error.message : String(error);
     startupWarnings.push(`Trace 观测服务器启动失败：${detail}`);
   });
@@ -612,10 +658,12 @@ async function main() {
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: buildLogo().trim(),
-    compactHeader: colors.boldPurple("HAJI"),
+    // 无头模式下 compactHeader 会被 ui.start() 直写 stdout，置空以保持输出纯净。
+    compactHeader: headlessRequest ? "" : colors.boldPurple("HAJI"),
     inputPrompt: colors.boldAccent("› "),
     continuationPrompt: colors.muted("│ "),
     renderBorder: (width) => colors.gray("─".repeat(width)),
+    forceNonInteractive: Boolean(headlessRequest),
   });
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
@@ -629,7 +677,11 @@ async function main() {
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
   ui.start();
   markStartupStage("ui_started");
-  for (const warning of mcpStartupWarnings) ui.writeLine(colors.warnLine(warning));
+  for (const warning of mcpStartupWarnings) {
+    // 无头模式下提示走 stderr，避免污染脚本消费的 stdout。
+    if (headlessRequest) console.error(colors.warnLine(warning));
+    else ui.writeLine(colors.warnLine(warning));
+  }
   // 状态栏展示当前工作目录与 git 分支（模型名称右侧）。git HEAD 位置只查找一次，
   // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
   const gitHeadPath = findGitHeadPath(process.cwd());
@@ -1175,6 +1227,10 @@ async function main() {
     if (isToolGrantedForSession(toolName, args)) return null;
     const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "AI";
     if (!ui.isInteractive()) {
+      // 无头且 stdin 非 TTY（管道/CI）时没有交互确认的机会，自动拒绝并把原因反馈给模型。
+      if (headlessRequest && !process.stdin.isTTY) {
+        return USER_REJECTED_TOOL_OUTPUT;
+      }
       const answer = await ui.readInput({
         prompt: `${requester} 请求${permissionVerb(toolName)}：${summarizeToolCall(toolName, args)}，授权？(y/N) › `,
       });
@@ -1185,13 +1241,7 @@ async function main() {
       {
         title: `需要授权 · ${requester} 请求${permissionVerb(toolName)}`,
         preview: buildPermissionPreview(toolName, args, process.cwd()),
-        items: [
-          { value: "once", label: "允许本次", hotkey: "y" },
-          ...(grant
-            ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }]
-            : []),
-          { value: "deny", label: "拒绝", hotkey: "n" },
-        ],
+        items: buildPermissionCardItems(grant),
         selectedValue: "once",
         hint: "↑↓ 选择 · Enter 确认 · Esc 中止本轮",
         confirmDelayMs: 300,
@@ -1202,6 +1252,25 @@ async function main() {
     if (selection.value === "session" && grant) {
       grantToolForSession(grant.key);
       ui.writeLine(colors.gray(`  本会话内 ${grant.scope} 将不再询问。`));
+    }
+    if ((selection.value === "always-project" || selection.value === "always-user") && grant) {
+      const ruleScope: PermissionRuleScope =
+        selection.value === "always-project" ? "project" : "user";
+      grantToolForSession(grant.key);
+      const saved = savePermissionRule(
+        { key: grant.key, scope: grant.scope, createdAt: new Date().toISOString() },
+        ruleScope,
+      );
+      if (saved) {
+        permissionRules = loadAllPermissionRules();
+        ui.writeLine(
+          colors.gray(
+            `  已永久允许 ${grant.scope}（${ruleScope === "project" ? "本项目 .haji/permissions.json" : "全局 ~/.haji/permissions.json"}），跨会话生效，/permissions 可管理。`,
+          ),
+        );
+      } else {
+        ui.writeLine(`  ${colors.warnLine(`规则写入失败，${grant.scope} 仅本会话内放行。`)}`);
+      }
     }
     return null;
   };
@@ -1262,6 +1331,8 @@ async function main() {
   };
 
   const startBackgroundInput = (initialValue?: string) => {
+    // 无头模式没有“边跑边输入下一句”的场景，避免 readline 挂在 stdin 上。
+    if (headlessRequest) return;
     if (ui.isInputActive()) return;
     ui.readInput({ slashCommands, initialValue })
       .then((input) => {
@@ -1408,6 +1479,16 @@ async function main() {
   try {
     markStartupStage("ready");
     while (true) {
+      // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
+      if (headlessRequest) {
+        await runAgentTurn(turnDeps, {
+          forwardedPrompt: headlessRequest.prompt,
+          commandInput: headlessRequest.prompt,
+          manualSkillExchange: undefined,
+          promptDisplayStartOffset: ui.getChatLength(),
+        });
+        break;
+      }
       injectAgentNotifications();
       // /skills reload 等操作会改变可调用的 Skill，每轮刷新补全目录。
       slashCommands = buildSlashCommandCatalog(skillRegistry.list());
@@ -1859,6 +1940,52 @@ async function main() {
           }
           continue;
         }
+        if (command === "permissions") {
+          // 永久放行规则管理：列出项目级与全局规则，选中即删除（同步撤销本会话授权）。
+          const rules = loadAllPermissionRules();
+          const entries: Array<{ scopeLevel: PermissionRuleScope; entry: PermissionRuleEntry }> = [
+            ...rules.project.map((entry) => ({ scopeLevel: "project" as const, entry })),
+            ...rules.user.map((entry) => ({ scopeLevel: "user" as const, entry })),
+          ];
+          if (entries.length === 0) {
+            ui.writeLine(colors.gray("暂无永久放行规则。授权卡片中选择「永久允许」即可添加。"));
+            continue;
+          }
+          try {
+            const selection = await readSelectionSafely({
+              title: "永久放行规则（选中即删除，Esc 退出）",
+              items: [
+                ...entries.map(({ scopeLevel, entry }) => ({
+                  value: `${scopeLevel}::${entry.key}`,
+                  label: entry.key,
+                  description: `${scopeLevel === "project" ? "本项目" : "全局"} · ${entry.scope}`,
+                })),
+                { value: "__done__", label: "完成（不删除）", hotkey: "q" },
+              ],
+              selectedValue: "__done__",
+            });
+            if (selection.value === "__done__") continue;
+            const separatorIndex = selection.value.indexOf("::");
+            const scopeLevel = selection.value.slice(0, separatorIndex) as PermissionRuleScope;
+            const ruleKey = selection.value.slice(separatorIndex + 2);
+            const removed = removePermissionRule(ruleKey, scopeLevel);
+            if (removed) {
+              permissionRules = loadAllPermissionRules();
+              sessionToolGrants.keys.delete(ruleKey);
+              ui.writeLine(
+                colors.okLine(
+                  `已删除永久放行规则：${ruleKey}（${scopeLevel === "project" ? "本项目" : "全局"}）。`,
+                ),
+              );
+            } else {
+              ui.writeLine(colors.warnLine(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
+            }
+          } catch (error) {
+            if (error instanceof TerminalInputCancelledError) continue;
+            throw error;
+          }
+          continue;
+        }
         if (command === "perf") {
           const reset = parts[1]?.toLowerCase() === "reset";
           const snapshot = performanceMonitor.snapshot(reset);
@@ -1960,7 +2087,7 @@ async function main() {
         store: experienceStore,
         provider: () => provider,
         model: () => selectedModel,
-        logger: (msg) => console.log(colors.gray(`  ${msg}`)),
+        logger: (msg) => progressLog(colors.gray(`  ${msg}`)),
       });
       const distillSummary = await distillEngine.runDistill(sessionObs, {
         messages,
@@ -1979,18 +2106,18 @@ async function main() {
         ];
         if (distillSummary.memoryCandidates > 0)
           parts.push(`记忆候选 ${distillSummary.memoryCandidates}`);
-        console.log(
+        progressLog(
           colors.gray(
             `经验提炼：${parts.join(" / ")}${distillSummary.llmTriggered ? "" : "（LLM 未触发）"}`,
           ),
         );
         if (distillSummary.memoryCandidates > 0) {
-          console.log(colors.gray(`   使用 /memory confirm <id> 确认候选记忆`));
+          progressLog(colors.gray(`   使用 /memory confirm <id> 确认候选记忆`));
         }
       }
       await sessionManager.flush();
       const tracePath = await tracker.save();
-      console.log(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
+      progressLog(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
     } catch (e) {
       console.error("无法保存 Trace 轨迹数据:", e);
     } finally {

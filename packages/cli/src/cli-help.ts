@@ -123,6 +123,10 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         subcommands: EFFORT_SUBCOMMANDS,
         menu: false,
       },
+      {
+        command: "/permissions",
+        description: "查看 / 删除永久放行的授权规则（跨会话生效）",
+      },
     ],
   },
   {
@@ -643,6 +647,8 @@ ${colors.bold("用法:")}
 ${colors.bold("选项:")}
   -v, --version       显示版本号
   -h, --help          显示帮助手册
+  -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文）
+  --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
 
 ${colors.bold("快捷命令 (对话内，枢纽进入后选择细分项):")}
 ${renderCommandSurfaceLines().join("\n")}

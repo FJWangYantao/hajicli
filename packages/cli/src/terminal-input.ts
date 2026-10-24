@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { stdin, stdout } from "node:process";
+import { stderr, stdin, stdout } from "node:process";
 import readline from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { PassThrough } from "node:stream";
@@ -97,6 +97,8 @@ export interface TerminalUIOptions {
   inputPrompt: string;
   renderBorder: (width: number) => string;
   continuationPrompt?: string;
+  /** 强制非交互（无头单次模式 haji -p）：即使身处 TTY 也走 stdout 直写与 readline 降级。 */
+  forceNonInteractive?: boolean;
 }
 
 export interface ReadInputOptions {
@@ -260,9 +262,7 @@ export class TerminalUI {
   private readonly textSelection = new TextSelectionModel();
   private readonly inputHistory = new InputHistoryBuffer();
   private readonly clipboardWriter = new ClipboardWriter();
-  private readonly interactive = Boolean(
-    stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === "function",
-  );
+  private readonly interactive: boolean;
   private started = false;
   private chatContent = "";
   private chatScrollOffset = 0;
@@ -326,6 +326,10 @@ export class TerminalUI {
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
+    // 在构造函数体内计算：无头模式需结合 options.forceNonInteractive 强制降级。
+    this.interactive =
+      Boolean(stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === "function") &&
+      !options.forceNonInteractive;
   }
 
   setPermissionMode(mode: string): void {
@@ -710,6 +714,11 @@ export class TerminalUI {
   }
 
   writeLine(value: string = ""): void {
+    // 非交互（无头/管道）下提示性整行走 stderr，stdout 只保留流式正文与工具块。
+    if (!this.interactive) {
+      stderr.write(`${value}\n`);
+      return;
+    }
     this.writeChat(`${value}\n`);
   }
   /**
