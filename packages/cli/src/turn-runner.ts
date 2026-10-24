@@ -302,9 +302,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   while (keepCalling) {
     const repairedMessages = repairToolCallPairs(messages);
     if (repairedMessages !== messages) {
+      // 静默修复：历史配对不完整通常来自被中止的回合，属于内部卫生问题，
+      // 不打断对话区的观感；修好的结果直接落盘，可在会话文件里查到差异。
       setMessages(repairedMessages);
       sessionManager.saveCurrentSession(messages);
-      ui.writeLine(colors.warnLine("已自动修复不完整的历史工具调用配对。"));
     }
     if (deps.refreshAgentVerificationContext(messages)) sessionManager.saveCurrentSession(messages);
     deps.startBackgroundInput();
