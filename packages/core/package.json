@@ -1,6 +1,6 @@
 {
   "name": "@hajicli/core",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "license": "MIT",
   "description": "Core library for hajicli providing interfaces and models config",
   "repository": {
