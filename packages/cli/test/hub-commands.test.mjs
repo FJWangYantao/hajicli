@@ -22,14 +22,15 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/help",
     "/model",
     "/config",
-    "/agent",
-    "/skill",
+    "/agents",
+    "/skills",
     "/memory",
     "/diag",
     "/compact",
     "/image",
     "/clear",
     "/resume",
+    "/undo",
     "/rewind",
     "/exit",
   ]);
@@ -38,13 +39,14 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/effort",
     "/permission",
     "/provider",
-    "/permissions",
-    "/subagent",
-    "/preset",
-    "/agents",
-    "/skills",
-    "/instinct",
+    "/theme",
+    "/agents new",
+    "/agents presets",
+    "/memory rules",
     "/perf",
+    "/cost",
+    "/diff",
+    "/doctor",
     "/viewer",
     "/mcp",
   ];
@@ -55,21 +57,24 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
 
 test("each hub maps its members to menu items without re-entering itself", () => {
   const menus = buildHubMenus();
-  assert.deepEqual(Object.keys(menus).sort(), ["agent", "config", "diag", "memory", "skill"]);
+  assert.deepEqual(Object.keys(menus).sort(), ["agents", "config", "diag", "memory"]);
   // /model 已提升到顶层；/effort 与 /model 的强度轴重复，只保留直连与补全，不进菜单。
   assert.deepEqual(
     menus.config.items.map((item) => item.value),
-    ["/permission", "/provider", "/permissions", "/theme"],
+    ["/permission", "/provider", "/theme"],
   );
   assert.deepEqual(
-    menus.agent.items.map((item) => item.value),
-    ["/subagent", "/preset", "/agents"],
+    menus.agents.items.map((item) => item.value),
+    ["/agents new", "/agents presets"],
   );
   assert.deepEqual(
     menus.diag.items.map((item) => item.value),
-    ["/perf", "/cost", "/viewer", "/mcp"],
+    ["/perf", "/cost", "/diff", "/doctor", "/viewer", "/mcp"],
   );
-  assert.ok(menus.memory.items.some((item) => item.value === "/memory list"));
+  assert.deepEqual(
+    menus.memory.items.map((item) => item.value),
+    ["/memory list", "/memory rules"],
+  );
   for (const [name, menu] of Object.entries(menus)) {
     assert.ok(menu.title.length > 0, `${name} menu should have a title`);
     assert.ok(menu.items.length > 0, `${name} menu should not be empty`);
@@ -82,24 +87,25 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   }
 });
 
-test("skill hub injects loadable skills and filters model-only entries", () => {
-  const menus = buildHubMenus([
+test("skill hub 已取消：Skill 经补全目录直连，管理入口是 /skills", () => {
+  const skills = [
     { name: "review", description: "代码审查", userInvocable: true },
     { name: "internal", description: "模型内部使用", userInvocable: false },
-  ]);
-  const values = menus.skill.items.map((item) => item.value);
-  assert.ok(values.includes("/skill review"));
-  assert.ok(!values.includes("/skill internal"));
-  assert.ok(values.includes("/skills"));
-  assert.ok(values.includes("/skills reload"));
-  assert.ok(values.includes("/skills validate"));
-  // 动态技能项排在管理子命令之前，便于直接选择。
-  assert.equal(values[0], "/skill review");
+  ];
+  const menus = buildHubMenus(skills);
+  assert.equal(menus.skill, undefined);
+  const catalog = buildSlashCommandCatalog(skills);
+  const commands = catalog.map((entry) => entry.command);
+  assert.ok(commands.includes("/skill review"));
+  assert.ok(!commands.includes("/skill internal"));
+  assert.ok(commands.includes("/skills"));
+  assert.ok(commands.includes("/skills reload"));
+  assert.ok(commands.includes("/skills validate"));
 });
 
 test("command surface keeps hubs and nested members in one source", () => {
   const hubs = COMMAND_SURFACE.filter((entry) => entry.members);
-  assert.equal(hubs.length, 5);
+  assert.equal(hubs.length, 4);
   for (const hub of hubs) {
     for (const member of hub.members ?? []) {
       assert.ok(member.command.startsWith("/"));
@@ -173,6 +179,7 @@ test("unknown commands suggest the closest known command", () => {
   assert.equal(suggestSimilarCommand("mdoel", catalog), "/model");
   assert.equal(suggestSimilarCommand("comapct", catalog), "/compact");
   assert.equal(suggestSimilarCommand("provder", catalog), "/provider");
-  assert.equal(suggestSimilarCommand("instin", catalog), "/instinct");
+  // /instinct 已收敛为 /memory rules 的别名，不再作为纠错建议出现。
+  assert.equal(suggestSimilarCommand("instin", catalog), undefined);
   assert.equal(suggestSimilarCommand("zzzzzz", catalog), undefined);
 });

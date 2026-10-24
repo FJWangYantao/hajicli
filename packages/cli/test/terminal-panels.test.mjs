@@ -4,6 +4,7 @@ import {
   buildActivityRow,
   buildStatusBarRow,
   buildTaskPanelRows,
+  buildTurnSummary,
 } from "../dist/terminal-panels.js";
 import { terminalWidth } from "../dist/terminal-text.js";
 
@@ -107,4 +108,71 @@ test("task panel rows render status glyphs, agent sub-rows and collapse footer",
   // 展开后脚注切换为收起提示
   const expandedRows = buildTaskPanelRows({ ...many, expanded: true }, 80).join("\n");
   assert.match(expandedRows, /Ctrl\+T 收起/);
+});
+
+test("task panel shows overall progress, elapsed time and agent tokens", () => {
+  const now = Date.now();
+  const rows = buildTaskPanelRows(
+    {
+      title: "重构 provider 层",
+      expanded: false,
+      items: [
+        { id: "1", content: "调研现状", status: "completed" },
+        {
+          id: "2",
+          content: "抽取配置模块",
+          status: "in_progress",
+          startedAt: now - 74_000,
+          agent: { id: "a1", role: "explorer", status: "running", tokens: 12_400 },
+        },
+      ],
+    },
+    80,
+    8,
+    now,
+  ).map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+  assert.match(rows[0], /任务 · 重构 provider 层 {2}1\/2/);
+  assert.match(rows[2], /● 抽取配置模块 {2}1m14s/);
+  assert.match(rows[3], /↳ explorer · 运行中 · 12k/);
+});
+
+test("buildTurnSummary assembles one line and drops segments by width", () => {
+  const full = {
+    durationMs: 12_300,
+    outputTokens: 1_234,
+    toolCalls: 5,
+    changedFiles: { files: 3, added: 42, removed: 7 },
+    typeCheck: { ok: true },
+    costDeltaCny: 0.012,
+  };
+  const wide = buildTurnSummary(full, 120);
+  assert.match(wide, /^完成 · 12\.3s/);
+  assert.match(wide, /改动 3 个文件 \+42 −7/);
+  assert.match(wide, /类型检查 ✓/);
+  assert.match(wide, /¥0\.012/);
+  assert.match(wide, /输出 1\.2k tokens/);
+  assert.match(wide, /5 次工具调用（Ctrl\+O）/);
+
+  // 窄屏按「工具次数 → 费用 → 类型检查」依次舍弃，始终保持单行。
+  const medium = buildTurnSummary(full, 64);
+  assert.doesNotMatch(medium, /Ctrl\+O/);
+  assert.match(medium, /完成 · 12\.3s/);
+  const narrow = buildTurnSummary(full, 40);
+  assert.match(narrow, /^完成 · 12\.3s/);
+  assert.ok(!narrow.includes("\n"));
+});
+
+test("buildTurnSummary omits absent stats", () => {
+  const minimal = buildTurnSummary({ durationMs: 800, toolCalls: 0 }, 80);
+  assert.equal(minimal, "完成 · 800ms");
+  const noCost = buildTurnSummary(
+    { durationMs: 1000, toolCalls: 1, outputTokens: 10, costDeltaCny: 0 },
+    80,
+  );
+  assert.doesNotMatch(noCost, /¥/);
+  const failedCheck = buildTurnSummary(
+    { durationMs: 1000, toolCalls: 0, typeCheck: { ok: false } },
+    80,
+  );
+  assert.match(failedCheck, /类型检查 ✕/);
 });

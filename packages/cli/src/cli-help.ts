@@ -45,7 +45,7 @@ export interface CommandSurfaceEntry {
   /**
    * 同义入口（不含斜杠，如 "new"）。只参与解析：输入 /new 等同于规范指令 /clear。
    * 别名不进补全、不进 /help、不参与未知指令纠错，保证一个动作只展示一个名字。
-   * 仅一级单词指令可挂别名；挂到多词指令上会在建表时报错。
+   * 别名本身必须是单个单词；目标可以是多词指令（如 "permissions" → /permission rules）。
    */
   aliases?: readonly string[];
 }
@@ -83,15 +83,22 @@ const PERMISSION_SUBCOMMANDS: readonly CommandSurfaceEntry[] = [
   { command: "/permission accept-edit", description: "自动编辑：文件编辑自动通过，命令需审批" },
   { command: "/permission auto", description: "自动：分类器判定风险，不安全的拒绝" },
   { command: "/permission bypass-permissions", description: "全放行：不做任何审批（谨慎）" },
+  {
+    command: "/permission rules",
+    description: "查看 / 删除永久放行的授权规则（跨会话生效）",
+    aliases: ["permissions"],
+  },
 ];
 
 /**
- * 顶层指令面：5 个枢纽收纳低频配置/管理类指令，高频动作保留在顶层。
+ * 顶层指令面：枢纽收纳低频配置/管理类指令，高频动作保留在顶层。
  * 只输入 `/` 时补全只展示这里的一层条目；继续输入字母后会模糊搜索全部指令、子命令与 Skill。
+ * 同义旧指令（/permissions、/subagent、/preset、/instinct 等）经 aliases 平滑迁移：
+ * 解析时重写为规范指令（支持多词），不进补全与帮助。
  */
 export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
   { command: "/help", description: "显示帮助手册" },
-  { command: "/model", description: "选择模型与思考强度" },
+  { command: "/model", description: "选择模型与思考强度（含价格与窗口）" },
   {
     command: "/config",
     description: "模型与配置",
@@ -99,7 +106,7 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
       {
         command: "/permission",
         description: "切换权限档次与危险阈值",
-        argHint: "[模式]",
+        argHint: "[模式|rules]",
         subcommands: PERMISSION_SUBCOMMANDS,
         aliases: ["perm"],
       },
@@ -132,10 +139,6 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         menu: false,
       },
       {
-        command: "/permissions",
-        description: "查看 / 删除永久放行的授权规则（跨会话生效）",
-      },
-      {
         command: "/theme",
         description: "切换配色主题（无参列出，/theme kero 应用并记住）",
         argHint: "[preset]",
@@ -143,68 +146,64 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     ],
   },
   {
-    command: "/agent",
+    command: "/agents",
     description: "子代理管理",
+    aliases: ["agent"],
     members: [
       {
-        command: "/subagent",
+        command: "/agents new",
         description: "启动子代理（无参数进入交互向导）",
         argHint: "[选项] [任务描述]",
+        aliases: ["subagent"],
       },
       {
-        command: "/preset",
+        command: "/agents presets",
         description: "查看 / 管理 subagent 预设",
         argHint: "[list|show|add|edit|remove]",
-        aliases: ["presets"],
+        aliases: ["preset", "presets"],
         subcommands: [
-          { command: "/preset list", description: "列出全部预设" },
+          { command: "/agents presets list", description: "列出全部预设" },
           {
-            command: "/preset show",
+            command: "/agents presets show",
             description: "查看预设详情",
             argHint: "<名称>",
             argRequired: true,
           },
           {
-            command: "/preset add",
+            command: "/agents presets add",
             description: "添加预设",
             argHint: "<名称> [选项]",
             argRequired: true,
           },
           {
-            command: "/preset edit",
+            command: "/agents presets edit",
             description: "修改预设",
             argHint: "<名称> [选项]",
             argRequired: true,
           },
           {
-            command: "/preset remove",
+            command: "/agents presets remove",
             description: "删除预设",
             argHint: "<名称>",
             argRequired: true,
           },
         ],
       },
+    ],
+    subcommands: [
       {
-        command: "/agents",
-        description: "查看、管理与中止 Agent",
-        argHint: "[stop|clear]",
-        subcommands: [
-          {
-            command: "/agents stop",
-            description: "中止 Agent",
-            argHint: "<agentId|all>",
-            argRequired: true,
-          },
-          { command: "/agents clear", description: "清理已结束的 Agent 记录" },
-        ],
+        command: "/agents stop",
+        description: "中止 Agent",
+        argHint: "<agentId|all>",
+        argRequired: true,
       },
+      { command: "/agents clear", description: "清理已结束的 Agent 记录" },
     ],
   },
   {
-    command: "/skill",
+    command: "/skills",
     description: "Skill 管理",
-    members: [
-      { command: "/skills", description: "查看全部 Skill" },
+    subcommands: [
       { command: "/skills reload", description: "重新扫描两个 Skill 目录" },
       { command: "/skills validate", description: "校验 Skill 清单与附属资源" },
     ],
@@ -214,9 +213,32 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     description: "经验系统",
     members: [
       { command: "/memory list", description: "列出 active 与 staging 记忆" },
-      { command: "/instinct", description: "列出行为规则（按 confidence 排序）" },
-      { command: "/instinct distill", description: "用本会话观测手动触发提炼" },
-      { command: "/instinct stats", description: "规则/记忆数量与观测健康" },
+      {
+        command: "/memory rules",
+        description: "列出行为规则（按 confidence 排序）",
+        aliases: ["instinct"],
+        subcommands: [
+          { command: "/memory rules distill", description: "用本会话观测手动触发提炼" },
+          { command: "/memory rules stats", description: "规则/记忆数量与观测健康" },
+          {
+            command: "/memory rules forget",
+            description: "删除规则",
+            argHint: "<id>",
+            argRequired: true,
+          },
+          {
+            command: "/memory rules promote",
+            description: "把项目级规则提升到用户级",
+            argHint: "<id>",
+            argRequired: true,
+          },
+          {
+            command: "/memory rules skill",
+            description: "查看可蒸馏规则 / 生成 Skill 草稿",
+            argHint: "[id]",
+          },
+        ],
+      },
     ],
     subcommands: [
       {
@@ -238,18 +260,6 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         argHint: "<id>",
         argRequired: true,
       },
-      { command: "/instinct forget", description: "删除规则", argHint: "<id>", argRequired: true },
-      {
-        command: "/instinct promote",
-        description: "把项目级规则提升到用户级",
-        argHint: "<id>",
-        argRequired: true,
-      },
-      {
-        command: "/instinct skill",
-        description: "查看可蒸馏规则 / 生成 Skill 草稿",
-        argHint: "[id]",
-      },
     ],
   },
   {
@@ -262,6 +272,8 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         subcommands: [{ command: "/perf reset", description: "读取后清空性能采样" }],
       },
       { command: "/cost", description: "本会话费用估算（按模型单价与 token 用量）" },
+      { command: "/diff", description: "查看本会话累计改动（文件与 diff）" },
+      { command: "/doctor", description: "一次性自检：Key 连通、引擎、ripgrep、MCP 等" },
       { command: "/viewer", description: "打开 Trace 观测中心" },
       { command: "/mcp", description: "查看 MCP server 与外部工具状态" },
     ],
@@ -280,6 +292,7 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     argHint: "[标题关键词]",
     aliases: ["history", "sessions"],
   },
+  { command: "/undo", description: "撤销上一轮的代码与消息（/rewind 的一键版）" },
   { command: "/rewind", description: "历史节点撤销与代码回退" },
   { command: "/exit", description: "退出 haji", aliases: ["quit", "q"] },
 ];
@@ -292,20 +305,20 @@ function normalizeCommandName(name: string): string {
 let aliasIndexCache: ReadonlyMap<string, string> | undefined;
 
 /**
- * 构建“别名 → 规范指令”索引（键与值均不含斜杠且小写）。
- * 别名只参与解析，不进补全、不进 /help、不参与未知指令纠错，
- * 因此同一个动作在界面上始终只展示规范名。
- * 建表即做冲突检测：别名不得与任何现有指令同名、不得重复登记、不得挂在多词指令上。
+ * 构建“别名 → 规范指令”索引（键与值均不含斜杠且小写；值可为多词，如
+ * "permissions" → "permission rules"）。别名只参与解析，不进补全、不进 /help、
+ * 不参与未知指令纠错，因此同一个动作在界面上始终只展示规范名。
+ * 建表即做冲突检测：别名不得与任何现有指令的头词同名、不得重复登记。
  * 导出以便测试注入自定义指令面验证冲突检测。
  */
 export function buildCommandAliasIndex(
   surface: readonly CommandSurfaceEntry[] = COMMAND_SURFACE,
 ): ReadonlyMap<string, string> {
-  const canonicals = new Set<string>();
+  const canonicalHeads = new Set<string>();
   const entries: CommandSurfaceEntry[] = [];
   const collect = (entry: CommandSurfaceEntry): void => {
     entries.push(entry);
-    canonicals.add(normalizeCommandName(entry.command));
+    canonicalHeads.add(normalizeCommandName(entry.command).split(" ")[0]);
     for (const member of entry.members ?? []) collect(member);
     for (const sub of entry.subcommands ?? []) collect(sub);
   };
@@ -315,17 +328,12 @@ export function buildCommandAliasIndex(
   for (const entry of entries) {
     if (!entry.aliases || entry.aliases.length === 0) continue;
     const canonical = normalizeCommandName(entry.command);
-    if (canonical.includes(" ")) {
-      throw new Error(
-        `指令 ${entry.command} 是多词指令，暂不支持挂别名：${entry.aliases.join(", ")}`,
-      );
-    }
     for (const raw of entry.aliases) {
       const alias = normalizeCommandName(raw);
       if (!alias || /\s/.test(alias)) {
         throw new Error(`别名 "${raw}"（${entry.command}）必须是不含空白的单个单词`);
       }
-      if (canonicals.has(alias)) {
+      if (canonicalHeads.has(alias)) {
         throw new Error(`别名 "${alias}"（${entry.command}）与现有指令 /${alias} 冲突`);
       }
       const registered = index.get(alias);
@@ -345,13 +353,28 @@ export function getCommandAliases(): ReadonlyMap<string, string> {
 }
 
 /**
- * 把输入的头词解析为规范指令名（不含斜杠、小写）。
+ * 把输入的头词解析为规范指令名（不含斜杠、小写，可能是多词如 "permission rules"）。
  * 未登记为别名时原样返回，调用方继续走原有未知指令分支。
  */
 export function resolveCanonicalCommand(name: string): string {
   const key = normalizeCommandName(name);
   if (!key) return name;
   return getCommandAliases().get(key) ?? name;
+}
+
+/**
+ * 别名重写整条指令输入：头词命中别名时替换为（可能多词的）规范指令并保留剩余参数，
+ * 例如 `/instinct distill` → `/memory rules distill`、`/subagent --x` → `/agents new --x`。
+ * 未命中别名或输入不是指令时原样返回（已 trim）。
+ */
+export function expandCommandInput(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return trimmed;
+  const parts = trimmed.slice(1).split(/\s+/);
+  const head = parts[0].toLowerCase();
+  const canonical = resolveCanonicalCommand(head);
+  if (canonical === head) return trimmed;
+  return `/${[...canonical.split(/\s+/).filter(Boolean), ...parts.slice(1)].join(" ")}`;
 }
 
 /**
@@ -600,8 +623,11 @@ export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: strin
   { keys: "PgUp / PgDn", description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 回到底部" },
   { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
   { keys: "Ctrl+O", description: "展开最后一批工具调用的完整输出" },
-  { keys: "Tab", description: "补全斜杠指令（不执行）" },
-  { keys: "鼠标拖选 + Ctrl+C", description: "复制选中文本；无选中时 Ctrl+C 退出" },
+  { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行）" },
+  {
+    keys: "鼠标拖选 + Ctrl+C",
+    description: "复制选中文本；无选中时 Ctrl+C 中止/清草稿，2 秒内两次退出",
+  },
 ];
 
 /** 按显示宽度折行：英文尽量在空格处断开，中文逐字断开。 */
@@ -762,6 +788,8 @@ ${colors.bold("用法:")}
 ${colors.bold("选项:")}
   -v, --version       显示版本号
   -h, --help          显示帮助手册
+  -c, --continue      继续最近一次会话（交互模式）
+  -r, --resume [关键词]  恢复历史会话：唯一命中直接载入，多命中进入选择器（交互模式）
   -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文；prompt 传 "-" 从 stdin 管道读取）
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
   --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）

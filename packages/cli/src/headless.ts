@@ -58,3 +58,32 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
   if (prompt === undefined) return {};
   return { request: { prompt, permissionMode, outputFormat } };
 }
+
+/** 会话恢复启动参数：`haji -c` 继续上次会话；`haji -r [关键词]` 搜索恢复。 */
+export interface SessionResumeRequest {
+  mode: "latest" | "search";
+  keyword?: string;
+}
+
+/**
+ * 解析会话恢复参数（-c/--continue 与 -r/--resume）。
+ * 与无头 -p 互斥：调用方在进入无头模式时忽略返回值。
+ */
+export function parseSessionResumeArgs(args: readonly string[]): SessionResumeRequest | undefined {
+  let resume: SessionResumeRequest | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "-c" || arg === "--continue") {
+      resume = { mode: "latest" };
+    } else if (arg === "-r" || arg === "--resume") {
+      const value = args[index + 1];
+      if (value !== undefined && !value.startsWith("-")) {
+        resume = { mode: "search", keyword: value };
+        index += 1;
+      } else {
+        resume = { mode: "search" };
+      }
+    }
+  }
+  return resume;
+}

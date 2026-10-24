@@ -356,6 +356,7 @@ test("an animation tick repaints only the fixed activity row", () => {
         icon: "✦",
         label: "思考中",
         elapsed: "1s",
+        startedAt: Date.now() - 1000,
       };
       ui.renderFrame();
       writes.length = 0;
@@ -374,7 +375,8 @@ test("an animation tick repaints only the fixed activity row", () => {
         1,
         `unexpected repaint rows: ${paintedRows.join(", ")}`,
       );
-      assert.doesNotMatch(update, /history|INPUT|ctx/);
+      // 右侧徽标（[默认] ctx N%）属于活动行本身；history 与 INPUT 行不得重绘。
+      assert.doesNotMatch(update, /history|INPUT/);
     } finally {
       cleanupTerminalUI(ui);
     }
@@ -478,20 +480,29 @@ test("the live tool tail renders below committed chat without entering the trans
   });
 });
 
-test("activity row drops the pulse meter and shows the interrupt hint on wide terminals", () => {
-  const activity = (ui) => {
+test("activity row drops the pulse meter; Esc hint yields to the mode badge", () => {
+  const activity = (ui, startedAt = Date.now()) => {
     ui.activityFrame = {
       phase: "tool",
       tone: "active",
       icon: "⠋",
       label: "运行 bash",
       elapsed: "3s",
+      startedAt,
     };
   };
-  const wide = renderFrame(120, 30, activity).plainRows.join("\n");
-  const narrow = renderFrame(80, 24, activity).plainRows.join("\n");
+  // 阶段开始后的前 3 秒：宽屏右侧显示“Esc 中止”。
+  const wide = renderFrame(120, 30, (ui) => activity(ui, Date.now() - 1000)).plainRows.join("\n");
   assert.match(wide, /⠋ 运行 bash {2}3s +Esc 中止/);
   assert.doesNotMatch(wide, /[▰▱]/);
+  // 3 秒后：Esc 提示让位给 [权限] ctx 徽标（长任务期间保持可见）。
+  const settled = renderFrame(120, 30, (ui) => activity(ui, Date.now() - 5000)).plainRows.join(
+    "\n",
+  );
+  assert.match(settled, /⠋ 运行 bash {2}3s +\[\S+\] ctx \d+%/);
+  assert.doesNotMatch(settled, /Esc 中止/);
+  // 窄屏不显示 Esc 提示，任务信息本身保留。
+  const narrow = renderFrame(80, 24, (ui) => activity(ui, Date.now() - 1000)).plainRows.join("\n");
   assert.match(narrow, /⠋ 运行 bash {2}3s/);
   assert.doesNotMatch(narrow, /Esc 中止/);
 });

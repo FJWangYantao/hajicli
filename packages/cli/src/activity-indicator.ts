@@ -33,6 +33,8 @@ export interface ActivityFrame {
   elapsed: string;
   detail?: string;
   idleText?: string;
+  /** 当前阶段开始时间戳（ms）：活动行据此决定“Esc 中止”提示的显示窗口。 */
+  startedAt?: number;
 }
 
 interface ActivityIndicatorOptions {
@@ -103,6 +105,7 @@ export function buildActivityFrame(
     label: state.label,
     elapsed: formatActivityDuration(elapsedMs),
     detail: state.detail,
+    startedAt: state.startedAt,
     // 本阶段从未有过进展时，空闲时长与已用时长相同，不再重复显示。
     idleText:
       !isPermission && tone !== "active" && state.lastProgressAt > state.startedAt

@@ -399,7 +399,9 @@ test("CLI exposes deterministic Skill commands and preserves tool-call pairing",
   const turnSource = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");
   assert.match(surface, /command: "\/skills"/);
-  assert.match(surface, /command: "\/skill"/);
+  // /skill 枢纽已取消：/skills 是管理入口，/skill <名称> 仍保留为直连调用。
+  assert.doesNotMatch(surface, /command: "\/skill",$/);
+  assert.match(source, /if \(command === "skill"\)/);
   assert.match(source, /parts\[1\]\?\.toLowerCase\(\) === "validate"/);
   assert.match(source, /new ListSkillResourcesTool\(skillRegistry\)/);
   assert.match(source, /new ReadSkillResourceTool\(skillRegistry\)/);

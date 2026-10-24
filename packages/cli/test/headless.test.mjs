@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { parseHeadlessArgs } from "../dist/headless.js";
+import { parseHeadlessArgs, parseSessionResumeArgs } from "../dist/headless.js";
 
 /** dist 入口按测试文件位置解析，兼容从仓库根或包目录发起的 node --test。 */
 const cliEntry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -119,4 +119,18 @@ test("smoke: -p without a prompt argument exits 1 with usage hint", () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /需要一个 prompt 参数/);
+});
+
+test("parseSessionResumeArgs supports -c/--continue and -r/--resume", () => {
+  assert.deepEqual(parseSessionResumeArgs([]), undefined);
+  assert.deepEqual(parseSessionResumeArgs(["-c"]), { mode: "latest" });
+  assert.deepEqual(parseSessionResumeArgs(["--continue"]), { mode: "latest" });
+  assert.deepEqual(parseSessionResumeArgs(["-r", "重构"]), {
+    mode: "search",
+    keyword: "重构",
+  });
+  // 旗标后没有参数：进入搜索选择器（不带关键词）。
+  assert.deepEqual(parseSessionResumeArgs(["--resume"]), { mode: "search" });
+  // 其他旗标不会被误认为关键词。
+  assert.deepEqual(parseSessionResumeArgs(["-r", "--help"]), { mode: "search" });
 });

@@ -97,3 +97,47 @@ export function expandFileMentions(input: string, cwd: string): FileMentionExpan
   }
   return { prompt, attached, skipped };
 }
+
+function isSubsequenceIn(needle: string, haystack: string): boolean {
+  if (!needle) return true;
+  let index = 0;
+  for (const char of haystack) {
+    if (char === needle[index]) index += 1;
+    if (index === needle.length) return true;
+  }
+  return false;
+}
+
+/**
+ * @ 文件补全的候选匹配：文件名前缀命中优先，其次路径前缀、文件名包含、
+ * 路径子序列；同分时短路径优先。供输入框的 @ 弹出列表使用。
+ */
+export function matchFileMentionCandidates(
+  files: readonly string[],
+  query: string,
+  limit = 8,
+): string[] {
+  const needle = query
+    .trim()
+    .toLowerCase()
+    .replace(/^[\\/]+/, "");
+  if (!needle) {
+    return files.filter((file) => !file.includes("node_modules")).slice(0, limit);
+  }
+  const scored: Array<{ file: string; score: number }> = [];
+  for (const file of files) {
+    const lower = file.toLowerCase();
+    const separator = Math.max(lower.lastIndexOf("/"), lower.lastIndexOf("\\"));
+    const base = lower.slice(separator + 1);
+    let score: number | undefined;
+    if (base.startsWith(needle)) score = 0;
+    else if (lower.startsWith(needle)) score = 1;
+    else if (base.includes(needle)) score = 2;
+    else if (isSubsequenceIn(needle, lower)) score = 3;
+    if (score !== undefined) scored.push({ file, score });
+  }
+  return scored
+    .sort((left, right) => left.score - right.score || left.file.length - right.file.length)
+    .slice(0, limit)
+    .map((item) => item.file);
+}

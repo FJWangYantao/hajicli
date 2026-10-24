@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildEditDiff, buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { colors } from "./theme.js";
@@ -32,6 +33,12 @@ export interface Preferences {
   riskThreshold?: string;
   /** 杂活模型（压缩摘要/会话标题/经验提炼）；缺省按单价自动挑最便宜的。 */
   utilityModel?: string;
+  /** 完成 / 待授权提醒：off | bell | desktop，默认 bell。 */
+  notify?: "off" | "bell" | "desktop";
+  /** 输入框占位提示轮换；false 关闭。 */
+  inputHints?: boolean;
+  /** 会话预算（元）：累计费用超过后在回合小结给出提示。 */
+  budget?: number;
 }
 
 function readPreferences(filePath: string): Preferences | null {
@@ -254,19 +261,16 @@ export interface PermissionCardItem {
 
 /**
  * 构造授权卡片的选项列表：允许本次 / 本会话内总是允许（有明确授权范围时）/
- * 永久允许·本项目 / 永久允许·全局 / 拒绝。永久允许跨会话写入 permissions.json。
+ * 永久允许（本项目 ⇄ 全局，作用域经 secondary 轴切换）/ 拒绝 / 拒绝并说明。
+ * 永久允许跨会话写入 permissions.json；「拒绝并说明」把理由回传给模型。
  */
 export function buildPermissionCardItems(grant: PermissionGrant | undefined): PermissionCardItem[] {
   return [
     { value: "once", label: "允许本次", hotkey: "y" },
     ...(grant ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }] : []),
-    ...(grant
-      ? [
-          { value: "always-project", label: `永久允许 ${grant.scope}（本项目）`, hotkey: "p" },
-          { value: "always-user", label: `永久允许 ${grant.scope}（全局）`, hotkey: "g" },
-        ]
-      : []),
+    ...(grant ? [{ value: "always", label: `永久允许 ${grant.scope}`, hotkey: "p" }] : []),
     { value: "deny", label: "拒绝", hotkey: "n" },
+    { value: "deny-reason", label: "拒绝并说明…", hotkey: "e" },
   ];
 }
 
@@ -451,9 +455,12 @@ export function summarizeToolResult(
     if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
       return { status: "success", text: "已替换 1 处" };
     }
+    // 工具块完成后的预览与授权卡片共用同一 diff 渲染（此时文件已改，行号为块内相对行号）。
+    const diff = buildEditDiff("", args.oldText, args.newText, 240, TOOL_PREVIEW_LINES);
     return {
       status: "success",
-      text: `已替换 1 处 · +${countTextLines(args.newText)} −${countTextLines(args.oldText)} 行`,
+      text: `已替换 1 处 · +${diff.stats.added} −${diff.stats.removed} 行`,
+      ...(diff.lines.length > 0 ? { preview: diff.lines } : {}),
     };
   }
 
@@ -650,8 +657,8 @@ function previewTextLines(text: string, prefix: string, maxLines: number): strin
 }
 
 /**
- * 授权卡片的预览内容：bash 展示完整命令与工作目录，write/edit 展示将要写入
- * 或替换的文本，其余工具逐项列出参数。返回已着色的行，由界面按宽度裁剪。
+ * 授权卡片的预览内容：bash 展示完整命令与工作目录，write/edit 用带行号与
+ * 行内高亮的 diff 预览，其余工具逐项列出参数。返回已着色的行，由界面按宽度裁剪。
  */
 export function buildPermissionPreview(
   toolName: string,
@@ -667,33 +674,39 @@ export function buildPermissionPreview(
     ];
   }
   if (toolName === "write" && typeof args.path === "string") {
+    const targetPath = path.resolve(cwd, args.path);
     let exists = false;
+    let original: string | undefined;
     try {
-      exists = fs.existsSync(path.resolve(cwd, args.path));
+      if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+        exists = true;
+        original = fs.readFileSync(targetPath, "utf8");
+      }
     } catch {
       exists = false;
+      original = undefined;
     }
     const content = typeof args.content === "string" ? args.content : "";
-    const lineCount = content ? content.replace(/\n$/, "").split("\n").length : 0;
+    const diff = buildWriteDiff(original, content, 240, 12);
+    if (diff.lines.length === 0) {
+      return [formatDiffHeader(oneLine(args.path), diff.stats, "内容为空")];
+    }
     return [
-      `${colors.bold(oneLine(args.path))}  ${colors.gray(`${exists ? "覆盖已有文件" : "新建文件"} · ${lineCount} 行`)}`,
-      ...previewTextLines(content, "+ ", 8).map((line) =>
-        line.startsWith("… 另有") ? colors.gray(line) : colors.green(line),
-      ),
+      formatDiffHeader(oneLine(args.path), diff.stats, exists ? "覆盖已有文件" : "新建文件"),
+      ...diff.lines,
     ];
   }
   if (toolName === "edit" && typeof args.path === "string") {
     const oldText = typeof args.oldText === "string" ? args.oldText : "";
     const newText = typeof args.newText === "string" ? args.newText : "";
-    return [
-      colors.bold(oneLine(args.path)),
-      ...previewTextLines(oldText, "- ", 6).map((line) =>
-        line.startsWith("… 另有") ? colors.gray(line) : colors.red(line),
-      ),
-      ...previewTextLines(newText, "+ ", 6).map((line) =>
-        line.startsWith("… 另有") ? colors.gray(line) : colors.green(line),
-      ),
-    ];
+    let original = "";
+    try {
+      original = fs.readFileSync(path.resolve(cwd, args.path), "utf8");
+    } catch {
+      original = "";
+    }
+    const diff = buildEditDiff(original, oldText, newText, 240, 14);
+    return [formatDiffHeader(oneLine(args.path), diff.stats), ...diff.lines];
   }
   const entries = Object.entries(args);
   if (entries.length === 0) return [colors.gray("（无参数）")];
@@ -791,6 +804,20 @@ export function describeModelError(error: unknown): ModelErrorDescription {
     return describe("模型服务暂时不可用", "上游服务异常，稍后重新发送即可。");
   }
   return describe("模型调用出错", "检查模型名称与 API Key，或用 /config 切换模型与提供商。");
+}
+
+/**
+ * 重试提示用的错误摘要：已知类别给「类别：原始说明（截断）」，
+ * 未知错误保留原文截断。纯函数，供 onRetry 每次重试时调用。
+ */
+export function summarizeModelErrorShort(error: unknown, maxLength = 60): string {
+  const described = describeModelError(error);
+  const raw = sanitizeTerminalText(described.detail).replace(/\s+/g, " ").trim();
+  if (described.title !== "模型调用出错" || !raw) {
+    const detail = raw.slice(0, 40);
+    return detail ? `${described.title}：${detail}` : described.title;
+  }
+  return Array.from(raw).slice(0, maxLength).join("");
 }
 
 export function getCliVersion(): string {

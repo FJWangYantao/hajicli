@@ -57,6 +57,52 @@ export interface SnapshotRollbackResult {
   reason?: string;
 }
 
+/** 会话拥有的单个文件改动（/diff 与回合小结的统计口径）。 */
+export interface OwnedChangeEntry {
+  path: string;
+  added: number;
+  removed: number;
+  kind: "created" | "modified" | "deleted";
+  /** 最早一次修改前的工作区内容；新建文件无此字段。 */
+  beforeContent?: string;
+}
+
+/** 按公共前后缀行近似计算增删行数（一侧为 undefined 时按整块新增 / 删除计）。 */
+function countLineChanges(
+  before: string | undefined,
+  after: string | undefined,
+): { added: number; removed: number } {
+  const toLines = (text: string): string[] => {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+    return lines;
+  };
+  const beforeLines = before !== undefined ? toLines(before) : [];
+  const afterLines = after !== undefined ? toLines(after) : [];
+  if (before === undefined) return { added: afterLines.length, removed: 0 };
+  if (after === undefined) return { added: 0, removed: beforeLines.length };
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  return {
+    added: afterLines.length - prefix - suffix,
+    removed: beforeLines.length - prefix - suffix,
+  };
+}
+
 /**
  * 内容寻址的工作区快照与会话级修改日志。
  *
@@ -291,6 +337,71 @@ export class SnapshotEngine {
   /** 兼容旧调用；语义已改为安全的会话归属回退。 */
   rollback(snapshotId: string): boolean {
     return this.rollbackOwnedChanges(snapshotId).ok;
+  }
+
+  /**
+   * 汇总自 sinceTimestamp 起当前会话通过工具产生的修改（快照日志口径）。
+   * 每个文件取最早记录的 before 与最晚记录的 after 对比；行数用公共前后缀近似。
+   * 供回合小结（改动文件数）与 /diff（本会话累计改动）使用。
+   */
+  listOwnedChanges(sinceTimestamp: number): OwnedChangeEntry[] | null {
+    try {
+      const records = this.readJournal().filter((record) => record.timestamp >= sinceTimestamp);
+      if (records.length === 0) return [];
+      const seen = new Set<string>();
+      const firstBefore = new Map<string, SnapshotFile | undefined>();
+      const lastAfter = new Map<string, SnapshotFile | undefined>();
+      for (const record of records) {
+        const before = this.readManifest(record.beforeSnapshotId);
+        const after = this.readManifest(record.afterSnapshotId);
+        if (!before || !after) continue;
+        const beforeFiles = this.fileMap(before);
+        const afterFiles = this.fileMap(after);
+        for (const relativePath of record.paths) {
+          if (!seen.has(relativePath)) {
+            seen.add(relativePath);
+            firstBefore.set(relativePath, beforeFiles.get(relativePath));
+          }
+          lastAfter.set(relativePath, afterFiles.get(relativePath));
+        }
+      }
+      const entries: OwnedChangeEntry[] = [];
+      for (const relativePath of [...seen].sort()) {
+        const beforeFile = firstBefore.get(relativePath);
+        const afterFile = lastAfter.get(relativePath);
+        const beforeContent =
+          beforeFile && beforeFile.kind === "file" ? this.readBlobText(beforeFile.blob) : undefined;
+        const afterContent =
+          afterFile && afterFile.kind === "file" ? this.readBlobText(afterFile.blob) : undefined;
+        // 窗口内新建后又删除：净变化为零，不产生条目。
+        if (beforeContent === undefined && afterContent === undefined) continue;
+        const { added, removed } = countLineChanges(beforeContent, afterContent);
+        const kind: OwnedChangeEntry["kind"] =
+          beforeContent === undefined
+            ? "created"
+            : afterContent === undefined
+              ? "deleted"
+              : "modified";
+        entries.push({
+          path: relativePath,
+          added,
+          removed,
+          kind,
+          ...(beforeContent !== undefined ? { beforeContent } : {}),
+        });
+      }
+      return entries;
+    } catch {
+      return null;
+    }
+  }
+
+  private readBlobText(blob: string): string | undefined {
+    try {
+      return fs.readFileSync(this.getBlobPath(blob), "utf8");
+    } catch {
+      return undefined;
+    }
   }
 
   private changedPaths(before: SnapshotManifest, after: SnapshotManifest): string[] {

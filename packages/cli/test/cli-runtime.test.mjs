@@ -294,7 +294,7 @@ test("tool cells fit the given width and expand results on a second row", () => 
   assert.deepEqual(running.slice(1), ["    │ compiling a", "    │ compiling b"]);
 });
 
-test("permission preview shows the complete command and the files being written", () => {
+test("permission preview shows the command and diff-style file changes", () => {
   const preview = buildPermissionPreview(
     "bash",
     { command: "for i in 1 2 3; do\n  echo $i\ndone" },
@@ -308,11 +308,16 @@ test("permission preview shows the complete command and the files being written"
     { path: "definitely-missing-file.txt", content: "hello\nworld\n" },
     os.tmpdir(),
   );
-  assert.match(write[0], /definitely-missing-file\.txt {2}新建文件 · 2 行/);
-  assert.deepEqual(write.slice(1), ["+ hello", "+ world"]);
+  // 新建文件：头部为 路径 + +2 −0 + 新建标记，正文为带行号的全绿行。
+  assert.match(write[0], /definitely-missing-file\.txt {2}\+2 −0 {2}新建文件/);
+  assert.match(write[1], /^\s*1 \+ hello$/);
+  assert.match(write[2], /^\s*2 \+ world$/);
 
   const edit = buildPermissionPreview("edit", { path: "a.ts", oldText: "x", newText: "y" }, "/");
-  assert.deepEqual(edit, ["a.ts", "- x", "+ y"]);
+  // 文件不存在时定位不到原文：退化为无行号的整块对比，但仍是 diff 形态。
+  assert.match(edit[0], /^a\.ts {2}\+1 −1/);
+  assert.ok(edit.some((row) => row.includes("−") && row.includes("x")));
+  assert.ok(edit.some((row) => row.includes("+") && row.includes("y")));
 });
 
 test("model errors are classified with a specific next step", () => {

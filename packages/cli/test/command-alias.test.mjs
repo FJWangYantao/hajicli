@@ -6,6 +6,7 @@ import {
   buildSessionHelpLines,
   buildSlashCommandCatalog,
   COMMAND_SURFACE,
+  expandCommandInput,
   findAliasSkillConflicts,
   getCommandAliases,
   getTopLevelSlashCommands,
@@ -16,6 +17,18 @@ import { setActiveColorLevel } from "../dist/theme.js";
 
 setActiveColorLevel("mono");
 
+/** 展平指令面的全部规范指令（含成员与子命令），别名目标必须能在这里找到。 */
+function collectCanonicalNames(surface = COMMAND_SURFACE) {
+  const names = new Set();
+  const collect = (entry) => {
+    names.add(entry.command.slice(1).toLowerCase());
+    for (const member of entry.members ?? []) collect(member);
+    for (const sub of entry.subcommands ?? []) collect(sub);
+  };
+  for (const entry of surface) collect(entry);
+  return names;
+}
+
 test("别名解析到规范指令，大小写与前导斜杠均容错", () => {
   assert.equal(resolveCanonicalCommand("new"), "clear");
   assert.equal(resolveCanonicalCommand("NEW"), "clear");
@@ -24,33 +37,51 @@ test("别名解析到规范指令，大小写与前导斜杠均容错", () => {
   assert.equal(resolveCanonicalCommand("sessions"), "resume");
   assert.equal(resolveCanonicalCommand("quit"), "exit");
   assert.equal(resolveCanonicalCommand("q"), "exit");
-  assert.equal(resolveCanonicalCommand("presets"), "preset");
+  assert.equal(resolveCanonicalCommand("presets"), "agents presets");
   assert.equal(resolveCanonicalCommand("providers"), "provider");
   assert.equal(resolveCanonicalCommand("perm"), "permission");
+  // 指令收敛后的多词别名目标。
+  assert.equal(resolveCanonicalCommand("permissions"), "permission rules");
+  assert.equal(resolveCanonicalCommand("instinct"), "memory rules");
+  assert.equal(resolveCanonicalCommand("subagent"), "agents new");
+  assert.equal(resolveCanonicalCommand("preset"), "agents presets");
+  assert.equal(resolveCanonicalCommand("agent"), "agents");
 });
 
 test("规范指令与非指令输入原样返回", () => {
-  for (const name of ["clear", "exit", "skill", "model", "help"]) {
+  for (const name of ["clear", "exit", "skill", "model", "help", "agents", "skills"]) {
     assert.equal(resolveCanonicalCommand(name), name);
   }
   assert.equal(resolveCanonicalCommand("zzzzzz"), "zzzzzz");
   assert.equal(resolveCanonicalCommand(""), "");
 });
 
-test("别名表全部指向真实指令，且键值不相等", () => {
-  const aliases = getCommandAliases();
-  const canonicalNames = new Set(
-    COMMAND_SURFACE.flatMap((entry) => [
-      entry.command.slice(1),
-      ...(entry.members ?? []).map((member) => member.command.slice(1)),
-    ]),
+test("expandCommandInput 重写整条输入并保留剩余参数", () => {
+  assert.equal(expandCommandInput("/instinct distill"), "/memory rules distill");
+  assert.equal(
+    expandCommandInput("/subagent --role research 修复测试"),
+    "/agents new --role research 修复测试",
   );
+  assert.equal(expandCommandInput("/permissions"), "/permission rules");
+  assert.equal(
+    expandCommandInput("/preset add fast --effort high"),
+    "/agents presets add fast --effort high",
+  );
+  assert.equal(expandCommandInput("/new"), "/clear");
+  assert.equal(expandCommandInput("/clear"), "/clear");
+  assert.equal(expandCommandInput("普通消息"), "普通消息");
+});
+
+test("别名表全部指向真实指令，且键值头词不相等", () => {
+  const aliases = getCommandAliases();
+  const canonicalNames = collectCanonicalNames();
   assert.ok(aliases.size > 0);
   for (const [alias, canonical] of aliases) {
     assert.notEqual(alias, canonical, `别名 ${alias} 不应与规范名相同`);
     assert.equal(alias, alias.toLowerCase());
     assert.ok(!alias.includes("/") && !alias.includes(" "));
     assert.ok(canonicalNames.has(canonical), `别名 ${alias} → ${canonical} 不是已知指令`);
+    assert.notEqual(alias, canonical.split(" ")[0], `别名 ${alias} 不应与规范指令头词相同`);
   }
 });
 
@@ -81,13 +112,13 @@ test("别名不出现在补全目录、顶层列表与 /help", () => {
 test("未知指令纠错只给规范名，不暴露别名", () => {
   const catalog = buildSlashCommandCatalog();
   const aliases = new Set([...getCommandAliases().keys()].map((alias) => `/${alias}`));
-  for (const typo of ["neww", "clera", "exi", "presett", "permz"]) {
+  for (const typo of ["neww", "clera", "exi", "presett", "permz", "subagentt", "instict"]) {
     const suggestion = suggestSimilarCommand(typo, catalog);
     assert.ok(!suggestion || !aliases.has(suggestion), `纠错不应建议别名：${suggestion}`);
   }
 });
 
-test("建表时拒绝与现有指令重名、重复登记和多词指令", () => {
+test("建表时拒绝与现有指令重名、重复登记和带空格的别名", () => {
   assert.throws(
     () =>
       buildCommandAliasIndex([
@@ -104,20 +135,31 @@ test("建表时拒绝与现有指令重名、重复登记和多词指令", () =>
       ]),
     /重复登记/,
   );
+  // 多词目标合法（指令收敛的平滑迁移路径）；别名本身仍必须是单词。
   assert.throws(
     () =>
       buildCommandAliasIndex([
         {
           command: "/memory",
           description: "a",
-          subcommands: [{ command: "/memory list", description: "l", aliases: ["ls"] }],
+          subcommands: [{ command: "/memory list", description: "l", aliases: ["list all"] }],
         },
       ]),
-    /多词指令/,
+    /不含空白的单个单词/,
   );
   assert.deepEqual(
     buildCommandAliasIndex([{ command: "/clear", description: "a", aliases: ["New"] }]),
     new Map([["new", "clear"]]),
+  );
+  assert.deepEqual(
+    buildCommandAliasIndex([
+      {
+        command: "/permission",
+        description: "a",
+        subcommands: [{ command: "/permission rules", description: "r", aliases: ["permissions"] }],
+      },
+    ]),
+    new Map([["permissions", "permission rules"]]),
   );
 });
 

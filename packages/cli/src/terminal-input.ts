@@ -10,9 +10,11 @@ import { findSlashArgHint, matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
+  type ActivityBadge,
   buildActivityRow,
   buildStatusBarRow,
   buildTaskPanelRows,
+  formatPermissionModeLabel,
   type TaskPanelItem,
 } from "./terminal-panels.js";
 import {
@@ -330,6 +332,19 @@ export class TerminalUI {
   private renderedChatRegionHeight = 0;
   private stdoutBackpressured = false;
   private renderPendingAfterDrain = false;
+  /** Ctrl+C 防误触：上一次按下时间与被清空的草稿（↑ 可一次性找回）。 */
+  private lastCtrlCAt = 0;
+  private ctrlCDraftStash = "";
+  /** 底栏临时提示（Ctrl+C 确认、清空草稿等），超时自动清除。 */
+  private transientHintText = "";
+  private transientHintTimer: NodeJS.Timeout | null = null;
+  /** 输入框为空时显示的淡色占位提示（由主循环在回合结束后轮换）。 */
+  private inputHint = "";
+  /** @ 文件补全：当前输入的 @ 词（含 @），空串表示不在补全状态。 */
+  private fileMentionQuery = "";
+  private fileMentionCandidates: string[] = [];
+  private fileMentionSelectedIndex = 0;
+  private fileMentionProvider?: (query: string) => string[];
 
   constructor(options: TerminalUIOptions) {
     this.options = options;
@@ -479,6 +494,57 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
+  /**
+   * 底栏临时提示（覆盖状态栏位置，不进对话区）：Ctrl+C 确认、草稿清空等。
+   * 有活动状态时活动行优先；非交互模式降级为 stderr 提示。
+   */
+  showTransientHint(text: string, durationMs = 2500): void {
+    if (!this.started) return;
+    if (!this.interactive) {
+      stderr.write(`${text}\n`);
+      return;
+    }
+    this.transientHintText = text;
+    if (this.transientHintTimer) clearTimeout(this.transientHintTimer);
+    this.transientHintTimer = setTimeout(() => {
+      this.transientHintTimer = null;
+      this.transientHintText = "";
+      this.scheduleRender();
+    }, durationMs);
+    this.transientHintTimer.unref?.();
+    this.scheduleRender(true);
+  }
+
+  /** 输入框为空时显示的淡色占位提示（主循环在回合结束轮换；空串清除）。 */
+  setInputHint(hint: string): void {
+    this.inputHint = hint;
+    this.scheduleRender();
+  }
+
+  /**
+   * 完成 / 待授权提醒。bell 写 BEL；desktop 写 OSC 9（iTerm2 / Windows Terminal）
+   * 与 OSC 777（部分 Linux 终端），不支持的终端静默忽略。非交互模式不提醒。
+   */
+  notify(kind: "bell" | "desktop", text: string): void {
+    if (!this.interactive) return;
+    if (kind === "bell") {
+      stdout.write("\x07");
+      return;
+    }
+    const safeText = text.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120);
+    const safeTitle = "haji";
+    stdout.write(`\x1b]9;${safeTitle}: ${safeText}\x07`);
+    stdout.write(`\x1b]777;notify;${safeTitle};${safeText}\x07`);
+  }
+
+  /** @ 文件补全的候选提供者：入参为去掉 @ 的查询词，返回相对路径列表。 */
+  setFileMentionProvider(provider?: (query: string) => string[]): void {
+    this.fileMentionProvider = provider;
+    this.fileMentionQuery = "";
+    this.fileMentionCandidates = [];
+    this.fileMentionSelectedIndex = 0;
+  }
+
   /** 当前聊天内容的真实可用宽度，供 Markdown 代码块和表格共享。 */
   getContentWidth(): number {
     const layout = resolveTuiLayout(
@@ -614,6 +680,13 @@ export class TerminalUI {
       clearInterval(this.agentPanelTimer);
       this.agentPanelTimer = null;
     }
+    if (this.transientHintTimer) {
+      clearTimeout(this.transientHintTimer);
+      this.transientHintTimer = null;
+    }
+    this.transientHintText = "";
+    this.fileMentionQuery = "";
+    this.fileMentionCandidates = [];
     this.pendingWheelRows = 0;
     this.activityFrame = undefined;
     this.stopSelectionAutoScroll();
@@ -1270,12 +1343,9 @@ export class TerminalUI {
   };
 
   private readonly handleIdleKeypress = (value: string, key: readline.Key) => {
-    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
+    if (isRealCtrlC(value, key)) {
+      this.handleCtrlCInteraction();
       return;
-    }
-    if (isRealCtrlC(value, key) && !this.activeInput && !this.activeSelection) {
-      this.close();
-      process.exit(130);
     }
     if ((key.name === "tab" && key.shift) || key.name === "backtab" || value === "\x1b[Z") {
       if (this.onShiftTabCallback) {
@@ -1303,6 +1373,49 @@ export class TerminalUI {
       return;
     }
   };
+
+  /**
+   * Ctrl+C 防误触（与主流 CLI 一致）：
+   * - 有选中文本：复制（保持现状）；
+   * - 回合进行中：等同 Esc 中止回合，提示再按退出；
+   * - 输入框有草稿：清空草稿（↑ 立即找回），提示再按退出；
+   * - 空闲 / 空输入：第一次提示，2 秒内第二次退出（130）。
+   */
+  private handleCtrlCInteraction(): void {
+    if (this.copyChatSelection()) {
+      this.lastCtrlCAt = 0;
+      return;
+    }
+    const repeated = Date.now() - this.lastCtrlCAt <= 2000;
+    this.lastCtrlCAt = Date.now();
+
+    // 回合进行中（onEscCallback 仅在回合内注册）：第一次等同 Esc 中止回合。
+    if (this.onEscCallback && !repeated) {
+      this.onEscCallback();
+      this.showTransientHint("已请求中止当前回合 · 再按一次 Ctrl+C 退出");
+      return;
+    }
+
+    const activeInput = this.activeInput;
+    if (activeInput && activeInput.graphemes.length > 0 && !repeated) {
+      this.ctrlCDraftStash = activeInput.graphemes.join("");
+      activeInput.graphemes = [];
+      activeInput.cursorIndex = 0;
+      activeInput.preferredColumn = undefined;
+      activeInput.selectedCommandIndex = 0;
+      activeInput.commandNavigated = false;
+      activeInput.historyNavigationActive = false;
+      this.showTransientHint("草稿已清空（按 ↑ 立即找回）· 再按一次 Ctrl+C 退出");
+      this.scheduleRender(true);
+      return;
+    }
+
+    if (repeated) {
+      this.close();
+      process.exit(130);
+    }
+    this.showTransientHint("再按一次 Ctrl+C 退出");
+  }
 
   private readonly handleProcessExit = () => {
     stdin.setRawMode(this.originalRawMode);
@@ -1370,10 +1483,80 @@ export class TerminalUI {
     return matchSlashCommands(activeInput.graphemes.join(""), activeInput.slashCommands);
   }
 
+  /** 当前输入尾部的 @ 文件引用词（如 "src/te"）；不在引用状态时返回 undefined。 */
+  private detectFileMentionQuery(text: string): string | undefined {
+    return /(?:^|\s)@([\w./\\:-]*)$/.exec(text)?.[1];
+  }
+
+  /** 依据当前输入刷新 @ 文件补全状态（候选变化时重置选中项）。 */
+  private updateFileMentionState(): void {
+    const activeInput = this.activeInput;
+    if (!activeInput || activeInput.sensitive || !this.fileMentionProvider) {
+      this.fileMentionQuery = "";
+      this.fileMentionCandidates = [];
+      this.fileMentionSelectedIndex = 0;
+      return;
+    }
+    const query = activeInput.historyNavigationActive
+      ? undefined
+      : this.detectFileMentionQuery(activeInput.graphemes.join(""));
+    if (query === undefined) {
+      this.fileMentionQuery = "";
+      this.fileMentionCandidates = [];
+      this.fileMentionSelectedIndex = 0;
+      return;
+    }
+    if (`@${query}` !== this.fileMentionQuery) {
+      this.fileMentionQuery = `@${query}`;
+      this.fileMentionCandidates = this.fileMentionProvider(query).slice(0, 8);
+      this.fileMentionSelectedIndex = 0;
+    }
+  }
+
+  /** 把选中的补全文件写回输入框：替换光标前的 @ 词，末尾补空格继续输入。 */
+  private applyFileMentionCompletion(): boolean {
+    const activeInput = this.activeInput;
+    if (!activeInput) return false;
+    const text = activeInput.graphemes.join("");
+    const match = /(?:^|\s)(@[\w./\\:-]*)$/.exec(text.slice(0, activeInput.cursorIndex));
+    const candidate = this.fileMentionCandidates[this.fileMentionSelectedIndex];
+    if (!match || !candidate) return false;
+    const replaceFrom = match.index + (match[0].startsWith(" ") ? 1 : 0);
+    const before = text.slice(0, replaceFrom);
+    const after = text.slice(activeInput.cursorIndex);
+    activeInput.graphemes = splitGraphemes(`${before}@${candidate} ${after}`);
+    activeInput.cursorIndex = splitGraphemes(`${before}@${candidate} `).length;
+    activeInput.preferredColumn = undefined;
+    activeInput.selectedCommandIndex = 0;
+    activeInput.commandNavigated = false;
+    this.fileMentionQuery = "";
+    this.fileMentionCandidates = [];
+    this.fileMentionSelectedIndex = 0;
+    this.scheduleRender(true);
+    return true;
+  }
+
   private getCommandSuggestionRows(width: number, maxRows: number): string[] {
     const activeInput = this.activeInput;
     if (!activeInput || maxRows <= 0) {
       return [];
+    }
+
+    // @ 文件补全：候选优先于斜杠指令补全展示。
+    this.updateFileMentionState();
+    if (this.fileMentionCandidates.length > 0) {
+      this.fileMentionSelectedIndex = Math.min(
+        this.fileMentionSelectedIndex,
+        this.fileMentionCandidates.length - 1,
+      );
+      return formatMenuRows(
+        this.fileMentionCandidates.map((candidate) => ({
+          label: candidate,
+          description: "@ 引用文件",
+        })),
+        this.fileMentionSelectedIndex,
+        width,
+      );
     }
 
     const suggestions = this.getCommandSuggestions(activeInput);
@@ -1383,10 +1566,16 @@ export class TerminalUI {
         activeInput.sensitive || activeInput.historyNavigationActive
           ? undefined
           : findSlashArgHint(activeInput.graphemes.join(""), activeInput.slashCommands);
-      if (!hint) return [];
-      return [
-        `  ${SEQ.muted}${fitText(`${hint.command} ${hint.argHint}  ${hint.description}`, Math.max(1, width - 2))}${SEQ.reset}`,
-      ];
+      if (hint) {
+        return [
+          `  ${SEQ.muted}${fitText(`${hint.command} ${hint.argHint}  ${hint.description}`, Math.max(1, width - 2))}${SEQ.reset}`,
+        ];
+      }
+      // 空输入时显示一条淡色占位提示（主循环在回合结束轮换，偏好可关闭）。
+      if (this.inputHint && activeInput.graphemes.length === 0) {
+        return [`  ${SEQ.muted}${fitText(this.inputHint, Math.max(1, width - 2))}${SEQ.reset}`];
+      }
+      return [];
     }
 
     activeInput.selectedCommandIndex = Math.min(
@@ -1543,7 +1732,15 @@ export class TerminalUI {
   }
 
   private buildActivityRow(width: number): string {
-    return buildActivityRow(this.activityFrame, width);
+    // 活动行右侧徽标：权限档 + ctx 用量（长任务期间随时可见是否仍在全放行）。
+    const badge: ActivityBadge | undefined =
+      this.activityFrame && this.permissionMode
+        ? {
+            modeLabel: formatPermissionModeLabel(this.permissionMode),
+            ctxRatio: this.usedTokens / Math.max(1, this.maxTokens),
+          }
+        : undefined;
+    return buildActivityRow(this.activityFrame, width, badge);
   }
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
@@ -1631,8 +1828,11 @@ export class TerminalUI {
     const emergencyMinimal = minimal && height < 8;
     // 活动状态不再单独占用输入框上方一行，而是与状态栏共用底部这一行：
     // 有活动时顶替状态栏显示，空闲时才显示常规状态，因此聊天区高度不会随动画变化。
+    // 临时提示（Ctrl+C 确认等）优先级介于两者之间：没有活动时占位、超时自动消失。
     const activityRow =
-      this.buildActivityRow(width) || (this.status ? truncateAnsiText(this.status, width) : "");
+      this.buildActivityRow(width) ||
+      (this.transientHintText ? truncateAnsiText(this.transientHintText, width) : "") ||
+      (this.status ? truncateAnsiText(this.status, width) : "");
     const statusBar =
       !emergencyMinimal && activityRow
         ? activityRow
@@ -1843,6 +2043,10 @@ export class TerminalUI {
 
     const value = activeInput.graphemes.join("");
     this.activeInput = undefined;
+    this.ctrlCDraftStash = "";
+    this.fileMentionQuery = "";
+    this.fileMentionCandidates = [];
+    this.fileMentionSelectedIndex = 0;
     this.scheduleRender(true);
 
     if (error) {
@@ -1940,6 +2144,16 @@ export class TerminalUI {
       return;
     }
 
+    // Ctrl+C 清空的草稿在 ↑ 时优先完整找回（一次性，随后回到正常历史浏览）。
+    if (direction === -1 && this.ctrlCDraftStash && activeInput.graphemes.length === 0) {
+      activeInput.graphemes = splitGraphemes(this.ctrlCDraftStash);
+      activeInput.cursorIndex = activeInput.graphemes.length;
+      activeInput.preferredColumn = undefined;
+      this.ctrlCDraftStash = "";
+      this.scheduleRender(true);
+      return;
+    }
+
     const value = this.inputHistory.move(direction, activeInput.graphemes.join(""));
     if (value === undefined) {
       return;
@@ -1977,6 +2191,22 @@ export class TerminalUI {
     }
     if (key.ctrl && key.name === "end") {
       this.scrollChat(-this.chatScrollOffset);
+      return;
+    }
+    // Tab 在选择器里循环切换次级轴（授权卡的永久允许作用域 本项目 ⇄ 全局）。
+    if ((key.name === "tab" && !key.shift) || key.name === "backtab" || value === "\x1b[Z") {
+      if (activeSelection.options.secondary) {
+        const itemCount = activeSelection.options.secondary.items.length;
+        const backward =
+          key.name === "backtab" || value === "\x1b[Z" || (key.shift && key.name === "tab");
+        if (backward) {
+          activeSelection.secondaryIndex =
+            (activeSelection.secondaryIndex - 1 + itemCount) % itemCount;
+        } else {
+          activeSelection.secondaryIndex = (activeSelection.secondaryIndex + 1) % itemCount;
+        }
+        this.scheduleRender(true);
+      }
       return;
     }
     const confirmLocked =
@@ -2025,11 +2255,8 @@ export class TerminalUI {
       void this.captureClipboardAttachment();
       return;
     }
-    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
-      return;
-    }
     if (isRealCtrlC(value, key)) {
-      this.finishInput(new TerminalInputCancelledError());
+      this.handleCtrlCInteraction();
       return;
     }
     if (key.name === "escape") {
@@ -2061,6 +2288,11 @@ export class TerminalUI {
       if (key.shift || key.meta) {
         this.insert("\n");
       } else {
+        // @ 文件补全展开中：Enter 先完成补全，不提交输入。
+        this.updateFileMentionState();
+        if (this.fileMentionCandidates.length > 0 && this.applyFileMentionCompletion()) {
+          return;
+        }
         const suggestions = this.getCommandSuggestions(activeInput);
         const typed = activeInput.graphemes.join("").trim().toLowerCase();
         const typedIsCommand = activeInput.slashCommands.some(
@@ -2167,6 +2399,15 @@ export class TerminalUI {
     }
 
     if (key.name === "up" || key.name === "down") {
+      this.updateFileMentionState();
+      if (this.fileMentionCandidates.length > 0) {
+        const mentionDirection = key.name === "up" ? -1 : 1;
+        this.fileMentionSelectedIndex =
+          (this.fileMentionSelectedIndex + mentionDirection + this.fileMentionCandidates.length) %
+          this.fileMentionCandidates.length;
+        this.scheduleRender(true);
+        return;
+      }
       const suggestions = this.getCommandSuggestions(activeInput);
       if (suggestions.length > 0) {
         const direction = key.name === "up" ? -1 : 1;
@@ -2229,6 +2470,11 @@ export class TerminalUI {
     }
 
     if (key.name === "tab") {
+      this.updateFileMentionState();
+      if (this.fileMentionCandidates.length > 0) {
+        this.applyFileMentionCompletion();
+        return;
+      }
       const suggestions = this.getCommandSuggestions(activeInput);
       if (suggestions.length > 0) {
         // Tab 只补全，不执行。

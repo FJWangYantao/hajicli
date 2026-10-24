@@ -147,7 +147,7 @@ test("TaskStore keeps plans isolated by session scope", () => {
   }
 });
 
-test("approval offers exactly three choices and defaults to Auto Execute", () => {
+test("approval offers exactly three Chinese choices and defaults to auto", () => {
   // Plan 审批流已抽到 turn-runner.ts，源码断言跟随迁移。
   const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   assert.match(source, /\[系统计划审阅要求\].*停止调用工具.*方案正文/);
@@ -155,12 +155,15 @@ test("approval offers exactly three choices and defaults to Auto Execute", () =>
     source,
     /getPermissionMode\(\) === "plan" && deps\.isPlanReadyForReview\(\)[\s\S]*!textContent\.trim\(\)[\s\S]*本次不进入审批/,
   );
-  assert.match(source, /value: "auto",\s*label: "Auto Execute"/);
-  assert.match(source, /value: "manual",\s*label: "Approve Manually"/);
-  assert.match(source, /value: "no",\s*label: "No, Revise Plan"/);
+  assert.match(source, /value: "auto",\s*label: "批准并自动执行"/);
+  assert.match(source, /value: "manual",\s*label: "批准，逐步审批"/);
+  assert.match(source, /value: "no",\s*label: "修改计划…"/);
   assert.match(source, /selectedValue: "auto"/);
   assert.match(source, /review\.value === "auto" \? "auto" : "default"/);
   assert.match(source, /每个任务都严格按 updatetask\(in_progress\).*实际验证.*taskfinish/);
+  // “修改计划…”分支：输入的意见作为下一条用户消息排队提交。
+  assert.match(source, /修改意见 › /);
+  assert.match(source, /pendingInputs\.push\(trimmedFeedback\)/);
 });
 
 test("Plan Mode sends only read-only, planning and isolated subagent tool definitions", () => {

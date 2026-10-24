@@ -28,12 +28,8 @@ export interface StatusBarState {
   currentPath: string;
 }
 
-/** 构建状态栏单行：权限档 · 模型/强度 · 路径（左） 与 ctx 用量条（右）。 */
-export function buildStatusBarRow(
-  state: StatusBarState,
-  width: number,
-  detail: TuiStatusDetail = "full",
-): string {
+/** 权限档的中文标签（状态栏 / 活动行徽标共用）。 */
+export function formatPermissionModeLabel(mode: string): string {
   const modeLabels: Record<string, string> = {
     plan: "计划",
     default: "默认",
@@ -41,7 +37,16 @@ export function buildStatusBarRow(
     auto: "自动",
     "bypass-permissions": "全放行",
   };
-  const modeLabel = modeLabels[state.permissionMode] || state.permissionMode.toUpperCase();
+  return modeLabels[mode] || mode.toUpperCase();
+}
+
+/** 构建状态栏单行：权限档 · 模型/强度 · 路径（左） 与 ctx 用量条（右）。 */
+export function buildStatusBarRow(
+  state: StatusBarState,
+  width: number,
+  detail: TuiStatusDetail = "full",
+): string {
+  const modeLabel = formatPermissionModeLabel(state.permissionMode);
   const permText = state.permissionMode ? `[${modeLabel}]` : "";
   // 底栏只有模式标签用强调色；「全放行」是真要警惕的状态，保留红色。
   const permColor = !permText
@@ -129,8 +134,20 @@ export function buildStatusBarRow(
   return `${fittedLeft}${padding}${rightAnsi}`;
 }
 
-/** 构建活动状态行：图标 + 阶段标签 + 耗时/细节，右侧按空间常驻 Esc 中止提示。 */
-export function buildActivityRow(frame: ActivityFrame | undefined, width: number): string {
+/** 构建活动状态行：图标 + 阶段标签 + 耗时/细节；宽屏右侧显示权限/ctx 徽标或 Esc 提示。 */
+export interface ActivityBadge {
+  /** 权限档标签（如“自动”），空串时不显示。 */
+  modeLabel: string;
+  /** 上下文占用比例（0-1）；缺省只显示模式。 */
+  ctxRatio?: number;
+}
+
+export function buildActivityRow(
+  frame: ActivityFrame | undefined,
+  width: number,
+  badge?: ActivityBadge,
+  now = Date.now(),
+): string {
   if (!frame || width <= 0) return "";
 
   // 正常进行中统一用强调色；只有等用户 / 卡住了才换黄色。
@@ -156,14 +173,36 @@ export function buildActivityRow(frame: ActivityFrame | undefined, width: number
     );
   }
   const row = `${primary}  ${suffix}`;
-  // 可中止的阶段在右侧常驻按键提示；空间不足时让位给左侧状态。
+  if (width < 72) return truncateAnsiText(row, width);
+
+  // 右侧信息：阶段开始后的前 3 秒显示“Esc 中止”（快捷键列表里仍能查到），
+  // 之后让位给 [权限] ctx N% 徽标——长任务期间随时可见是否仍在全放行、上下文是否快满。
   const interruptible = ["thinking", "responding", "tool", "batch"].includes(frame.phase);
-  const hint = "Esc 中止";
-  const hintWidth = terminalWidth(hint);
-  if (!interruptible || width < 100) return truncateAnsiText(row, width);
-  const fittedRow = truncateAnsiText(row, width - hintWidth - 2);
-  const padding = " ".repeat(Math.max(2, width - terminalWidth(fittedRow) - hintWidth));
-  return `${fittedRow}${padding}${SEQ.muted}${hint}${SEQ.reset}`;
+  const phaseElapsedMs =
+    frame.startedAt !== undefined ? now - frame.startedAt : Number.POSITIVE_INFINITY;
+  const hintFirst = interruptible && phaseElapsedMs <= 3000 && width >= 100;
+
+  let rightText = "";
+  if (hintFirst) {
+    rightText = `${SEQ.muted}Esc 中止${SEQ.reset}`;
+  } else if (badge?.modeLabel) {
+    let ratioColor = SEQ.muted;
+    if (badge.ctxRatio !== undefined) {
+      if (badge.ctxRatio >= 0.85) ratioColor = SEQ.boldRed;
+      else if (badge.ctxRatio >= 0.6) ratioColor = SEQ.yellow;
+    }
+    const modeColor = badge.modeLabel === "全放行" ? SEQ.boldRed : SEQ.muted;
+    const ctxText =
+      badge.ctxRatio !== undefined
+        ? ` ${ratioColor}ctx ${Math.round(badge.ctxRatio * 100)}%${SEQ.reset}`
+        : "";
+    rightText = `${SEQ.reset}[${modeColor}${badge.modeLabel}${SEQ.reset}]${ctxText}`;
+  }
+  if (!rightText) return truncateAnsiText(row, width);
+  const rightWidth = terminalWidth(rightText);
+  const fittedRow = truncateAnsiText(row, Math.max(1, width - rightWidth - 2));
+  const padding = " ".repeat(Math.max(2, width - terminalWidth(fittedRow) - rightWidth));
+  return `${fittedRow}${padding}${rightText}`;
 }
 
 /** 任务面板条目（含关联 Agent 的展示信息）。 */
@@ -171,11 +210,15 @@ export interface TaskPanelItem {
   id: string;
   content: string;
   status: "pending" | "in_progress" | "completed";
+  /** 进入进行中的时间戳（ms）；用于右侧显示已耗时。 */
+  startedAt?: number;
   agent?: {
     id: string;
     role: string;
     status: "running" | "awaiting_verification" | "verified" | "rejected" | "failed" | "aborted";
     summary?: string;
+    /** 子代理累计 tokens（含输入输出）。 */
+    tokens?: number;
   };
 }
 
@@ -186,10 +229,25 @@ export interface TaskPanelState {
   expanded: boolean;
 }
 
-/** 构建任务面板行：标题 + 状态符号行（✓/●/○）+ 可选 Agent 子行 + 折叠脚注。 */
-export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows = 8): string[] {
+/** 已耗时展示：进行中任务与状态栏的口径一致（秒 / 分秒）。 */
+function formatElapsedSince(startedAt: number | undefined, now: number): string {
+  if (startedAt === undefined) return "";
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/** 构建任务面板行：标题（含整体进度）+ 状态符号行（✓/●/○）+ 可选 Agent 子行 + 折叠脚注。 */
+export function buildTaskPanelRows(
+  state: TaskPanelState,
+  width: number,
+  maxRows = 8,
+  now = Date.now(),
+): string[] {
   if (!state.title || maxRows <= 0) return [];
-  const panelTitle = state.title ? `任务 · ${state.title}` : "任务";
+  const total = state.items.length;
+  const done = state.items.filter((task) => task.status === "completed").length;
+  const panelTitle = `任务 · ${state.title}${total > 0 ? `  ${done}/${total}` : ""}`;
   const rows = [`${SEQ.bold}${truncateText(panelTitle, width)}${SEQ.reset}`];
   const visibleTasks = state.expanded ? state.items : state.items.slice(0, 5);
   const needsFooter = state.expanded || state.items.length > visibleTasks.length;
@@ -203,7 +261,12 @@ export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows
         `${SEQ.green}✓${SEQ.reset} ${SEQ.dim}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`,
       );
     } else if (task.status === "in_progress") {
-      rows.push(`${SEQ.accent}●${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`);
+      const elapsed = formatElapsedSince(task.startedAt, now);
+      const text =
+        elapsed && width >= 40
+          ? `${truncateText(task.content, Math.max(1, width - elapsed.length - 4))}  ${SEQ.muted}${elapsed}${SEQ.reset}`
+          : truncateText(task.content, Math.max(1, width - 2));
+      rows.push(`${SEQ.accent}●${SEQ.reset} ${text}`);
     } else {
       rows.push(`${SEQ.muted}○${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`);
     }
@@ -228,9 +291,13 @@ export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows
             : task.agent.status === "awaiting_verification"
               ? SEQ.yellow
               : SEQ.red;
+      const tokensText =
+        task.agent.tokens !== undefined && task.agent.tokens > 0
+          ? ` · ${SEQ.muted}${formatAgentTokens(task.agent.tokens)}${SEQ.reset}`
+          : "";
       rows.push(
         truncateAnsiText(
-          `${SEQ.muted}    ↳ ${task.agent.role} · ${SEQ.reset}${color}${statusLabel}${SEQ.reset}`,
+          `${SEQ.muted}    ↳ ${task.agent.role} · ${SEQ.reset}${color}${statusLabel}${SEQ.reset}${tokensText}`,
           width,
         ),
       );
@@ -259,4 +326,70 @@ export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows
     }
   }
   return rows;
+}
+
+/** 回合小结的输入数据（turn-runner 收集，这里只做拼装与宽度舍弃）。 */
+export interface TurnSummaryStats {
+  durationMs: number;
+  outputTokens?: number;
+  toolCalls: number;
+  /** 本回合工作区改动（来自快照日志）；无改动或缺省时不显示。 */
+  changedFiles?: { files: number; added: number; removed: number };
+  /** 本回合最近一次编辑后验证结果；未触发时不显示。 */
+  typeCheck?: { ok: boolean };
+  /** 本回合费用增量（元）；未定价模型传 undefined。 */
+  costDeltaCny?: number;
+}
+
+/**
+ * 构建回合小结单行：完成 · 耗时 · 改动 · 类型检查 · 费用 · 输出 · 工具次数。
+ * 超宽时按「工具次数 → 费用 → 类型检查」依次舍弃，保证单行。
+ */
+export function buildTurnSummary(stats: TurnSummaryStats, width: number): string {
+  const duration = formatToolDurationSafe(stats.durationMs);
+  const base = `完成 · ${duration}`;
+  const changeText = stats.changedFiles
+    ? `改动 ${stats.changedFiles.files} 个文件 +${stats.changedFiles.added} −${stats.changedFiles.removed}`
+    : "";
+  const typeCheckText = stats.typeCheck ? (stats.typeCheck.ok ? "类型检查 ✓" : "类型检查 ✕") : "";
+  const costText =
+    stats.costDeltaCny !== undefined && stats.costDeltaCny > 0
+      ? `¥${stats.costDeltaCny < 0.01 ? stats.costDeltaCny.toFixed(4) : stats.costDeltaCny.toFixed(3)}`
+      : "";
+  const outputText =
+    stats.outputTokens !== undefined ? `输出 ${formatAgentTokens(stats.outputTokens)} tokens` : "";
+  const toolText = stats.toolCalls > 0 ? `${stats.toolCalls} 次工具调用（Ctrl+O）` : "";
+
+  const segments = [base, changeText, typeCheckText, costText, outputText, toolText].filter(
+    Boolean,
+  );
+  const dropOrder: Array<() => void> = [
+    () => {
+      const index = segments.indexOf(toolText);
+      if (index >= 0) segments.splice(index, 1);
+    },
+    () => {
+      const index = segments.indexOf(costText);
+      if (index >= 0) segments.splice(index, 1);
+    },
+    () => {
+      const index = segments.indexOf(typeCheckText);
+      if (index >= 0) segments.splice(index, 1);
+    },
+  ];
+  let dropIndex = 0;
+  while (terminalWidth(segments.join(" · ")) > width && dropIndex < dropOrder.length) {
+    dropOrder[dropIndex]();
+    dropIndex += 1;
+  }
+  return segments.join(" · ");
+}
+
+/** 工具耗时：亚秒显示毫秒，一分钟内保留一位小数（与 cli-runtime.formatToolDuration 同口径）。 */
+function formatToolDurationSafe(durationMs: number): string {
+  const ms = Math.max(0, Math.round(Number.isFinite(durationMs) ? durationMs : 0));
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
 }

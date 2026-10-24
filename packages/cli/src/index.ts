@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { exec } from "node:child_process";
+import { exec, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START,
@@ -51,6 +52,8 @@ import {
   EditFileTool,
   GlobalFindFilesTool,
   GrepSearchTool,
+  getModelMetadata,
+  getModelPricing,
   ListSkillResourcesTool,
   LoadSkillTool,
   McpManager,
@@ -77,10 +80,10 @@ import {
   buildLogo,
   buildSessionHelpLines,
   buildSlashCommandCatalog,
+  expandCommandInput,
   findAliasSkillConflicts,
   getTopLevelSlashCommands,
   handleEarlyCliArgs,
-  resolveCanonicalCommand,
   suggestSimilarCommand,
 } from "./cli-help.js";
 import {
@@ -99,12 +102,15 @@ import {
   summarizeToolResult,
 } from "./cli-runtime.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
-import { CostTracker } from "./cost-tracker.js";
+import { CostTracker, formatCostCny } from "./cost-tracker.js";
+import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
+import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
-import { expandFileMentions } from "./file-mentions.js";
-import { parseHeadlessArgs } from "./headless.js";
+import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
+import { parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
+import { runProviderOnboarding } from "./onboarding.js";
 import {
   isToolAllowedPersistently,
   loadAllPermissionRules,
@@ -143,6 +149,9 @@ import {
   handleClearCommand,
   handleResumeCommand,
   handleRewindCommand,
+  handleUndoCommand,
+  resumeByKeyword,
+  resumeLatestSession,
   type SessionCommandContext,
 } from "./session-commands.js";
 import {
@@ -158,6 +167,7 @@ import {
   TerminalInputCancelledError,
   TerminalUI,
 } from "./terminal-input.js";
+import { formatPermissionModeLabel } from "./terminal-panels.js";
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
 import {
   colors,
@@ -198,6 +208,8 @@ async function main() {
     process.exit(1);
   }
   const headlessRequest = headlessParse.request;
+  // 会话恢复参数（haji -c / haji -r）：只在交互模式生效，无头 -p 时忽略。
+  const sessionResumeRequest = headlessRequest ? undefined : parseSessionResumeArgs(cliArgs);
   if (headlessRequest?.prompt === "-") {
     // prompt 传 "-" 表示从 stdin 管道读取（cat error.log | haji -p "-"）。
     if (process.stdin.isTTY) {
@@ -234,35 +246,53 @@ async function main() {
   }
   markStartupStage("terminal_appearance");
 
-  const providerConfig = loadProviderConfig();
+  let providerConfig = loadProviderConfig();
   let volcApiKey =
     process.env.VOLC_API_KEY ||
     process.env.ARK_API_KEY ||
     providerConfig.providers.volcengine?.apiKey;
   let deepseekApiKey = process.env.DEEPSEEK_API_KEY || providerConfig.providers.deepseek?.apiKey;
 
-  const hasCustomProviderKey = Object.entries(providerConfig.providers).some(
-    ([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey),
-  );
-  if (!volcApiKey && !deepseekApiKey && !hasCustomProviderKey) {
-    console.error(
-      colors.failLine(
-        "请配置 DEEPSEEK_API_KEY / VOLC_API_KEY，或启动后使用 /provider add 添加自定义提供商。",
-      ),
+  const hasCustomProviderKey = () =>
+    Object.entries(providerConfig.providers).some(
+      ([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey),
     );
-    process.exit(1);
+  if (!volcApiKey && !deepseekApiKey && !hasCustomProviderKey()) {
+    // 首次启动：交互模式进入配置向导（完成后正常进入主循环）；
+    // 无头 / 管道模式保持原有行为——打印提示后退出码 1。
+    if (headlessRequest || !process.stdin.isTTY) {
+      console.error(
+        colors.failLine(
+          "请配置 DEEPSEEK_API_KEY / VOLC_API_KEY，或启动后使用 /provider add 添加自定义提供商。",
+        ),
+      );
+      process.exit(1);
+    }
+    const onboarding = await runProviderOnboarding(process.stdin);
+    if (!onboarding.configured) process.exit(1);
+    providerConfig = loadProviderConfig();
+    volcApiKey =
+      process.env.VOLC_API_KEY ||
+      process.env.ARK_API_KEY ||
+      providerConfig.providers.volcengine?.apiKey;
+    deepseekApiKey = process.env.DEEPSEEK_API_KEY || providerConfig.providers.deepseek?.apiKey;
   }
 
+  // 读取上次保存的偏好（模型 + 思考强度）；提前到清屏之前以便打印一行有用的启动信息。
+  const savedPreference = loadPreference();
   if (!headlessRequest) {
     // 启动时清空终端屏幕，实现“置顶并开辟新页面”效果
     console.clear();
 
     console.log(buildLogo());
-    console.log(colors.gray("正在初始化大模型提供商、系统工具和 Trace 观测服务器..."));
+    const bootModel = savedPreference?.model || "未选择模型";
+    const bootProvider = providerPlainLabel(savedPreference?.provider || "deepseek");
+    console.log(
+      colors.gray(
+        `${bootProvider} · ${bootModel} · ${savedPreference?.reasoningEffort ?? "medium"}   ${process.cwd()}`,
+      ),
+    );
   }
-
-  // 读取上次保存的偏好（模型 + 思考强度）
-  const savedPreference = loadPreference();
   markStartupStage("preference");
 
   // 根据 selectedModel 动态构建 Provider 实例的工厂函数
@@ -353,6 +383,22 @@ async function main() {
     contextWindowTokens: number;
     maxOutputTokens: number;
   };
+  const formatContextWindow = (tokens: number): string =>
+    tokens >= 1_000_000
+      ? `${Number((tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1))}M`
+      : `${Math.max(1, Math.round(tokens / 1000))}k`;
+  /** /model 选择器描述栏追加价格与窗口：入 ¥x / 出 ¥y 每百万 · 128k · tier。 */
+  const withModelMeta = (option: AvailableModelOption): AvailableModelOption => {
+    const parts = [option.description];
+    const pricing = getModelPricing(option.value);
+    if (pricing) {
+      parts.push(`入 ¥${pricing.inputPerMTokens} / 出 ¥${pricing.outputPerMTokens} 每百万`);
+    }
+    parts.push(formatContextWindow(option.contextWindowTokens));
+    const tier = getModelMetadata(option.value)?.tier;
+    if (tier && tier !== "flagship") parts.push(tier);
+    return { ...option, description: parts.filter(Boolean).join(" · ") };
+  };
   const buildAvailableModels = (): AvailableModelOption[] => {
     const available: AvailableModelOption[] = [
       ...(deepseekApiKey
@@ -400,7 +446,7 @@ async function main() {
         maxOutputTokens: entry.maxOutputTokens ?? 8_192,
       })),
     );
-    return available;
+    return available.map(withModelMeta);
   };
 
   // 构建所有可用的模型选项（仅包含有对应 API Key 的 Provider 的模型）
@@ -528,6 +574,8 @@ async function main() {
   // 诊断以系统消息注入会话，模型在下一次调用时可见并自纠。带冷却时间防编辑连发拖慢回合。
   let postEditVerifyCommand: string | undefined | null = null;
   let postEditVerifyLastRunAt = 0;
+  // 最近一次验证结果（回合小结的“类型检查 ✓/✕”数据源；按时间戳只统计本回合触发的）。
+  let lastPostEditCheck: { ok: boolean; at: number } | undefined;
   const POST_EDIT_VERIFY_COOLDOWN_MS = 10_000;
   const maybeRunPostEditVerify = async (): Promise<string | undefined> => {
     if (postEditVerifyCommand === null) {
@@ -538,6 +586,7 @@ async function main() {
     if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
     postEditVerifyLastRunAt = now;
     const result = await runProjectCheck(postEditVerifyCommand, process.cwd());
+    lastPostEditCheck = { ok: result.ok, at: Date.now() };
     return formatVerificationNotice(result, postEditVerifyCommand);
   };
   hookEngine.register("PostToolUse", async (ctx) => {
@@ -606,6 +655,8 @@ async function main() {
           `✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`,
         ),
       );
+      // 压缩后上下文用量提醒重新计数（黄/红阈值可再次触发）。
+      resetContextUsageWarnings();
       if (result.summaryMode === "fallback") {
         ui.writeLine(colors.warnLine("模型摘要失败，本次使用了本地降级摘要。"));
       }
@@ -804,6 +855,25 @@ async function main() {
   markStartupStage("ui_ctor");
   // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
+  // @ 文件补全：工作区文件列表缓存（60 秒刷新），输入 @ 时弹出模糊搜索。
+  const fileMentionCache = { files: [] as string[], loadedAt: 0 };
+  const listWorkspaceFiles = (): string[] => {
+    if (Date.now() - fileMentionCache.loadedAt > 60_000) {
+      try {
+        const output = execFileSync(
+          "git",
+          ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+          { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+        );
+        fileMentionCache.files = output.split("\0").filter(Boolean).slice(0, 20_000);
+      } catch {
+        // 非 git 仓库或 git 不可用：保持空列表（@ 补全无候选，不影响 @ 引用展开）。
+      }
+      fileMentionCache.loadedAt = Date.now();
+    }
+    return fileMentionCache.files;
+  };
+  ui.setFileMentionProvider((query) => matchFileMentionCandidates(listWorkspaceFiles(), query));
   // 别名优先于同名 Skill：启动时把这类遮蔽关系显式告知用户。
   const aliasSkillWarnings = findAliasSkillConflicts(
     skillRegistry.list().map((skill) => skill.name),
@@ -819,11 +889,26 @@ async function main() {
   // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
   const gitHeadPath = findGitHeadPath(process.cwd());
   ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
-  // Logo 下方的启动信息行：provider · model · effort + 引导提示。
+  // Logo 下方的启动信息行：provider · model · effort + 权限档 + 工作区，与上次会话提示。
   // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
+  const formatRelativeTime = (iso: string): string => {
+    const elapsed = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(elapsed) || elapsed < 60_000) return "刚刚";
+    if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
+    if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
+    return `${Math.floor(elapsed / 86_400_000)} 天前`;
+  };
+  const recentSession = sessionManager
+    .listSessions()
+    .find((session) => session.id !== sessionManager.getCurrentSession().id);
+  const startupModeLabel = formatPermissionModeLabel(permissionMode);
   ui.setHeaderInfo([
-    `${colors.muted(providerLabel(currentProviderName))} ${colors.gray("·")} ${colors.boldAccent(selectedModel)} ${colors.gray("·")} ${colors.muted(reasoningEffort)}`,
-    colors.gray("输入 /help 查看命令，或直接开始对话"),
+    `${colors.muted(providerLabel(currentProviderName))} ${colors.gray("·")} ${colors.boldAccent(selectedModel)} ${colors.gray("·")} ${colors.muted(reasoningEffort)}  ${colors.gray(`[${startupModeLabel}]`)}   ${colors.gray(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)))}`,
+    recentSession
+      ? colors.gray(
+          `上次会话：${sanitizeTerminalText(recentSession.title)}（${formatRelativeTime(recentSession.updatedAt)}） · /resume 继续`,
+        )
+      : colors.gray("输入 /help 查看命令，或直接开始对话"),
   ]);
   const showRuntimeWarning = (warning: string): void => {
     ui.writeLine(colors.warnLine(warning));
@@ -838,19 +923,42 @@ async function main() {
   let planReadyForReview = false;
   let planReviewSummaryRequested = false;
 
+  // 任务面板进度：记录每个任务进入“进行中”的时间（右侧显示已耗时），
+  // 子代理行附带累计 tokens。agentManager 在下方初始化，首次同步延后到其后调用。
+  const taskInProgressSince = new Map<string, number>();
   const syncTaskPlanUI = (recentlyCompleted?: { id: string; content: string }): void => {
     const plan = taskStore.getPlan();
     if (!plan) {
+      taskInProgressSince.clear();
       ui.setTaskPlan(null);
       return;
     }
+    const activeIds = new Set(
+      plan.tasks.filter((task) => task.status === "in_progress").map((task) => task.id),
+    );
+    for (const id of [...taskInProgressSince.keys()]) {
+      if (!activeIds.has(id)) taskInProgressSince.delete(id);
+    }
+    for (const task of plan.tasks) {
+      if (task.status === "in_progress" && !taskInProgressSince.has(task.id)) {
+        taskInProgressSince.set(task.id, Date.now());
+      }
+    }
     ui.setTaskPlan({
       title: plan.title,
-      tasks: plan.tasks,
+      tasks: plan.tasks.map((task) => ({
+        ...task,
+        startedAt: task.status === "in_progress" ? taskInProgressSince.get(task.id) : undefined,
+        agent: task.agent
+          ? {
+              ...task.agent,
+              tokens: agentManager.get(task.agent.id)?.usage.totalTokens,
+            }
+          : undefined,
+      })),
       completedTasks: recentlyCompleted ? [{ ...recentlyCompleted, status: "completed" }] : [],
     });
   };
-  syncTaskPlanUI();
 
   const syncAgentPanel = (agents: AgentRecord[]): void => {
     ui.setAgentPanel(
@@ -892,6 +1000,8 @@ async function main() {
     },
   });
   agentManager.setScope(sessionManager.getCurrentSession().id);
+  // agentManager 就绪后做首次任务面板同步（syncTaskPlanUI 会读取子代理 tokens）。
+  syncTaskPlanUI();
   markStartupStage("agent_manager");
 
   const refreshAgentVerificationContext = (targetMessages: ChatMessage[]): boolean => {
@@ -1358,7 +1468,7 @@ async function main() {
     const toolName = ctx.toolName || "";
     const args = ctx.args || {};
     if (isToolGrantedForSession(toolName, args)) return null;
-    const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "AI";
+    const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "主 Agent";
     if (!ui.isInteractive()) {
       // 无头且 stdin 非 TTY（管道/CI）时没有交互确认的机会，自动拒绝并把原因反馈给模型。
       if (headlessRequest && !process.stdin.isTTY) {
@@ -1370,25 +1480,55 @@ async function main() {
       return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
     }
     const grant = getPermissionGrant(toolName, args);
+    notifyUserAttention();
     const selection = await readSelectionSafely(
       {
         title: `需要授权 · ${requester} 请求${permissionVerb(toolName)}`,
         preview: buildPermissionPreview(toolName, args, process.cwd()),
         items: buildPermissionCardItems(grant),
         selectedValue: "once",
-        hint: "↑↓ 选择 · Enter 确认 · Esc 中止本轮",
+        // 永久允许的作用域（本项目 ⇄ 全局）：Tab 或 ←→ 切换，仅对“永久允许”一项生效。
+        ...(grant
+          ? {
+              secondary: {
+                label: "永久作用域",
+                items: [
+                  { value: "project", label: "本项目" },
+                  { value: "user", label: "全局" },
+                ],
+                selectedValue: "project",
+              },
+            }
+          : {}),
+        hint: "↑↓ 选择 · Tab 切作用域 · Enter 确认 · Esc 中止本轮",
         confirmDelayMs: 300,
       },
       "restore",
     );
     if (selection.value === "deny") return USER_REJECTED_TOOL_OUTPUT;
+    if (selection.value === "deny-reason") {
+      // 拒绝并说明：理由回传给模型，避免它换个写法重试同一件事。
+      const draft = ui.cancelInput();
+      try {
+        const reason = (
+          await ui.readInput({ prompt: "拒绝原因（回传给模型，留空则直接拒绝）› " })
+        ).trim();
+        if (!reason) return USER_REJECTED_TOOL_OUTPUT;
+        return `${USER_REJECTED_TOOL_OUTPUT}\n用户说明：${reason}`;
+      } catch (error) {
+        if (error instanceof TerminalInputCancelledError) return USER_REJECTED_TOOL_OUTPUT;
+        throw error;
+      } finally {
+        startBackgroundInput(draft);
+      }
+    }
     if (selection.value === "session" && grant) {
       grantToolForSession(grant.key);
       ui.writeLine(colors.gray(`  本会话内 ${grant.scope} 将不再询问。`));
     }
-    if ((selection.value === "always-project" || selection.value === "always-user") && grant) {
+    if (selection.value === "always" && grant) {
       const ruleScope: PermissionRuleScope =
-        selection.value === "always-project" ? "project" : "user";
+        selection.secondaryValue === "user" ? "user" : "project";
       grantToolForSession(grant.key);
       const saved = savePermissionRule(
         { key: grant.key, scope: grant.scope, createdAt: new Date().toISOString() },
@@ -1398,7 +1538,7 @@ async function main() {
         permissionRules = loadAllPermissionRules();
         ui.writeLine(
           colors.gray(
-            `  已永久允许 ${grant.scope}（${ruleScope === "project" ? "本项目 .haji/permissions.json" : "全局 ~/.haji/permissions.json"}），跨会话生效，/permissions 可管理。`,
+            `  已永久允许 ${grant.scope}（${ruleScope === "project" ? "本项目 .haji/permissions.json" : "全局 ~/.haji/permissions.json"}），跨会话生效，/permission rules 可管理。`,
           ),
         );
       } else {
@@ -1620,6 +1760,78 @@ async function main() {
     updateStatusUI,
   };
 
+  // 完成 / 待授权提醒（偏好 notify：off | bell | desktop，默认 bell）。
+  const notifyPreference = savedPreference?.notify ?? "bell";
+  const notifyUserAttention = (): void => {
+    if (notifyPreference !== "off") ui.notify(notifyPreference, "Haji 正在等待你的操作");
+  };
+
+  // 输入框占位提示：空输入框显示一条淡色轮换提示（偏好 inputHints: false 关闭）。
+  const inputHintsEnabled = savedPreference?.inputHints !== false;
+  const inputHintTemplates: ReadonlyArray<string | (() => string)> = [
+    "@ 引用文件 · / 打开指令中心",
+    () => `Shift+Tab 切换权限模式 · 当前 [${formatPermissionModeLabel(permissionMode)}]`,
+    "/image <路径> 让模型看图",
+    "/rewind 回到任意一步并撤销改动 · /undo 一键撤销上一轮",
+    "/diff 查看本会话累计改动",
+  ];
+  let inputHintIndex = 0;
+  const rotateInputHint = (): void => {
+    if (!inputHintsEnabled) return;
+    const template = inputHintTemplates[inputHintIndex % inputHintTemplates.length];
+    inputHintIndex += 1;
+    ui.setInputHint(typeof template === "function" ? template() : template);
+  };
+  rotateInputHint();
+
+  // 上下文用量主动提醒：状态栏变黄（≥60%）/ 变红（≥85%）后各提示一次，压缩后重新计数。
+  let contextWarnedYellow = false;
+  let contextWarnedRed = false;
+  const resetContextUsageWarnings = (): void => {
+    contextWarnedYellow = false;
+    contextWarnedRed = false;
+  };
+  const maybeWarnContextUsage = (): void => {
+    const ratio =
+      estimateMessagesTokens(messages, { includeSystem: true }) / getSelectedContextWindowTokens();
+    if (ratio >= 0.85) {
+      if (contextWarnedRed) return;
+      contextWarnedRed = true;
+      contextWarnedYellow = true;
+      ui.writeLine(
+        colors.warnLine(
+          `上下文已用 ${Math.round(ratio * 100)}%，接近自动压缩阈值 · 可 /compact 手动压缩`,
+        ),
+      );
+    } else if (ratio >= 0.6 && !contextWarnedYellow) {
+      contextWarnedYellow = true;
+      ui.writeLine(
+        colors.warnLine(
+          `上下文已用 ${Math.round(ratio * 100)}% · 可 /compact 提前压缩，避免自动压缩打断长任务`,
+        ),
+      );
+    }
+  };
+
+  // 会话预算提醒（偏好 budget，单位元）：首次超过后在回合小结后给出黄色提示。
+  const sessionBudgetCny =
+    typeof savedPreference?.budget === "number" && savedPreference.budget > 0
+      ? savedPreference.budget
+      : undefined;
+  let budgetExceededNotified = false;
+  const maybeWarnBudget = (): void => {
+    if (!sessionBudgetCny || budgetExceededNotified) return;
+    const summary = costTracker.getSummary();
+    if (summary.totalCostCny > sessionBudgetCny) {
+      budgetExceededNotified = true;
+      ui.writeLine(
+        colors.warnLine(
+          `本会话费用 ${formatCostCny(summary.totalCostCny)} 已超过预算 ${formatCostCny(sessionBudgetCny)}（在 preferences.json 调整 budget）。`,
+        ),
+      );
+    }
+  };
+
   // 回合执行（turn-runner.ts）的状态注入：permissionMode / riskThreshold 用访问器
   // （Plan 审批会在回合中切档），provider / 模型 / 强度在回合开始时快照即可。
   const turnDeps: TurnDeps = {
@@ -1671,11 +1883,36 @@ async function main() {
     showRuntimeWarning,
     refreshAgentVerificationContext,
     startBackgroundInput,
+    getCostSnapshot: () => costTracker.getSummary(),
+    getLastTypeCheck: (sinceMs) =>
+      lastPostEditCheck && lastPostEditCheck.at >= sinceMs
+        ? { ok: lastPostEditCheck.ok }
+        : undefined,
+    listOwnedChanges: (sinceMs) => snapshotEngine.listOwnedChanges(sinceMs),
+    notifyUserAttention,
+    onTurnFinished: (durationMs) => {
+      // 超过 30s 的回合完成后提醒（窗口失焦时也能感知）。
+      if (durationMs > 30_000 && notifyPreference !== "off") {
+        ui.notify(notifyPreference, "Haji 已完成");
+      }
+      rotateInputHint();
+      maybeWarnContextUsage();
+      maybeWarnBudget();
+    },
   };
 
   let fatalExit: unknown;
   try {
     markStartupStage("ready");
+    // 启动参数 -c / -r：进入主循环前恢复历史会话（-c 最近一个；-r 唯一命中直载，否则选择器）。
+    if (sessionResumeRequest) {
+      if (sessionResumeRequest.mode === "latest") {
+        await resumeLatestSession(sessionCommandContext);
+      } else {
+        await resumeByKeyword(sessionCommandContext, sessionResumeRequest.keyword);
+      }
+      ui.dismissStartupHeader();
+    }
     while (true) {
       // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
       if (headlessRequest) {
@@ -1813,9 +2050,11 @@ async function main() {
 
       // 解析斜杠内置命令
       if (trimmedInput.startsWith("/")) {
+        // 别名重写（含多词别名）：/permissions → /permission rules、/instinct distill →
+        // /memory rules distill、/subagent … → /agents new … 等；旧指令全部平滑迁移。
+        trimmedInput = expandCommandInput(trimmedInput);
         const parts = trimmedInput.slice(1).split(/\s+/);
-        // 别名只影响解析：/new → /clear、/quit → /exit 等，展示与补全仍只有规范名。
-        const command = resolveCanonicalCommand(parts[0].toLowerCase());
+        const command = parts[0].toLowerCase();
 
         if (!command) {
           // 只输入 “/” 后回车：打开指令中心，而不是当作未知指令。
@@ -1947,8 +2186,8 @@ async function main() {
           const name = (separator < 0 ? raw : raw.slice(0, separator)).trim();
           const skillArgs = separator < 0 ? "" : raw.slice(separator).trim();
           if (!name) {
-            // 无参数 → Skill 枢纽菜单：动态列出可用 Skill 与管理子命令。
-            await runHubMenu("skill");
+            // /skill 枢纽已取消：无参数时引导到 /skills（Skill 管理列表）。
+            ui.writeLine(colors.gray("/skill <名称> 调用 Skill；查看全部请输入 /skills。"));
             continue;
           }
           const entry = skillRegistry.get(name);
@@ -2003,22 +2242,34 @@ async function main() {
             await runHubMenu("memory");
             continue;
           }
+          if (parts[1]?.toLowerCase() === "rules") {
+            // /memory rules …（原 /instinct …）：行为规则族，UI 文案统一叫“规则”。
+            await handleInstinctCommand(parts.slice(2), experienceCommandContext, colors);
+            continue;
+          }
           await handleMemoryCommand(parts.slice(1), experienceCommandContext, colors);
           continue;
         }
-        if (command === "instinct") {
-          await handleInstinctCommand(parts.slice(1), experienceCommandContext, colors);
-          continue;
-        }
-        if (command === "subagent") {
-          await handleSubagentCommand(subagentCommandContext, { trimmedInput });
-          continue;
-        }
-        if (command === "preset") {
-          await handlePresetCommand(subagentCommandContext, { trimmedInput, parts });
-          continue;
-        }
         if (command === "agents") {
+          const agentsAction = parts[1]?.toLowerCase();
+          if (agentsAction === "new") {
+            // /agents new …（原 /subagent …）：启动子代理 / 交互向导。
+            const rest = parts.slice(2).join(" ");
+            await handleSubagentCommand(subagentCommandContext, {
+              trimmedInput: rest ? `/subagent ${rest}` : "/subagent",
+            });
+            continue;
+          }
+          if (agentsAction === "presets") {
+            // /agents presets …（原 /preset …）：预设管理。
+            const rest = parts.slice(2);
+            const restText = rest.join(" ");
+            await handlePresetCommand(subagentCommandContext, {
+              trimmedInput: restText ? `/preset ${restText}` : "/preset",
+              parts: ["preset", ...rest],
+            });
+            continue;
+          }
           await handleAgentsCommand(subagentCommandContext, { parts });
           continue;
         }
@@ -2051,6 +2302,7 @@ async function main() {
           const layersStr =
             result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "已处于精简状态";
           ui.writeLine(colors.okLine(`上下文压缩完成！(${layersStr})`));
+          resetContextUsageWarnings();
           ui.writeLine(
             colors.cyan(
               `  字符占用: ${result.originalChars.toLocaleString()} ➔ ${result.compactedChars.toLocaleString()} (释放了 ${result.freedPercentage}% 空间)`,
@@ -2153,6 +2405,53 @@ async function main() {
           continue;
         }
         if (command === "permission") {
+          if (parts[1]?.toLowerCase() === "rules") {
+            // /permission rules（原 /permissions）：永久放行规则管理，选中即删除。
+            const rules = loadAllPermissionRules();
+            const entries: Array<{ scopeLevel: PermissionRuleScope; entry: PermissionRuleEntry }> =
+              [
+                ...rules.project.map((entry) => ({ scopeLevel: "project" as const, entry })),
+                ...rules.user.map((entry) => ({ scopeLevel: "user" as const, entry })),
+              ];
+            if (entries.length === 0) {
+              ui.writeLine(colors.gray("暂无永久放行规则。授权卡片中选择「永久允许」即可添加。"));
+              continue;
+            }
+            try {
+              const selection = await readSelectionSafely({
+                title: "永久放行规则（选中即删除，Esc 退出）",
+                items: [
+                  ...entries.map(({ scopeLevel, entry }) => ({
+                    value: `${scopeLevel}::${entry.key}`,
+                    label: entry.key,
+                    description: `${scopeLevel === "project" ? "本项目" : "全局"} · ${entry.scope}`,
+                  })),
+                  { value: "__done__", label: "完成（不删除）", hotkey: "q" },
+                ],
+                selectedValue: "__done__",
+              });
+              if (selection.value === "__done__") continue;
+              const separatorIndex = selection.value.indexOf("::");
+              const scopeLevel = selection.value.slice(0, separatorIndex) as PermissionRuleScope;
+              const ruleKey = selection.value.slice(separatorIndex + 2);
+              const removed = removePermissionRule(ruleKey, scopeLevel);
+              if (removed) {
+                permissionRules = loadAllPermissionRules();
+                sessionToolGrants.keys.delete(ruleKey);
+                ui.writeLine(
+                  colors.okLine(
+                    `已删除永久放行规则：${ruleKey}（${scopeLevel === "project" ? "本项目" : "全局"}）。`,
+                  ),
+                );
+              } else {
+                ui.writeLine(colors.warnLine(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
+              }
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) continue;
+              throw error;
+            }
+            continue;
+          }
           let reqMode = parts[1]?.toLowerCase();
           if (!reqMode) {
             try {
@@ -2200,52 +2499,6 @@ async function main() {
           );
           if (permissionMode === "plan") {
             ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));
-          }
-          continue;
-        }
-        if (command === "permissions") {
-          // 永久放行规则管理：列出项目级与全局规则，选中即删除（同步撤销本会话授权）。
-          const rules = loadAllPermissionRules();
-          const entries: Array<{ scopeLevel: PermissionRuleScope; entry: PermissionRuleEntry }> = [
-            ...rules.project.map((entry) => ({ scopeLevel: "project" as const, entry })),
-            ...rules.user.map((entry) => ({ scopeLevel: "user" as const, entry })),
-          ];
-          if (entries.length === 0) {
-            ui.writeLine(colors.gray("暂无永久放行规则。授权卡片中选择「永久允许」即可添加。"));
-            continue;
-          }
-          try {
-            const selection = await readSelectionSafely({
-              title: "永久放行规则（选中即删除，Esc 退出）",
-              items: [
-                ...entries.map(({ scopeLevel, entry }) => ({
-                  value: `${scopeLevel}::${entry.key}`,
-                  label: entry.key,
-                  description: `${scopeLevel === "project" ? "本项目" : "全局"} · ${entry.scope}`,
-                })),
-                { value: "__done__", label: "完成（不删除）", hotkey: "q" },
-              ],
-              selectedValue: "__done__",
-            });
-            if (selection.value === "__done__") continue;
-            const separatorIndex = selection.value.indexOf("::");
-            const scopeLevel = selection.value.slice(0, separatorIndex) as PermissionRuleScope;
-            const ruleKey = selection.value.slice(separatorIndex + 2);
-            const removed = removePermissionRule(ruleKey, scopeLevel);
-            if (removed) {
-              permissionRules = loadAllPermissionRules();
-              sessionToolGrants.keys.delete(ruleKey);
-              ui.writeLine(
-                colors.okLine(
-                  `已删除永久放行规则：${ruleKey}（${scopeLevel === "project" ? "本项目" : "全局"}）。`,
-                ),
-              );
-            } else {
-              ui.writeLine(colors.warnLine(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
-            }
-          } catch (error) {
-            if (error instanceof TerminalInputCancelledError) continue;
-            throw error;
           }
           continue;
         }
@@ -2317,6 +2570,114 @@ async function main() {
           ui.writeChat(costTracker.formatCostReport().join("\n"));
           continue;
         }
+        if (command === "diff") {
+          // /diff：本会话累计改动（快照日志口径）：文件列表 + 每文件 diff 预览。
+          const ownedChanges = snapshotEngine.listOwnedChanges(0);
+          if (!ownedChanges) {
+            ui.writeLine(
+              colors.warnLine("快照日志不可用（非 git 仓库或快照目录损坏），无法统计本会话改动。"),
+            );
+            continue;
+          }
+          if (ownedChanges.length === 0) {
+            ui.writeLine(colors.gray("本会话尚未修改任何文件。"));
+            continue;
+          }
+          const totalAdded = ownedChanges.reduce((sum, entry) => sum + entry.added, 0);
+          const totalRemoved = ownedChanges.reduce((sum, entry) => sum + entry.removed, 0);
+          const diffLines = [
+            colors.bold(
+              `本会话累计改动（${ownedChanges.length} 个文件 · +${totalAdded} −${totalRemoved}）`,
+            ),
+          ];
+          const kindNote = (kind: string): string | undefined =>
+            kind === "created" ? "新建" : kind === "deleted" ? "已删除" : undefined;
+          for (const entry of ownedChanges) {
+            diffLines.push(
+              formatDiffHeader(
+                entry.path,
+                { added: entry.added, removed: entry.removed },
+                kindNote(entry.kind),
+              ),
+            );
+            if (entry.kind === "deleted" || entry.beforeContent === undefined) continue;
+            let currentContent: string | undefined;
+            try {
+              currentContent = fs.readFileSync(path.resolve(process.cwd(), entry.path), "utf8");
+            } catch {
+              currentContent = undefined;
+            }
+            if (currentContent !== undefined) {
+              diffLines.push(
+                ...buildWriteDiff(entry.beforeContent, currentContent, ui.getContentWidth(), 6)
+                  .lines,
+              );
+            }
+          }
+          diffLines.push(colors.gray("已删除的文件不展示内容 diff；/undo 可一键撤销上一轮改动。"));
+          ui.writeChat(`${diffLines.join("\n")}\n`);
+          continue;
+        }
+        if (command === "undo") {
+          await handleUndoCommand(sessionCommandContext);
+          continue;
+        }
+        if (command === "doctor") {
+          // /doctor：一次性自检。连通测试只对当前 provider 发一次最小请求。
+          let doctorConnection:
+            | { providerLabel: string; baseUrl: string; apiKey: string; model: string }
+            | undefined;
+          try {
+            if (currentProviderName === "deepseek" && deepseekApiKey) {
+              doctorConnection = {
+                providerLabel: providerLabel("deepseek"),
+                baseUrl:
+                  resolveProviderSetting(
+                    "deepseek",
+                    "baseUrl",
+                    process.env.DEEPSEEK_BASE_URL,
+                    "https://api.deepseek.com/v1",
+                    providerConfig,
+                  ) || "https://api.deepseek.com/v1",
+                apiKey: deepseekApiKey,
+                model: selectedModel,
+              };
+            } else if (currentProviderName === "volcengine" && volcApiKey) {
+              doctorConnection = {
+                providerLabel: providerLabel("volcengine"),
+                baseUrl:
+                  resolveProviderSetting(
+                    "volcengine",
+                    "baseUrl",
+                    process.env.VOLC_BASE_URL || process.env.ARK_BASE_URL,
+                    "https://ark.cn-beijing.volces.com/api/coding/v3",
+                    providerConfig,
+                  ) || "https://ark.cn-beijing.volces.com/api/coding/v3",
+                apiKey: volcApiKey,
+                model: selectedModel,
+              };
+            } else {
+              const customEntry = providerConfig.providers[currentProviderName];
+              const customModel = customEntry?.model || customEntry?.models?.[0];
+              if (customEntry?.apiKey && customEntry.baseUrl && customModel) {
+                doctorConnection = {
+                  providerLabel: providerLabel(currentProviderName),
+                  baseUrl: normalizeBaseUrl(customEntry.baseUrl).url,
+                  apiKey: customEntry.apiKey,
+                  model: customModel,
+                };
+              }
+            }
+          } catch {
+            doctorConnection = undefined;
+          }
+          const rows = await collectDoctorChecks({
+            connection: doctorConnection,
+            mcpStatuses: mcpManager.getServerStatuses(),
+          });
+          ui.writeChat(`${renderDoctorReport(rows)}\n`);
+          continue;
+        }
         if (command === "perf") {
           const reset = parts[1]?.toLowerCase() === "reset";
           const snapshot = performanceMonitor.snapshot(reset);
@@ -2339,7 +2700,7 @@ async function main() {
           );
           continue;
         }
-        if (command === "config" || command === "agent" || command === "diag") {
+        if (command === "config" || command === "diag") {
           // 枢纽入口：菜单选中项经待处理队列转发给下一轮主循环分发。
           await runHubMenu(command);
           continue;

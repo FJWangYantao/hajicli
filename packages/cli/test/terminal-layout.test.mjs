@@ -126,7 +126,7 @@ test("renders the compact Todo panel and toggles its expanded state with Ctrl+T"
 
   const collapsed = ui.buildTaskPanel(100, 8).map(stripAnsi);
   assert.deepEqual(collapsed.slice(0, 4), [
-    "任务 · 配置开发环境",
+    "任务 · 配置开发环境  2/8",
     "✓ 阅读前后端配置文件",
     "● 创建数据库容器",
     "○ 修改本地配置",

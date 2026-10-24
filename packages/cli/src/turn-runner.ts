@@ -31,7 +31,7 @@ import { formatAgentTokens } from "./agent-commands.js";
 import {
   describeModelError,
   formatReasoningPreview,
-  formatToolDuration,
+  summarizeModelErrorShort,
   summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
@@ -41,7 +41,7 @@ import {
   shouldShowToolThinkingSummary,
 } from "./markdown-renderer.js";
 import { TerminalInputCancelledError, type TerminalUI } from "./terminal-input.js";
-import { sanitizeTerminalText } from "./terminal-sanitize.js";
+import { buildTurnSummary } from "./terminal-panels.js";
 import { colors } from "./theme.js";
 import {
   buildRepeatedFailureNotice,
@@ -103,6 +103,21 @@ export interface TurnDeps {
   showRuntimeWarning(warning: string): void;
   refreshAgentVerificationContext(messages: ChatMessage[]): boolean;
   startBackgroundInput(initialValue?: string): void;
+  /** 回合小结数据源：会话费用快照（回合前后差值即本回合增量）。 */
+  getCostSnapshot?(): { totalCostCny: number; hasUnpriced: boolean };
+  /** 回合小结数据源：最近一次编辑后验证结果（sinceMs 之前的旧结果不显示）。 */
+  getLastTypeCheck?(sinceMs: number): { ok: boolean } | undefined;
+  /** 回合小结数据源：自某时间戳起会话拥有的工作区改动（快照日志口径）。 */
+  listOwnedChanges?(sinceMs: number): Array<{
+    path: string;
+    added: number;
+    removed: number;
+    kind: "created" | "modified" | "deleted";
+  }> | null;
+  /** 出现授权卡片 / 计划审批等需要用户关注的界面时触发（失焦提醒）。 */
+  notifyUserAttention?(): void;
+  /** 回合正常结束（未中止、未失败）时触发：完成提醒、输入提示轮换等。 */
+  onTurnFinished?(durationMs: number): void;
 }
 
 export interface TurnInput {
@@ -302,6 +317,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let malformedToolRecoveryAttempts = 0;
   // 回合小结：耗时、模型输出 tokens（以 Provider 统计为准）与工具调用次数。
   const turnStartedAt = Date.now();
+  const costBeforeTurn = deps.getCostSnapshot?.();
   let turnOutputTokens: number | undefined;
   let turnToolCalls = 0;
   let turnFailed = false;
@@ -384,11 +400,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       onRetry: ({ attempt, maxRetries, delayMs, error }) => {
         if (isTurnAborted) return;
         requestRetryCount = attempt;
-        const reason = Array.from(sanitizeTerminalText(error.message || String(error)))
-          .slice(0, 60)
-          .join("");
+        // 已知错误类别给分类摘要（认证失败 / 限流 / 网络不可达…），未知错误保留原文截断。
+        const reason = summarizeModelErrorShort(error);
         activityIndicator.progress(
-          `请求失败，${(delayMs / 1000).toFixed(1)}s 后第 ${attempt}/${maxRetries} 次重试：${reason}`,
+          `请求失败（${reason}），${(delayMs / 1000).toFixed(1)}s 后第 ${attempt}/${maxRetries} 次重试`,
         );
       },
     });
@@ -724,23 +739,24 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           keepCalling = false;
         } else {
           try {
+            deps.notifyUserAttention?.();
             const review = await deps.readSelectionSafely({
-              title: "Plan ready — choose how Haji should execute it",
+              title: "计划已就绪 · 选择执行方式",
               items: [
                 {
                   value: "auto",
-                  label: "Auto Execute",
-                  description: "自动执行安全操作，高风险操作由安全引擎拦截",
+                  label: "批准并自动执行",
+                  description: "切到 [自动]，高风险操作由安全引擎拦截",
                 },
                 {
                   value: "manual",
-                  label: "Approve Manually",
-                  description: "每个修改型工具都先请求你的批准",
+                  label: "批准，逐步审批",
+                  description: "切到 [默认]，每个修改型工具都先询问",
                 },
                 {
                   value: "no",
-                  label: "No, Revise Plan",
-                  description: "留在 Plan Mode，继续修改计划",
+                  label: "修改计划…",
+                  description: "直接输入修改意见，继续留在计划模式",
                 },
               ],
               selectedValue: "auto",
@@ -761,7 +777,22 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               );
               keepCalling = true;
             } else {
-              ui.writeLine(colors.gray("计划未批准，仍处于 Plan Mode；你可以继续要求调整计划。"));
+              ui.writeLine(colors.gray("计划未批准，仍处于计划模式。"));
+              // 直接打开输入框收集修改意见：提交后作为下一条用户消息进入下一轮。
+              const draft = ui.cancelInput();
+              try {
+                const feedback = await ui.readInput({ prompt: "修改意见 › " });
+                const trimmedFeedback = feedback.trim();
+                if (trimmedFeedback) {
+                  pendingInputs.push(trimmedFeedback);
+                  ui.setQueue(pendingInputs);
+                  ui.writeLine(colors.gray("已记录修改意见，下一轮提交给模型（仍处于计划模式）。"));
+                }
+              } catch (inputError) {
+                if (!(inputError instanceof TerminalInputCancelledError)) throw inputError;
+              } finally {
+                deps.startBackgroundInput(draft);
+              }
               keepCalling = false;
             }
           } catch (error) {
@@ -798,12 +829,38 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   }
   stopActiveTurnVisuals();
   if (!isTurnAborted && !turnFailed) {
-    const summary = [
-      `完成 · ${formatToolDuration(Date.now() - turnStartedAt)}`,
-      turnOutputTokens !== undefined ? `输出 ${formatAgentTokens(turnOutputTokens)} tokens` : "",
-      turnToolCalls > 0 ? `${turnToolCalls} 次工具调用（Ctrl+O 展开最后一批输出）` : "",
-    ].filter(Boolean);
-    ui.writeLine(colors.gray(`  ${summary.join(" · ")}`));
+    const durationMs = Date.now() - turnStartedAt;
+    // 改动统计只覆盖本回合（快照日志按时间戳过滤）；类型检查取本回合最近一次验证结果。
+    const ownedChanges = deps.listOwnedChanges?.(turnStartedAt - 1);
+    const changedFiles =
+      ownedChanges && ownedChanges.length > 0
+        ? {
+            files: ownedChanges.length,
+            added: ownedChanges.reduce((sum, entry) => sum + entry.added, 0),
+            removed: ownedChanges.reduce((sum, entry) => sum + entry.removed, 0),
+          }
+        : undefined;
+    const typeCheck = deps.getLastTypeCheck?.(turnStartedAt);
+    const costAfter = deps.getCostSnapshot?.();
+    const costDeltaCny =
+      costAfter !== undefined && costBeforeTurn !== undefined
+        ? Math.max(0, costAfter.totalCostCny - costBeforeTurn.totalCostCny)
+        : undefined;
+    const summary = buildTurnSummary(
+      {
+        durationMs,
+        outputTokens: turnOutputTokens,
+        toolCalls: turnToolCalls,
+        ...(changedFiles ? { changedFiles } : {}),
+        ...(typeCheck ? { typeCheck } : {}),
+        ...(costDeltaCny !== undefined && !costAfter?.hasUnpriced && costDeltaCny > 0
+          ? { costDeltaCny }
+          : {}),
+      },
+      ui.getContentWidth(),
+    );
+    ui.writeLine(colors.gray(`  ${summary}`));
+    deps.onTurnFinished?.(durationMs);
   }
   ui.onEsc();
   deps.setForegroundAbortSignal(undefined);

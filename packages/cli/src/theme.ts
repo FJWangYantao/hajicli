@@ -639,6 +639,13 @@ function paintText(text: string, color: string, bold = false): string {
   return `${bold ? BOLD : ""}${fgSeq(color)}${text}${themeReset()}`;
 }
 
+/** diff 行内高亮：色块背景 + 主题背景色作前景（明暗反转），任意主题下都有足够对比度。 */
+function paintBgText(text: string, color: string): string {
+  if (getColorLevel() === "mono") return text;
+  const theme = getTheme();
+  return `${bgSeq(color)}${fgSeq(theme.background)}${text}${themeReset()}`;
+}
+
 /**
  * 主题化颜色工具集，与 index.ts 历史的 `colors` 对象形态兼容，
  * 便于直接替换。所有方法均在收尾调用 {@link themeReset} 恢复主题背景。
@@ -659,6 +666,8 @@ export const paint = {
   cyan: (text: string): string => paintText(text, getTheme().cyan),
   bold: (text: string): string =>
     getColorLevel() === "mono" ? text : `${BOLD}${text}${themeReset()}`,
+  redBg: (text: string): string => paintBgText(text, getTheme().red),
+  greenBg: (text: string): string => paintBgText(text, getTheme().green),
   // 带状态图标的一行提示：状态色只上图标，文字保持正文色。
   okLine: (text: string): string => `${paintText("✓", getTheme().green, true)} ${text}`,
   warnLine: (text: string): string => `${paintText("!", getTheme().yellow, true)} ${text}`,

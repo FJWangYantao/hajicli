@@ -12,7 +12,7 @@ test("指令中心：一级列表覆盖全部枢纽，且每个枢纽都有可�
   const menus = buildHubMenus();
   const hubNames = Object.keys(menus).sort();
 
-  assert.deepEqual(hubNames, ["agent", "config", "diag", "memory", "skill"]);
+  assert.deepEqual(hubNames, ["agents", "config", "diag", "memory"]);
   for (const hub of hubNames) {
     assert.ok(commands.includes(`/${hub}`), `枢纽 /${hub} 必须出现在一级列表`);
     assert.ok(menus[hub].items.length > 0, `枢纽 /${hub} 的二级菜单不能为空`);

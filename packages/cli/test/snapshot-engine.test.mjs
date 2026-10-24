@@ -242,3 +242,61 @@ test("lightweight anchors and scoped edit checkpoints only track the target file
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("listOwnedChanges aggregates per-file numstat for /diff and turn summaries", () => {
+  const cwd = createRepository();
+  try {
+    const engine = new SnapshotEngine(cwd);
+    engine.setScope("session-list-owned");
+    const anchor = engine.createSnapshot("before user message");
+    assert.ok(anchor);
+
+    const first = engine.beginMutation(anchor, ["tracked.txt", "created.txt"]);
+    assert.ok(first);
+    fs.writeFileSync(path.join(cwd, "tracked.txt"), "committed\nfirst tool change\n");
+    fs.writeFileSync(path.join(cwd, "created.txt"), "line 1\nline 2\n");
+    assert.ok(engine.completeMutation(first));
+
+    const second = engine.beginMutation(anchor, ["tracked.txt"]);
+    assert.ok(second);
+    fs.writeFileSync(path.join(cwd, "tracked.txt"), "committed\nsecond tool change\nmore\n");
+    assert.ok(engine.completeMutation(second));
+
+    const entries = engine.listOwnedChanges(0);
+    assert.ok(entries);
+    assert.equal(entries.length, 2);
+    // created.txt：整文件新增（2 行）。
+    const created = entries.find((entry) => entry.path === "created.txt");
+    assert.equal(created.kind, "created");
+    assert.equal(created.added, 2);
+    assert.equal(created.removed, 0);
+    assert.equal(created.beforeContent, undefined);
+    // tracked.txt：最早 before（committed）到最晚 after（3 行）对比。
+    const modified = entries.find((entry) => entry.path === "tracked.txt");
+    assert.equal(modified.kind, "modified");
+    assert.equal(modified.beforeContent, "committed\n");
+    assert.equal(modified.added, 2);
+    assert.equal(modified.removed, 0);
+
+    // 时间戳过滤：起点晚于全部记录时不返回任何条目。
+    const later = engine.listOwnedChanges(Date.now() + 60_000);
+    assert.deepEqual(later, []);
+
+    // 删除文件：窗口内新建后又删除 → 净变化为零，不再出现；删除既有文件归类为 deleted。
+    const third = engine.beginMutation(anchor, ["created.txt", "external.txt"]);
+    assert.ok(third);
+    fs.rmSync(path.join(cwd, "created.txt"));
+    fs.rmSync(path.join(cwd, "external.txt"));
+    assert.ok(engine.completeMutation(third));
+    const afterDelete = engine.listOwnedChanges(0);
+    assert.equal(
+      afterDelete.find((entry) => entry.path === "created.txt"),
+      undefined,
+    );
+    const deleted = afterDelete.find((entry) => entry.path === "external.txt");
+    assert.equal(deleted.kind, "deleted");
+    assert.ok(deleted.removed >= 1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

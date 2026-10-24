@@ -183,20 +183,21 @@ test("permission card items expose persistent options only with a grant", () => 
     key: "bash:npm test",
     scope: "npm test 开头的命令",
   });
+  // 永久允许只有一项（作用域经 secondary 轴 Tab 切换），另加“拒绝并说明”。
   assert.deepEqual(
     withGrant.map((item) => item.value),
-    ["once", "session", "always-project", "always-user", "deny"],
+    ["once", "session", "always", "deny", "deny-reason"],
   );
   assert.deepEqual(
     withGrant.map((item) => item.hotkey),
-    ["y", "a", "p", "g", "n"],
+    ["y", "a", "p", "n", "e"],
   );
 
   // 无授权范围（组合命令等）：只有单次允许/拒绝，不提供任何“总是允许”
   const withoutGrant = buildPermissionCardItems(undefined);
   assert.deepEqual(
     withoutGrant.map((item) => item.value),
-    ["once", "deny"],
+    ["once", "deny", "deny-reason"],
   );
 });
 
@@ -209,12 +210,14 @@ test("index.ts wires persistent rules into the PreToolUse hook and the card", ()
   const evaluateCall = source.indexOf("permissionEngine.evaluate", hookStart);
   assert.ok(earlyCheck > hookStart && evaluateCall > earlyCheck, "持久规则早于权限引擎评估");
   assert.ok(/mode !== "plan" && mode !== "bypass-permissions"/.test(source));
-  // 授权卡片选项来自纯函数；永久允许写盘后刷新缓存并给出确认提示
+  // 授权卡片选项来自纯函数；永久允许（作用域走 secondary 轴）写盘后刷新缓存并给出确认提示
   assert.ok(source.includes("buildPermissionCardItems(grant)"));
-  assert.ok(source.includes('selection.value === "always-project"'));
+  assert.ok(source.includes('selection.value === "always"'));
+  assert.ok(source.includes('selection.secondaryValue === "user" ? "user" : "project"'));
+  assert.ok(source.includes('selection.value === "deny-reason"'));
   assert.ok(source.includes("savePermissionRule"));
   assert.ok(source.includes("permissionRules = loadAllPermissionRules()"));
-  // /permissions 管理入口存在且删除后同步撤销会话授权
-  assert.ok(source.includes('command === "permissions"'));
+  // /permission rules 管理入口存在且删除后同步撤销会话授权
+  assert.ok(source.includes('parts[1]?.toLowerCase() === "rules"'));
   assert.ok(source.includes("sessionToolGrants.keys.delete(ruleKey)"));
 });

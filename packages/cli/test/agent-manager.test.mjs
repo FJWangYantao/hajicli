@@ -683,8 +683,12 @@ test("agent panel includes per-agent runtime configuration when provided", () =>
 test("CLI registers deterministic subagent and agent management commands", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");
-  assert.match(surface, /command: "\/subagent"/);
+  // /subagent 已收敛为 /agents new 的别名；指令面以 /agents 为枢纽。
+  assert.match(surface, /command: "\/agents new"/);
   assert.match(surface, /command: "\/agents"/);
+  assert.match(surface, /aliases: \["subagent"\]/);
+  assert.match(source, /command === "agents"/);
+  assert.match(source, /agentsAction === "new"/);
   assert.match(source, /agentManager\.abortAll\(\)/);
   assert.match(source, /maxReadonlyConcurrency: 3/);
   assert.match(source, /refreshAgentVerificationContext\(messages\)/);
