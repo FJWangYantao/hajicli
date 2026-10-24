@@ -182,7 +182,7 @@ async function main() {
   // 无头单次模式（haji -p "prompt"）：跑完一个回合后退出，不进入交互主循环。
   const headlessParse = parseHeadlessArgs(cliArgs);
   if (headlessParse.error) {
-    console.error(colors.boldRed(`错误: ${headlessParse.error}`));
+    console.error(colors.failLine(headlessParse.error));
     process.exit(1);
   }
   const headlessRequest = headlessParse.request;
@@ -469,7 +469,7 @@ async function main() {
   if (headlessRequest && permissionMode === "plan") {
     // 无头模式没有 Plan 审批交互（选择器会静默取默认项），plan 档自动按 default 执行。
     permissionMode = "default";
-    console.error(colors.yellow("无头模式不支持 Plan 审批，权限档位已按 default 执行。"));
+    console.error(colors.warnLine("无头模式不支持 Plan 审批，权限档位已按 default 执行。"));
   }
 
   const hookEngine = new HookEngine();
@@ -1386,7 +1386,7 @@ async function main() {
           ),
         );
       } else {
-        ui.writeLine(colors.yellow(`  规则写入失败，${grant.scope} 仅本会话内放行。`));
+        ui.writeLine(`  ${colors.warnLine(`规则写入失败，${grant.scope} 仅本会话内放行。`)}`);
       }
     }
     return null;
@@ -2142,12 +2142,12 @@ async function main() {
               permissionRules = loadAllPermissionRules();
               sessionToolGrants.keys.delete(ruleKey);
               ui.writeLine(
-                colors.green(
+                colors.okLine(
                   `已删除永久放行规则：${ruleKey}（${scopeLevel === "project" ? "本项目" : "全局"}）。`,
                 ),
               );
             } else {
-              ui.writeLine(colors.yellow(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
+              ui.writeLine(colors.warnLine(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
             }
           } catch (error) {
             if (error instanceof TerminalInputCancelledError) continue;
