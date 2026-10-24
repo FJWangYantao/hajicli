@@ -6,12 +6,13 @@
  * provider-commands.ts，实例构建在 index.ts 的 buildProvider。
  */
 import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from "@hajicli/core";
-import { MODEL_REGISTRY } from "@hajicli/plugins";
+import { getModelPricing, MODEL_REGISTRY } from "@hajicli/plugins";
 import {
   isBuiltinProvider,
   type ProviderConfig,
   resolveProviderSetting,
 } from "./provider-config.js";
+import { loadUserModels } from "./user-models.js";
 
 export const DEEPSEEK_MODELS = MODEL_REGISTRY.filter((model) => model.provider === "deepseek");
 export const VOLCENGINE_MODELS = MODEL_REGISTRY.filter((model) => model.provider === "volcengine");
@@ -57,6 +58,9 @@ export function detectProviderForModel(
       if (entry?.models?.includes(modelValue)) return name;
     }
   }
+  // 用户模型表（~/.haji/models.json）：内置 provider 的新模型无需发版即可正确路由。
+  const userModel = loadUserModels().find((entry) => entry.model === modelValue);
+  if (userModel) return userModel.provider;
   return "deepseek";
 }
 
@@ -161,4 +165,42 @@ export function resolveInitialSelection(params: InitialSelectionParams): Initial
 export function normalizeReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
   const normalized = value?.trim().toLowerCase();
   return isReasoningEffort(normalized) ? normalized : undefined;
+}
+
+export interface UtilityModelCandidate {
+  value: string;
+}
+
+/**
+ * 解析杂活模型（压缩摘要 / 会话标题 / 经验提炼）：偏好显式指定时优先
+ * （不可用则回退主模型，绝不静默换选）；否则在可用模型里按注册表单价
+ * 挑最便宜的，无单价信息时按 flash/lite/mini 命名惯例兜底。
+ * 返回 undefined 表示没有合适的杂活模型，调用方直接用主模型。
+ */
+export function resolveUtilityModel(
+  preference: string | undefined,
+  availableModels: readonly UtilityModelCandidate[],
+): string | undefined {
+  if (preference) {
+    return availableModels.some((model) => model.value === preference) ? preference : undefined;
+  }
+  type PricedCandidate = {
+    value: string;
+    pricing: NonNullable<ReturnType<typeof getModelPricing>>;
+  };
+  const priced = availableModels
+    .map((model): PricedCandidate | { value: string; pricing: undefined } => ({
+      value: model.value,
+      pricing: getModelPricing(model.value),
+    }))
+    .filter((entry): entry is PricedCandidate => entry.pricing !== undefined);
+  if (priced.length > 0) {
+    const total = (pricing: PricedCandidate["pricing"]): number =>
+      pricing.inputPerMTokens + pricing.outputPerMTokens;
+    return priced.reduce((cheapest, entry) =>
+      total(entry.pricing) < total(cheapest.pricing) ? entry : cheapest,
+    ).value;
+  }
+  const heuristic = availableModels.find((model) => /flash|lite|mini|small|haiku/i.test(model.value));
+  return heuristic?.value;
 }

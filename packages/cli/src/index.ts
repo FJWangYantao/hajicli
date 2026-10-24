@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import {
   AGENT_VERIFICATION_CONTEXT_END,
@@ -95,8 +96,11 @@ import {
   summarizeToolResult,
 } from "./cli-runtime.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
+import { CostTracker } from "./cost-tracker.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
+import { expandFileMentions } from "./file-mentions.js";
 import { parseHeadlessArgs } from "./headless.js";
+import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import {
   isToolAllowedPersistently,
@@ -106,6 +110,11 @@ import {
   removePermissionRule,
   savePermissionRule,
 } from "./permission-rules.js";
+import {
+  detectProjectCheckCommand,
+  formatVerificationNotice,
+  runProjectCheck,
+} from "./post-edit-verify.js";
 import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
   isBuiltinProvider,
@@ -120,9 +129,11 @@ import {
   detectProviderForModel,
   EFFORT_OPTIONS,
   normalizeReasoningEffort,
+  providerHasApiKey,
   providerLabel,
   providerPlainLabel,
   resolveInitialSelection,
+  resolveUtilityModel,
   VOLCENGINE_MODELS,
 } from "./provider-models.js";
 import {
@@ -149,6 +160,7 @@ import { colors, setThemeAppearance } from "./theme.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
 import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
+import { loadUserModels } from "./user-models.js";
 
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
@@ -174,6 +186,26 @@ async function main() {
     process.exit(1);
   }
   const headlessRequest = headlessParse.request;
+  if (headlessRequest?.prompt === "-") {
+    // prompt 传 "-" 表示从 stdin 管道读取（cat error.log | haji -p "-"）。
+    if (process.stdin.isTTY) {
+      console.error(
+        colors.boldRed('错误: prompt 为 "-" 时需要通过管道提供内容（stdin 不能是终端）。'),
+      );
+      process.exit(1);
+    }
+    try {
+      headlessRequest.prompt = fs.readFileSync(0, "utf8");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(colors.boldRed(`错误: 读取 stdin 失败：${detail}`));
+      process.exit(1);
+    }
+    if (!headlessRequest.prompt.trim()) {
+      console.error(colors.boldRed("错误: stdin 内容为空。"));
+      process.exit(1);
+    }
+  }
   // 无头模式下所有提示性输出改道 stderr，stdout 只保留模型正文与工具块。
   const progressLog = (message: string): void => {
     if (headlessRequest) console.error(message);
@@ -300,35 +332,64 @@ async function main() {
       providerConfig.providers[providerName]?.modelContextWindows?.[modelValue],
     );
 
-  // 构建可用模型列表：内置注册表（有 key）+ 自定义 provider 声明的模型
-  const buildAvailableModels = () => [
-    ...(deepseekApiKey
-      ? DEEPSEEK_MODELS.map((m) => ({
-          ...m,
-          contextWindowTokens:
-            configuredContextWindow("deepseek", m.value) ?? m.contextWindowTokens,
-        }))
-      : []),
-    ...(volcApiKey
-      ? VOLCENGINE_MODELS.map((m) => ({
-          ...m,
-          contextWindowTokens:
-            configuredContextWindow("volcengine", m.value) ?? m.contextWindowTokens,
-        }))
-      : []),
-    ...Object.entries(providerConfig.providers)
-      .filter(([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey))
-      .flatMap(([name, entry]) =>
-        (entry?.models || []).map((model) => ({
-          value: model,
-          label: model,
-          description: `自定义 · ${name}`,
-          provider: name,
-          contextWindowTokens: configuredContextWindow(name, model) ?? 128_000,
-          maxOutputTokens: 8_192,
-        })),
-      ),
-  ];
+  // 构建可用模型列表：内置注册表（有 key）+ 自定义 provider 声明的模型 + 用户模型表
+  type AvailableModelOption = {
+    value: string;
+    label: string;
+    description: string;
+    provider: string;
+    contextWindowTokens: number;
+    maxOutputTokens: number;
+  };
+  const buildAvailableModels = (): AvailableModelOption[] => {
+    const available: AvailableModelOption[] = [
+      ...(deepseekApiKey
+        ? DEEPSEEK_MODELS.map((m) => ({
+            ...m,
+            contextWindowTokens:
+              configuredContextWindow("deepseek", m.value) ?? m.contextWindowTokens,
+          }))
+        : []),
+      ...(volcApiKey
+        ? VOLCENGINE_MODELS.map((m) => ({
+            ...m,
+            contextWindowTokens:
+              configuredContextWindow("volcengine", m.value) ?? m.contextWindowTokens,
+          }))
+        : []),
+    ];
+    available.push(
+      ...Object.entries(providerConfig.providers)
+        .filter(([name, entry]) => !isBuiltinProvider(name) && Boolean(entry?.apiKey))
+        .flatMap(([name, entry]) =>
+          (entry?.models || []).map((model) => ({
+            value: model,
+            label: model,
+            description: `自定义 · ${name}`,
+            provider: name,
+            contextWindowTokens: configuredContextWindow(name, model) ?? 128_000,
+            maxOutputTokens: 8_192,
+          })),
+        ),
+    );
+    // 用户模型表（~/.haji/models.json）：内置 provider 的新模型无需发版即可选用。
+    const userModelEntries = loadUserModels().filter(
+      (entry) =>
+        providerHasApiKey(entry.provider, providerConfig, deepseekApiKey, volcApiKey) &&
+        !available.some((existing) => existing.value === entry.model),
+    );
+    available.push(
+      ...userModelEntries.map((entry) => ({
+        value: entry.model,
+        label: entry.model,
+        description: entry.description || `用户登记 · ${entry.provider}`,
+        provider: entry.provider,
+        contextWindowTokens: normalizeContextWindowTokens(entry.contextWindowTokens) ?? 128_000,
+        maxOutputTokens: entry.maxOutputTokens ?? 8_192,
+      })),
+    );
+    return available;
+  };
 
   // 构建所有可用的模型选项（仅包含有对应 API Key 的 Provider 的模型）
   let availableModels = buildAvailableModels();
@@ -347,6 +408,33 @@ async function main() {
   let selectedModel: string = initialSelection.model;
   let currentProviderName: string = initialSelection.providerName;
 
+  // 杂活模型运行时（压缩摘要/会话标题/经验提炼共用）：按单价自动挑最便宜的，
+  // 偏好 utilityModel 显式指定时优先。跨 provider 时按需构建独立 provider 实例。
+  let utilityProviderCache: { model: string; instance: ObservableModelProvider } | undefined;
+  const getUtilityRuntime = ():
+    | { provider: ObservableModelProvider; model: string }
+    | undefined => {
+    const utilityModel = resolveUtilityModel(
+      typeof savedPreference?.utilityModel === "string" && savedPreference.utilityModel.trim()
+        ? savedPreference.utilityModel.trim()
+        : undefined,
+      availableModels,
+    );
+    if (!utilityModel || utilityModel === selectedModel) return undefined;
+    if (utilityProviderCache?.model !== utilityModel) {
+      try {
+        utilityProviderCache = { model: utilityModel, instance: buildProvider(utilityModel) };
+      } catch {
+        // 杂活模型构建失败（如 Key 失效）时回退主模型，不阻断主流程。
+        utilityProviderCache = undefined;
+        return undefined;
+      }
+    }
+    return utilityProviderCache
+      ? { provider: utilityProviderCache.instance, model: utilityProviderCache.model }
+      : undefined;
+  };
+
   // 当前模型上下文窗口：provider 配置按模型声明优先于内置注册表；环境变量始终最高。
   const getSelectedContextWindowTokens = (): number =>
     getModelContextWindowTokens(
@@ -362,6 +450,8 @@ async function main() {
     "medium";
 
   const permissionEngine = new PermissionEngine();
+  // 会话级费用记账：主线回合的 onUsage 按注册表单价估算（/cost 查看）。
+  const costTracker = new CostTracker();
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   let permissionRules = loadAllPermissionRules();
@@ -422,6 +512,22 @@ async function main() {
   });
 
   // 2. 注册 PostToolUse Hook：用于 Trace 轨迹审计收集与自动 Git 快照生成
+  // 编辑后验证（LSP 轻量版）：主 Agent 的 write/edit 成功后跑项目 typecheck，
+  // 诊断以系统消息注入会话，模型在下一次调用时可见并自纠。带冷却时间防编辑连发拖慢回合。
+  let postEditVerifyCommand: string | undefined | null = null;
+  let postEditVerifyLastRunAt = 0;
+  const POST_EDIT_VERIFY_COOLDOWN_MS = 10_000;
+  const maybeRunPostEditVerify = async (): Promise<string | undefined> => {
+    if (postEditVerifyCommand === null) {
+      postEditVerifyCommand = detectProjectCheckCommand(process.cwd());
+    }
+    if (!postEditVerifyCommand) return undefined;
+    const now = Date.now();
+    if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
+    postEditVerifyLastRunAt = now;
+    const result = await runProjectCheck(postEditVerifyCommand, process.cwd());
+    return formatVerificationNotice(result, postEditVerifyCommand);
+  };
   hookEngine.register("PostToolUse", async (ctx) => {
     const isApproved =
       !ctx.toolOutput?.startsWith("错误:") && !ctx.toolOutput?.startsWith("[安全引擎拒绝拦截]");
@@ -443,6 +549,15 @@ async function main() {
       agentId: ctx.agentId,
       depth: ctx.depth,
     });
+    if (
+      !ctx.agentId &&
+      (ctx.toolName === "write" || ctx.toolName === "edit") &&
+      ctx.toolOutput &&
+      isApproved
+    ) {
+      const notice = await maybeRunPostEditVerify();
+      if (notice) messages.push({ role: "system", content: notice });
+    }
   });
 
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
@@ -501,13 +616,14 @@ async function main() {
 
     activityIndicator.start("compacting", "压缩上下文", "正在生成结构化摘要");
     try {
-      const summary = await provider.complete(
+      const utility = getUtilityRuntime();
+      const summary = await (utility?.provider ?? provider).complete(
         [
           { role: "system", content: summaryInstruction },
           { role: "user", content: `以下是待压缩的完整 JSONL 对话记录：\n\n${transcript}` },
         ],
         {
-          model: selectedModel,
+          model: utility?.model ?? selectedModel,
           reasoningEffort: "low",
           thinking: false,
           maxTokens: 6000,
@@ -664,6 +780,7 @@ async function main() {
     continuationPrompt: colors.muted("│ "),
     renderBorder: (width) => colors.gray("─".repeat(width)),
     forceNonInteractive: Boolean(headlessRequest),
+    muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
   });
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
@@ -1363,6 +1480,8 @@ async function main() {
     getAvailableModels: () => availableModels,
     rebuildAvailableModels: () => {
       availableModels = buildAvailableModels();
+      // provider 配置变化后旧实例的端点/Key 可能已失效，下次按需重建。
+      utilityProviderCache = undefined;
     },
     getSelectedModel: () => selectedModel,
     setSelectedModel: (model) => {
@@ -1442,6 +1561,8 @@ async function main() {
     getProvider: () => provider,
     getSelectedModel: () => selectedModel,
     getReasoningEffort: () => reasoningEffort,
+    recordCost: (model, usage, purpose) => costTracker.record(model, usage, purpose),
+    getTitleUtility: getUtilityRuntime,
     getPermissionMode: () => permissionMode,
     getRiskThreshold: () => riskThreshold,
     getMessages: () => messages,
@@ -1481,12 +1602,50 @@ async function main() {
     while (true) {
       // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
       if (headlessRequest) {
+        const headlessStartedAt = Date.now();
         await runAgentTurn(turnDeps, {
           forwardedPrompt: headlessRequest.prompt,
           commandInput: headlessRequest.prompt,
           manualSkillExchange: undefined,
           promptDisplayStartOffset: ui.getChatLength(),
         });
+        if (headlessRequest.outputFormat === "json") {
+          // JSON 模式：stdout 全程静音，这里统一输出结构化结果（正文取最后一条助手消息）。
+          const finalMessages = turnDeps.getMessages();
+          const lastAssistant = [...finalMessages]
+            .reverse()
+            .find(
+              (message) =>
+                message.role === "assistant" &&
+                typeof message.content === "string" &&
+                message.content.trim().length > 0,
+            );
+          const cost = costTracker.getSummary();
+          const currentSession = sessionManager.getCurrentSession();
+          process.stdout.write(
+            `${JSON.stringify(
+              {
+                ok: true,
+                prompt: headlessRequest.prompt,
+                model: selectedModel,
+                text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
+                toolCalls: finalMessages.filter((message) => message.role === "tool").length,
+                sessionId: currentSession.id,
+                sessionTitle: currentSession.title,
+                usage: {
+                  requests: cost.requests,
+                  promptTokens: cost.promptTokens,
+                  completionTokens: cost.completionTokens,
+                  estimatedCostCny: Number(cost.totalCostCny.toFixed(6)),
+                  hasUnpricedModels: cost.hasUnpriced,
+                },
+                durationMs: Date.now() - headlessStartedAt,
+              },
+              null,
+              2,
+            )}\n`,
+          );
+        }
         break;
       }
       injectAgentNotifications();
@@ -1538,6 +1697,15 @@ async function main() {
         ui.writeLine();
         ui.writeLine(colors.userMsg(displayInput));
         ui.writeLine();
+        // @ 文件引用：提交时把命中文件的内容展开为附件块（对话回显保持用户原话）。
+        const mentionExpansion = expandFileMentions(trimmedInput, process.cwd());
+        if (mentionExpansion.attached.length > 0) {
+          forwardedPrompt = mentionExpansion.prompt;
+          ui.writeLine(colors.gray(`  ↳ 已附加文件：${mentionExpansion.attached.join("、")}`));
+        }
+        if (mentionExpansion.skipped.length > 0) {
+          ui.writeLine(colors.yellow(`  ↳ 未附加：${mentionExpansion.skipped.join("、")}`));
+        }
       }
 
       // 解析斜杠内置命令
@@ -1765,7 +1933,8 @@ async function main() {
           continue;
         }
         if (command === "resume") {
-          await handleResumeCommand(sessionCommandContext);
+          // /resume <关键词>：按标题/首条用户消息模糊过滤后再选择。
+          await handleResumeCommand(sessionCommandContext, parts.slice(1).join(" ").trim());
           continue;
         }
         if (command === "rewind") {
@@ -1986,6 +2155,36 @@ async function main() {
           }
           continue;
         }
+        if (command === "image") {
+          // /image <图片路径> [提示词]：加载本地图片为附件并立即提问（需视觉模型）。
+          const parsedImage = parseImageCommand(parts);
+          if (!parsedImage) {
+            ui.writeLine(
+              colors.red("用法：/image <图片路径> [提示词]，例如 /image D:\\shot.png 这是什么报错"),
+            );
+            continue;
+          }
+          const attachment = loadImageAttachment(parsedImage.imagePath);
+          if (!attachment.ok) {
+            ui.writeLine(colors.red(`! ${attachment.error}`));
+            continue;
+          }
+          ui.writeLine(
+            colors.gray(`  ↳ 已附加图片：${parsedImage.imagePath}（${attachment.mimeType}）`),
+          );
+          await runAgentTurn(turnDeps, {
+            forwardedPrompt: parsedImage.prompt,
+            commandInput: trimmedInput,
+            manualSkillExchange: undefined,
+            promptDisplayStartOffset: ui.getChatLength(),
+            promptAttachments: [{ mimeType: attachment.mimeType, base64: attachment.base64 }],
+          });
+          continue;
+        }
+        if (command === "cost") {
+          ui.writeChat(costTracker.formatCostReport().join("\n"));
+          continue;
+        }
         if (command === "perf") {
           const reset = parts[1]?.toLowerCase() === "reset";
           const snapshot = performanceMonitor.snapshot(reset);
@@ -2082,11 +2281,11 @@ async function main() {
         sessionId: sessionManager.getCurrentSession().id,
         cwd: process.cwd(),
       });
-      // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选
+      // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选（LLM 路径走杂活模型）
       const distillEngine = new DistillEngine({
         store: experienceStore,
-        provider: () => provider,
-        model: () => selectedModel,
+        provider: () => getUtilityRuntime()?.provider ?? provider,
+        model: () => getUtilityRuntime()?.model ?? selectedModel,
         logger: (msg) => progressLog(colors.gray(`  ${msg}`)),
       });
       const distillSummary = await distillEngine.runDistill(sessionObs, {

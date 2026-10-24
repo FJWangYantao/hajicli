@@ -247,13 +247,20 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "查看性能指标（reset 清空采样）",
         subcommands: [{ command: "/perf reset", description: "读取后清空性能采样" }],
       },
+      { command: "/cost", description: "本会话费用估算（按模型单价与 token 用量）" },
       { command: "/viewer", description: "打开 Trace 观测中心" },
       { command: "/mcp", description: "查看 MCP server 与外部工具状态" },
     ],
   },
   { command: "/compact", description: "多层上下文压缩" },
+  {
+    command: "/image",
+    description: "附加本地图片并提问（需视觉模型）",
+    argHint: "<图片路径> [提示词]",
+    argRequired: true,
+  },
   { command: "/clear", description: "清空聊天与上下文" },
-  { command: "/resume", description: "历史对话查看与热切换" },
+  { command: "/resume", description: "历史对话查看与热切换", argHint: "[标题关键词]" },
   { command: "/rewind", description: "历史节点撤销与代码回退" },
   { command: "/exit", description: "退出 haji" },
 ];
@@ -647,8 +654,9 @@ ${colors.bold("用法:")}
 ${colors.bold("选项:")}
   -v, --version       显示版本号
   -h, --help          显示帮助手册
-  -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文）
+  -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文；prompt 传 "-" 从 stdin 管道读取）
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
+  --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）
 
 ${colors.bold("快捷命令 (对话内，枢纽进入后选择细分项):")}
 ${renderCommandSurfaceLines().join("\n")}

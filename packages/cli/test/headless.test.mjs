@@ -19,20 +19,24 @@ test("parseHeadlessArgs returns empty when no -p flag is present", () => {
 
 test("parseHeadlessArgs accepts -p and --print with a prompt", () => {
   assert.deepEqual(parseHeadlessArgs(["-p", "解释这段代码"]), {
-    request: { prompt: "解释这段代码", permissionMode: undefined },
+    request: { prompt: "解释这段代码", permissionMode: undefined, outputFormat: undefined },
   });
   assert.deepEqual(parseHeadlessArgs(["--print", "hello"]), {
-    request: { prompt: "hello", permissionMode: undefined },
+    request: { prompt: "hello", permissionMode: undefined, outputFormat: undefined },
   });
 });
 
 test("parseHeadlessArgs combines -p with --permission-mode in any order", () => {
   assert.deepEqual(parseHeadlessArgs(["-p", "hi", "--permission-mode", "accept-edit"]), {
-    request: { prompt: "hi", permissionMode: "accept-edit" },
+    request: { prompt: "hi", permissionMode: "accept-edit", outputFormat: undefined },
   });
   assert.deepEqual(parseHeadlessArgs(["--permission-mode", "auto", "-p", "hi"]), {
-    request: { prompt: "hi", permissionMode: "auto" },
+    request: { prompt: "hi", permissionMode: "auto", outputFormat: undefined },
   });
+  assert.deepEqual(parseHeadlessArgs(["-p", "hi", "--output-format", "json"]), {
+    request: { prompt: "hi", permissionMode: undefined, outputFormat: "json" },
+  });
+  assert.match(parseHeadlessArgs(["-p", "hi", "--output-format", "xml"]).error ?? "", /text 或 json/);
 });
 
 test("parseHeadlessArgs rejects missing prompt and invalid modes", () => {

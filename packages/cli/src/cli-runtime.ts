@@ -30,6 +30,8 @@ export interface Preferences {
   provider?: string;
   permissionMode?: string;
   riskThreshold?: string;
+  /** 杂活模型（压缩摘要/会话标题/经验提炼）；缺省按单价自动挑最便宜的。 */
+  utilityModel?: string;
 }
 
 function readPreferences(filePath: string): Preferences | null {

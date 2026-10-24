@@ -75,6 +75,8 @@ export interface ChatMessage {
   reasoning_content?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** 图片附件（/image 命令）：provider 转为多模态 content parts 发送，需视觉模型。 */
+  attachments?: Array<{ mimeType: string; base64: string }>;
 }
 
 /**

@@ -71,13 +71,39 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ui.writeLine(colors.okLine("已开启全新对话并重置上下文。"));
 }
 
-/** 分发 /resume 指令；调用方负责其后的主循环 continue。 */
-export async function handleResumeCommand(ctx: SessionCommandContext): Promise<void> {
+/** 子序列匹配：keyword 的字符按顺序出现在目标文本中（不区分大小写）。 */
+function fuzzyMatchSession(
+  keyword: string,
+  session: { title: string; messages: ChatMessage[] },
+): boolean {
+  const needle = keyword.toLowerCase();
+  const firstUserMessage =
+    session.messages.find(
+      (message) => message.role === "user" && typeof message.content === "string",
+    )?.content ?? "";
+  const haystack = `${session.title}\n${firstUserMessage}`.toLowerCase();
+  let index = 0;
+  for (const char of haystack) {
+    if (char === needle[index]) index += 1;
+    if (index === needle.length) return true;
+  }
+  return needle.length === 0;
+}
+
+/** 分发 /resume 指令；keyword 用于按标题/首条用户消息模糊过滤；调用方负责其后的主循环 continue。 */
+export async function handleResumeCommand(ctx: SessionCommandContext, keyword = ""): Promise<void> {
   const { ui, sessionManager, taskStore, snapshotEngine, agentManager, skillRegistry } = ctx;
   await sessionManager.flush();
-  const sessions = sessionManager.listSessions();
-  if (sessions.length === 0) {
+  const allSessions = sessionManager.listSessions();
+  if (allSessions.length === 0) {
     ui.writeLine(colors.warnLine("暂无存盘的历史对话记录。"));
+    return;
+  }
+  const sessions = keyword
+    ? allSessions.filter((session) => fuzzyMatchSession(keyword, session))
+    : allSessions;
+  if (sessions.length === 0) {
+    ui.writeLine(colors.warnLine(`没有匹配「${keyword}」的历史对话（按标题与首条消息模糊搜索）。`));
     return;
   }
 
@@ -98,7 +124,9 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
 
   try {
     const selection = await ctx.readSelectionSafely({
-      title: "选择要恢复的历史对话 (按最近时间排序)",
+      title: keyword
+        ? `选择要恢复的历史对话（匹配「${keyword}」，共 ${sessions.length} 个）`
+        : "选择要恢复的历史对话 (按最近时间排序)",
       items,
       selectedValue: sessionManager.getCurrentSession().id,
     });

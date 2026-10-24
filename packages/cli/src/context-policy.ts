@@ -1,4 +1,5 @@
 import { MODEL_CONTEXT_WINDOWS } from "@hajicli/plugins";
+import { loadUserModels } from "./user-models.js";
 
 /**
  * 将窗口值归一化为合法 tokens 数：接受有限数字（字符串按数字解析），
@@ -24,5 +25,12 @@ export function getModelContextWindowTokens(
   if (configured !== undefined) return configured;
   const fromProvider = normalizeContextWindowTokens(providerModelContextWindow);
   if (fromProvider !== undefined) return fromProvider;
-  return MODEL_CONTEXT_WINDOWS[modelValue] ?? 128_000;
+  if (MODEL_CONTEXT_WINDOWS[modelValue] !== undefined) return MODEL_CONTEXT_WINDOWS[modelValue];
+  // 用户模型表（~/.haji/models.json）：内置注册表没有的新模型按用户声明取窗口。
+  const userModelWindow = loadUserModels().find(
+    (entry) => entry.model === modelValue,
+  )?.contextWindowTokens;
+  const fromUserModels = normalizeContextWindowTokens(userModelWindow);
+  if (fromUserModels !== undefined) return fromUserModels;
+  return 128_000;
 }

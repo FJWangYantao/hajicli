@@ -7,6 +7,7 @@ import {
   ProviderError,
   withExponentialBackoff,
 } from "@hajicli/core";
+import { type MultimodalContent, messageContentOrParts } from "./image-attachments.js";
 import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
 import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
 import { AlwaysThinkingAdapter } from "./thinking-compat.js";
@@ -141,7 +142,7 @@ export class VolcengineProvider implements ModelProvider {
 
     interface RequestPayloadMessage {
       role: string;
-      content: string;
+      content: string | MultimodalContent;
       tool_calls?: Array<{
         id: string;
         type: string;
@@ -157,7 +158,7 @@ export class VolcengineProvider implements ModelProvider {
     const requestMessages: RequestPayloadMessage[] = messages.map((msg) => {
       const payloadMsg: RequestPayloadMessage = {
         role: msg.role,
-        content: msg.content,
+        content: messageContentOrParts(msg),
       };
       if (msg.tool_calls) {
         payloadMsg.tool_calls = msg.tool_calls.map((tc) => ({

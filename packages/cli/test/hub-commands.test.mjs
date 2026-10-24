@@ -27,6 +27,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/memory",
     "/diag",
     "/compact",
+    "/image",
     "/clear",
     "/resume",
     "/rewind",
@@ -66,7 +67,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   );
   assert.deepEqual(
     menus.diag.items.map((item) => item.value),
-    ["/perf", "/viewer", "/mcp"],
+    ["/perf", "/cost", "/viewer", "/mcp"],
   );
   assert.ok(menus.memory.items.some((item) => item.value === "/memory list"));
   for (const [name, menu] of Object.entries(menus)) {

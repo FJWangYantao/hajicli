@@ -5,6 +5,8 @@ export interface HeadlessRequest {
   prompt: string;
   /** 显式指定的权限档位（--permission-mode）；缺省沿用偏好设置。 */
   permissionMode?: PermissionMode;
+  /** 输出格式（--output-format）：text 直写正文（默认）；json 静音正文、结束时输出结构化结果。 */
+  outputFormat?: "text" | "json";
 }
 
 export interface HeadlessParseResult {
@@ -24,6 +26,7 @@ const USAGE_PERMISSION_MODES = "plan | default | accept-edit | auto | bypass-per
 export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult {
   let prompt: string | undefined;
   let permissionMode: PermissionMode | undefined;
+  let outputFormat: "text" | "json" | undefined;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "-p" || arg === "--print") {
@@ -43,8 +46,15 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
       }
       permissionMode = value;
       index += 1;
+    } else if (arg === "--output-format") {
+      const value = args[index + 1];
+      if (value !== "text" && value !== "json") {
+        return { error: "--output-format 只支持 text 或 json" };
+      }
+      outputFormat = value;
+      index += 1;
     }
   }
   if (prompt === undefined) return {};
-  return { request: { prompt, permissionMode } };
+  return { request: { prompt, permissionMode, outputFormat } };
 }

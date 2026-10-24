@@ -99,6 +99,8 @@ export interface TerminalUIOptions {
   continuationPrompt?: string;
   /** 强制非交互（无头单次模式 haji -p）：即使身处 TTY 也走 stdout 直写与 readline 降级。 */
   forceNonInteractive?: boolean;
+  /** 无头 JSON 输出模式：非交互下正文也不写 stdout，由调用方统一输出 JSON。 */
+  muteNonInteractiveOutput?: boolean;
 }
 
 export interface ReadInputOptions {
@@ -263,6 +265,7 @@ export class TerminalUI {
   private readonly inputHistory = new InputHistoryBuffer();
   private readonly clipboardWriter = new ClipboardWriter();
   private readonly interactive: boolean;
+  private readonly outputMuted: boolean;
   private started = false;
   private chatContent = "";
   private chatScrollOffset = 0;
@@ -330,6 +333,7 @@ export class TerminalUI {
     this.interactive =
       Boolean(stdin.isTTY && stdout.isTTY && typeof stdin.setRawMode === "function") &&
       !options.forceNonInteractive;
+    this.outputMuted = Boolean(options.muteNonInteractiveOutput);
   }
 
   setPermissionMode(mode: string): void {
@@ -699,7 +703,7 @@ export class TerminalUI {
     // 否则终端真的制表位会把已测量的行宽推超、自动折行撑破布局。
     const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      stdout.write(text);
+      if (!this.outputMuted) stdout.write(text);
       return;
     }
 
@@ -728,7 +732,7 @@ export class TerminalUI {
    */
   writeBlankLine(): void {
     if (!this.interactive) {
-      stdout.write("\n");
+      if (!this.outputMuted) stdout.write("\n");
       return;
     }
     if (this.chatContent && !this.chatContent.endsWith("\n")) {
@@ -782,7 +786,7 @@ export class TerminalUI {
     const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
       const delta = text.slice(Math.max(0, this.chatContent.length - offset));
-      if (delta) {
+      if (delta && !this.outputMuted) {
         stdout.write(delta);
       }
     }

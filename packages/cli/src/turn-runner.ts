@@ -63,6 +63,14 @@ export interface TurnDeps {
   getProvider(): ObservableModelProvider;
   getSelectedModel(): string;
   getReasoningEffort(): ReasoningEffort;
+  /** 回调形式避免 turn-runner 依赖 cost-tracker 具体类型；缺省不记账。 */
+  recordCost?: (
+    model: string,
+    usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+    purpose?: string,
+  ) => void;
+  /** 会话标题生成用的杂活模型运行时；缺省退回主模型。 */
+  getTitleUtility?: () => { provider: ObservableModelProvider; model: string } | undefined;
   getPermissionMode(): PermissionMode;
   getRiskThreshold(): RiskLevel;
   getMessages(): ChatMessage[];
@@ -99,6 +107,8 @@ export interface TurnInput {
   manualSkillExchange?: { toolCall: ToolCall; output: string };
   /** 本轮用户消息回显在对话区的起始位置（收回 prompt 时据此清除回显）。 */
   promptDisplayStartOffset: number;
+  /** 图片附件（/image 命令）：随用户消息一起发送，需视觉模型。 */
+  promptAttachments?: Array<{ mimeType: string; base64: string }>;
 }
 
 /** 执行一个对话回合。main() 的主循环在分发完斜杠命令后调用。 */
@@ -133,7 +143,11 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     deps.setMessages(next);
   };
   const messagesBeforePrompt = [...messages];
-  messages.push({ role: "user", content: promptInput });
+  messages.push({
+    role: "user",
+    content: promptInput,
+    ...(input.promptAttachments?.length ? { attachments: input.promptAttachments } : {}),
+  });
   deps.setLastUserMessageForRecall(promptInput);
   if (input.manualSkillExchange) {
     messages.push(
@@ -182,10 +196,15 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       sessionManager
         .generateTitleAsync(promptInput, async (prompt) => {
           let fullTitleText = "";
-          const titleStream = provider.completeStream([{ role: "user", content: prompt }], {
-            model: selectedModel,
-            reasoningEffort: "low",
-          });
+          // 标题是低价值杂活，优先走便宜的 utility 模型。
+          const utility = deps.getTitleUtility?.();
+          const titleStream = (utility?.provider ?? provider).completeStream(
+            [{ role: "user", content: prompt }],
+            {
+              model: utility?.model ?? selectedModel,
+              reasoningEffort: "low",
+            },
+          );
           for await (const chunk of titleStream) fullTitleText += chunk;
           return fullTitleText;
         })
@@ -349,6 +368,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       onUsage: (usage) => {
         completionTokens = usage.completion_tokens;
         turnOutputTokens = (turnOutputTokens ?? 0) + usage.completion_tokens;
+        deps.recordCost?.(selectedModel, usage, "主线回合");
       },
       onFinish: (finish) => {
         finishReason = finish.reason;
