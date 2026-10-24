@@ -70,7 +70,12 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 跨会话持久授权在 `permission-rules.ts`（`.haji/permissions.json` / `~/.haji/permissions.json`），
   键形态复用 `getPermissionGrant`（`bash:npm test` 前缀 / 工具名）；PreToolUse 早查命中即放行，
   但 plan / bypass 两档不查表。管理入口 `/permissions`（列表+删除）。
-  无头模式 `haji -p "<prompt>"`（`--permission-mode` 可指定档位）复用同一套放行逻辑。
+  无头模式 `haji -p "<prompt>"`（`--permission-mode`、`--output-format json`、prompt `-` 读 stdin）复用同一套放行逻辑。
+- 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
+  走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
+  内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
+- 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目 typecheck 并以系统消息回注诊断；
+  `HAJI_POST_EDIT_VERIFY=0` 关闭。测试涉及真实回合时注意它会真的执行 `npx tsc --noEmit`。
 
 ## 代码风格与提交
 

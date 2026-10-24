@@ -68,7 +68,17 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - `PermissionEngine`（core）按 `permissionMode`（plan / default / accept-edit / auto / bypass-permissions）+ `riskThreshold`（Auto 档危险阈值）决策；只读工具（含 MCP `readOnly: true`）自动放行。
 - 会话级授权按 key 记忆（bash 按命令前缀），切换会话即失效。
 - 跨会话持久授权（`permission-rules.ts`）：授权卡片可选「永久允许·本项目 / 全局」，写入 `.haji/permissions.json` / `~/.haji/permissions.json`（键与会话级同形态）；PreToolUse 在权限引擎评估前命中即放行（plan / bypass 两档不查表）。`/permissions` 列出并删除规则。
-- 无头单次模式 `haji -p "prompt"`（`headless.ts`）：跳过 logo 与交互主循环，跑完一个回合直接进入退出清理；TerminalUI 以 `forceNonInteractive` 强制走 stdout 直写降级，提示性输出一律改道 stderr（stdout 只含模型正文与工具块）。`--permission-mode` 可指定档位（plan 自动按 default 执行）；未命中放行规则的工具调用在 stdin 为 TTY 时 y/N 确认，管道/CI 下自动拒绝。退出码：回合完成 0 / 启动错误 1 / SIGINT 130。
+- 无头单次模式 `haji -p "prompt"`（`headless.ts`）：跳过 logo 与交互主循环，跑完一个回合直接进入退出清理；TerminalUI 以 `forceNonInteractive` 强制走 stdout 直写降级，提示性输出一律改道 stderr（stdout 只含模型正文与工具块）。`--permission-mode` 可指定档位（plan 自动按 default 执行）；`--output-format json` 静音正文并输出结构化结果（text/usage/cost/sessionId）；prompt 传 `-` 从 stdin 管道读取。未命中放行规则的工具调用在 stdin 为 TTY 时 y/N 确认，管道/CI 下自动拒绝。退出码：回合完成 0 / 启动错误 1 / SIGINT 130。
+
+## 费用、模型路由与目录
+
+- 单价与档位在 `model-registry.ts`（`pricing` 每百万 token 估算值、`tier` 标记 utility 档）。
+- `cost-tracker.ts`：主线回合 onUsage 记账，`/cost` 按模型汇总估算费用（未定价模型只计 tokens）。
+- 杂活模型路由（`provider-models.resolveUtilityModel`）：压缩摘要 / 会话标题 / 经验提炼优先走最便宜的可用模型；偏好 `utilityModel` 显式指定（不可用回退主模型）。跨 provider 时按需构建独立 provider 实例（`getUtilityRuntime` 缓存，provider 配置变更即失效）。
+- 用户模型表 `~/.haji/models.json`（`user-models.ts`，mtime 缓存）：内置 provider 上新模型无需发版——登记 model/provider/contextWindowTokens 即进入 `/model` 列表、`detectProviderForModel` 路由与上下文窗口解析。
+- `@路径` 文件引用（`file-mentions.ts`）：提交时把工作区内命中文件展开为 `<attached_file>` 附件块；越界/不存在/二进制记入 skipped 提示。
+- 图片输入 `/image <路径> [提示词]`（`image-command.ts`）：本地图片（png/jpg/gif/webp/bmp，≤6MB）转 base64 附件，经 core `ChatMessage.attachments` → plugins `messageContentOrParts` 转多模态 content parts（需视觉模型）。
+- 编辑后验证（`post-edit-verify.ts`，LSP 轻量替代）：主 Agent write/edit 成功后跑项目 typecheck（`HAJI_POST_EDIT_VERIFY` 可指定/`"0"` 关闭），诊断以系统消息注入会话供模型自纠；10s 冷却防编辑连发拖慢回合。
 
 ## 子代理
 
