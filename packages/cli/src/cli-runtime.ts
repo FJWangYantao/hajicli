@@ -510,7 +510,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
   const mark =
     options.status === "running"
-      ? colors.cyan(options.spinner || "●")
+      ? colors.accent(options.spinner || "●")
       : options.status === "success"
         ? colors.boldGreen("✓")
         : options.status === "rejected"
@@ -526,36 +526,34 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     (timing ? terminalWidth(timing) + 2 : 0);
   const summaryWidth = Math.max(0, width - fixedWidth - 2);
   const summary = fitText(options.summary, summaryWidth);
-  const headerPlainWidth = fixedWidth + (summary ? terminalWidth(summary) + 2 : 0);
-  const gap = timing ? " ".repeat(Math.max(2, width - headerPlainWidth + 2)) : "";
+  // 耗时紧跟在参数后面，不贴右边：工具块写进对话时宽度就定了，
+  // 之后窗口拉宽，贴右的耗时会停在半路，和别的整行元素对不齐。
   const header = [
     TOOL_CELL_INDENT,
     mark,
     " ",
-    source ? colors.gray(source) : "",
-    colors.bold(options.toolName),
+    source ? colors.faint(source) : "",
+    options.toolName,
     summary ? `  ${summary}` : "",
-    timing ? `${gap}${colors.gray(timing)}` : "",
+    timing ? `  ${colors.faint(timing)}` : "",
   ].join("");
   const rows = [header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);
   if (options.status === "running") {
     for (const line of options.outputTail || []) {
-      rows.push(`${TOOL_CELL_INDENT}  ${colors.gray(`│ ${fitText(line, bodyWidth)}`)}`);
+      rows.push(
+        `${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.muted(fitText(line, bodyWidth))}`,
+      );
     }
   } else if (options.resultText) {
+    // 成败只靠前面的 ✓ / ✕ / ⊘ 着色；失败的说明用正文色，比成功的灰字醒目一档。
     const text = fitText(options.resultText, bodyWidth);
-    const styled =
-      options.status === "failed"
-        ? colors.red(text)
-        : options.status === "rejected"
-          ? colors.yellow(text)
-          : colors.gray(text);
-    rows.push(`${TOOL_CELL_INDENT}  ${colors.gray("└")} ${styled}`);
+    const styled = options.status === "failed" ? text : colors.muted(text);
+    rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("└")} ${styled}`);
     // 预览和结果说明的文字对齐（└ 加一个空格占两格）。
     const previewWidth = Math.max(1, bodyWidth - 2);
     for (const line of (options.preview || []).slice(0, TOOL_PREVIEW_LINES)) {
-      rows.push(`${TOOL_CELL_INDENT}    ${colors.gray(fitText(line, previewWidth))}`);
+      rows.push(`${TOOL_CELL_INDENT}    ${colors.muted(fitText(line, previewWidth))}`);
     }
   }
   return rows;
@@ -637,7 +635,7 @@ export function buildPermissionPreview(
   if (toolName === "bash" && typeof args.command === "string") {
     return [
       ...previewTextLines(args.command, "", 12).map((line) =>
-        line.startsWith("… 另有") ? colors.gray(line) : colors.cyan(line),
+        line.startsWith("… 另有") ? colors.gray(line) : line,
       ),
       colors.gray(`工作目录 ${displayPath(cwd, cwd)}`),
     ];

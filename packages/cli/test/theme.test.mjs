@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
+import { hexContrastRatio } from "../dist/contrast.js";
 import { buildAgentPanelRows } from "../dist/terminal-input.js";
+import { buildStatusBarRow } from "../dist/terminal-panels.js";
 import {
   bgSeq,
   buildAnsiStyles,
   detectColorLevel,
+  faintHex,
   fgSeq,
   getColorLevel,
   paint,
@@ -13,6 +16,7 @@ import {
   setActiveColorLevel,
   setActiveTheme,
   setColorLevel,
+  softAccentHex,
   themeBg,
   themeEnter,
   themeExit,
@@ -121,4 +125,45 @@ test("terminal UI color sequences follow runtime color-level changes", () => {
   assert.match(buildAgentPanelRows([item], 80).join("\n"), /\x1b\[/u);
   setActiveColorLevel("mono");
   assert.doesNotMatch(buildAgentPanelRows([item], 80).join("\n"), /\x1b\[/u);
+});
+
+test("faint and soft accent tiers sit below their base color but stay readable", () => {
+  const light = {
+    ...FIXED_THEME,
+    background: "#ffffff",
+    foreground: "#242b36",
+    muted: "#5b6472",
+    accent: "#6b4fc4",
+  };
+  setActiveTheme(light);
+  const faint = hexContrastRatio(faintHex(), "#ffffff");
+  assert.ok(faint >= 3, `faint contrast ${faint}`);
+  assert.ok(faint < hexContrastRatio(light.muted, "#ffffff"), "faint is lighter than muted");
+  const soft = hexContrastRatio(softAccentHex(), "#ffffff");
+  assert.ok(soft >= 3, `soft accent contrast ${soft}`);
+  assert.ok(soft < hexContrastRatio(light.accent, "#ffffff"), "soft accent is lighter than accent");
+});
+
+test("status lines color only the icon, and the status bar keeps one accent", () => {
+  setActiveTheme(FIXED_THEME);
+  setActiveColorLevel("truecolor");
+  const line = paint.okLine("done");
+  assert.ok(line.startsWith(`\x1b[1m${fgSeq(FIXED_THEME.green)}✓`));
+  assert.ok(line.endsWith(`${themeReset()} done`), "text after the icon keeps the theme color");
+
+  const row = buildStatusBarRow(
+    {
+      permissionMode: "auto",
+      usedTokens: 13_000,
+      maxTokens: 1_000_000,
+      modelName: "deepseek-v4.1-flash",
+      providerName: "workbuddy",
+      reasoningEffort: "medium",
+      currentPath: "/tmp/project",
+    },
+    120,
+  );
+  assert.ok(row.includes(`${fgSeq(FIXED_THEME.accent)}[自动]`));
+  assert.ok(row.includes(`${fgSeq(FIXED_THEME.muted)}workbuddy`));
+  assert.ok(!row.includes(fgSeq(FIXED_THEME.cyan)), "no cyan left in the status bar");
 });

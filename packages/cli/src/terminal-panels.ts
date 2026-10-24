@@ -43,25 +43,29 @@ export function buildStatusBarRow(
   };
   const modeLabel = modeLabels[state.permissionMode] || state.permissionMode.toUpperCase();
   const permText = state.permissionMode ? `[${modeLabel}]` : "";
-  const permColorMap: Record<string, string> = {
-    plan: SEQ.cyan,
-    default: SEQ.green,
-    "accept-edit": SEQ.yellow,
-    auto: SEQ.accent,
-    "bypass-permissions": SEQ.boldRed,
-  };
-  const permColor = permText ? permColorMap[state.permissionMode] || SEQ.muted : "";
+  // 底栏只有模式标签用强调色；「全放行」是真要警惕的状态，保留红色。
+  const permColor = !permText
+    ? ""
+    : state.permissionMode === "bypass-permissions"
+      ? SEQ.boldRed
+      : state.permissionMode === "default"
+        ? SEQ.muted
+        : SEQ.accent;
   const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : "";
 
   const used = state.usedTokens;
   const max = state.maxTokens;
   const ratio = Math.min(1, Math.max(0, used / max));
 
-  let colorCode = SEQ.cyan;
+  // 平时用淡紫、数字用灰，不抢眼；快满时才换成黄 / 红提醒。
+  let colorCode = SEQ.softAccent;
+  let valueColor = SEQ.muted;
   if (ratio >= 0.85) {
     colorCode = SEQ.boldRed;
+    valueColor = SEQ.boldRed;
   } else if (ratio >= 0.6) {
     colorCode = SEQ.yellow;
+    valueColor = SEQ.yellow;
   }
 
   const percentText = `${Math.round(ratio * 100)}%`;
@@ -71,9 +75,12 @@ export function buildStatusBarRow(
 
   const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
   const emptyCount = Math.max(0, barCapacity - filledCount);
-  const barStr = barCapacity > 0 ? `${"█".repeat(filledCount)}${"░".repeat(emptyCount)} ` : "";
+  const barStr =
+    barCapacity > 0
+      ? `${colorCode}${"█".repeat(filledCount)}${SEQ.reset}${SEQ.faint}${"░".repeat(emptyCount)}${SEQ.reset} `
+      : "";
   const valueText = detail === "full" ? numText : percentText;
-  const rightAnsi = `${colorCode}${barStr}${SEQ.reset}${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${valueText}${SEQ.reset}`;
+  const rightAnsi = `${barStr}${SEQ.muted}${ctxLabel}${SEQ.reset} ${valueColor}${valueText}${SEQ.reset}`;
   const rightWidth = terminalWidth(rightAnsi);
 
   // 模型区按实际剩余空间分配（路径优先级最低，排在它之后）。
@@ -95,7 +102,7 @@ export function buildStatusBarRow(
         ? `${fitText(state.modelName, Math.max(1, modelLimit - terminalWidth(effort) - 3))} · ${effort}`
         : fitText(state.modelName, modelLimit));
   }
-  const modelAnsi = modelStr ? `${SEQ.bold}${SEQ.cyan}${modelStr}${SEQ.reset}` : "";
+  const modelAnsi = modelStr ? `${SEQ.muted}${modelStr}${SEQ.reset}` : "";
 
   const baseLeftAnsi = [permAnsi, modelAnsi].filter(Boolean).join("  ");
   const baseLeftWidth = terminalWidth(baseLeftAnsi);
@@ -126,16 +133,13 @@ export function buildStatusBarRow(
 export function buildActivityRow(frame: ActivityFrame | undefined, width: number): string {
   if (!frame || width <= 0) return "";
 
+  // 正常进行中统一用强调色；只有等用户 / 卡住了才换黄色。
   const color =
     frame.tone === "stalled"
       ? SEQ.boldYellow
-      : frame.tone === "waiting"
+      : frame.tone === "waiting" || frame.phase === "permission"
         ? SEQ.yellow
-        : frame.phase === "responding"
-          ? SEQ.green
-          : frame.phase === "permission"
-            ? SEQ.yellow
-            : SEQ.cyan;
+        : SEQ.accent;
   // 等待与停滞已由颜色区分；只有停滞时补一个文字提示，避免同一状态重复描述。
   const toneText = frame.tone === "stalled" ? "等待较久" : "";
   const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(" · ");
@@ -186,7 +190,7 @@ export interface TaskPanelState {
 export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows = 8): string[] {
   if (!state.title || maxRows <= 0) return [];
   const panelTitle = state.title ? `任务 · ${state.title}` : "任务";
-  const rows = [`${SEQ.bold}${SEQ.blue}${truncateText(panelTitle, width)}${SEQ.reset}`];
+  const rows = [`${SEQ.bold}${truncateText(panelTitle, width)}${SEQ.reset}`];
   const visibleTasks = state.expanded ? state.items : state.items.slice(0, 5);
   const needsFooter = state.expanded || state.items.length > visibleTasks.length;
   const taskRowLimit = Math.max(1, maxRows - (needsFooter ? 1 : 0));
@@ -199,9 +203,7 @@ export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows
         `${SEQ.green}✓${SEQ.reset} ${SEQ.dim}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`,
       );
     } else if (task.status === "in_progress") {
-      rows.push(
-        `${SEQ.bold}${SEQ.blue}●${SEQ.reset} ${SEQ.bold}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`,
-      );
+      rows.push(`${SEQ.accent}●${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`);
     } else {
       rows.push(`${SEQ.muted}○${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`);
     }
@@ -217,16 +219,20 @@ export function buildTaskPanelRows(state: TaskPanelState, width: number, maxRows
               : task.agent.status === "aborted"
                 ? "已中止"
                 : "失败";
+      // 状态色只上状态词，角色名用灰。
       const color =
         task.agent.status === "running"
-          ? SEQ.cyan
+          ? SEQ.accent
           : task.agent.status === "verified"
             ? SEQ.green
             : task.agent.status === "awaiting_verification"
               ? SEQ.yellow
               : SEQ.red;
       rows.push(
-        `${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}${SEQ.reset}`,
+        truncateAnsiText(
+          `${SEQ.muted}    ↳ ${task.agent.role} · ${SEQ.reset}${color}${statusLabel}${SEQ.reset}`,
+          width,
+        ),
       );
     }
   }

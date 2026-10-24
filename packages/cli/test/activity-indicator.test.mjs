@@ -192,9 +192,9 @@ test("tool run view commits finished cells in call order and clears the live are
 
   const committed = view.commit();
   assert.deepEqual(committed.split("\n"), [
-    `  ✓ read  a.ts${" ".repeat(43)}7ms`,
+    "  ✓ read  a.ts  7ms",
     "    └ 10 行",
-    `  ✓ grep  "x"${" ".repeat(44)}4ms`,
+    '  ✓ grep  "x"  4ms',
     "    └ 3 条结果",
     "  ⊘ bash  rm -rf build",
     "    └ 已拒绝执行",
