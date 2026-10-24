@@ -232,7 +232,7 @@ function createWizardHelpers(deps: WizardDeps) {
       }
       const result = parseOptionalInteger(input, field.min, field.max);
       if (!result.ok) {
-        deps.ui.writeLine(colors.red(`✗ ${result.message}，请重新输入。`));
+        deps.ui.writeLine(colors.failLine(`${result.message}，请重新输入。`));
         continue;
       }
       // 留空（undefined）时保持当前值：add 向导初始为空 -> undefined；edit 向导初始为现值 -> 保持
@@ -256,7 +256,7 @@ function createWizardHelpers(deps: WizardDeps) {
       }
       const error = validate(input);
       if (error) {
-        deps.ui.writeLine(colors.red(`✗ ${error}，请重新输入（输入 b 返回上一步）。`));
+        deps.ui.writeLine(colors.failLine(`${error}，请重新输入（输入 b 返回上一步）。`));
         continue;
       }
       return input;

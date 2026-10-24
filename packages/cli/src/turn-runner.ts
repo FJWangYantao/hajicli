@@ -206,7 +206,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     if (abortNoticeShown) return;
     abortNoticeShown = true;
     ui.writeLine();
-    ui.writeLine(colors.red("✕ 已中止本轮"));
+    ui.writeLine(colors.failLine(colors.muted("已中止本轮")));
   };
 
   const reclaimPrompt = () => {
@@ -285,7 +285,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     if (repairedMessages !== messages) {
       setMessages(repairedMessages);
       sessionManager.saveCurrentSession(messages);
-      ui.writeLine(colors.yellow("! 已自动修复不完整的历史工具调用配对。"));
+      ui.writeLine(colors.warnLine("已自动修复不完整的历史工具调用配对。"));
     }
     if (deps.refreshAgentVerificationContext(messages)) sessionManager.saveCurrentSession(messages);
     deps.startBackgroundInput();
@@ -419,9 +419,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         const described = describeModelError(streamError);
         ui.writeLine();
         const retryNote = requestRetryCount > 0 ? `（已自动重试 ${requestRetryCount} 次）` : "";
-        ui.writeLine(colors.boldRed(`✕ ${described.title}${retryNote}`));
+        ui.writeLine(colors.failLine(colors.bold(`${described.title}${retryNote}`)));
         if (described.detail) ui.writeLine(colors.gray(`  ${described.detail}`));
-        ui.writeLine(`  ${colors.yellow("提示")} ${described.hint}`);
+        ui.writeLine(`  ${colors.muted("提示")} ${described.hint}`);
         ui.writeLine();
       }
       keepCalling = false;
@@ -448,7 +448,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         completionTokens === undefined
           ? ""
           : ` · ${completionTokens.toLocaleString("en-US")} tokens`;
-      ui.writeLine(colors.gray(`  思考 ${thinkingSeconds}s${tokenSummary}`));
+      ui.writeLine(colors.faint(`  思考 ${thinkingSeconds}s${tokenSummary}`));
     } else if (!toolCalls || toolCalls.length === 0 || invalidToolCall) {
       // 无工具调用（或工具调用无效）时正文后补一个空行；
       // 有工具调用时由下方工具调用块前后的空行负责分隔，避免产生连续空行。
@@ -475,7 +475,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           ? "Provider 返回 finish_reason=length；Haji 未设置单次输出上限，这是上游服务端限制。"
           : "工具参数可能因上游流中断而被截断。";
       ui.writeLine(
-        colors.boldYellow(`! 已拦截不完整的 ${toolName} 工具调用，未执行、未写入工具调用历史。`),
+        colors.warnLine(`已拦截不完整的 ${toolName} 工具调用，未执行、未写入工具调用历史。`),
       );
       ui.writeLine(colors.gray(`${invalidToolCall.validation.error} ${truncationHint}`));
 
@@ -489,7 +489,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         keepCalling = true;
       } else {
         ui.writeLine(
-          colors.red(
+          colors.failLine(
             "连续两次收到不完整工具参数，已停止自动重试，避免无限循环。请缩短单次写入内容后重试。",
           ),
         );
@@ -504,8 +504,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           ? `（已生成 ${completionTokens.toLocaleString("en-US")} tokens）`
           : "";
       ui.writeLine(
-        colors.yellow(
-          `! 上游 Provider 以 length 结束${usedText}，本轮内容可能不完整；Haji 未设置单次输出上限。`,
+        colors.warnLine(
+          `上游 Provider 以 length 结束${usedText}，本轮内容可能不完整；Haji 未设置单次输出上限。`,
         ),
       );
     }
@@ -659,7 +659,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     } else {
       if (deps.getPermissionMode() === "plan" && deps.isPlanReadyForReview()) {
         if (!textContent.trim()) {
-          ui.writeLine(colors.yellow("! 模型未输出可审阅的方案正文，本次不进入审批。"));
+          ui.writeLine(colors.warnLine("模型未输出可审阅的方案正文，本次不进入审批。"));
           keepCalling = false;
         } else {
           try {
@@ -696,7 +696,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               sessionManager.saveCurrentSession(messages);
               deps.updateStatusUI();
               ui.writeLine(
-                colors.green(`✓ 计划已批准，已切换到 [${deps.getPermissionMode()}] 并继续执行。`),
+                colors.okLine(`计划已批准，已切换到 [${deps.getPermissionMode()}] 并继续执行。`),
               );
               keepCalling = true;
             } else {
@@ -721,8 +721,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         if (unverifiedAgents.length > 0) {
           const ids = unverifiedAgents.map((agent) => agent.id).join(", ");
           ui.writeLine(
-            colors.yellow(
-              `! 子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`,
+            colors.warnLine(
+              `子代理结果尚未独立验证：${ids}。主 Agent 将继续验证，当前结论不能视为完成。`,
             ),
           );
           deps.refreshAgentVerificationContext(messages);

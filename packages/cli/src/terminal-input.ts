@@ -452,7 +452,7 @@ export class TerminalUI {
         })
         .join("  ");
       // 保留原始队列内容，实际截断在 render 时按最新终端宽度计算。
-      this.queueText = ` ${SEQ.boldYellow}待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.cyan}${formatted}${SEQ.reset}`;
+      this.queueText = ` ${SEQ.accent}待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.muted}${formatted}${SEQ.reset}`;
     }
     this.scheduleRender();
   }

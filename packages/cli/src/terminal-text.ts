@@ -1,6 +1,15 @@
 import { tryNativeLayoutAnsiDocument, tryNativeWrapAnsi } from "./native-terminal-engine.js";
 import type { TextCell } from "./text-selection.js";
-import { bgSeq, fgSeq, getColorLevel, getTheme, themeBg, themeReset } from "./theme.js";
+import {
+  bgSeq,
+  faintHex,
+  fgSeq,
+  getColorLevel,
+  getTheme,
+  softAccentHex,
+  themeBg,
+  themeReset,
+} from "./theme.js";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_AT_OFFSET_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/y;
@@ -13,6 +22,12 @@ export const SEQ = {
   },
   get muted() {
     return fgSeq(getTheme().muted);
+  },
+  get faint() {
+    return fgSeq(faintHex());
+  },
+  get softAccent() {
+    return fgSeq(softAccentHex());
   },
   get green() {
     return fgSeq(getTheme().green);

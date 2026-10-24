@@ -62,7 +62,7 @@ export async function handleSubagentCommand(
       if (parsed.preset) {
         const found = findSubagentPreset(presets, parsed.preset);
         if (!found) {
-          ui.writeLine(colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
+          ui.writeLine(colors.failLine(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
           return;
         }
         initialPresetName = found.name;
@@ -90,24 +90,24 @@ export async function handleSubagentCommand(
       if (saveName) {
         if (persistPreset(buildPresetFromParsed(saveName, parsed))) {
           ui.writeLine(
-            colors.green(`✓ 已保存预设：${saveName}（下次可用 /subagent preset:${saveName} 复用）`),
+            colors.okLine(`已保存预设：${saveName}（下次可用 /subagent preset:${saveName} 复用）`),
           );
         } else {
-          ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
+          ui.writeLine(colors.warnLine("预设保存失败（请检查磁盘权限）。"));
         }
       }
     } else if (parsed.preset) {
       // ---- 非交互式：应用预设（命令行显式参数优先）----
       const preset = findSubagentPreset(loadSubagentPresets(), parsed.preset);
       if (!preset) {
-        ui.writeLine(colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
+        ui.writeLine(colors.failLine(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
         return;
       }
       parsed = applySubagentPreset(parsed, preset);
       ui.writeLine(colors.gray(`已应用预设：${preset.name}（${formatPresetSummary(preset)}）`));
     }
     if (!parsed.description) {
-      ui.writeLine(colors.red("子代理任务描述不能为空。"));
+      ui.writeLine(colors.failLine("子代理任务描述不能为空。"));
       return;
     }
     const launch = ctx.launchManualAgent(
@@ -138,7 +138,7 @@ export async function handleSubagentCommand(
     ui.onEsc();
     if (finished.result) {
       ui.writeLine(finished.result.summary);
-      ui.writeLine(colors.yellow(`结果状态：${finished.status}，需要父 Agent 独立验证。`));
+      ui.writeLine(colors.warnLine(`结果状态：${finished.status}，需要父 Agent 独立验证。`));
       ctx.refreshAgentVerificationContext(ctx.getMessages());
       ctx.saveSession();
       ctx.updateStatusUI();
@@ -148,7 +148,9 @@ export async function handleSubagentCommand(
       ui.writeLine(colors.gray("已取消创建子代理。"));
     } else {
       ui.writeLine(
-        colors.red(`启动子代理失败: ${error instanceof Error ? error.message : String(error)}`),
+        colors.failLine(
+          `启动子代理失败: ${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
     }
   }
@@ -180,12 +182,12 @@ export async function handlePresetCommand(
   if (action === "show") {
     const name = parts[2];
     if (!name) {
-      ui.writeLine(colors.red("用法: /preset show <name>"));
+      ui.writeLine(colors.warnLine("用法: /preset show <name>"));
       return;
     }
     const preset = findSubagentPreset(presets, name);
     if (!preset) {
-      ui.writeLine(colors.red(`预设不存在: ${name}`));
+      ui.writeLine(colors.failLine(`预设不存在: ${name}`));
       return;
     }
     ui.writeLine(formatPresetDetail(preset));
@@ -195,7 +197,7 @@ export async function handlePresetCommand(
     const rawArgs = trimmedInput.replace(/^\/presets?\s+edit\s*/i, "");
     if (!rawArgs) {
       ui.writeLine(
-        colors.red(
+        colors.warnLine(
           "用法: /preset edit <name> [--effort ...] [--max-tokens ...] ...（不带选项时交互式修改）",
         ),
       );
@@ -205,7 +207,7 @@ export async function handlePresetCommand(
       const parsedPreset = parsePresetCommand(rawArgs);
       const target = findSubagentPreset(presets, parsedPreset.name);
       if (!target) {
-        ui.writeLine(colors.red(`预设不存在: ${parsedPreset.name}`));
+        ui.writeLine(colors.failLine(`预设不存在: ${parsedPreset.name}`));
         return;
       }
       const patch: Partial<Omit<SubagentPreset, "name">> = {
@@ -252,17 +254,19 @@ export async function handlePresetCommand(
       }
       if (saveSubagentPresets(updateSubagentPreset(presets, target.name, patch))) {
         ui.writeLine(
-          colors.green(`✓ 已更新预设：${target.name}（/preset show ${target.name} 查看详情）`),
+          colors.okLine(`已更新预设：${target.name}（/preset show ${target.name} 查看详情）`),
         );
       } else {
-        ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
+        ui.writeLine(colors.warnLine("预设保存失败（请检查磁盘权限）。"));
       }
     } catch (error) {
       if (error instanceof TerminalInputCancelledError) {
         ui.writeLine(colors.gray("已取消编辑预设。"));
       } else {
         ui.writeLine(
-          colors.red(`编辑预设失败: ${error instanceof Error ? error.message : String(error)}`),
+          colors.failLine(
+            `编辑预设失败: ${error instanceof Error ? error.message : String(error)}`,
+          ),
         );
       }
     }
@@ -271,19 +275,19 @@ export async function handlePresetCommand(
   if (action === "remove" || action === "rm" || action === "delete") {
     const name = parts[2];
     if (!name) {
-      ui.writeLine(colors.red("用法: /preset remove <name>"));
+      ui.writeLine(colors.warnLine("用法: /preset remove <name>"));
       return;
     }
     const existing = findSubagentPreset(presets, name);
     if (!existing) {
-      ui.writeLine(colors.red(`预设不存在: ${name}`));
+      ui.writeLine(colors.failLine(`预设不存在: ${name}`));
       return;
     }
     const next = presets.filter((item) => item.name.toLowerCase() !== existing.name.toLowerCase());
     if (saveSubagentPresets(next)) {
-      ui.writeLine(colors.green(`✓ 已删除预设：${existing.name}`));
+      ui.writeLine(colors.okLine(`已删除预设：${existing.name}`));
     } else {
-      ui.writeLine(colors.yellow("! 删除失败（请检查磁盘权限）。"));
+      ui.writeLine(colors.warnLine("删除失败（请检查磁盘权限）。"));
     }
     return;
   }
@@ -317,25 +321,27 @@ export async function handlePresetCommand(
       if (!presetToAdd) return;
       if (persistPreset(presetToAdd)) {
         ui.writeLine(
-          colors.green(
-            `✓ 已保存预设：${presetToAdd.name}（/preset show ${presetToAdd.name} 查看详情）`,
+          colors.okLine(
+            `已保存预设：${presetToAdd.name}（/preset show ${presetToAdd.name} 查看详情）`,
           ),
         );
       } else {
-        ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
+        ui.writeLine(colors.warnLine("预设保存失败（请检查磁盘权限）。"));
       }
     } catch (error) {
       if (error instanceof TerminalInputCancelledError) {
         ui.writeLine(colors.gray("已取消添加预设。"));
       } else {
         ui.writeLine(
-          colors.red(`添加预设失败: ${error instanceof Error ? error.message : String(error)}`),
+          colors.failLine(
+            `添加预设失败: ${error instanceof Error ? error.message : String(error)}`,
+          ),
         );
       }
     }
     return;
   }
-  ui.writeLine(colors.red(`未知操作: ${action}。支持 list / show / add / remove。`));
+  ui.writeLine(colors.failLine(`未知操作: ${action}。支持 list / show / add / remove。`));
 }
 
 /** 分发 /agents 指令（列表选择、查看详情与中止）；调用方负责其后的主循环 continue。 */
@@ -348,14 +354,14 @@ export async function handleAgentsCommand(
   if (action === "stop") {
     const target = input.parts[2];
     if (!target) {
-      ui.writeLine(colors.red("用法: /agents stop <agentId|all>"));
+      ui.writeLine(colors.warnLine("用法: /agents stop <agentId|all>"));
     } else if (target.toLowerCase() === "all") {
-      ui.writeLine(colors.yellow(`已请求中止 ${agentManager.abortAll()} 个 Agent。`));
+      ui.writeLine(colors.okLine(`已请求中止 ${agentManager.abortAll()} 个 Agent。`));
     } else {
       ui.writeLine(
         agentManager.abort(target)
-          ? colors.yellow(`已请求中止 ${target}。`)
-          : colors.red(`Agent 不存在或当前不可中止: ${target}`),
+          ? colors.okLine(`已请求中止 ${target}。`)
+          : colors.failLine(`Agent 不存在或当前不可中止: ${target}`),
       );
     }
     return;
@@ -391,8 +397,8 @@ export async function handleAgentsCommand(
     if (selection.secondaryValue === "stop") {
       ui.writeLine(
         agentManager.abort(selection.value)
-          ? colors.yellow(`已请求中止 ${selection.value}。`)
-          : colors.red(`Agent ${selection.value} 当前不可中止。`),
+          ? colors.okLine(`已请求中止 ${selection.value}。`)
+          : colors.failLine(`Agent ${selection.value} 当前不可中止。`),
       );
     } else if (selected) {
       ui.writeChat(JSON.stringify(selected, null, 2));

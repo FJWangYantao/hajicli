@@ -25,6 +25,9 @@ const noColor = {
   red: (s) => s,
   yellow: (s) => s,
   bold: (s) => s,
+  okLine: (s) => `✓ ${s}`,
+  warnLine: (s) => `! ${s}`,
+  failLine: (s) => `✕ ${s}`,
 };
 
 function makeCtx(store, outputs, userSkillsDir) {

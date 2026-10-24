@@ -116,7 +116,7 @@ export type ThemeAppearance = "dark" | "light";
 /** 内置深色调色板：HAJI 轨迹台，低干扰深色表面 + 克制紫色强调。 */
 const DARK_THEME: Theme = {
   background: "",
-  userMsgBg: "#171b22",
+  userMsgBg: "#1c1a26",
   foreground: "#d9dee7",
   accent: "#a995d6",
   muted: "#8f98a5",
@@ -138,7 +138,7 @@ const DARK_THEME: Theme = {
  */
 const LIGHT_THEME: Theme = {
   background: "",
-  userMsgBg: "#eceff4",
+  userMsgBg: "#f0eef8",
   foreground: "#242b36",
   accent: "#6b4fc4",
   muted: "#5b6472",
@@ -434,6 +434,32 @@ export function dimHex(color: string, amount = 0.4): string {
   return mixHexOklab(color, referenceBackgroundFor(getTheme(), getThemeAppearance()), amount);
 }
 
+/**
+ * 第三档文字色（正文 > muted > faint）：思考行、└ 连线、耗时这类辅助信息。
+ * 从 muted 朝背景再淡一截，但不低于 3:1，浅色底上也看得见。
+ */
+export function faintHex(): string {
+  const theme = getTheme();
+  return ensureContrast(
+    dimHex(theme.muted, 0.35),
+    referenceBackgroundFor(theme, getThemeAppearance()),
+    ACCENT_MIN_CONTRAST,
+  );
+}
+
+/**
+ * ctx 用量条这类「品牌色但不该抢眼」的图形：强调色朝背景淡一半。
+ * 是非文本图形，对比度按 3:1 兜底。
+ */
+export function softAccentHex(): string {
+  const theme = getTheme();
+  return ensureContrast(
+    dimHex(theme.accent, 0.5),
+    referenceBackgroundFor(theme, getThemeAppearance()),
+    ACCENT_MIN_CONTRAST,
+  );
+}
+
 /** dim 前景 SGR；默认作用于主题正文色。 */
 export function dimFgSeq(color: string = getTheme().foreground): string {
   return fgSeq(dimHex(color));
@@ -480,9 +506,14 @@ export const paint = {
   blue: (text: string): string => paintText(text, getTheme().blue),
   boldBlue: (text: string): string => paintText(text, getTheme().blue, true),
   muted: (text: string): string => paintText(text, getTheme().muted),
+  faint: (text: string): string => paintText(text, faintHex()),
   cyan: (text: string): string => paintText(text, getTheme().cyan),
   bold: (text: string): string =>
     getColorLevel() === "mono" ? text : `${BOLD}${text}${themeReset()}`,
+  // 带状态图标的一行提示：状态色只上图标，文字保持正文色。
+  okLine: (text: string): string => `${paintText("✓", getTheme().green, true)} ${text}`,
+  warnLine: (text: string): string => `${paintText("!", getTheme().yellow, true)} ${text}`,
+  failLine: (text: string): string => `${paintText("✕", getTheme().red, true)} ${text}`,
   userMsg: (text: string): string => {
     const lines = text.split("\n");
     if (getColorLevel() === "mono") {

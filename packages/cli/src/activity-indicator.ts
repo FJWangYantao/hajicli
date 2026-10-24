@@ -210,6 +210,7 @@ interface ToolRunEntry {
   startedAt: number;
   durationMs?: number;
   resultText?: string;
+  preview?: string[];
   outputTail: string[];
   partialLine: string;
 }
@@ -295,6 +296,7 @@ export class ToolRunView {
     if (!entry) return;
     entry.status = result.status;
     entry.resultText = result.text;
+    entry.preview = result.preview;
     entry.durationMs = durationMs;
     if (!this.entries.some((item) => item.status === "running")) this.clearTimer();
     this.flush();
@@ -347,6 +349,7 @@ export class ToolRunView {
           ? formatToolDuration(entry.durationMs)
           : undefined,
       resultText: entry.resultText,
+      preview: entry.preview,
       outputTail,
     });
   }
