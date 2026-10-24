@@ -23,22 +23,24 @@ pnpm workspace monorepo：`packages/core`（`@hajicli/core`）、`packages/plugi
 - `packages/cli/package.json`（发布包 `hajicli`）
 - `packages/plugins/package.json`（`@hajicli/core` 同步看 `packages/core/package.json`）
 
-本机全局 `haji` 不是 registry 副本，而是指向仓库的 **junction**：
+本机（asus）全局 `haji` 不是 registry 副本，而是指向仓库的 **junction**（npm 前缀在 `E:\nodejs`）：
 
 ```
-C:\Users\WYT\AppData\Roaming\npm\node_modules\hajicli        → packages\cli（同 inode）
-  node_modules\@hajicli\core    <JUNCTION> → packages\core
-  node_modules\@hajicli\plugins <JUNCTION> → packages\plugins
+E:\nodejs\haji / haji.cmd / haji.ps1                          （npm shim）
+E:\nodejs\node_modules\hajicli          <JUNCTION> → <仓库>\packages\cli
+  node_modules\@hajicli\core           <JUNCTION> → <仓库>\packages\core
+  node_modules\@hajicli\plugins        <JUNCTION> → <仓库>\packages\plugins
 ```
 
-因此：
+**记忆约定：每次跑完新版本（`pnpm run build`），全局 `haji` 经 junction 自动就是新版本，无需任何重装操作。**
 
-- ✅ 改完 `pnpm run build` 后，全局 `haji` 立刻是新版本，**不需要** `npm i -g` / `pnpm link`
+- ✅ 构建完即生效，**不需要** `npm i -g` / `pnpm link`（junction 与仓库是同一份文件）
 - ❌ 不要删除或移动仓库目录，否则全局 `haji` 立即失效
-- 收尾验证（版本应一致；不一致说明 junction 被换成了副本，需重新 `npm i -g ./packages/cli`）：
+- ❌ 不要 `npm i -g hajicli`——会用 registry 副本覆盖 junction，此后构建不再同步到全局命令
+- 收尾验证（两者应一致；不一致说明 junction 被换成了副本，需重新 `npm i -g ./packages/cli` 重建链接）：
 
 ```bash
-node -e "console.log(require('C:/Users/WYT/AppData/Roaming/npm/node_modules/hajicli/package.json').version)"
+haji --version
 node -e "console.log(require('./packages/cli/package.json').version)"
 ```
 
