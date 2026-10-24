@@ -3,8 +3,10 @@ import test from "node:test";
 
 import { performanceMonitor } from "@hajicli/core";
 import {
+  buildRepeatedFailureNotice,
   createToolCallBatches,
   MAX_PARALLEL_READ_ONLY_TOOLS,
+  RepeatedFailureTracker,
   runToolCallBatch,
 } from "../dist/tool-batch.js";
 
@@ -122,4 +124,32 @@ test("parallel batch lets one normal failed result coexist with successful sibli
     ],
   );
   performanceMonitor.snapshot(true);
+});
+
+test("repeated failure tracker counts same tool, target and reason regardless of content", () => {
+  const tracker = new RepeatedFailureTracker();
+  const denied = "写入文件失败: 路径越出当前工作区，已拒绝访问: D:\\Desktop\\a.html\n说明";
+  assert.equal(tracker.record("write", { path: "D:\\Desktop\\a.html", content: "v1" }, denied), 1);
+  assert.equal(tracker.record("write", { path: "D:\\Desktop\\a.html", content: "v2" }, denied), 2);
+  // 不同目标单独计数
+  assert.equal(
+    tracker.record("write", { path: "b.html", content: "x" }, "写入文件失败: 磁盘满"),
+    1,
+  );
+  assert.equal(tracker.record("write", { path: "D:\\Desktop\\a.html", content: "v3" }, denied), 3);
+});
+
+test("repeated failure tracker resets after any success so fix-and-retest loops are not flagged", () => {
+  const tracker = new RepeatedFailureTracker();
+  const failed = "[退出码: 1]\nFAIL";
+  assert.equal(tracker.record("bash", { command: "npm test" }, failed), 1);
+  tracker.reset();
+  assert.equal(tracker.record("bash", { command: "npm test" }, failed), 1);
+  // 同一退出码、不同命令不算重复
+  assert.equal(tracker.record("bash", { command: "npm run lint" }, failed), 1);
+});
+
+test("repeated failure notice only appears from the second identical failure", () => {
+  assert.equal(buildRepeatedFailureNotice(1), "");
+  assert.match(buildRepeatedFailureNotice(2), /相同原因失败 2 次.*不要再发起同样的调用/);
 });

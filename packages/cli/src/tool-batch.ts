@@ -89,3 +89,36 @@ export async function runToolCallBatch<T, R extends TimedToolResult>(
     savedTimeMs,
   };
 }
+
+/** 同一失败原因在一个回合内出现到该次数时，追加提示要求模型停止原样重试。 */
+export const REPEATED_FAILURE_NOTICE_AT = 2;
+/** 同一失败原因在一个回合内出现到该次数时，直接结束本轮自动循环。 */
+export const REPEATED_FAILURE_STOP_AT = 3;
+
+/**
+ * 统计一个回合内"连续"失败中，相同工具、相同目标（命令/路径）、相同原因（输出首行）的次数。
+ * 不比较其余参数：模型换一份内容重写同一个越界路径，仍算同一种失败。
+ * 期间任何一次工具调用成功即清零，避免"测试失败→修改→再测"的正常迭代被误判。
+ */
+export class RepeatedFailureTracker {
+  private readonly counts = new Map<string, number>();
+
+  public record(toolName: string, args: Record<string, unknown>, output: string): number {
+    const target = typeof args.command === "string" ? args.command : args.path;
+    const reason = output.trim().split("\n", 1)[0] ?? "";
+    const key = JSON.stringify([toolName, typeof target === "string" ? target : "", reason]);
+    const count = (this.counts.get(key) ?? 0) + 1;
+    this.counts.set(key, count);
+    return count;
+  }
+
+  public reset(): void {
+    this.counts.clear();
+  }
+}
+
+/** 追加到工具结果末尾、提示模型换方案的系统说明；未达阈值时返回空串。 */
+export function buildRepeatedFailureNotice(count: number): string {
+  if (count < REPEATED_FAILURE_NOTICE_AT) return "";
+  return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。`;
+}

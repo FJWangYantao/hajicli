@@ -227,6 +227,9 @@ test("file tools reject paths outside the current workspace", async () => {
     assert.match(read, /路径越出当前工作区/);
     assert.match(write, /路径越出当前工作区/);
     assert.match(grep, /路径越出当前工作区/);
+    // 首行是给界面看的拒绝原因；第二行告诉模型这是固定边界，并给出可行做法。
+    assert.match(write, /^写入文件失败: 路径越出当前工作区，已拒绝访问: .+\n.*固定的安全边界/);
+    assert.match(write, /HAJI_ALLOW_OUTSIDE_WORKSPACE=1/);
     assert.equal(await fs.readFile(outside, "utf8"), "secret\n");
   } finally {
     process.chdir(originalCwd);

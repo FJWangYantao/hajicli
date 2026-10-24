@@ -7,6 +7,11 @@ export interface ResolveWorkspacePathOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** 越界错误的第二行：说明这是固定边界并给出可行做法，避免模型换个写法反复重试。 */
+const OUTSIDE_WORKSPACE_HINT =
+  "文件工具只能访问当前工作目录（Cwd）内的路径，这是固定的安全边界，重试同一位置会以同样方式失败。" +
+  "请改为写入工作区内的路径并告诉用户文件位置；确需访问工作区外时，请用户设置 HAJI_ALLOW_OUTSIDE_WORKSPACE=1 后重启。";
+
 export class WorkspacePathError extends Error {
   constructor(message: string) {
     super(message);
@@ -83,7 +88,9 @@ export async function resolveWorkspacePath(
     ? unresolvedCandidate
     : path.resolve(root, inputPath);
   if (!isInside(root, candidate)) {
-    throw new WorkspacePathError(`路径越出当前工作区，已拒绝访问: ${inputPath}`);
+    throw new WorkspacePathError(
+      `路径越出当前工作区，已拒绝访问: ${inputPath}\n${OUTSIDE_WORKSPACE_HINT}`,
+    );
   }
 
   const resolvedTarget =
@@ -91,7 +98,9 @@ export async function resolveWorkspacePath(
       ? await findExistingAncestor(candidate)
       : await fs.realpath(candidate);
   if (!isInside(root, resolvedTarget)) {
-    throw new WorkspacePathError(`路径通过符号链接越出当前工作区，已拒绝访问: ${inputPath}`);
+    throw new WorkspacePathError(
+      `路径通过符号链接越出当前工作区，已拒绝访问: ${inputPath}\n${OUTSIDE_WORKSPACE_HINT}`,
+    );
   }
 
   return candidate;

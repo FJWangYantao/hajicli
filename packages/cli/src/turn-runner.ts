@@ -43,7 +43,13 @@ import {
 import { TerminalInputCancelledError, type TerminalUI } from "./terminal-input.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { colors } from "./theme.js";
-import { createToolCallBatches, runToolCallBatch } from "./tool-batch.js";
+import {
+  buildRepeatedFailureNotice,
+  createToolCallBatches,
+  REPEATED_FAILURE_STOP_AT,
+  RepeatedFailureTracker,
+  runToolCallBatch,
+} from "./tool-batch.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
 export interface TurnDeps {
@@ -299,6 +305,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let turnOutputTokens: number | undefined;
   let turnToolCalls = 0;
   let turnFailed = false;
+  const repeatedFailures = new RepeatedFailureTracker();
   while (keepCalling) {
     const repairedMessages = repairToolCallPairs(messages);
     if (repairedMessages !== messages) {
@@ -543,6 +550,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         args: Record<string, unknown>;
         duration: number;
         execution?: ToolExecutionResult;
+        failed?: boolean;
         unregistered?: boolean;
         skipped?: boolean;
       };
@@ -551,6 +559,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         .reverse()
         .find((message) => message.role === "user" && message.snapshotId)?.snapshotId;
       const batches = createToolCallBatches(toolCalls);
+      let stoppedByRepeatedFailure = false;
 
       for (const batch of batches) {
         // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
@@ -588,12 +597,16 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               batchSize: batch.calls.length,
               onProgress: (progress) => toolRunView.output(tc.id, progress.chunk),
             });
-            toolRunView.finish(
-              tc.id,
-              summarizeToolResult(toolName, execution.output, execution, args),
-              execution.duration,
-            );
-            return { tc, toolName, args, duration: execution.duration, execution };
+            const summary = summarizeToolResult(toolName, execution.output, execution, args);
+            toolRunView.finish(tc.id, summary, execution.duration);
+            return {
+              tc,
+              toolName,
+              args,
+              duration: execution.duration,
+              execution,
+              failed: summary.status === "failed",
+            };
           } catch (error) {
             if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
             return { tc, toolName, args, duration: 0, skipped: true };
@@ -642,7 +655,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             continue;
           }
 
-          const toolOutput = execution.output;
+          let toolOutput = execution.output;
+          if (result.failed) {
+            const failureCount = repeatedFailures.record(toolName, args, toolOutput);
+            toolOutput += buildRepeatedFailureNotice(failureCount);
+            if (failureCount >= REPEATED_FAILURE_STOP_AT) stoppedByRepeatedFailure = true;
+          } else {
+            repeatedFailures.reset();
+          }
           if (
             deps.getPermissionMode() === "plan" &&
             toolName === "taskcreate" &&
@@ -674,6 +694,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       ui.writeLine();
       if (isTurnAborted) {
         showAbortNotice();
+        keepCalling = false;
+      } else if (stoppedByRepeatedFailure) {
+        ui.writeLine(
+          colors.warnLine(
+            `同一工具调用已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，已停止本轮自动重试。请调整要求后再试。`,
+          ),
+        );
         keepCalling = false;
       } else if (deps.getPermissionMode() === "plan" && deps.isPlanReadyForReview()) {
         if (!deps.isPlanReviewSummaryRequested()) {
