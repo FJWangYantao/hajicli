@@ -193,7 +193,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
 
 /** 分发 /rewind 指令；调用方负责其后的主循环 continue。 */
 export async function handleRewindCommand(ctx: SessionCommandContext): Promise<void> {
-  const { ui, sessionManager, snapshotEngine, skillRegistry } = ctx;
+  const { ui, snapshotEngine, skillRegistry } = ctx;
   const messages = ctx.getMessages();
   const userMessageNodes: Array<{ index: number; content: string }> = [];
   for (let i = 0; i < messages.length; i++) {

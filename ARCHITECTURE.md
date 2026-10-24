@@ -40,18 +40,20 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 
 ### TUI 与渲染
 
-- `terminal-input.ts`：`TerminalUI`——全屏布局（对话区 / 状态栏 / 输入框）、readInput / readSelection / 实时区域（setLiveTail）。
+- `terminal-input.ts`：`TerminalUI`——全屏布局（对话区 / 状态栏 / 输入框）、readInput / readSelection / 实时区域（setLiveTail）。输入编辑、鼠标选区与整帧渲染共享私有状态，保持为单一类；面板类构建逻辑已抽为纯函数。
+- `terminal-panels.ts`：状态栏 / 活动状态行 / 任务面板的纯构建函数（与 `agent-panel.ts` 同模式），输入标量状态输出 ANSI 行，可用固定宽度直接单测。
 - `native-terminal-engine.ts`：加载 Rust `.node` 模块（换行 / ANSI 文档排版），失败回退纯 TS；`/perf` 可看当前引擎。
 - `markdown-renderer.ts`：流式 Markdown 渲染 + 节流；`theme.ts`：深浅两套调色板 + 自定义色对比度兜底（WCAG AA）。
 - `activity-indicator.ts`：状态行（思考 / 生成 / 工具）与工具块视图（ToolRunView）。
 
-### 回合执行（仍在 index.ts 内）
+### 回合执行（turn-runner.ts）
 
-一个回合 = prompt 提交 → UserPromptSubmit Hook（可能触发自动压缩）→ 循环调用 `provider.completeStream`（流式正文 + 推理预览 + onRetry 提示）→ 工具调用按依赖分批（`tool-batch.ts`，只读工具并行）→ 结果写回消息。关键语义：
+`runAgentTurn(deps, input)` 承担一个完整对话回合：prompt 提交 → UserPromptSubmit Hook（可能触发自动压缩）→ 循环调用 `provider.completeStream`（流式正文 + 推理预览 + onRetry 提示）→ 工具调用按依赖分批（`tool-batch.ts`，只读工具并行）→ 结果写回消息。关键语义：
 
 - **prompt 收回**：请求真正发出前按 Esc，prompt 不入会话、回填输入框（`commitPromptForRequest` 由 `onRequestStart` 划界）。
 - **中止**：发出后 Esc → AbortController，部分输出保留，工具进程后台清理。
 - **Plan 模式**：只读工具 + Todo 计划，`PLAN_READY_MARKER` 后进入审批选择，批准后切换权限档继续执行。
+- **状态注入**：`permissionMode` / `riskThreshold` 经 `TurnDeps` 访问器读取（Plan 审批会在回合中切档）；provider / 模型 / 思考强度在回合开始时快照。
 
 ## Provider 与模型（packages/plugins）
 

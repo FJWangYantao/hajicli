@@ -5,9 +5,15 @@ import readlinePromises from "node:readline/promises";
 import { PassThrough } from "node:stream";
 import { performanceMonitor } from "@hajicli/core";
 import type { ActivityFrame } from "./activity-indicator.js";
-import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
+import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { findSlashArgHint, matchSlashCommands } from "./cli-help.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
+import {
+  buildActivityRow,
+  buildStatusBarRow,
+  buildTaskPanelRows,
+  type TaskPanelItem,
+} from "./terminal-panels.js";
 import {
   type TerminalMouseEvent,
   type TerminalProtocolEvent,
@@ -31,7 +37,6 @@ import {
   splitGraphemes,
   terminalWidth,
   truncateAnsiText,
-  truncateTailText,
   truncateText,
   type VisibleInputLayout,
   wrapAnsi,
@@ -44,6 +49,7 @@ import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
 // 保持既有 dist/terminal-input.js 导出面的兼容：拆分后的符号在此统一转发。
 export { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
+export type { TaskPanelItem } from "./terminal-panels.js";
 export {
   buildScreenUpdate,
   buildViewportScrollUpdate,
@@ -184,18 +190,6 @@ interface PendingMouseSelection {
   column: number;
   row: number;
   logicalRow: number;
-}
-
-interface TaskPanelItem {
-  id: string;
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  agent?: {
-    id: string;
-    role: string;
-    status: "running" | "awaiting_verification" | "verified" | "rejected" | "failed" | "aborted";
-    summary?: string;
-  };
 }
 
 export class TerminalInputCancelledError extends Error {
@@ -1461,208 +1455,35 @@ export class TerminalUI {
   }
 
   private buildStatusBar(width: number, detail: TuiStatusDetail = "full"): string {
-    const modeLabels: Record<string, string> = {
-      plan: "计划",
-      default: "默认",
-      "accept-edit": "自动编辑",
-      auto: "自动",
-      "bypass-permissions": "全放行",
-    };
-    const modeLabel = modeLabels[this.permissionMode] || this.permissionMode.toUpperCase();
-    const permText = this.permissionMode ? `[${modeLabel}]` : "";
-    const permColorMap: Record<string, string> = {
-      plan: SEQ.cyan,
-      default: SEQ.green,
-      "accept-edit": SEQ.yellow,
-      auto: SEQ.accent,
-      "bypass-permissions": SEQ.boldRed,
-    };
-    const permColor = permText ? permColorMap[this.permissionMode] || SEQ.muted : "";
-    const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : "";
-
-    const used = this.usedTokens;
-    const max = this.maxTokens;
-    const ratio = Math.min(1, Math.max(0, used / max));
-
-    let colorCode = SEQ.cyan;
-    if (ratio >= 0.85) {
-      colorCode = SEQ.boldRed;
-    } else if (ratio >= 0.6) {
-      colorCode = SEQ.yellow;
-    }
-
-    const percentText = `${Math.round(ratio * 100)}%`;
-    const numText = `${formatAgentTokens(used)}/${formatAgentTokens(max)}`;
-    const ctxLabel = "ctx";
-    const barCapacity = detail === "full" && width >= 72 ? 8 : 0;
-
-    const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
-    const emptyCount = Math.max(0, barCapacity - filledCount);
-    const barStr = barCapacity > 0 ? `${"█".repeat(filledCount)}${"░".repeat(emptyCount)} ` : "";
-    const valueText = detail === "full" ? numText : percentText;
-    const rightAnsi = `${colorCode}${barStr}${SEQ.reset}${SEQ.muted}${ctxLabel}${SEQ.reset} ${colorCode}${valueText}${SEQ.reset}`;
-    const rightWidth = terminalWidth(rightAnsi);
-
-    // 模型区按实际剩余空间分配（路径优先级最低，排在它之后）。
-    const modelLimit = Math.max(
-      6,
-      Math.min(detail === "full" ? 48 : 40, width - terminalWidth(permAnsi) - rightWidth - 4),
+    return buildStatusBarRow(
+      {
+        permissionMode: this.permissionMode,
+        usedTokens: this.usedTokens,
+        maxTokens: this.maxTokens,
+        modelName: this.modelName,
+        providerName: this.providerName,
+        reasoningEffort: this.reasoningEffort,
+        currentPath: this.currentPath,
+      },
+      width,
+      detail,
     );
-    // 空间不足时依次舍弃提供商、截短模型名，思考强度始终完整保留。
-    let modelStr = "";
-    if (detail !== "minimal" && this.modelName) {
-      const effort = this.reasoningEffort.toLowerCase();
-      const candidates = [
-        detail === "full" ? [this.providerName, this.modelName, effort] : [],
-        [this.modelName, effort],
-      ].map((parts) => parts.filter(Boolean).join(" · "));
-      modelStr =
-        candidates.find((candidate) => candidate && terminalWidth(candidate) <= modelLimit) ||
-        (effort
-          ? `${fitText(this.modelName, Math.max(1, modelLimit - terminalWidth(effort) - 3))} · ${effort}`
-          : fitText(this.modelName, modelLimit));
-    }
-    const modelAnsi = modelStr ? `${SEQ.bold}${SEQ.cyan}${modelStr}${SEQ.reset}` : "";
-
-    const baseLeftAnsi = [permAnsi, modelAnsi].filter(Boolean).join("  ");
-    const baseLeftWidth = terminalWidth(baseLeftAnsi);
-
-    let pathAnsi = "";
-    if (detail === "full" && this.currentPath) {
-      const pathMaxWidth = Math.max(0, width - baseLeftWidth - rightWidth - 4);
-      if (pathMaxWidth >= 3) {
-        pathAnsi = `${SEQ.muted}${truncateTailText(this.currentPath, pathMaxWidth)}${SEQ.reset}`;
-      }
-    }
-    const fullLeftAnsi = [baseLeftAnsi, pathAnsi].filter(Boolean).join("  ");
-    const fullLeftWidth = terminalWidth(fullLeftAnsi);
-
-    if (fullLeftWidth + rightWidth + 1 <= width) {
-      const padding = " ".repeat(width - fullLeftWidth - rightWidth);
-      return `${fullLeftAnsi}${padding}${rightAnsi}`;
-    }
-
-    if (rightWidth >= width) return truncateAnsiText(rightAnsi, width);
-    const availableLeft = Math.max(0, width - rightWidth - 1);
-    const fittedLeft = truncateAnsiText(fullLeftAnsi, availableLeft);
-    const padding = " ".repeat(Math.max(1, width - terminalWidth(fittedLeft) - rightWidth));
-    return `${fittedLeft}${padding}${rightAnsi}`;
   }
 
   private buildActivityRow(width: number): string {
-    const frame = this.activityFrame;
-    if (!frame || width <= 0) return "";
-
-    const color =
-      frame.tone === "stalled"
-        ? SEQ.boldYellow
-        : frame.tone === "waiting"
-          ? SEQ.yellow
-          : frame.phase === "responding"
-            ? SEQ.green
-            : frame.phase === "permission"
-              ? SEQ.yellow
-              : SEQ.cyan;
-    // 等待与停滞已由颜色区分；只有停滞时补一个文字提示，避免同一状态重复描述。
-    const toneText = frame.tone === "stalled" ? "等待较久" : "";
-    const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(" · ");
-    const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
-    const suffix = `${SEQ.muted}${frame.elapsed}${detail ? ` · ${detail}` : ""}${SEQ.reset}`;
-    if (width < 32) {
-      return truncateAnsiText(`${primary}  ${SEQ.muted}${frame.elapsed}${SEQ.reset}`, width);
-    }
-    if (width < 60) {
-      const compactState = toneText ? ` · ${toneText}` : "";
-      return truncateAnsiText(
-        `${primary}  ${SEQ.muted}${frame.elapsed}${compactState}${SEQ.reset}`,
-        width,
-      );
-    }
-    const row = `${primary}  ${suffix}`;
-    // 可中止的阶段在右侧常驻按键提示；空间不足时让位给左侧状态。
-    const interruptible = ["thinking", "responding", "tool", "batch"].includes(frame.phase);
-    const hint = "Esc 中止";
-    const hintWidth = terminalWidth(hint);
-    if (!interruptible || width < 100) return truncateAnsiText(row, width);
-    const fittedRow = truncateAnsiText(row, width - hintWidth - 2);
-    const padding = " ".repeat(Math.max(2, width - terminalWidth(fittedRow) - hintWidth));
-    return `${fittedRow}${padding}${SEQ.muted}${hint}${SEQ.reset}`;
+    return buildActivityRow(this.activityFrame, width);
   }
 
   private buildTaskPanel(width: number, maxRows = 8): string[] {
-    if (!this.taskPanelTitle || maxRows <= 0) return [];
-    const panelTitle = this.taskPanelTitle ? `任务 · ${this.taskPanelTitle}` : "任务";
-    const rows = [`${SEQ.bold}${SEQ.blue}${truncateText(panelTitle, width)}${SEQ.reset}`];
-    const visibleTasks = this.taskPanelExpanded
-      ? this.taskPanelItems
-      : this.taskPanelItems.slice(0, 5);
-    const needsFooter = this.taskPanelExpanded || this.taskPanelItems.length > visibleTasks.length;
-    const taskRowLimit = Math.max(1, maxRows - (needsFooter ? 1 : 0));
-    let renderedTaskCount = 0;
-
-    for (const task of visibleTasks) {
-      if (rows.length >= taskRowLimit) break;
-      if (task.status === "completed") {
-        rows.push(
-          `${SEQ.green}✓${SEQ.reset} ${SEQ.dim}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`,
-        );
-      } else if (task.status === "in_progress") {
-        rows.push(
-          `${SEQ.bold}${SEQ.blue}●${SEQ.reset} ${SEQ.bold}${truncateText(task.content, Math.max(1, width - 2))}${SEQ.reset}`,
-        );
-      } else {
-        rows.push(
-          `${SEQ.muted}○${SEQ.reset} ${truncateText(task.content, Math.max(1, width - 2))}`,
-        );
-      }
-      renderedTaskCount += 1;
-      if (task.agent && rows.length < taskRowLimit) {
-        const statusLabel =
-          task.agent.status === "running"
-            ? "运行中"
-            : task.agent.status === "awaiting_verification"
-              ? "待验证"
-              : task.agent.status === "verified"
-                ? "已验证"
-                : task.agent.status === "aborted"
-                  ? "已中止"
-                  : "失败";
-        const color =
-          task.agent.status === "running"
-            ? SEQ.cyan
-            : task.agent.status === "verified"
-              ? SEQ.green
-              : task.agent.status === "awaiting_verification"
-                ? SEQ.yellow
-                : SEQ.red;
-        rows.push(
-          `${color}    ↳ ${truncateText(`${task.agent.role} · ${statusLabel}`, Math.max(1, width - 6))}${SEQ.reset}`,
-        );
-      }
-    }
-
-    if (needsFooter && rows.length < maxRows) {
-      const hiddenTasks = this.taskPanelItems.slice(renderedTaskCount);
-      if (hiddenTasks.length > 0) {
-        const doneCount = hiddenTasks.filter((task) => task.status === "completed").length;
-        const activeCount = hiddenTasks.filter((task) => task.status === "in_progress").length;
-        const pendingCount = hiddenTasks.filter((task) => task.status === "pending").length;
-        const statusSummary = [
-          doneCount > 0 ? `${doneCount} 已完成` : "",
-          activeCount > 0 ? `${activeCount} 进行中` : "",
-          pendingCount > 0 ? `${pendingCount} 待处理` : "",
-        ]
-          .filter(Boolean)
-          .join(" · ");
-        const counts = statusSummary ? ` (${statusSummary})` : "";
-        rows.push(
-          `${SEQ.muted}${truncateText(`… 另有 ${hiddenTasks.length} 项${counts} · Ctrl+T ${this.taskPanelExpanded ? "收起" : "展开"}`, width)}${SEQ.reset}`,
-        );
-      } else {
-        rows.push(`${SEQ.muted}${truncateText("… Ctrl+T 收起", width)}${SEQ.reset}`);
-      }
-    }
-    return rows;
+    return buildTaskPanelRows(
+      {
+        title: this.taskPanelTitle,
+        items: this.taskPanelItems,
+        expanded: this.taskPanelExpanded,
+      },
+      width,
+      maxRows,
+    );
   }
 
   private toggleTaskPanel(value: string, key: readline.Key): boolean {
