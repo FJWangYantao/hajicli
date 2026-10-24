@@ -24,7 +24,8 @@ export async function startTraceServer(
 ): Promise<number> {
   const tracesDir = path.join(process.cwd(), ".haji", "traces");
 
-  const createHandler = (boundPort: number) =>
+  const createHandler =
+    (boundPort: number) =>
     async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
       const url = new URL(req.url || "/", `http://localhost:${boundPort}`);
       const pathname = url.pathname;

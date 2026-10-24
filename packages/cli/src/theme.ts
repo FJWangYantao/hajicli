@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { hexGradient, mixHexOklab } from "./oklab.js";
 import { ensureContrast } from "./contrast.js";
+import { hexGradient, mixHexOklab } from "./oklab.js";
 
 /**
  * TUI 主题模块。

@@ -147,13 +147,13 @@ import {
   runSubagentWizard,
   type WizardDeps,
 } from "./subagent-wizard.js";
+import { detectTerminalAppearance } from "./terminal-appearance.js";
 import {
   shouldRestartBackgroundInput,
   TerminalInputCancelledError,
   TerminalUI,
 } from "./terminal-input.js";
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
-import { detectTerminalAppearance } from "./terminal-appearance.js";
 import { colors, setThemeAppearance } from "./theme.js";
 import { createToolCallBatches, runToolCallBatch } from "./tool-batch.js";
 import { SharedToolExecutor } from "./tool-executor.js";

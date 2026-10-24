@@ -41,13 +41,14 @@ node -e "console.log(require('C:/Users/WYT/AppData/Roaming/npm/node_modules/haji
 node -e "console.log(require('./packages/cli/package.json').version)"
 ```
 
-## Lint 基线（重要，别被吓到）
+## Lint（保持全绿）
 
-`pnpm lint` 在当前仓库**基线就不干净**（约 143 条，绝大多数是 biome format 的 CRLF 行尾差异，少数 `lint/style/noNonNullAssertion`）。
+`pnpm lint` 当前**0 error**（剩余少量 info 级 `noNonNullAssertion` 提示是刻意保留的，不挡门禁）。行尾已统一：
 
-- ❌ 不要用 `pnpm lint:fix` / `biome check --write .` 一把梭：会重写大量文件的换行符，产生巨量无关 diff
-- ✅ 只对本次改动的文件跑 `pnpm exec biome check <files>`，并与改动前基线对比条数（改动不应新增规则类错误）
-- 只调整 import 顺序时，可用 `pnpm exec biome check --formatter-enabled=false --linter-enabled=false --write <file>`，避免顺手改行尾
+- `.gitattributes` 定为 `* text=auto eol=lf`，仓库与工作副本统一 LF，与 biome 的 `formatter.lineEnding: lf` 对齐；
+  仅 `*.cmd` / `*.bat` 保持 CRLF（Windows 批处理要求），字体等二进制显式标记 `binary`。
+- 提交前对本次改动文件跑 `pnpm exec biome check <files>`，不要让新错误进仓库。
+- 需要格式修复时对**改动文件**跑 `pnpm exec biome check --write <files>` 即可，行尾统一后不会再产生巨量无关 diff。
 
 ## 架构要点：provider / 模型（踩过的坑）
 

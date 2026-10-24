@@ -81,12 +81,14 @@ test("visible provider list hides builtins without an API key", () => {
     // 自定义 provider 无论有无 key 都按配置条目列出，且顺序稳定、不重复
     assert.equal(saveProviderConfig("zhipu", { apiKey: "k-1", models: ["glm-5.3-flash"] }), true);
     const withCustom = loadProviderConfig();
-    assert.deepEqual(listVisibleProviderNames(withCustom, () => true), [
-      "deepseek",
-      "volcengine",
-      "zhipu",
-    ]);
-    assert.deepEqual(listVisibleProviderNames(withCustom, () => false), ["zhipu"]);
+    assert.deepEqual(
+      listVisibleProviderNames(withCustom, () => true),
+      ["deepseek", "volcengine", "zhipu"],
+    );
+    assert.deepEqual(
+      listVisibleProviderNames(withCustom, () => false),
+      ["zhipu"],
+    );
 
     // 隐藏只是展示层行为：内置名与写入路径保持不变，仍可重新配置
     assert.deepEqual(withCustom.providers.deepseek, {});

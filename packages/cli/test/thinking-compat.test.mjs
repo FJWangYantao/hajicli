@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
-
-import { OpenAICompatibleProvider } from "@hajicli/plugins";
 import {
-  adaptPayloadForAlwaysThinking,
   AlwaysThinkingAdapter,
+  adaptPayloadForAlwaysThinking,
   clampEffortForAlwaysThinking,
   isAlwaysThinkingConflict,
+  OpenAICompatibleProvider,
 } from "@hajicli/plugins";
 
 const CONFLICT_MESSAGE =

@@ -1,1 +1,19 @@
-* text=auto
+# 仓库与工作副本统一 LF（与 biome formatter 的 lineEnding=lf 对齐）。
+# 不设 eol 时 Windows 的 core.autocrlf 会检出 CRLF，导致 pnpm lint 大面积报行尾差异。
+* text=auto eol=lf
+
+# Windows 批处理脚本必须保持 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制资源不做任何换行转换
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.node binary
+*.exe binary
+*.zip binary

@@ -168,7 +168,7 @@ test("projectinfo skips Rust target directory with transient rmeta artifacts", a
     await fs.mkdir(path.join(root, "src"), { recursive: true });
     await fs.mkdir(path.join(root, "target", "debug", "deps", "rmetaXeaSft"), { recursive: true });
     await fs.writeFile(path.join(root, "src", "main.rs"), "fn main() {}\n");
-    await fs.writeFile(path.join(root, "Cargo.toml"), "[package]\nname = \"x\"\n");
+    await fs.writeFile(path.join(root, "Cargo.toml"), '[package]\nname = "x"\n');
     await fs.writeFile(
       path.join(root, "target", "debug", "deps", "rmetaXeaSft", "lib.rmeta"),
       "stale artifact\n",
