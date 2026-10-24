@@ -10,13 +10,19 @@ import {
   faintHex,
   fgSeq,
   getColorLevel,
+  getTheme,
+  getThemePreset,
+  listThemePresets,
   paint,
   resetActiveColorLevel,
   resetActiveTheme,
+  resetThemePreset,
   setActiveColorLevel,
   setActiveTheme,
   setColorLevel,
+  setThemePreset,
   softAccentHex,
+  THEME_PRESET_NAMES,
   themeBg,
   themeEnter,
   themeExit,
@@ -45,6 +51,7 @@ const FIXED_THEME = {
 afterEach(() => {
   resetActiveColorLevel();
   resetActiveTheme();
+  resetThemePreset();
 });
 
 test("detectColorLevel honors explicit mono conditions before color capabilities", () => {
@@ -166,4 +173,30 @@ test("status lines color only the icon, and the status bar keeps one accent", ()
   assert.ok(row.includes(`${fgSeq(FIXED_THEME.accent)}[自动]`));
   assert.ok(row.includes(`${fgSeq(FIXED_THEME.muted)}workbuddy`));
   assert.ok(!row.includes(fgSeq(FIXED_THEME.cyan)), "no cyan left in the status bar");
+});
+
+test("theme presets resolve to distinct palettes under one appearance", () => {
+  resetThemePreset();
+  setActiveColorLevel("truecolor");
+  setThemePreset("default");
+  const defaultTheme = getTheme();
+  setThemePreset("kero");
+  const keroTheme = getTheme();
+  assert.notEqual(defaultTheme.accent, keroTheme.accent);
+  assert.notEqual(defaultTheme.foreground, keroTheme.foreground);
+  assert.equal(getThemePreset(), "kero");
+});
+
+test("re-selecting the active preset reports no change", () => {
+  resetThemePreset();
+  setThemePreset("default");
+  assert.equal(setThemePreset("default"), false);
+  assert.equal(setThemePreset("kero"), true);
+});
+
+test("theme preset list exposes the registered presets", () => {
+  const names = listThemePresets().map((preset) => preset.name);
+  assert.deepEqual(names, [...THEME_PRESET_NAMES]);
+  assert.ok(names.includes("default"));
+  assert.ok(names.includes("kero"));
 });

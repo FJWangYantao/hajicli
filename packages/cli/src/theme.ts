@@ -44,6 +44,17 @@ export interface Theme {
   brightCyan: string;
 }
 
+/**
+ * 命名主题预设：在内置调色板之上再分一层「套系」选择。
+ * - `default`：HAJI 自带调色板，低干扰深色表面 + 克制紫色强调。
+ * - `kero`：Kero 设计稿色系（复刻 design/kero/kero-tokens.ts），Apple 系统色 + 蓝色强调。
+ * 每套预设都提供 dark/light 两份，最终生效值由 preset × appearance 决定。
+ */
+export type ThemePresetName = "default" | "kero";
+
+/** 已注册的主题预设名（顺序即展示顺序）。 */
+export const THEME_PRESET_NAMES: readonly ThemePresetName[] = ["default", "kero"];
+
 /** 终端颜色能力，从完全无色到 24-bit 真彩色。 */
 export type ColorLevel = "mono" | "ansi16" | "ansi256" | "truecolor";
 
@@ -154,9 +165,57 @@ const LIGHT_THEME: Theme = {
   brightCyan: "#1a7f99",
 };
 
-const PALETTES: Readonly<Record<ThemeAppearance, Theme>> = {
-  dark: DARK_THEME,
-  light: LIGHT_THEME,
+/**
+ * Kero 预设深色板：复刻 design/kero/kero-tokens.ts 的 keroDark（darkPalette + darkTermTheme 合成）。
+ * 注意：Kero 的 washes 渐变背景在本架构无对应位（haji 不绘制整屏底色），这里只取单色前景/强调/语义色。
+ */
+const KERO_DARK_THEME: Theme = {
+  background: "#232328",
+  userMsgBg: "#323237",
+  foreground: "#e6e6ea",
+  accent: "#6b93ff",
+  muted: "#a9a9b4",
+  red: "#ff6b64",
+  green: "#4fd17a",
+  yellow: "#f2c14e",
+  blue: "#6b9bff",
+  magenta: "#d07cf0",
+  cyan: "#4cc9e0",
+  brightGreen: "#74e397",
+  brightYellow: "#ffd479",
+  brightBlue: "#8fb3ff",
+  brightCyan: "#7fdcec",
+};
+
+/** Kero 预设浅色板：复刻设计稿 keroLight（lightPalette + lightTermTheme 合成）。 */
+const KERO_LIGHT_THEME: Theme = {
+  background: "#ffffff",
+  userMsgBg: "#f4f4f4",
+  foreground: "#1d1d1f",
+  accent: "#3b6cf6",
+  muted: "#6e6e78",
+  red: "#d3302f",
+  green: "#22863a",
+  yellow: "#b08800",
+  blue: "#2f5bd8",
+  magenta: "#a033c4",
+  cyan: "#0f8199",
+  brightGreen: "#2fa84f",
+  brightYellow: "#d4a017",
+  brightBlue: "#3b82f6",
+  brightCyan: "#14a3bf",
+};
+
+/** 每套预设的显示说明，供 /theme 列表展示。 */
+const THEME_PRESET_INFO: Readonly<Record<ThemePresetName, string>> = {
+  default: "HAJI 自带：低干扰深色表面 + 克制紫色强调",
+  kero: "Kero 设计稿：Apple 系统色系 + 蓝色强调",
+};
+
+/** preset × appearance → 内置调色板基线。 */
+const PALETTES: Readonly<Record<ThemePresetName, Readonly<Record<ThemeAppearance, Theme>>>> = {
+  default: { dark: DARK_THEME, light: LIGHT_THEME },
+  kero: { dark: KERO_DARK_THEME, light: KERO_LIGHT_THEME },
 };
 
 /** 向后兼容的默认主题别名（深色调色板）。 */
@@ -346,8 +405,11 @@ function enforceReadableContrast(theme: Theme, appearance: ThemeAppearance): The
  * 始终返回一个完整的 Theme 对象（所有字段均有值；`background` 可为空串，
  * 表示沿用终端默认背景）。
  */
-export function loadTheme(appearance: ThemeAppearance = activeAppearance): Theme {
-  const merged: Theme = { ...PALETTES[appearance] };
+export function loadTheme(
+  appearance: ThemeAppearance = activeAppearance,
+  preset: ThemePresetName = currentPreset(),
+): Theme {
+  const merged: Theme = { ...PALETTES[preset][appearance] };
   const user = readThemeFile(userThemeConfigPath());
   const project = readThemeFile(projectThemeConfigPath());
   for (const key of THEME_KEYS) {
@@ -363,6 +425,54 @@ let activeTheme: Theme | undefined;
 /** 当前外观（深/浅），决定使用哪套内置调色板。 */
 let activeAppearance: ThemeAppearance = "dark";
 
+/** 当前预设；未显式设置时延迟从 theme.json 解析。 */
+let activePreset: ThemePresetName | undefined;
+
+/** 判断字符串是否为合法预设名。 */
+function isThemePresetName(value: string): value is ThemePresetName {
+  return (THEME_PRESET_NAMES as readonly string[]).includes(value);
+}
+
+/** 从单个主题文件读取 preset 字段；缺失/非法返回 undefined。 */
+function readThemePresetFromFile(filePath: string): ThemePresetName | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const preset = (parsed as Record<string, unknown>).preset;
+    return typeof preset === "string" && isThemePresetName(preset) ? preset : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 解析配置中的预设：项目级优先，其次用户级，最后回退 default。 */
+function resolveConfiguredPreset(): ThemePresetName {
+  return (
+    readThemePresetFromFile(projectThemeConfigPath()) ??
+    readThemePresetFromFile(userThemeConfigPath()) ??
+    "default"
+  );
+}
+
+/** 当前生效预设；尚未解析时读一次配置。 */
+function currentPreset(): ThemePresetName {
+  if (!activePreset) activePreset = resolveConfiguredPreset();
+  return activePreset;
+}
+
+/** 读取当前生效的主题预设。 */
+export function getThemePreset(): ThemePresetName {
+  return currentPreset();
+}
+
+/** 列出全部可用预设及说明（顺序即展示顺序）。 */
+export function listThemePresets(): ReadonlyArray<{
+  name: ThemePresetName;
+  description: string;
+}> {
+  return THEME_PRESET_NAMES.map((name) => ({ name, description: THEME_PRESET_INFO[name] }));
+}
+
 /** 读取当前生效的外观。 */
 export function getThemeAppearance(): ThemeAppearance {
   return activeAppearance;
@@ -375,8 +485,41 @@ export function getThemeAppearance(): ThemeAppearance {
 export function setThemeAppearance(appearance: ThemeAppearance): boolean {
   if (appearance === activeAppearance && activeTheme) return false;
   activeAppearance = appearance;
-  activeTheme = loadTheme(appearance);
+  activeTheme = loadTheme(appearance, currentPreset());
   return true;
+}
+
+/**
+ * 切换命名主题预设并重建激活主题。
+ * 调用方负责在切换后触发一次全量重绘；预设未变化时返回 false。
+ */
+export function setThemePreset(preset: ThemePresetName): boolean {
+  if (preset === activePreset && activeTheme) return false;
+  activePreset = preset;
+  activeTheme = loadTheme(activeAppearance, preset);
+  return true;
+}
+
+/**
+ * 把预设写回用户级 theme.json（保留文件中的既有颜色覆盖）。
+ * 写失败不影响本次运行内的切换效果。
+ */
+export function persistThemePreset(preset: ThemePresetName): void {
+  const target = userThemeConfigPath();
+  let source: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as unknown;
+    if (parsed && typeof parsed === "object") source = { ...(parsed as Record<string, unknown>) };
+  } catch {
+    // 文件不存在或损坏：从空对象重建。
+  }
+  source.preset = preset;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${JSON.stringify(source, null, 2)}\n`, "utf8");
+  } catch {
+    // 权限等写入失败：保持运行内生效即可。
+  }
 }
 
 /**
@@ -384,7 +527,7 @@ export function setThemeAppearance(appearance: ThemeAppearance): boolean {
  * 测试可通过 {@link setActiveTheme} 注入固定主题。
  */
 export function getTheme(): Theme {
-  if (!activeTheme) activeTheme = loadTheme();
+  if (!activeTheme) activeTheme = loadTheme(activeAppearance, currentPreset());
   return activeTheme;
 }
 
@@ -401,6 +544,12 @@ export function resetActiveTheme(): void {
 /** 重置外观为深色（测试用）。 */
 export function resetThemeAppearance(): void {
   activeAppearance = "dark";
+  activeTheme = undefined;
+}
+
+/** 重置预设与激活主题（测试用）：下次访问时重新从配置解析。 */
+export function resetThemePreset(): void {
+  activePreset = undefined;
   activeTheme = undefined;
 }
 

@@ -336,6 +336,20 @@ export class TerminalUI {
     this.outputMuted = Boolean(options.muteNonInteractiveOutput);
   }
 
+  /**
+   * 强制下一次渲染走全量刷新：清屏并按当前主题重绘整屏。
+   * 主题/配色在运行中切换后调用。注意：已提交的历史行是固化的 SGR 文本，
+   * 不会重新着色，只有重绘出的新帧使用新主题。
+   */
+  forceRedraw(): void {
+    if (!this.started || !this.interactive) return;
+    // 置空尺寸缓存，令 renderFrame 的 fullRefresh 判定成立（触发 themeEnter()+清屏）。
+    this.renderedScreenWidth = 0;
+    this.renderedScreenHeight = 0;
+    this.renderedScreenRows = [];
+    this.scheduleRender();
+  }
+
   setPermissionMode(mode: string): void {
     this.permissionMode = mode;
     this.scheduleRender();

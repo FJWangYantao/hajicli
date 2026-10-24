@@ -156,7 +156,16 @@ import {
   TerminalUI,
 } from "./terminal-input.js";
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
-import { colors, setThemeAppearance } from "./theme.js";
+import {
+  colors,
+  getThemePreset,
+  listThemePresets,
+  persistThemePreset,
+  setThemeAppearance,
+  setThemePreset,
+  THEME_PRESET_NAMES,
+  type ThemePresetName,
+} from "./theme.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
 import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
@@ -2153,6 +2162,42 @@ async function main() {
             if (error instanceof TerminalInputCancelledError) continue;
             throw error;
           }
+          continue;
+        }
+        if (command === "theme") {
+          const presetArg = parts[1]?.toLowerCase();
+          const currentPreset = getThemePreset();
+          if (!presetArg) {
+            const rows = listThemePresets().map((preset) => {
+              const marker = preset.name === currentPreset ? colors.green("●") : colors.gray("○");
+              const padded = preset.name.padEnd(9);
+              const label = preset.name === currentPreset ? colors.bold(padded) : padded;
+              return `  ${marker} ${label} ${colors.gray(preset.description)}`;
+            });
+            ui.writeChat(
+              [
+                colors.bold("配色主题"),
+                ...rows,
+                colors.gray(`当前：${currentPreset}。使用 /theme <名称> 切换并记住选择。`),
+              ].join("\n"),
+            );
+            continue;
+          }
+          if (!(THEME_PRESET_NAMES as readonly string[]).includes(presetArg)) {
+            ui.writeLine(
+              colors.failLine(`未知主题 "${presetArg}"。可用：${THEME_PRESET_NAMES.join(" / ")}。`),
+            );
+            continue;
+          }
+          const preset = presetArg as ThemePresetName;
+          const changed = setThemePreset(preset);
+          persistThemePreset(preset);
+          ui.forceRedraw();
+          ui.writeLine(
+            changed
+              ? colors.okLine(`已切换到主题 ${preset}（历史消息保留旧配色）。`)
+              : colors.gray(`当前已是主题 ${preset}。`),
+          );
           continue;
         }
         if (command === "image") {

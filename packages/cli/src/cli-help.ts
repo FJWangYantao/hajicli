@@ -127,6 +127,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         command: "/permissions",
         description: "查看 / 删除永久放行的授权规则（跨会话生效）",
       },
+      {
+        command: "/theme",
+        description: "切换配色主题（无参列出，/theme kero 应用并记住）",
+        argHint: "[preset]",
+      },
     ],
   },
   {
