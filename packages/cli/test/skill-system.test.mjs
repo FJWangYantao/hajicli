@@ -395,6 +395,8 @@ test("L4 keeps Skill activation metadata but allows content to be reloaded", asy
 
 test("CLI exposes deterministic Skill commands and preserves tool-call pairing", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  // Skill 转发的消息入队逻辑在回合执行模块里，断言跟随迁移。
+  const turnSource = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");
   assert.match(surface, /command: "\/skills"/);
   assert.match(surface, /command: "\/skill"/);
@@ -404,15 +406,15 @@ test("CLI exposes deterministic Skill commands and preserves tool-call pairing",
   assert.match(source, /if \(!entry\) \{\s*ui\.writeLine\(colors\.red\(`未找到 Skill/);
   assert.match(source, /manual-skill-\$\{randomUUID\(\)\}/);
   assert.match(
-    source,
-    /role: "assistant",[\s\S]*?content: "",[\s\S]*?reasoning_content: "",[\s\S]*?tool_calls: \[manualSkillExchange\.toolCall\]/,
+    turnSource,
+    /role: "assistant",[\s\S]*?content: "",[\s\S]*?reasoning_content: "",[\s\S]*?tool_calls: \[input\.manualSkillExchange\.toolCall\]/,
   );
   assert.match(
     source,
     /role: "assistant",[\s\S]*?content: "",[\s\S]*?reasoning_content: "",[\s\S]*?tool_calls: \[toolCall\]/,
   );
   assert.match(
-    source,
-    /role: "tool",\s*content: manualSkillExchange\.output,\s*tool_call_id: manualSkillExchange\.toolCall\.id/,
+    turnSource,
+    /role: "tool",\s*content: input\.manualSkillExchange\.output,\s*tool_call_id: input\.manualSkillExchange\.toolCall\.id/,
   );
 });

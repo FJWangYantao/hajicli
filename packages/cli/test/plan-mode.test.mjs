@@ -148,11 +148,12 @@ test("TaskStore keeps plans isolated by session scope", () => {
 });
 
 test("approval offers exactly three choices and defaults to Auto Execute", () => {
-  const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  // Plan 审批流已抽到 turn-runner.ts，源码断言跟随迁移。
+  const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   assert.match(source, /\[系统计划审阅要求\].*停止调用工具.*方案正文/);
   assert.match(
     source,
-    /permissionMode === "plan" && planReadyForReview[\s\S]*!textContent\.trim\(\)[\s\S]*本次不进入审批/,
+    /getPermissionMode\(\) === "plan" && deps\.isPlanReadyForReview\(\)[\s\S]*!textContent\.trim\(\)[\s\S]*本次不进入审批/,
   );
   assert.match(source, /value: "auto",\s*label: "Auto Execute"/);
   assert.match(source, /value: "manual",\s*label: "Approve Manually"/);
