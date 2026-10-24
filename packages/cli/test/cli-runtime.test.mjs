@@ -55,6 +55,56 @@ test("CLI preferences persist normally and report write failures", () => {
   }
 });
 
+test("user-level preferences act as the default and project ones override them", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "haji-pref-merge-"));
+  const home = path.join(root, "home");
+  const project = path.join(root, "project");
+  const previousCwd = process.cwd();
+  const previousHome = process.env.USERPROFILE;
+  const previousHomeUnix = process.env.HOME;
+  try {
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+    // os.homedir() 在 Windows 上读 USERPROFILE、其它平台读 HOME，两个都指到临时目录
+    process.env.USERPROFILE = home;
+    process.env.HOME = home;
+    fs.mkdirSync(path.join(home, ".haji"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".haji", "preferences.json"),
+      JSON.stringify({ model: "global-model", reasoningEffort: "low", provider: "workbuddy" }),
+    );
+    fs.mkdirSync(path.join(project, ".haji"), { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".haji", "preferences.json"),
+      JSON.stringify({ model: "project-model" }),
+    );
+    process.chdir(project);
+
+    // 项目级只写模型，其余字段沿用用户级默认
+    const merged = loadPreference();
+    assert.equal(merged.model, "project-model");
+    assert.equal(merged.provider, "workbuddy");
+
+    // 带 BOM 的文件（记事本 / PowerShell 5.1 写出）也要能读
+    fs.writeFileSync(
+      path.join(project, ".haji", "preferences.json"),
+      `\uFEFF${JSON.stringify({ model: "bom-model" })}`,
+    );
+    assert.equal(loadPreference().model, "bom-model");
+
+    // 没有项目级文件时回落到用户级默认
+    fs.rmSync(path.join(project, ".haji"), { recursive: true, force: true });
+    assert.equal(loadPreference().provider, "workbuddy");
+  } finally {
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousHome;
+    if (previousHomeUnix === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHomeUnix;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("tool argument summaries stay single-line and bounded", () => {
   assert.equal(formatToolArgs({ path: "a\nb" }), 'path: "a b"');
   assert.equal(formatToolArgs({ content: "x".repeat(100) }, 20).length, 20);

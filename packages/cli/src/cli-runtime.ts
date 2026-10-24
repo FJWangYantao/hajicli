@@ -6,7 +6,21 @@ import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { colors } from "./theme.js";
 
-const DEFAULT_PREFERENCES_PATH = path.join(process.cwd(), ".haji", "preferences.json");
+/** 用户级偏好（跨项目默认值）：~/.haji/preferences.json。 */
+function userPreferencesPath(): string {
+  return path.join(os.homedir(), ".haji", "preferences.json");
+}
+
+/**
+ * 项目级偏好：<cwd>/.haji/preferences.json。
+ *
+ * 读取顺序是「项目级覆盖用户级」：用户级存的是全局默认（模型 / 思考强度 / provider），
+ * 每个项目第一次改模型时才写自己的那份，之后按项目记忆。
+ */
+function projectPreferencesPath(): string {
+  return path.join(process.cwd(), ".haji", "preferences.json");
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface Preferences {
@@ -18,22 +32,68 @@ export interface Preferences {
   riskThreshold?: string;
 }
 
-export function loadPreference(preferencePath = DEFAULT_PREFERENCES_PATH): Preferences | null {
+function readPreferences(filePath: string): Preferences | null {
   try {
-    return JSON.parse(fs.readFileSync(preferencePath, "utf8")) as Preferences;
+    // 去掉可能存在的 UTF-8 BOM：记事本 / PowerShell 5.1 写出来的 JSON 常带它，
+    // 而 JSON.parse 会把 BOM 当成语法错误，导致偏好被静默忽略。
+    const text = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Preferences;
   } catch {
     return null;
   }
 }
 
+/**
+ * 读取偏好：显式传入路径时只读那一份（测试用）；否则先读用户级再叠项目级，
+ * 字段逐个覆盖，所以项目里只改了模型也不会把用户级的 provider 丢成 undefined。
+ */
+export function loadPreference(preferencePath?: string): Preferences | null {
+  if (preferencePath) return readPreferences(preferencePath);
+  const user = readPreferences(userPreferencesPath());
+  const project = readPreferences(projectPreferencesPath());
+  const merged: Record<string, unknown> = { ...user, ...project };
+  // 空字符串视作「没设置」，避免项目级写了个空值把用户级默认抹掉
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === "") delete merged[key];
+  }
+  return Object.keys(merged).length > 0 ? (merged as unknown as Preferences) : null;
+}
+
+/**
+ * 保存偏好。不传路径时写项目级（历史行为），并在用户级还不存在时补一份，
+ * 让第一次使用的人也有全局默认可回退。
+ */
 export function savePreference(
   preference: Preferences,
   onWarning?: (message: string) => void,
-  preferencePath = DEFAULT_PREFERENCES_PATH,
+  preferencePath?: string,
+): boolean {
+  const write = (filePath: string): boolean => {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(preference, null, 2), "utf8");
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      onWarning?.(`用户偏好保存失败：${detail}`);
+      return false;
+    }
+  };
+  if (preferencePath) return write(preferencePath);
+  if (!fs.existsSync(userPreferencesPath())) write(userPreferencesPath());
+  return write(projectPreferencesPath());
+}
+
+/** 写入用户级偏好（跨项目默认）。供「设为默认」这类显式操作使用。 */
+export function saveUserPreference(
+  preference: Preferences,
+  onWarning?: (message: string) => void,
 ): boolean {
   try {
-    fs.mkdirSync(path.dirname(preferencePath), { recursive: true });
-    fs.writeFileSync(preferencePath, JSON.stringify(preference, null, 2), "utf8");
+    fs.mkdirSync(path.dirname(userPreferencesPath()), { recursive: true });
+    fs.writeFileSync(userPreferencesPath(), JSON.stringify(preference, null, 2), "utf8");
     return true;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

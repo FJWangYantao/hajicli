@@ -406,7 +406,7 @@ export const ANNOTATIONS = {
   },
 
   "packages/cli/src/cli-runtime.ts": {
-    desc: "CLI 运行时小工具集:用户偏好(.haji/preferences.json:模型/强度/provider/权限档/危险阈值)的容错读写;formatToolArgs 把工具参数压成单行摘要(key: \"value\" 连接,超 45 字符截断);getCliVersion 读 package.json 版本号,异常回退 1.0.0。",
+    desc: "CLI 运行时小工具集:用户偏好(两级 .haji/preferences.json——~/.haji 存跨项目默认,<cwd>/.haji 存本项目,读取时项目级逐字段覆盖用户级;字段为模型/强度/provider/权限档/危险阈值;解析前去掉 UTF-8 BOM,避免记事本写出的文件被静默忽略)的容错读写;formatToolArgs 把工具参数压成单行摘要(key: \"value\" 连接,超 45 字符截断);getCliVersion 读 package.json 版本号,异常回退 1.0.0。",
   },
 
   "packages/cli/src/context-policy.ts": {
