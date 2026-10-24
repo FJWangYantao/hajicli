@@ -1,6 +1,7 @@
 export * from "./abort.js";
 export * from "./agent-manager.js";
 export * from "./atomic-file.js";
+export * from "./auto-classifier.js";
 export * from "./context-compact.js";
 export * from "./context-policy.js";
 export * from "./distill-engine.js";

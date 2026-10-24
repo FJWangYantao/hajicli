@@ -78,6 +78,7 @@ export class SharedToolExecutor {
         userIntent: context.userIntent || "",
         permissionMode: context.permissionMode,
         riskThreshold: context.riskThreshold,
+        abortSignal: context.abortSignal,
         agentId: context.agentId,
         parentAgentId: context.parentAgentId,
         depth: context.depth,

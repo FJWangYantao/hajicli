@@ -24,6 +24,8 @@ export interface HookContext {
   sessionId?: string;
   /** 工作目录（Stop 事件使用）。 */
   cwd?: string;
+  /** 当前回合的中止信号（PreToolUse 用来取消 Auto 分类器判定）。 */
+  abortSignal?: AbortSignal;
 }
 
 /** Hook 处理器函数定义：返回 string 代表拦截或修改，返回 void/null/undefined 代表放行 */

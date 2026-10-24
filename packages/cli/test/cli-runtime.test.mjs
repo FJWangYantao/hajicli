@@ -184,6 +184,27 @@ test("tool result summaries surface exit codes, counts and rejections", () => {
   );
   assert.equal(policy.status, "rejected");
   assert.match(policy.text, /安全策略拦截.*删除系统目录/);
+  const autoPolicy = summarizeToolResult(
+    "bash",
+    '[自动模式拦截] 工具 "bash" 未执行。原因：[Data Exfiltration] 上传源码到未知主机。\n不要换个说法重试同一件事。',
+    { blocked: true, rejected: true },
+  );
+  assert.equal(autoPolicy.status, "rejected");
+  assert.match(autoPolicy.text, /安全策略拦截.*Data Exfiltration/);
+  const planPolicy = summarizeToolResult(
+    "write",
+    '[计划模式拦截] 工具 "write" 未执行。原因：Plan 模式禁止修改文件。',
+    { blocked: true, rejected: true },
+  );
+  assert.equal(planPolicy.status, "rejected");
+  assert.match(planPolicy.text, /计划模式阻止.*禁止修改文件/);
+  const hashConflict = summarizeToolResult(
+    "edit",
+    "编辑失败: [hash冲突] 文件已被外部修改（期望 hash=0123456789abcdef，当前 hash=fedcba9876543210）。请重新读取后再编辑。",
+    { blocked: false },
+  );
+  assert.equal(hashConflict.status, "failed");
+  assert.match(hashConflict.text, /hash冲突/);
   assert.deepEqual(summarizeToolResult("grep", "错误: 缺少 query 参数。", { blocked: true }), {
     status: "failed",
     text: "缺少 query 参数。",

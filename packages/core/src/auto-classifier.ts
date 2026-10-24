@@ -23,8 +23,15 @@ const CLIP_CHARS = 1_500;
 /** 分类器的判定（`allow` / `deny` 各带一句理由）。 */
 export type AutoDecision = { allow: true; reason: string } | { allow: false; reason: string };
 
-/** LLM 分类器回调：由 CLI 层注入，返回模型的原始回复文本；抛错即视为失败（fail-closed）。 */
-export type AutoJudge = (request: { system: string; user: string }) => Promise<string>;
+/**
+ * LLM 分类器回调：由 CLI 层注入，返回模型的原始回复文本；抛错即视为失败（fail-closed）。
+ * `signal` 由权限引擎传入（判定超时会 abort），实现方应把它透传给网络请求。
+ */
+export type AutoJudge = (request: {
+  system: string;
+  user: string;
+  signal?: AbortSignal;
+}) => Promise<string>;
 
 /**
  * 生成分类器的系统提示词。`environment` 是用户可配的信任边界（自然语言）；

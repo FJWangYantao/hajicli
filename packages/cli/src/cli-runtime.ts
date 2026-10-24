@@ -39,6 +39,8 @@ export interface Preferences {
   budget?: number;
   /** 右侧会话信息栏开关；缺省视为开启（true），宽度不足时自动隐藏。 */
   sidebar?: boolean;
+  /** Auto 模式的信任边界（自然语言，拼进安全分类器系统提示词）；缺省为工作目录及其 git remote。 */
+  autoEnvironment?: string;
 }
 
 function readPreferences(filePath: string): Preferences | null {
@@ -398,9 +400,15 @@ export function summarizeToolResult(
   args: Record<string, unknown> = {},
 ): ToolResultSummary {
   const body = sanitizeTerminalText(output.replace(VERIFICATION_EVIDENCE_RE, ""));
-  if (body.startsWith("[安全引擎拒绝拦截]")) {
-    const reason = body.match(/拒绝原因: ([^。\n]+)/)?.[1];
-    return { status: "rejected", text: `安全策略拦截${reason ? `：${oneLine(reason)}` : ""}` };
+  const policyLabel = body.startsWith("[计划模式拦截]")
+    ? "计划模式阻止"
+    : body.startsWith("[自动模式拦截]") || body.startsWith("[安全引擎拒绝拦截]")
+      ? "安全策略拦截"
+      : undefined;
+  if (policyLabel) {
+    const reason = body.match(/(?:拒绝原因|原因)[:：]\s*([^。\n]+)/)?.[1];
+    // 自动模式的原因可能以 [Data Exfiltration] 这类标签开头，保留原文便于定位。
+    return { status: "rejected", text: `${policyLabel}${reason ? `：${oneLine(reason)}` : ""}` };
   }
   if (outcome.rejected) {
     return { status: "rejected", text: body.includes("用户拒绝") ? "已拒绝执行" : firstLine(body) };

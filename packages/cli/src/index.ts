@@ -11,6 +11,7 @@ import {
   type AgentRecord,
   type BaseTool,
   type ChatMessage,
+  DEFAULT_PERMISSION_MODE,
   DistillEngine,
   ExperienceStore,
   ExperiencesPromptPart,
@@ -516,7 +517,7 @@ async function main() {
   let permissionRules = loadAllPermissionRules();
   let permissionMode: PermissionMode = isPermissionMode(savedPreference?.permissionMode)
     ? savedPreference?.permissionMode
-    : "default";
+    : DEFAULT_PERMISSION_MODE;
   let riskThreshold: RiskLevel = (
     ["low", "medium", "high"].includes(savedPreference?.riskThreshold || "")
       ? savedPreference?.riskThreshold
@@ -526,9 +527,11 @@ async function main() {
     permissionMode = headlessRequest.permissionMode;
   }
   if (headlessRequest && permissionMode === "plan") {
-    // 无头模式没有 Plan 审批交互（选择器会静默取默认项），plan 档自动按 default 执行。
-    permissionMode = "default";
-    console.error(colors.warnLine("无头模式不支持 Plan 审批，权限档位已按 default 执行。"));
+    // 无头模式没有 Plan 审批交互（选择器会静默取默认项），plan 档自动按默认档执行。
+    permissionMode = DEFAULT_PERMISSION_MODE;
+    console.error(
+      colors.warnLine(`无头模式不支持 Plan 审批，权限档位已按 ${DEFAULT_PERMISSION_MODE} 执行。`),
+    );
   }
 
   const hookEngine = new HookEngine();
@@ -554,6 +557,7 @@ async function main() {
       args: ctx.args || {},
       userIntent: ctx.userIntent || "",
       riskThreshold: ctx.riskThreshold as RiskLevel,
+      abortSignal: ctx.abortSignal,
     });
 
     if (checkResult.action === "allow") {
@@ -564,8 +568,11 @@ async function main() {
     }
     if (checkResult.action === "deny") {
       // 拦截结果由工具块统一展示（⊘ + 原因），这里只返回给模型的说明。
-      const autoDeniedReason = checkResult.reason || "Auto 分类器安全拦截";
-      return `[安全引擎拒绝拦截] 命令 "${ctx.toolName}" 被 Auto 分类器检测为超出允许的危险阈值 (${checkResult.riskLevel})。拒绝原因: ${autoDeniedReason}。请重新分析用户意图，改用更安全的替代指令或步骤。`;
+      const deniedReason = checkResult.reason || "权限引擎安全拦截";
+      if (mode === "plan") {
+        return `[计划模式拦截] 工具 "${ctx.toolName}" 未执行。原因：${deniedReason}\n提交计划并等待用户批准后再执行修改。`;
+      }
+      return `[自动模式拦截] 工具 "${ctx.toolName}" 未执行。原因：${deniedReason}\n不要换个说法重试同一件事；改用更安全的做法，或询问用户是否需要执行。`;
     }
     return null;
   });
@@ -943,6 +950,50 @@ async function main() {
   for (const warning of initialSkillScan.warnings) ui.writeLine(colors.warnLine(warning));
 
   ui.setPermissionMode(permissionMode);
+  // Auto 模式：把主/杂活模型接成安全分类器。判定失败、超时、回复无法解析一律拒绝，
+  // 与 auto-classifier 的 fail-closed 语义一致；用户中止回合时沿 abortSignal 取消请求。
+  permissionEngine.configureAuto({
+    judge: async ({ system, user, signal }) => {
+      const utility = getUtilityRuntime();
+      return (utility?.provider ?? provider).complete(
+        [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        {
+          model: utility?.model ?? selectedModel,
+          reasoningEffort: "low",
+          thinking: false,
+          maxTokens: 400,
+          abortSignal: signal,
+        },
+      );
+    },
+    environment: savedPreference?.autoEnvironment,
+    cwd: process.cwd(),
+    userMessages: () => messages.filter((message) => message.role === "user").map((m) => m.content),
+    onJudge: (event) => {
+      if (!ui.isInteractive()) return;
+      if (event.phase === "start") {
+        ui.showTransientHint(`自动判定中 · ${event.toolName}`, 60_000);
+        return;
+      }
+      const verdict =
+        event.source === "hard-block"
+          ? "硬熔断"
+          : event.source === "error"
+            ? "判定失败"
+            : event.source === "fallback"
+              ? event.allowed
+                ? "规则放行"
+                : "规则拦截"
+              : event.allowed
+                ? "AI 放行"
+                : "AI 拦截";
+      const duration = event.durationMs !== undefined ? ` · ${event.durationMs}ms` : "";
+      ui.showTransientHint(`${verdict} · ${event.toolName}${duration}`, 3_000);
+    },
+  });
   let planReadyForReview = false;
   let planReviewSummaryRequested = false;
 
@@ -1376,8 +1427,10 @@ async function main() {
     }
     permissionMode = nextMode;
     await refreshSystemPromptPreservingContext();
+    const currentPreference = loadPreference();
     savePreference(
       {
+        ...(currentPreference ?? {}),
         model: selectedModel,
         reasoningEffort,
         provider: currentProviderName,
@@ -2398,9 +2451,15 @@ async function main() {
             selectedModel = newModel;
             reasoningEffort = selection.secondaryValue;
             await refreshSystemPromptPreservingContext();
-            // 持久化用户偏好到本地
+            // 持久化用户偏好到本地（保留 sidebar / autoEnvironment 等未在此修改的字段）。
+            const currentPreference = loadPreference();
             savePreference(
-              { model: selectedModel, reasoningEffort, provider: currentProviderName },
+              {
+                ...(currentPreference ?? {}),
+                model: selectedModel,
+                reasoningEffort,
+                provider: currentProviderName,
+              },
               showRuntimeWarning,
             );
             updateStatusUI();
@@ -2478,7 +2537,7 @@ async function main() {
                 items: PERMISSION_MODES,
                 selectedValue: permissionMode,
                 secondary: {
-                  label: "Auto 危险阈值",
+                  label: "规则回退阈值（分类器不可用时）",
                   items: [
                     { value: "low", label: "LOW", description: "严苛（允许无副作用命令）" },
                     { value: "medium", label: "MEDIUM", description: "标准（推荐，阻止高危操作）" },
@@ -2513,7 +2572,11 @@ async function main() {
           planReadyForReview = false;
           planReviewSummaryRequested = false;
           ui.writeLine(
-            colors.okLine(`系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`),
+            colors.okLine(
+              permissionMode === "auto"
+                ? "系统权限已设置为 [auto]（LLM 安全分类器；判定失败或超时一律拒绝）"
+                : `系统权限已设置为 [${permissionMode}] (规则回退阈值: ${riskThreshold})`,
+            ),
           );
           if (permissionMode === "plan") {
             ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));

@@ -1,10 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  type RiskLevel,
-  type SecurityAssessment,
-  SecurityClassifier,
-} from "./security-classifier.js";
+  type AutoJudge,
+  buildActionSection,
+  buildSystemPrompt,
+  buildUserSection,
+  hardBlock,
+  parseDecision,
+} from "./auto-classifier.js";
+import { type RiskLevel, SecurityClassifier } from "./security-classifier.js";
 import { HajiError } from "./types.js";
 
 /**
@@ -34,7 +38,7 @@ export const PERMISSION_MODES: Array<{
   {
     value: "auto",
     label: "Auto Classifier",
-    description: "AI 分类器判定危险等级，不安全命令拒绝并提示修正",
+    description: "LLM 结合用户意图判定：常规操作自动放行，越界或危险操作拦截并说明原因",
   },
   {
     value: "bypass-permissions",
@@ -49,6 +53,9 @@ export const PERMISSION_MODES: Array<{
 export function isPermissionMode(mode: string | undefined): mode is PermissionMode {
   return Boolean(mode && PERMISSION_MODES.some((m) => m.value === mode));
 }
+
+/** 新会话的默认权限档：LLM 自动分类器（用户显式保存的偏好仍然优先）。 */
+export const DEFAULT_PERMISSION_MODE: PermissionMode = "auto";
 
 /**
  * 权限检查动作。
@@ -75,7 +82,39 @@ export interface PermissionEvaluateOptions {
   toolName: string;
   args: Record<string, unknown>;
   userIntent?: string;
+  /** 本会话用户说过的话（从早到晚）；缺省退回 `userIntent` 单条。 */
+  userMessages?: readonly string[];
   riskThreshold?: RiskLevel;
+  /** 用户中止当前回合时透传，用于取消分类器调用。 */
+  abortSignal?: AbortSignal;
+}
+
+/** Auto 分类器的一次判定进度（供 UI 展示「判定中 / 已放行 / 已拦截」）。 */
+export interface AutoJudgeEvent {
+  phase: "start" | "done";
+  toolName: string;
+  /** 判定来源：模型分类器、确定性硬熔断、未注入分类器时的规则回退。 */
+  source: "classifier" | "hard-block" | "fallback" | "error";
+  allowed?: boolean;
+  reason?: string;
+  durationMs?: number;
+}
+
+/**
+ * Auto 模式分类器运行参数。
+ * 不注入 `judge` 时退回确定性的 SecurityClassifier，保证任何嵌入场景下 auto 档仍可用。
+ */
+export interface AutoClassifierConfig {
+  judge?: AutoJudge;
+  /** 用户可配的信任边界（自然语言），拼进分类器系统提示词。 */
+  environment?: string;
+  /** 单次判定超时（ms）；超时按拒绝处理（fail-closed）。 */
+  timeoutMs?: number;
+  /** 分类器看到的用户原话来源；缺省用 `userIntent`。 */
+  userMessages?: () => readonly string[];
+  /** 工作目录（动作描述里的相对路径基准、硬熔断的路径判断）。 */
+  cwd?: string;
+  onJudge?: (event: AutoJudgeEvent) => void;
 }
 
 /**
@@ -86,6 +125,51 @@ export class PermissionError extends HajiError {
     super(message, "PERMISSION_ERROR");
     this.name = "PermissionError";
   }
+}
+
+const DEFAULT_AUTO_TIMEOUT_MS = 20_000;
+
+interface JudgeSignal {
+  signal: AbortSignal;
+  timedOut: () => boolean;
+  dispose: () => void;
+}
+
+/** 组合超时与用户中止：任一触发都会 abort 分类器请求，并在 dispose 时清理定时器/监听器。 */
+function createJudgeSignal(timeoutMs: number, external?: AbortSignal): JudgeSignal {
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = (): void => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs)
+      : undefined;
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      external?.removeEventListener("abort", onExternalAbort);
+    },
+  };
+}
+
+/** 即使 judge 实现忽略了 signal，也要让 await 在 abort 时立刻返回（fail-closed）。 */
+function rejectOnAbort(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
 }
 
 /** 只读 shell 命令（首个词，小写）：只查看文件或目录，不产生副作用。 */
@@ -193,9 +277,19 @@ const extraReadOnlyTools = new Set<string>();
 
 export class PermissionEngine {
   private classifier: SecurityClassifier;
+  private autoConfig: AutoClassifierConfig;
 
-  constructor() {
+  constructor(autoConfig: AutoClassifierConfig = {}) {
     this.classifier = new SecurityClassifier();
+    this.autoConfig = { ...autoConfig };
+  }
+
+  /**
+   * 注入 / 更新 Auto 模式的 LLM 分类器。CLI 在主模型可用后调用，
+   * 未注入 judge 时 auto 档退回确定性的 SecurityClassifier。
+   */
+  public configureAuto(autoConfig: AutoClassifierConfig): void {
+    this.autoConfig = { ...this.autoConfig, ...autoConfig };
   }
 
   /**
@@ -242,7 +336,7 @@ export class PermissionEngine {
    * 根据当前权限模式和工具入参，评估工具调用的处理动作。
    */
   public async evaluate(options: PermissionEvaluateOptions): Promise<PermissionCheckResult> {
-    const { mode, toolName, args, userIntent = "", riskThreshold = "medium" } = options;
+    const { mode, toolName, args } = options;
 
     // Plan 模式只允许只读调研与计划管理，禁止修改工作区。
     if (mode === "plan") {
@@ -302,29 +396,137 @@ export class PermissionEngine {
       return { action: "prompt", riskLevel: "medium", reason: "修改型工具需用户手动确认授权" };
     }
 
-    // 5. Auto 模式：调起 SecurityClassifier 动态分析
+    // 5. Auto 模式：确定性硬熔断 + LLM 分类器；未注入 judge 时退回规则分类器
     if (mode === "auto") {
-      const assessment: SecurityAssessment = await this.classifier.assess({
-        toolName,
-        args,
-        userIntent,
-        riskThreshold,
-      });
-
-      if (assessment.isSafe) {
-        return {
-          action: "allow",
-          riskLevel: assessment.riskLevel,
-        };
-      }
-
-      return {
-        action: "deny",
-        riskLevel: assessment.riskLevel,
-        reason: assessment.reason || "分类器检测到该操作超出允许的安全风险阈值",
-      };
+      return this.evaluateAuto(toolName, args, options);
     }
 
     return { action: "prompt", riskLevel: "medium" };
+  }
+
+  private emitAutoJudge(event: AutoJudgeEvent): void {
+    try {
+      this.autoConfig.onJudge?.(event);
+    } catch {
+      // UI 回调失败不能影响安全判定。
+    }
+  }
+
+  private async evaluateAuto(
+    toolName: string,
+    args: Record<string, unknown>,
+    options: PermissionEvaluateOptions,
+  ): Promise<PermissionCheckResult> {
+    const startedAt = Date.now();
+    const cwd = this.autoConfig.cwd ?? process.cwd();
+
+    // 确定性硬熔断优先于模型：分类器再准也不把「一句命令毁掉机器」交给它判。
+    const hardBlockReason = hardBlock(toolName, args, cwd);
+    if (hardBlockReason) {
+      this.emitAutoJudge({
+        phase: "done",
+        toolName,
+        source: "hard-block",
+        allowed: false,
+        reason: hardBlockReason,
+        durationMs: Date.now() - startedAt,
+      });
+      return { action: "deny", riskLevel: "critical", reason: hardBlockReason };
+    }
+
+    const judge = this.autoConfig.judge;
+    if (!judge) {
+      this.emitAutoJudge({ phase: "start", toolName, source: "fallback" });
+      const assessment = await this.classifier.assess({
+        toolName,
+        args,
+        userIntent: options.userIntent,
+        riskThreshold: options.riskThreshold,
+      });
+      this.emitAutoJudge({
+        phase: "done",
+        toolName,
+        source: "fallback",
+        allowed: assessment.isSafe,
+        reason: assessment.reason,
+        durationMs: Date.now() - startedAt,
+      });
+      return assessment.isSafe
+        ? { action: "allow", riskLevel: assessment.riskLevel }
+        : {
+            action: "deny",
+            riskLevel: assessment.riskLevel,
+            reason: assessment.reason || "分类器检测到该操作超出允许的安全风险阈值",
+          };
+    }
+
+    this.emitAutoJudge({ phase: "start", toolName, source: "classifier" });
+    const configMessages = this.autoConfig.userMessages?.();
+    const userMessages =
+      configMessages && configMessages.length > 0
+        ? configMessages
+        : options.userMessages && options.userMessages.length > 0
+          ? options.userMessages
+          : options.userIntent
+            ? [options.userIntent]
+            : [];
+    const system = buildSystemPrompt(this.autoConfig.environment);
+    const user = `${buildUserSection(userMessages)}\n\n${buildActionSection(toolName, args, cwd)}`;
+    const judgeSignal = createJudgeSignal(
+      this.autoConfig.timeoutMs ?? DEFAULT_AUTO_TIMEOUT_MS,
+      options.abortSignal,
+    );
+
+    try {
+      // 先挂一个空 catch：超时/中止让 race 先返回后，模型请求稍后的拒绝不应变成未处理异常。
+      const judgePromise = Promise.resolve().then(() =>
+        judge({ system, user, signal: judgeSignal.signal }),
+      );
+      judgePromise.catch(() => {});
+      const reply = await Promise.race([judgePromise, rejectOnAbort(judgeSignal.signal)]);
+      const decision = parseDecision(reply);
+      if (!decision) {
+        const reason = "分类器返回无法解析的判定，已按拒绝处理。请改用更安全的做法或询问用户。";
+        this.emitAutoJudge({
+          phase: "done",
+          toolName,
+          source: "error",
+          allowed: false,
+          reason,
+          durationMs: Date.now() - startedAt,
+        });
+        return { action: "deny", riskLevel: "high", reason };
+      }
+      this.emitAutoJudge({
+        phase: "done",
+        toolName,
+        source: "classifier",
+        allowed: decision.allow,
+        reason: decision.reason,
+        durationMs: Date.now() - startedAt,
+      });
+      return decision.allow
+        ? { action: "allow", riskLevel: "low", reason: decision.reason }
+        : { action: "deny", riskLevel: "high", reason: decision.reason };
+    } catch (error) {
+      const aborted = judgeSignal.timedOut()
+        ? `分类器判定超时（${this.autoConfig.timeoutMs ?? DEFAULT_AUTO_TIMEOUT_MS}ms），已按拒绝处理`
+        : options.abortSignal?.aborted
+          ? "判定已被用户中止，该工具未执行"
+          : `分类器调用失败，已按拒绝处理：${
+              error instanceof Error ? error.message : String(error)
+            }`;
+      this.emitAutoJudge({
+        phase: "done",
+        toolName,
+        source: "error",
+        allowed: false,
+        reason: aborted,
+        durationMs: Date.now() - startedAt,
+      });
+      return { action: "deny", riskLevel: "high", reason: aborted };
+    } finally {
+      judgeSignal.dispose();
+    }
   }
 }
