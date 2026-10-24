@@ -20,8 +20,54 @@ export interface ExperienceCommandContext {
   /** 提炼后的消息写入通道。 */
   writeLine: (line: string) => void;
   writeChat: (content: string) => void;
+  /**
+   * 缺 id 时列出候选供选（由终端注入）。未注入时退回“用法”提示，
+   * 便于测试与无头场景复用本模块而不依赖 TerminalUI。
+   */
+  pick?: (options: ExperiencePickOptions) => Promise<string | undefined>;
   /** 用户级 Skill 目录（/instinct skill 蒸馏目标），缺省 ~/.haji/skills；测试注入临时目录。 */
   userSkillsDir?: string;
+}
+
+/** 候选选择器的入参：与 TerminalUI.readSelection 的子集保持一致，避免直接耦合。 */
+export interface ExperiencePickOptions {
+  title: string;
+  items: ReadonlyArray<{ value: string; label: string; description: string }>;
+  selectedValue?: string;
+}
+
+/** 缺 id 时列出候选；未注入选择器或候选为空时返回 undefined，调用方回退用法提示。 */
+async function pickCandidate(
+  ctx: ExperienceCommandContext,
+  title: string,
+  items: Array<{ value: string; label: string; description: string }>,
+): Promise<string | undefined> {
+  if (!ctx.pick || items.length === 0) return undefined;
+  return ctx.pick({ title, items, selectedValue: items[0]?.value });
+}
+
+/** 记忆候选：id + 类型作标签，内容作说明，便于直接辨认。 */
+function memoryPickItems(memories: readonly Memory[]): Array<{
+  value: string;
+  label: string;
+  description: string;
+}> {
+  return memories.map((memory) => ({
+    value: memory.id,
+    label: `${memory.id} [${memory.type}]`,
+    description: memory.content.replace(/\s+/g, " ").slice(0, 80),
+  }));
+}
+
+/** 规则候选：id + domain 作标签，触发条件与动作用来说明。 */
+function instinctPickItems(
+  instincts: ReturnType<ExperienceStore["loadInstincts"]>,
+): Array<{ value: string; label: string; description: string }> {
+  return instincts.map((instinct) => ({
+    value: instinct.id,
+    label: `${instinct.id} [${instinct.domain}]`,
+    description: `${instinct.trigger} → ${instinct.action}`.replace(/\s+/g, " ").slice(0, 80),
+  }));
 }
 
 /** ANSI 颜色辅助（与 index.ts 的 colors 一致，由调用方注入）。 */
@@ -62,7 +108,14 @@ export async function handleMemoryCommand(
   const sub = args[0]?.toLowerCase();
 
   if (sub === "confirm") {
-    const id = args[1];
+    // 缺 id 时列出 staging 候选：待确认项通常不多，直接选比手抄 id 更快。
+    const id =
+      args[1] ??
+      (await pickCandidate(
+        ctx,
+        "确认哪条记忆（staging → active）",
+        memoryPickItems(ctx.store.loadMemories("all").filter((m) => m.status === "staging")),
+      ));
     if (!id) {
       ctx.writeLine(colors.warnLine("用法: /memory confirm <id>"));
       return;
@@ -114,7 +167,9 @@ export async function handleMemoryCommand(
   }
 
   if (sub === "forget") {
-    const id = args[1];
+    const id =
+      args[1] ??
+      (await pickCandidate(ctx, "删除哪条记忆", memoryPickItems(ctx.store.loadMemories("all"))));
     if (!id) {
       ctx.writeLine(colors.warnLine("用法: /memory forget <id>"));
       return;
@@ -127,7 +182,14 @@ export async function handleMemoryCommand(
   }
 
   if (sub === "promote") {
-    const id = args[1];
+    // 只有项目级能提升，候选里就先过滤掉用户级，避免选了才报错。
+    const id =
+      args[1] ??
+      (await pickCandidate(
+        ctx,
+        "提升哪条记忆到用户级",
+        memoryPickItems(ctx.store.loadMemories("all").filter((m) => m.scope !== "user")),
+      ));
     if (!id) {
       ctx.writeLine(colors.warnLine("用法: /memory promote <id>"));
       return;
@@ -230,7 +292,9 @@ export async function handleInstinctCommand(
   }
 
   if (sub === "forget") {
-    const id = args[1];
+    const id =
+      args[1] ??
+      (await pickCandidate(ctx, "删除哪条规则", instinctPickItems(ctx.store.loadInstincts(true))));
     if (!id) {
       ctx.writeLine(colors.warnLine("用法: /instinct forget <id>"));
       return;
@@ -243,7 +307,14 @@ export async function handleInstinctCommand(
   }
 
   if (sub === "promote") {
-    const id = args[1];
+    const id =
+      args[1] ??
+      (await pickCandidate(
+        ctx,
+        "提升哪条规则到用户级",
+        // 只有项目级规则可提升，先按 scope 过滤候选。
+        instinctPickItems(ctx.store.loadInstincts(true).filter((item) => item.scope !== "user")),
+      ));
     if (!id) {
       ctx.writeLine(colors.warnLine("用法: /instinct promote <id>"));
       return;

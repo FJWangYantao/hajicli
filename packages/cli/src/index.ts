@@ -77,7 +77,10 @@ import {
   buildLogo,
   buildSessionHelpLines,
   buildSlashCommandCatalog,
+  findAliasSkillConflicts,
+  getTopLevelSlashCommands,
   handleEarlyCliArgs,
+  resolveCanonicalCommand,
   suggestSimilarCommand,
 } from "./cli-help.js";
 import {
@@ -801,9 +804,13 @@ async function main() {
   markStartupStage("ui_ctor");
   // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
+  // 别名优先于同名 Skill：启动时把这类遮蔽关系显式告知用户。
+  const aliasSkillWarnings = findAliasSkillConflicts(
+    skillRegistry.list().map((skill) => skill.name),
+  );
   ui.start();
   markStartupStage("ui_started");
-  for (const warning of mcpStartupWarnings) {
+  for (const warning of [...mcpStartupWarnings, ...aliasSkillWarnings]) {
     // 无头模式下提示走 stderr，避免污染脚本消费的 stdout。
     if (headlessRequest) console.error(colors.warnLine(warning));
     else ui.writeLine(colors.warnLine(warning));
@@ -1430,6 +1437,67 @@ async function main() {
     }
   };
 
+  // 指令中心：只输入 "/" 回车时打开的一级导航。
+  // 选中枢纽继续进入其二级菜单（runHubMenu），选中动作型指令直接转发给主循环执行，
+  // 全程只需要方向键与回车，不必记住指令名。
+  const runCommandCenter = async (): Promise<void> => {
+    const hubMenus = buildHubMenus(skillRegistry.list());
+    const items = getTopLevelSlashCommands().map((entry) => {
+      const hub = entry.command.slice(1);
+      return {
+        value: entry.command,
+        label: hubMenus[hub] ? `${entry.command} ›` : entry.command,
+        description: entry.description,
+      };
+    });
+    try {
+      const selection = await readSelectionSafely({
+        title: "指令中心",
+        items,
+        selectedValue: items[0]?.value,
+      });
+      const hub = selection.value.slice(1);
+      if (hubMenus[hub]) {
+        await runHubMenu(hub);
+        return;
+      }
+      hubForwardedCommand = selection.value;
+    } catch (error) {
+      if (error instanceof TerminalInputCancelledError) return;
+      throw error;
+    }
+  };
+
+  /**
+   * /memory 与 /instinct 共用的经验系统上下文。
+   * pick 注入终端选择器：缺 id 时把记忆/规则列为候选，而不是要求用户手抄。
+   */
+  const experienceCommandContext = {
+    store: experienceStore,
+    provider: () => provider,
+    model: () => selectedModel,
+    pendingObservations: () => experienceStore.getPendingObservations(),
+    writeLine: (line: string) => ui.writeLine(line),
+    writeChat: (content: string) => ui.writeChat(content),
+    pick: async (options: {
+      title: string;
+      items: ReadonlyArray<{ value: string; label: string; description: string }>;
+      selectedValue?: string;
+    }) => {
+      try {
+        const selection = await readSelectionSafely({
+          title: options.title,
+          items: [...options.items],
+          selectedValue: options.selectedValue,
+        });
+        return selection.value;
+      } catch (error) {
+        if (error instanceof TerminalInputCancelledError) return undefined;
+        throw error;
+      }
+    },
+  };
+
   // 交互向导依赖：把 main() 的会话状态注入 subagent-wizard 模块。
   const wizardDeps: WizardDeps = {
     ui,
@@ -1720,9 +1788,16 @@ async function main() {
       // 解析斜杠内置命令
       if (trimmedInput.startsWith("/")) {
         const parts = trimmedInput.slice(1).split(/\s+/);
-        const command = parts[0].toLowerCase();
+        // 别名只影响解析：/new → /clear、/quit → /exit 等，展示与补全仍只有规范名。
+        const command = resolveCanonicalCommand(parts[0].toLowerCase());
 
-        if (command === "exit" || command === "quit") {
+        if (!command) {
+          // 只输入 “/” 后回车：打开指令中心，而不是当作未知指令。
+          await runCommandCenter();
+          continue;
+        }
+
+        if (command === "exit") {
           const abortedAgents = agentManager.abortAll();
           if (abortedAgents > 0)
             ui.writeLine(colors.gray(`已中止 ${abortedAgents} 个后台 Agent。`));
@@ -1902,34 +1977,18 @@ async function main() {
             await runHubMenu("memory");
             continue;
           }
-          const expCtx = {
-            store: experienceStore,
-            provider: () => provider,
-            model: () => selectedModel,
-            pendingObservations: () => experienceStore.getPendingObservations(),
-            writeLine: (line: string) => ui.writeLine(line),
-            writeChat: (content: string) => ui.writeChat(content),
-          };
-          await handleMemoryCommand(parts.slice(1), expCtx, colors);
+          await handleMemoryCommand(parts.slice(1), experienceCommandContext, colors);
           continue;
         }
         if (command === "instinct") {
-          const expCtx = {
-            store: experienceStore,
-            provider: () => provider,
-            model: () => selectedModel,
-            pendingObservations: () => experienceStore.getPendingObservations(),
-            writeLine: (line: string) => ui.writeLine(line),
-            writeChat: (content: string) => ui.writeChat(content),
-          };
-          await handleInstinctCommand(parts.slice(1), expCtx, colors);
+          await handleInstinctCommand(parts.slice(1), experienceCommandContext, colors);
           continue;
         }
         if (command === "subagent") {
           await handleSubagentCommand(subagentCommandContext, { trimmedInput });
           continue;
         }
-        if (command === "preset" || command === "presets") {
+        if (command === "preset") {
           await handlePresetCommand(subagentCommandContext, { trimmedInput, parts });
           continue;
         }
@@ -2063,11 +2122,11 @@ async function main() {
           }
           continue;
         }
-        if (command === "provider" || command === "providers") {
+        if (command === "provider") {
           await handleProviderCommand(providerCommandContext, { parts });
           continue;
         }
-        if (command === "permission" || command === "perm") {
+        if (command === "permission") {
           let reqMode = parts[1]?.toLowerCase();
           if (!reqMode) {
             try {
@@ -2165,23 +2224,25 @@ async function main() {
           continue;
         }
         if (command === "theme") {
-          const presetArg = parts[1]?.toLowerCase();
+          let presetArg = parts[1]?.toLowerCase();
           const currentPreset = getThemePreset();
           if (!presetArg) {
-            const rows = listThemePresets().map((preset) => {
-              const marker = preset.name === currentPreset ? colors.green("●") : colors.gray("○");
-              const padded = preset.name.padEnd(9);
-              const label = preset.name === currentPreset ? colors.bold(padded) : padded;
-              return `  ${marker} ${label} ${colors.gray(preset.description)}`;
-            });
-            ui.writeChat(
-              [
-                colors.bold("配色主题"),
-                ...rows,
-                colors.gray(`当前：${currentPreset}。使用 /theme <名称> 切换并记住选择。`),
-              ].join("\n"),
-            );
-            continue;
+            // 无参 → 直接列出主题供选择，省去记忆与打字；/theme <名称> 仍是直连快路径。
+            try {
+              const selection = await readSelectionSafely({
+                title: "配色主题",
+                items: listThemePresets().map((preset) => ({
+                  value: preset.name,
+                  label: preset.name === currentPreset ? `${preset.name}（当前）` : preset.name,
+                  description: preset.description,
+                })),
+                selectedValue: currentPreset,
+              });
+              presetArg = selection.value.toLowerCase();
+            } catch (error) {
+              if (error instanceof TerminalInputCancelledError) continue;
+              throw error;
+            }
           }
           if (!(THEME_PRESET_NAMES as readonly string[]).includes(presetArg)) {
             ui.writeLine(

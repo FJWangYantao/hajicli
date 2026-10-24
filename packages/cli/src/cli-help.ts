@@ -42,6 +42,12 @@ export interface CommandSurfaceEntry {
   argRequired?: boolean;
   /** 为 false 时不出现在枢纽菜单与帮助树中，但仍可补全与直连调用（兼容旧指令）。 */
   menu?: boolean;
+  /**
+   * 同义入口（不含斜杠，如 "new"）。只参与解析：输入 /new 等同于规范指令 /clear。
+   * 别名不进补全、不进 /help、不参与未知指令纠错，保证一个动作只展示一个名字。
+   * 仅一级单词指令可挂别名；挂到多词指令上会在建表时报错。
+   */
+  aliases?: readonly string[];
 }
 
 /** 枢纽菜单项：value 是选中后转发给主循环的完整指令文本。 */
@@ -95,11 +101,13 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "切换权限档次与危险阈值",
         argHint: "[模式]",
         subcommands: PERMISSION_SUBCOMMANDS,
+        aliases: ["perm"],
       },
       {
         command: "/provider",
         description: "查看 / 切换 / 添加 / 配置提供商",
         argHint: "[名称|add|set|unset]",
+        aliases: ["providers"],
         subcommands: [
           { command: "/provider add", description: "引导添加自定义提供商", argHint: "[--project]" },
           {
@@ -147,6 +155,7 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         command: "/preset",
         description: "查看 / 管理 subagent 预设",
         argHint: "[list|show|add|edit|remove]",
+        aliases: ["presets"],
         subcommands: [
           { command: "/preset list", description: "列出全部预设" },
           {
@@ -264,11 +273,105 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     argHint: "<图片路径> [提示词]",
     argRequired: true,
   },
-  { command: "/clear", description: "清空聊天与上下文" },
-  { command: "/resume", description: "历史对话查看与热切换", argHint: "[标题关键词]" },
+  { command: "/clear", description: "清空聊天与上下文", aliases: ["new"] },
+  {
+    command: "/resume",
+    description: "历史对话查看与热切换",
+    argHint: "[标题关键词]",
+    aliases: ["history", "sessions"],
+  },
   { command: "/rewind", description: "历史节点撤销与代码回退" },
-  { command: "/exit", description: "退出 haji" },
+  { command: "/exit", description: "退出 haji", aliases: ["quit", "q"] },
 ];
+
+/** 规范指令名口径：去掉前导斜杠并小写。别名索引与解析共用这一套规则。 */
+function normalizeCommandName(name: string): string {
+  return name.trim().replace(/^\//, "").toLowerCase();
+}
+
+let aliasIndexCache: ReadonlyMap<string, string> | undefined;
+
+/**
+ * 构建“别名 → 规范指令”索引（键与值均不含斜杠且小写）。
+ * 别名只参与解析，不进补全、不进 /help、不参与未知指令纠错，
+ * 因此同一个动作在界面上始终只展示规范名。
+ * 建表即做冲突检测：别名不得与任何现有指令同名、不得重复登记、不得挂在多词指令上。
+ * 导出以便测试注入自定义指令面验证冲突检测。
+ */
+export function buildCommandAliasIndex(
+  surface: readonly CommandSurfaceEntry[] = COMMAND_SURFACE,
+): ReadonlyMap<string, string> {
+  const canonicals = new Set<string>();
+  const entries: CommandSurfaceEntry[] = [];
+  const collect = (entry: CommandSurfaceEntry): void => {
+    entries.push(entry);
+    canonicals.add(normalizeCommandName(entry.command));
+    for (const member of entry.members ?? []) collect(member);
+    for (const sub of entry.subcommands ?? []) collect(sub);
+  };
+  for (const entry of surface) collect(entry);
+
+  const index = new Map<string, string>();
+  for (const entry of entries) {
+    if (!entry.aliases || entry.aliases.length === 0) continue;
+    const canonical = normalizeCommandName(entry.command);
+    if (canonical.includes(" ")) {
+      throw new Error(
+        `指令 ${entry.command} 是多词指令，暂不支持挂别名：${entry.aliases.join(", ")}`,
+      );
+    }
+    for (const raw of entry.aliases) {
+      const alias = normalizeCommandName(raw);
+      if (!alias || /\s/.test(alias)) {
+        throw new Error(`别名 "${raw}"（${entry.command}）必须是不含空白的单个单词`);
+      }
+      if (canonicals.has(alias)) {
+        throw new Error(`别名 "${alias}"（${entry.command}）与现有指令 /${alias} 冲突`);
+      }
+      const registered = index.get(alias);
+      if (registered && registered !== canonical) {
+        throw new Error(`别名 "${alias}" 重复登记：/${registered} 与 ${entry.command}`);
+      }
+      index.set(alias, canonical);
+    }
+  }
+  return index;
+}
+
+/** 别名索引（惰性构建；建表冲突直接抛错，避免别名静默遮蔽真实指令）。 */
+export function getCommandAliases(): ReadonlyMap<string, string> {
+  aliasIndexCache ??= buildCommandAliasIndex();
+  return aliasIndexCache;
+}
+
+/**
+ * 把输入的头词解析为规范指令名（不含斜杠、小写）。
+ * 未登记为别名时原样返回，调用方继续走原有未知指令分支。
+ */
+export function resolveCanonicalCommand(name: string): string {
+  const key = normalizeCommandName(name);
+  if (!key) return name;
+  return getCommandAliases().get(key) ?? name;
+}
+
+/**
+ * 别名与 Skill 同名检查：别名解析发生在 /skill <name> 分支之前，内置指令别名优先，
+ * 启动时调用本函数给出告警，避免用户误以为输入别名能命中同名 Skill。
+ */
+export function findAliasSkillConflicts(skillNames: readonly string[]): string[] {
+  const aliases = getCommandAliases();
+  const conflicts: string[] = [];
+  for (const name of skillNames) {
+    const key = normalizeCommandName(name);
+    const canonical = aliases.get(key);
+    if (canonical) {
+      conflicts.push(
+        `/${key} 是内置指令别名（→ /${canonical}），同名 Skill "${name}" 需用 /skill ${name} 调用。`,
+      );
+    }
+  }
+  return conflicts;
+}
 
 /** 帮助与枢纽菜单展示的成员（menu: false 的兼容指令不展示）。 */
 function menuMembers(entry: CommandSurfaceEntry): readonly CommandSurfaceEntry[] {

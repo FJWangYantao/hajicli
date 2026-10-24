@@ -645,3 +645,91 @@ test("/instinct skill reports unknown id", async () => {
     fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+// ─── 缺 id 时的候选选择（pick 注入） ──────────────────────────────────────────
+
+test("/memory confirm 无 id 且未注入 pick 时回退用法提示", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const outputs = [];
+    await handleMemoryCommand(["confirm"], makeCtx(store, outputs), noColor);
+    assert.ok(outputs.some((line) => line.includes("用法: /memory confirm <id>")));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("/memory confirm 无 id 时用 pick 选择 staging 记忆", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const now = new Date().toISOString();
+    // staging 候选必须写进 staging 目录，confirmMemory 只在该目录查找。
+    await store.stageMemory({
+      id: "stage-1",
+      name: "候选记忆",
+      type: "project",
+      content: "候选记忆内容",
+      status: "staging",
+      confidence: 0.5,
+      createdAt: now,
+      updatedAt: now,
+      keywords: [],
+    });
+    const outputs = [];
+    const picks = [];
+    const ctx = {
+      ...makeCtx(store, outputs),
+      pick: async (options) => {
+        picks.push(options);
+        return options.items[0]?.value;
+      },
+    };
+    await handleMemoryCommand(["confirm"], ctx, noColor);
+    assert.equal(picks.length, 1);
+    assert.match(picks[0].title, /staging/);
+    assert.deepEqual(
+      picks[0].items.map((item) => item.value),
+      ["stage-1"],
+    );
+    assert.ok(outputs.some((line) => line.includes("已确认")));
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("/memory promote 只把非用户级记忆列为候选", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    const now = new Date().toISOString();
+    // 作用域由 type 决定：type=user 落用户级目录，其余落项目级目录。
+    const memory = (id, type) => ({
+      id,
+      name: id,
+      type,
+      content: `${id} 内容`,
+      status: "active",
+      confidence: 0.8,
+      createdAt: now,
+      updatedAt: now,
+      keywords: [],
+    });
+    await store.upsertMemory(memory("proj-1", "project"));
+    await store.upsertMemory(memory("user-1", "user"));
+    const picks = [];
+    const ctx = {
+      ...makeCtx(store, []),
+      pick: async (options) => {
+        picks.push(options);
+        return undefined;
+      },
+    };
+    await handleMemoryCommand(["promote"], ctx, noColor);
+    assert.equal(picks.length, 1);
+    assert.deepEqual(
+      picks[0].items.map((item) => item.value),
+      ["proj-1"],
+    );
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});

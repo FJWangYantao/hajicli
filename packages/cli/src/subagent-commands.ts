@@ -156,6 +156,32 @@ export async function handleSubagentCommand(
   }
 }
 
+/**
+ * 缺参数时列出预设供选择：能枚举的数据不要求用户手抄名字。
+ * 没有预设或用户按 Esc 取消时返回 undefined，调用方回退到原有的用法提示。
+ */
+async function pickPresetName(
+  ctx: SubagentCommandContext,
+  presets: ReturnType<typeof loadSubagentPresets>,
+): Promise<string | undefined> {
+  if (presets.length === 0) return undefined;
+  try {
+    const selection = await ctx.readSelectionSafely({
+      title: "选择 subagent 预设",
+      items: presets.map((preset) => ({
+        value: preset.name,
+        label: preset.name,
+        description: formatPresetSummary(preset),
+      })),
+      selectedValue: presets[0].name,
+    });
+    return selection.value;
+  } catch (error) {
+    if (error instanceof TerminalInputCancelledError) return undefined;
+    throw error;
+  }
+}
+
 /** 分发 /preset 与 /presets 指令；调用方负责其后的主循环 continue。 */
 export async function handlePresetCommand(
   ctx: SubagentCommandContext,
@@ -180,7 +206,8 @@ export async function handlePresetCommand(
     return;
   }
   if (action === "show") {
-    const name = parts[2];
+    // 无名称时直接列预设供选，避免手抄名字。
+    const name = parts[2] ?? (await pickPresetName(ctx, presets));
     if (!name) {
       ui.writeLine(colors.warnLine("用法: /preset show <name>"));
       return;
@@ -273,7 +300,7 @@ export async function handlePresetCommand(
     return;
   }
   if (action === "remove" || action === "rm" || action === "delete") {
-    const name = parts[2];
+    const name = parts[2] ?? (await pickPresetName(ctx, presets));
     if (!name) {
       ui.writeLine(colors.warnLine("用法: /preset remove <name>"));
       return;
@@ -352,10 +379,34 @@ export async function handleAgentsCommand(
   const { ui, agentManager } = ctx;
   const action = input.parts[1]?.toLowerCase();
   if (action === "stop") {
-    const target = input.parts[2];
+    // 无参时列出 Agent 供选（含 all），省掉手抄 id。
+    let target = input.parts[2];
     if (!target) {
-      ui.writeLine(colors.warnLine("用法: /agents stop <agentId|all>"));
-    } else if (target.toLowerCase() === "all") {
+      const candidates = agentManager.list();
+      if (candidates.length === 0) {
+        ui.writeLine(colors.gray("当前没有 Agent 记录。"));
+        return;
+      }
+      try {
+        const selection = await ctx.readSelectionSafely({
+          title: "选择要中止的 Agent",
+          items: [
+            { value: "all", label: "all", description: "中止全部运行中的 Agent" },
+            ...candidates.map((agent) => ({
+              value: agent.id,
+              label: `${agent.id} ${agent.status}`,
+              description: `${agent.role} · ${agent.description}`,
+            })),
+          ],
+          selectedValue: candidates[0].id,
+        });
+        target = selection.value;
+      } catch (error) {
+        if (!(error instanceof TerminalInputCancelledError)) throw error;
+        return;
+      }
+    }
+    if (target.toLowerCase() === "all") {
       ui.writeLine(colors.okLine(`已请求中止 ${agentManager.abortAll()} 个 Agent。`));
     } else {
       ui.writeLine(
