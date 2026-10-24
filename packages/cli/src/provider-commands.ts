@@ -85,7 +85,7 @@ export async function handleProviderCommand(
     (part) => part.toLowerCase() === "--global" || part.toLowerCase() === "--user",
   );
   if (hasProjectScope && hasUserScope) {
-    ui.writeLine(colors.red("不能同时指定 --project 与 --global。"));
+    ui.writeLine(colors.failLine("不能同时指定 --project 与 --global。"));
     return;
   }
   const configScope: ProviderConfigScope = hasProjectScope ? "project" : "user";
@@ -101,7 +101,9 @@ export async function handleProviderCommand(
       : providerConfig.providers[targetName]?.apiKey;
     if (!targetKey) {
       ui.writeLine(
-        colors.red(`未配置 ${providerLabel(targetName)} API Key。使用 /provider add 引导配置。`),
+        colors.failLine(
+          `未配置 ${providerLabel(targetName)} API Key。使用 /provider add 引导配置。`,
+        ),
       );
       return;
     }
@@ -118,7 +120,7 @@ export async function handleProviderCommand(
             "");
     if (!targetModel) {
       ui.writeLine(
-        colors.red(
+        colors.failLine(
           `${providerLabel(targetName)} 未配置任何模型。使用 /provider add 补充模型列表。`,
         ),
       );
@@ -138,7 +140,7 @@ export async function handleProviderCommand(
     );
     ctx.updateStatusUI();
     ui.writeLine(
-      colors.green(`已切换到 ${providerLabel(targetName)}，模型：${ctx.getSelectedModel()}。`),
+      colors.okLine(`已切换到 ${providerLabel(targetName)}，模型：${ctx.getSelectedModel()}。`),
     );
     return;
   }
@@ -156,13 +158,13 @@ export async function handleProviderCommand(
         }
         const nameError = validateProviderName(nameInput);
         if (nameError) {
-          ui.writeLine(colors.red(`✗ ${nameError}，请重新输入。`));
+          ui.writeLine(colors.failLine(`${nameError}，请重新输入。`));
           continue;
         }
         const lowerName = nameInput.toLowerCase();
         if (providerConfig.providers[lowerName]?.apiKey) {
           ui.writeLine(
-            colors.yellow(`已存在 ${providerLabel(lowerName)} 的配置，继续输入将覆盖。`),
+            colors.warnLine(`已存在 ${providerLabel(lowerName)} 的配置，继续输入将覆盖。`),
           );
         }
         const baseUrl = (
@@ -177,11 +179,11 @@ export async function handleProviderCommand(
         const normalizedUrl = normalizeBaseUrl(baseUrl);
         if (normalizedUrl.note) {
           ui.writeLine(
-            colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
+            colors.muted(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
           );
         }
         if (!/^https?:\/\//i.test(normalizedUrl.url)) {
-          ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrl}），请重新输入。`));
+          ui.writeLine(colors.failLine(`Base URL 无效（${baseUrl}），请重新输入。`));
           continue;
         }
         const apiKey = (
@@ -201,7 +203,7 @@ export async function handleProviderCommand(
         ).trim();
         const models = parseModelList(modelListInput);
         if (models.length === 0) {
-          ui.writeLine(colors.red("✗ 至少需要输入一个模型名称，请重新输入。"));
+          ui.writeLine(colors.failLine("至少需要输入一个模型名称，请重新输入。"));
           continue;
         }
         // 连通性测试：用第一个模型发最小请求
@@ -209,13 +211,13 @@ export async function handleProviderCommand(
         const result = await testProviderConnection(normalizedUrl.url, apiKey, models[0]);
         if (!result.ok) {
           ui.writeLine(
-            colors.red(
-              `✗ 连通性测试失败：${result.error}${result.ms !== undefined ? `（${result.ms}ms）` : ""}`,
+            colors.failLine(
+              `连通性测试失败：${result.error}${result.ms !== undefined ? `（${result.ms}ms）` : ""}`,
             ),
           );
           if (result.normalizedNote) {
             ui.writeLine(
-              colors.yellow(`提示：${result.normalizedNote}（实际请求 ${result.usedUrl}）`),
+              colors.muted(`提示：${result.normalizedNote}（实际请求 ${result.usedUrl}）`),
             );
           }
           const retry = (await ui.readInput({ prompt: "输入 r 重新配置，输入 c 取消" }))
@@ -238,7 +240,7 @@ export async function handleProviderCommand(
           configScope,
         );
         if (!ok) {
-          ui.writeLine(colors.red("保存配置失败，请检查磁盘权限。"));
+          ui.writeLine(colors.failLine("保存配置失败，请检查磁盘权限。"));
           break;
         }
         // 同步内存状态，使配置立即生效
@@ -247,8 +249,8 @@ export async function handleProviderCommand(
         ctx.rebuildAvailableModels();
         ctx.updateStatusUI();
         ui.writeLine(
-          colors.green(
-            `✓ 已添加 ${providerLabel(lowerName)}（${configScopeLabel}，连通性测试通过，${result.ms}ms）。`,
+          colors.okLine(
+            `已添加 ${providerLabel(lowerName)}（${configScopeLabel}，连通性测试通过，${result.ms}ms）。`,
           ),
         );
         ui.writeLine(colors.gray(`配置文件：${providerConfigPath(configScope)}`));
@@ -275,7 +277,7 @@ export async function handleProviderCommand(
   // 配置：/provider set <name> [--project]（API Key 通过安全输入框录入）
   if (action === "set") {
     if (!target || validateProviderName(target)) {
-      ui.writeLine(colors.red("用法: /provider set <name> [--project]"));
+      ui.writeLine(colors.warnLine("用法: /provider set <name> [--project]"));
       return;
     }
     const name = target.toLowerCase();
@@ -285,7 +287,7 @@ export async function handleProviderCommand(
         .slice(3)
         .filter((part) => !["--project", "--global", "--user"].includes(part.toLowerCase()));
       if (inlineArguments.length > 0) {
-        ui.writeLine(colors.red("API Key 不再支持内联传入；请使用掩码输入框。"));
+        ui.writeLine(colors.failLine("API Key 不再支持内联传入；请使用掩码输入框。"));
         return;
       }
       const apiKey = (
@@ -305,11 +307,11 @@ export async function handleProviderCommand(
         const normalizedUrl = normalizeBaseUrl(baseUrlToSave);
         if (normalizedUrl.note) {
           ui.writeLine(
-            colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
+            colors.muted(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
           );
         }
         if (!/^https?:\/\//i.test(normalizedUrl.url)) {
-          ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrlToSave}），已跳过保存。`));
+          ui.writeLine(colors.failLine(`Base URL 无效（${baseUrlToSave}），已跳过保存。`));
           baseUrlToSave = undefined;
         } else {
           baseUrlToSave = normalizedUrl.url;
@@ -336,15 +338,15 @@ export async function handleProviderCommand(
         const parsedWindows = parseModelContextWindows(windowsInput);
         if (parsedWindows.invalid.length > 0) {
           ui.writeLine(
-            colors.yellow(
-              `! 已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
+            colors.warnLine(
+              `已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
             ),
           );
         }
         if (Object.keys(parsedWindows.windows).length > 0) {
           modelContextWindows = parsedWindows.windows;
         } else {
-          ui.writeLine(colors.red("✗ 未解析出有效窗口，保持原有窗口配置不变。"));
+          ui.writeLine(colors.failLine("未解析出有效窗口，保持原有窗口配置不变。"));
         }
       }
       const ok = saveProviderConfig(
@@ -359,7 +361,7 @@ export async function handleProviderCommand(
         configScope,
       );
       if (!ok) {
-        ui.writeLine(colors.red(`保存 ${label} 配置失败，请检查磁盘权限。`));
+        ui.writeLine(colors.failLine(`保存 ${label} 配置失败，请检查磁盘权限。`));
         return;
       }
       // 同步内存状态，使配置立即生效
@@ -391,15 +393,15 @@ export async function handleProviderCommand(
         ctx.updateStatusUI();
       }
       ui.writeLine(
-        colors.green(
-          `✓ 已保存 ${label} 的${configScopeLabel}配置（${providerConfigPath(configScope)}）。`,
+        colors.okLine(
+          `已保存 ${label} 的${configScopeLabel}配置（${providerConfigPath(configScope)}）。`,
         ),
       );
       if (
         configScope === "user" &&
         Object.keys(loadProviderConfigScope("project").providers[name] || {}).length > 0
       ) {
-        ui.writeLine(colors.yellow("当前项目仍有同名项目级配置，会继续覆盖对应的全局字段。"));
+        ui.writeLine(colors.warnLine("当前项目仍有同名项目级配置，会继续覆盖对应的全局字段。"));
       }
       ui.writeLine(
         colors.gray(
@@ -419,13 +421,13 @@ export async function handleProviderCommand(
   // 清除：/provider unset <name> [--project]
   if (action === "unset") {
     if (!target) {
-      ui.writeLine(colors.red("用法: /provider unset <name> [--project]"));
+      ui.writeLine(colors.warnLine("用法: /provider unset <name> [--project]"));
       return;
     }
     const name = target.toLowerCase();
     const label = providerLabel(name);
     if (!unsetProviderConfig(name, configScope)) {
-      ui.writeLine(colors.red(`清除 ${label} 的${configScopeLabel}配置失败。`));
+      ui.writeLine(colors.failLine(`清除 ${label} 的${configScopeLabel}配置失败。`));
       return;
     }
     const refreshed = loadProviderConfig();
@@ -443,7 +445,7 @@ export async function handleProviderCommand(
     }
     ctx.rebuildAvailableModels();
     ctx.updateStatusUI();
-    ui.writeLine(colors.green(`✓ 已清除 ${label} 的${configScopeLabel}配置。`));
+    ui.writeLine(colors.okLine(`已清除 ${label} 的${configScopeLabel}配置。`));
     const keyAfter = isBuiltinProvider(name)
       ? name === "deepseek"
         ? ctx.getDeepseekApiKey()
@@ -451,7 +453,7 @@ export async function handleProviderCommand(
       : providerConfig.providers[name]?.apiKey;
     if (ctx.getCurrentProviderName() === name && !keyAfter) {
       ui.writeLine(
-        colors.yellow(
+        colors.warnLine(
           `当前正在使用 ${label}，但已无可用 API Key。建议 /provider add 重新配置或切换提供商。`,
         ),
       );
@@ -494,10 +496,10 @@ export async function handleProviderCommand(
     }
     const masked = key ? `${key.slice(0, 6)}***（共 ${key.length} 位）` : "未配置";
     const source = key && key === envKey ? "环境变量" : sourceFor(name, ["apiKey"]);
-    rows.push(`  ${label}${ctx.getCurrentProviderName() === name ? colors.green("（当前）") : ""}`);
     rows.push(
-      `    API Key: ${key ? colors.green(masked) + colors.gray(` [${source}]`) : colors.red("未配置")}`,
+      `  ${label}${ctx.getCurrentProviderName() === name ? colors.purple("（当前）") : ""}`,
     );
+    rows.push(`    API Key: ${key ? masked + colors.gray(` [${source}]`) : colors.red("未配置")}`);
     rows.push(
       `    Base URL: ${entry.baseUrl || "默认"} ${colors.gray(`[${sourceFor(name, ["baseUrl"])}]`)}`,
     );

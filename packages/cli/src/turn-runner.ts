@@ -421,7 +421,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         const retryNote = requestRetryCount > 0 ? `（已自动重试 ${requestRetryCount} 次）` : "";
         ui.writeLine(colors.failLine(colors.bold(`${described.title}${retryNote}`)));
         if (described.detail) ui.writeLine(colors.gray(`  ${described.detail}`));
-        ui.writeLine(`  ${colors.yellow("提示")} ${described.hint}`);
+        ui.writeLine(`  ${colors.muted("提示")} ${described.hint}`);
         ui.writeLine();
       }
       keepCalling = false;

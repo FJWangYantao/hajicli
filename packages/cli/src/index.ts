@@ -180,8 +180,8 @@ async function main() {
   );
   if (!volcApiKey && !deepseekApiKey && !hasCustomProviderKey) {
     console.error(
-      colors.boldRed(
-        "错误: 请配置 DEEPSEEK_API_KEY / VOLC_API_KEY，或启动后使用 /provider add 添加自定义提供商。",
+      colors.failLine(
+        "请配置 DEEPSEEK_API_KEY / VOLC_API_KEY，或启动后使用 /provider add 添加自定义提供商。",
       ),
     );
     process.exit(1);
@@ -434,7 +434,7 @@ async function main() {
         ),
       );
       if (result.summaryMode === "fallback") {
-        ui.writeLine(colors.yellow("! 模型摘要失败，本次使用了本地降级摘要。"));
+        ui.writeLine(colors.warnLine("模型摘要失败，本次使用了本地降级摘要。"));
       }
     }
   });
@@ -629,7 +629,7 @@ async function main() {
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
   ui.start();
   markStartupStage("ui_started");
-  for (const warning of mcpStartupWarnings) ui.writeLine(colors.yellow(`! ${warning}`));
+  for (const warning of mcpStartupWarnings) ui.writeLine(colors.warnLine(warning));
   // 状态栏展示当前工作目录与 git 分支（模型名称右侧）。git HEAD 位置只查找一次，
   // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
   const gitHeadPath = findGitHeadPath(process.cwd());
@@ -641,13 +641,13 @@ async function main() {
     colors.gray("输入 /help 查看命令，或直接开始对话"),
   ]);
   const showRuntimeWarning = (warning: string): void => {
-    ui.writeLine(colors.yellow(`! ${warning}`));
+    ui.writeLine(colors.warnLine(warning));
   };
   tracker.setWarningHandler(showRuntimeWarning);
   sessionManager.setWarningHandler(showRuntimeWarning);
   snapshotEngine.setWarningHandler(showRuntimeWarning);
   for (const warning of startupWarnings) showRuntimeWarning(warning);
-  for (const warning of initialSkillScan.warnings) ui.writeLine(colors.yellow(`! ${warning}`));
+  for (const warning of initialSkillScan.warnings) ui.writeLine(colors.warnLine(warning));
 
   ui.setPermissionMode(permissionMode);
   let planReadyForReview = false;
@@ -696,7 +696,7 @@ async function main() {
   const agentManager = new AgentManager({
     maxReadonlyConcurrency: 3,
     onChange: syncAgentPanel,
-    onWarning: (warning) => ui.writeLine(colors.yellow(`! ${warning}`)),
+    onWarning: (warning) => ui.writeLine(colors.warnLine(warning)),
     onNotification: (notification) => {
       if (!notification.background) return;
       const mark =
@@ -846,7 +846,7 @@ async function main() {
         return;
       }
       if (event.type === "warning") {
-        ui.writeLine(colors.yellow(`! [${event.agentId}] ${event.message}`));
+        ui.writeLine(colors.warnLine(`[${event.agentId}] ${event.message}`));
         return;
       }
       if (event.type === "done") {
@@ -1086,7 +1086,9 @@ async function main() {
     const nextIdx = (currIdx + 1) % permissionCycleList.length;
     void applyPermissionMode(permissionCycleList[nextIdx]).catch((error) => {
       ui.writeLine(
-        colors.red(`切换权限模式失败: ${error instanceof Error ? error.message : String(error)}`),
+        colors.failLine(
+          `切换权限模式失败: ${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
     });
   });
@@ -1216,7 +1218,7 @@ async function main() {
   const runHubMenu = async (hubName: string): Promise<void> => {
     const menu = buildHubMenus(skillRegistry.list())[hubName];
     if (!menu) {
-      ui.writeLine(colors.red(`未知指令入口: ${hubName}`));
+      ui.writeLine(colors.failLine(`未知指令入口: ${hubName}`));
       return;
     }
     try {
@@ -1515,7 +1517,7 @@ async function main() {
                 `  ${colors.purple(status.name.padEnd(20))} ${stateLabel(status)}${ro} · ${status.toolCount} 个工具`,
               );
               if (status.state === "failed" && status.error)
-                lines.push(colors.red(`    ${status.error.replace(/\s+/g, " ").slice(0, 160)}`));
+                lines.push(colors.muted(`    ${status.error.replace(/\s+/g, " ").slice(0, 160)}`));
               for (const tool of status.tools) lines.push(colors.gray(`    ${tool}`));
             }
             ui.writeChat(lines.join("\n"));
@@ -1531,16 +1533,15 @@ async function main() {
             const summary = `${result.checkedSkills} 个 Skill，${result.checkedResources} 个资源`;
             ui.writeLine(
               result.valid
-                ? colors.green(`✓ Skill 校验通过：${summary}。`)
-                : colors.red(`✕ Skill 校验失败：${summary}。`),
+                ? colors.okLine(`Skill 校验通过：${summary}。`)
+                : colors.failLine(`Skill 校验失败：${summary}。`),
             );
             for (const issue of result.issues) {
-              const prefix = issue.severity === "error" ? "✕" : "!";
               const scope = issue.skill ? `[${issue.skill}] ` : "";
               ui.writeLine(
                 issue.severity === "error"
-                  ? colors.red(`${prefix} ${scope}${issue.message}`)
-                  : colors.yellow(`${prefix} ${scope}${issue.message}`),
+                  ? colors.failLine(`${scope}${issue.message}`)
+                  : colors.warnLine(`${scope}${issue.message}`),
               );
             }
             continue;
@@ -1549,8 +1550,8 @@ async function main() {
             const result = await skillRegistry.scan();
             await refreshSystemPromptPreservingContext();
             sessionManager.saveCurrentSession(messages);
-            ui.writeLine(colors.green(`✓ 已重新扫描 ${result.skills.length} 个 Skill。`));
-            for (const warning of result.warnings) ui.writeLine(colors.yellow(`! ${warning}`));
+            ui.writeLine(colors.okLine(`已重新扫描 ${result.skills.length} 个 Skill。`));
+            for (const warning of result.warnings) ui.writeLine(colors.warnLine(warning));
           }
           const loaded = new Map(
             skillRegistry.getLoaded("main").map((skill) => [skill.name, skill]),
@@ -1593,11 +1594,11 @@ async function main() {
           }
           const entry = skillRegistry.get(name);
           if (!entry) {
-            ui.writeLine(colors.red(`未找到 Skill "${name}"。请使用 /skills 查看可用列表。`));
+            ui.writeLine(colors.failLine(`未找到 Skill "${name}"。请使用 /skills 查看可用列表。`));
             continue;
           }
           if (!entry.userInvocable) {
-            ui.writeLine(colors.red(`Skill "${name}" 不允许通过 /skill 手动调用。`));
+            ui.writeLine(colors.failLine(`Skill "${name}" 不允许通过 /skill 手动调用。`));
             continue;
           }
           const toolCall: ToolCall = {
@@ -1619,7 +1620,7 @@ async function main() {
             },
           );
           if (result.blocked) {
-            ui.writeLine(colors.red(result.output));
+            ui.writeLine(colors.failLine(result.output));
             continue;
           }
           manualSkillExchange = { toolCall, output: result.output };
@@ -1633,7 +1634,7 @@ async function main() {
             );
             sessionManager.saveCurrentSession(messages);
             updateStatusUI();
-            ui.writeLine(colors.green(`✓ 已加载 Skill：${name}`));
+            ui.writeLine(colors.okLine(`已加载 Skill：${name}`));
             continue;
           }
         }
@@ -1705,7 +1706,7 @@ async function main() {
           updateStatusUI();
           const layersStr =
             result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "已处于精简状态";
-          ui.writeLine(colors.boldGreen(`✓ 上下文压缩完成！(${layersStr})`));
+          ui.writeLine(colors.okLine(`上下文压缩完成！(${layersStr})`));
           ui.writeLine(
             colors.cyan(
               `  字符占用: ${result.originalChars.toLocaleString()} ➔ ${result.compactedChars.toLocaleString()} (释放了 ${result.freedPercentage}% 空间)`,
@@ -1718,7 +1719,7 @@ async function main() {
           );
           if (result.summaryMode === "fallback") {
             ui.writeLine(
-              colors.yellow("! 模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。"),
+              colors.warnLine("模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。"),
             );
           }
           continue;
@@ -1742,7 +1743,7 @@ async function main() {
             }
           }
           if (!isReasoningEffort(requestedEffort)) {
-            ui.writeLine(colors.red(`无效思考强度：${requestedEffort}`));
+            ui.writeLine(colors.failLine(`无效思考强度：${requestedEffort}`));
             ui.writeLine(colors.gray("可选：low、medium、high、xhigh、max"));
             continue;
           }
@@ -1750,7 +1751,7 @@ async function main() {
           reasoningEffort = requestedEffort;
           await refreshSystemPromptPreservingContext();
           updateStatusUI();
-          ui.writeLine(colors.green(`已切换到 ${reasoningEffort}，当前会话历史已保留。`));
+          ui.writeLine(colors.okLine(`已切换到 ${reasoningEffort}，当前会话历史已保留。`));
           continue;
         }
         if (command === "model") {
@@ -1790,7 +1791,7 @@ async function main() {
             );
             updateStatusUI();
             ui.writeLine(
-              colors.green(
+              colors.okLine(
                 `模型：${selectedModel} · 思考强度：${reasoningEffort} · 提供商：${providerLabel(currentProviderName)}`,
               ),
             );
@@ -1842,7 +1843,7 @@ async function main() {
           }
 
           if (!isPermissionMode(reqMode)) {
-            ui.writeLine(colors.red(`无效权限模式：${reqMode}`));
+            ui.writeLine(colors.failLine(`无效权限模式：${reqMode}`));
             ui.writeLine(colors.gray("可选：plan、default、accept-edit、auto、bypass-permissions"));
             continue;
           }
@@ -1851,7 +1852,7 @@ async function main() {
           planReadyForReview = false;
           planReviewSummaryRequested = false;
           ui.writeLine(
-            colors.green(`系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`),
+            colors.okLine(`系统权限已设置为 [${permissionMode}] (Auto 危险阈值: ${riskThreshold})`),
           );
           if (permissionMode === "plan") {
             ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));
@@ -1914,7 +1915,7 @@ async function main() {
         if (!forwardedPrompt || !manualSkillExchange) {
           const suggestion = suggestSimilarCommand(command, slashCommands);
           ui.writeLine(
-            colors.red(
+            colors.failLine(
               suggestion
                 ? `未知命令: /${command}。你是不是想输入 ${suggestion}？`
                 : `未知命令: /${command}。输入 /help 查看帮助。`,

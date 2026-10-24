@@ -32,11 +32,15 @@ export interface ExperienceColors {
   red: (s: string) => string;
   yellow: (s: string) => string;
   bold: (s: string) => string;
+  /** 带状态图标的整行提示：只给图标着色（见 theme.ts 的 paint）。 */
+  okLine: (s: string) => string;
+  warnLine: (s: string) => string;
+  failLine: (s: string) => string;
 }
 
-/** 作用域展示标签：用户级（跨项目）用绿色突出，项目级用灰色。 */
+/** 作用域展示标签：用户级（跨项目）用强调色突出，项目级用灰色。 */
 function scopeTag(scope: "user" | "project" | undefined, colors: ExperienceColors): string {
-  return scope === "user" ? colors.green("[用户级]") : colors.gray("[项目级]");
+  return scope === "user" ? colors.purple("[用户级]") : colors.gray("[项目级]");
 }
 
 /**
@@ -60,16 +64,16 @@ export async function handleMemoryCommand(
   if (sub === "confirm") {
     const id = args[1];
     if (!id) {
-      ctx.writeLine(colors.red("用法: /memory confirm <id>"));
+      ctx.writeLine(colors.warnLine("用法: /memory confirm <id>"));
       return;
     }
     const result = await ctx.store.confirmMemory(id);
     if (result === "user") {
-      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已确认并进入用户级 active（跨项目生效）。`));
+      ctx.writeLine(colors.okLine(`记忆 "${id}" 已确认并进入用户级 active（跨项目生效）。`));
     } else if (result === "project") {
-      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已确认并进入 active。`));
+      ctx.writeLine(colors.okLine(`记忆 "${id}" 已确认并进入 active。`));
     } else {
-      ctx.writeLine(colors.red(`未找到 staging 中 id 为 "${id}" 的记忆。`));
+      ctx.writeLine(colors.failLine(`未找到 staging 中 id 为 "${id}" 的记忆。`));
     }
     return;
   }
@@ -78,11 +82,11 @@ export async function handleMemoryCommand(
     const type = args[1]?.toLowerCase();
     const content = args.slice(2).join(" ").trim();
     if (!type || !content) {
-      ctx.writeLine(colors.red("用法: /memory add <user|project|feedback> <内容>"));
+      ctx.writeLine(colors.warnLine("用法: /memory add <user|project|feedback> <内容>"));
       return;
     }
     if (!["user", "project", "feedback"].includes(type)) {
-      ctx.writeLine(colors.red("类型必须是 user / project / feedback 之一。"));
+      ctx.writeLine(colors.failLine("类型必须是 user / project / feedback 之一。"));
       return;
     }
     const now = new Date().toISOString();
@@ -100,10 +104,10 @@ export async function handleMemoryCommand(
     };
     await ctx.store.upsertMemory(memory);
     ctx.writeLine(
-      colors.green(
+      colors.okLine(
         type === "user"
-          ? `✓ 已添加 user 记忆 "${id}"（用户级，跨项目共用）。`
-          : `✓ 已添加 ${type} 记忆 "${id}"（项目级）。`,
+          ? `已添加 user 记忆 "${id}"（用户级，跨项目共用）。`
+          : `已添加 ${type} 记忆 "${id}"（项目级）。`,
       ),
     );
     return;
@@ -112,12 +116,12 @@ export async function handleMemoryCommand(
   if (sub === "forget") {
     const id = args[1];
     if (!id) {
-      ctx.writeLine(colors.red("用法: /memory forget <id>"));
+      ctx.writeLine(colors.warnLine("用法: /memory forget <id>"));
       return;
     }
     const ok = await ctx.store.forgetMemory(id);
     ctx.writeLine(
-      ok ? colors.green(`✓ 已删除记忆 "${id}"。`) : colors.red(`未找到 id 为 "${id}" 的记忆。`),
+      ok ? colors.okLine(`已删除记忆 "${id}"。`) : colors.failLine(`未找到 id 为 "${id}" 的记忆。`),
     );
     return;
   }
@@ -125,16 +129,16 @@ export async function handleMemoryCommand(
   if (sub === "promote") {
     const id = args[1];
     if (!id) {
-      ctx.writeLine(colors.red("用法: /memory promote <id>"));
+      ctx.writeLine(colors.warnLine("用法: /memory promote <id>"));
       return;
     }
     const result = await ctx.store.promoteMemory(id);
     if (result === "promoted") {
-      ctx.writeLine(colors.green(`✓ 记忆 "${id}" 已提升到用户级（跨项目共用）。`));
+      ctx.writeLine(colors.okLine(`记忆 "${id}" 已提升到用户级（跨项目共用）。`));
     } else if (result === "already-user-level") {
       ctx.writeLine(colors.gray(`记忆 "${id}" 已在用户级，无需提升。`));
     } else {
-      ctx.writeLine(colors.red(`未找到项目级 id 为 "${id}" 的记忆。`));
+      ctx.writeLine(colors.failLine(`未找到项目级 id 为 "${id}" 的记忆。`));
     }
     return;
   }
@@ -160,10 +164,10 @@ export async function handleMemoryCommand(
     }
   }
   if (staging.length > 0) {
-    lines.push(colors.yellow(`— staging（待确认，/memory confirm <id>）—`));
+    lines.push(colors.gray(`— staging（待确认，/memory confirm <id>）—`));
     for (const m of staging) {
       lines.push(
-        `  ${colors.yellow(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${scopeTag(m.scope, colors)} ${m.content.replace(/\s+/g, " ").slice(0, 80)}`,
+        `  ${colors.purple(m.id.padEnd(28))} ${colors.gray(`[${m.type}]`)} ${scopeTag(m.scope, colors)} ${m.content.replace(/\s+/g, " ").slice(0, 80)}`,
       );
     }
   }
@@ -191,7 +195,9 @@ export async function handleInstinctCommand(
   if (sub === "distill") {
     const provider = ctx.provider();
     if (!provider) {
-      ctx.writeLine(colors.red("当前无可用 provider，无法运行 LLM 提炼（统计路径仍可运行）。"));
+      ctx.writeLine(
+        colors.failLine("当前无可用 provider，无法运行 LLM 提炼（统计路径仍可运行）。"),
+      );
     }
     const engine = new DistillEngine({
       store: ctx.store,
@@ -216,8 +222,8 @@ export async function handleInstinctCommand(
     ];
     if (summary.memoryCandidates > 0) parts.push(`记忆候选 ${summary.memoryCandidates}`);
     ctx.writeLine(
-      colors.green(
-        `✓ 提炼完成：${parts.join(" / ")}${summary.llmTriggered ? "" : "（LLM 未触发）"}`,
+      colors.okLine(
+        `提炼完成：${parts.join(" / ")}${summary.llmTriggered ? "" : "（LLM 未触发）"}`,
       ),
     );
     return;
@@ -226,12 +232,12 @@ export async function handleInstinctCommand(
   if (sub === "forget") {
     const id = args[1];
     if (!id) {
-      ctx.writeLine(colors.red("用法: /instinct forget <id>"));
+      ctx.writeLine(colors.warnLine("用法: /instinct forget <id>"));
       return;
     }
     const ok = await ctx.store.forgetInstinct(id);
     ctx.writeLine(
-      ok ? colors.green(`✓ 已删除规则 "${id}"。`) : colors.red(`未找到 id 为 "${id}" 的规则。`),
+      ok ? colors.okLine(`已删除规则 "${id}"。`) : colors.failLine(`未找到 id 为 "${id}" 的规则。`),
     );
     return;
   }
@@ -239,16 +245,16 @@ export async function handleInstinctCommand(
   if (sub === "promote") {
     const id = args[1];
     if (!id) {
-      ctx.writeLine(colors.red("用法: /instinct promote <id>"));
+      ctx.writeLine(colors.warnLine("用法: /instinct promote <id>"));
       return;
     }
     const result = await ctx.store.promoteInstinct(id);
     if (result === "promoted") {
-      ctx.writeLine(colors.green(`✓ 规则 "${id}" 已提升到用户级（跨项目共用）。`));
+      ctx.writeLine(colors.okLine(`规则 "${id}" 已提升到用户级（跨项目共用）。`));
     } else if (result === "already-user-level") {
       ctx.writeLine(colors.gray(`规则 "${id}" 已在用户级，无需提升。`));
     } else {
-      ctx.writeLine(colors.red(`未找到项目级 id 为 "${id}" 的规则。`));
+      ctx.writeLine(colors.failLine(`未找到项目级 id 为 "${id}" 的规则。`));
     }
     return;
   }
@@ -386,7 +392,7 @@ async function handleInstinctSkillCommand(
 
   const instinct = ctx.store.loadInstincts(true).find((i) => i.id === id);
   if (!instinct) {
-    ctx.writeLine(colors.red(`未找到 id 为 "${id}" 的规则。`));
+    ctx.writeLine(colors.failLine(`未找到 id 为 "${id}" 的规则。`));
     return;
   }
 
@@ -401,7 +407,7 @@ async function handleInstinctSkillCommand(
   const manifestPath = path.join(skillDir, "SKILL.md");
   if (fs.existsSync(manifestPath)) {
     ctx.writeLine(
-      colors.red(
+      colors.failLine(
         `用户级 Skill "${skillName}" 已存在，已拒绝覆盖。如需重新生成，请先删除 ${skillDir}。`,
       ),
     );
@@ -440,7 +446,7 @@ async function handleInstinctSkillCommand(
 
   await fsp.mkdir(skillDir, { recursive: true });
   await fsp.writeFile(manifestPath, content, "utf8");
-  ctx.writeLine(colors.green(`✓ 已生成用户级 Skill 草稿 "${skillName}"：${manifestPath}`));
+  ctx.writeLine(colors.okLine(`已生成用户级 Skill 草稿 "${skillName}"：${manifestPath}`));
   ctx.writeLine(
     colors.gray(
       `执行 /skills reload 重新扫描后生效；原规则保留，如不再需要可用 /instinct forget ${instinct.id} 移除。`,

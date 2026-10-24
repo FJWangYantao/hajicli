@@ -403,7 +403,7 @@ test("CLI exposes deterministic Skill commands and preserves tool-call pairing",
   assert.match(source, /parts\[1\]\?\.toLowerCase\(\) === "validate"/);
   assert.match(source, /new ListSkillResourcesTool\(skillRegistry\)/);
   assert.match(source, /new ReadSkillResourceTool\(skillRegistry\)/);
-  assert.match(source, /if \(!entry\) \{\s*ui\.writeLine\(colors\.red\(`未找到 Skill/);
+  assert.match(source, /if \(!entry\) \{\s*ui\.writeLine\(colors\.failLine\(`未找到 Skill/);
   assert.match(source, /manual-skill-\$\{randomUUID\(\)\}/);
   assert.match(
     turnSource,

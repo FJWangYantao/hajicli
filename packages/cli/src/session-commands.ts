@@ -68,7 +68,7 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ctx.saveSession();
   ctx.updateStatusUI();
   ui.clearChat();
-  ui.writeLine(colors.green("✓ 已开启全新对话并重置上下文。"));
+  ui.writeLine(colors.okLine("已开启全新对话并重置上下文。"));
 }
 
 /** 分发 /resume 指令；调用方负责其后的主循环 continue。 */
@@ -77,7 +77,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
   await sessionManager.flush();
   const sessions = sessionManager.listSessions();
   if (sessions.length === 0) {
-    ui.writeLine(colors.yellow("! 暂无存盘的历史对话记录。"));
+    ui.writeLine(colors.warnLine("暂无存盘的历史对话记录。"));
     return;
   }
 
@@ -119,7 +119,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
       const historyOutput: string[] = [];
       const appendHistoryLine = (value: string = "") => historyOutput.push(`${value}\n`);
       appendHistoryLine(
-        colors.boldGreen(`✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
+        colors.okLine(`已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
       );
       // 工具结果并入对应调用的工具块显示，这里先按调用 id 建立索引。
       const historyToolOutputs = new Map<string, string>();
@@ -181,7 +181,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
       }
       ui.replaceChat(historyOutput.join(""));
     } else {
-      ui.writeLine(colors.yellow("! 选中的会话为空或加载失败。"));
+      ui.writeLine(colors.warnLine("选中的会话为空或加载失败。"));
     }
   } catch (error) {
     if (error instanceof TerminalInputCancelledError) {
@@ -205,7 +205,7 @@ export async function handleRewindCommand(ctx: SessionCommandContext): Promise<v
   }
 
   if (userMessageNodes.length === 0) {
-    ui.writeLine(colors.yellow("! 当前会话中暂无合法的用户对话节点可供回退。"));
+    ui.writeLine(colors.warnLine("当前会话中暂无合法的用户对话节点可供回退。"));
     return;
   }
 
@@ -243,7 +243,7 @@ export async function handleRewindCommand(ctx: SessionCommandContext): Promise<v
     const targetContent = typeof targetMsgNode?.content === "string" ? targetMsgNode.content : "";
 
     if (!targetMsgNode?.snapshotId) {
-      ui.writeLine(colors.yellow("! 该历史节点没有安全代码快照，未执行任何回退。"));
+      ui.writeLine(colors.warnLine("该历史节点没有安全代码快照，未执行任何回退。"));
       ui.writeLine(
         colors.gray("旧会话节点无法精确恢复工作区；请从升级后的新消息开始使用 /rewind。"),
       );
@@ -252,7 +252,7 @@ export async function handleRewindCommand(ctx: SessionCommandContext): Promise<v
 
     const rollbackResult = snapshotEngine.rollbackOwnedChanges(targetMsgNode.snapshotId);
     if (!rollbackResult.ok) {
-      ui.writeLine(colors.boldRed("✕ 代码快照恢复失败，消息历史与工作区均未修改。"));
+      ui.writeLine(colors.failLine("代码快照恢复失败，消息历史与工作区均未修改。"));
       ui.writeLine(colors.gray(rollbackResult.reason || "快照缺失，或当前 Git HEAD 已发生变化。"));
       return;
     }
@@ -269,11 +269,11 @@ export async function handleRewindCommand(ctx: SessionCommandContext): Promise<v
       rollbackResult.revertedPaths.length > 0
         ? `，并撤销了本会话修改的 ${rollbackResult.revertedPaths.length} 个文件`
         : "；未改动工作区文件";
-    ui.writeLine(colors.boldGreen(`↺ 已成功退回历史至节点 #${targetMsgIndex}${rollbackSummary}。`));
+    ui.writeLine(colors.okLine(`已成功退回历史至节点 #${targetMsgIndex}${rollbackSummary}。`));
     if (rollbackResult.preservedPaths.length > 0) {
       ui.writeLine(
-        colors.yellow(
-          `! 已保留 ${rollbackResult.preservedPaths.length} 个后来被外部修改的文件，避免覆盖你的改动。`,
+        colors.warnLine(
+          `已保留 ${rollbackResult.preservedPaths.length} 个后来被外部修改的文件，避免覆盖你的改动。`,
         ),
       );
       ui.writeLine(colors.gray(rollbackResult.preservedPaths.join(", ")));
