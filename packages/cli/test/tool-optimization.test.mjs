@@ -240,3 +240,56 @@ test("bash timeout terminates the command through the existing abort path", {
     assert.ok(Date.now() - startedAt < 5_000);
   });
 });
+
+test("edit matches LF oldText against CRLF files and keeps CRLF endings", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "crlf.ts");
+    await fs.writeFile(target, "const a = 1;\r\nconst b = 2;\r\nconst c = 3;\r\n");
+    const result = await new EditFileTool().execute({
+      path: "crlf.ts",
+      oldText: "const a = 1;\nconst b = 2;",
+      newText: "const a = 1;\nconst b = 20;",
+    });
+    assert.match(result, /文件精准编辑成功/);
+    assert.equal(
+      await fs.readFile(target, "utf8"),
+      "const a = 1;\r\nconst b = 20;\r\nconst c = 3;\r\n",
+    );
+  });
+});
+
+test("edit miss shows the closest actual lines so the model can correct oldText", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "near.ts");
+    const original = "function run() {\n\tconst value = compute();\n\treturn value;\n}\n";
+    await fs.writeFile(target, original);
+    const editor = new EditFileTool();
+
+    // 缩进写错（空格 vs Tab）
+    const indent = await editor.execute({
+      path: "near.ts",
+      oldText: "  const value = compute();\n  return value;",
+      newText: "x",
+    });
+    assert.match(indent, /^编辑失败: 在文件中找不到指定的 oldText 原文。\n/);
+    assert.match(indent, /最接近的位置/);
+    assert.match(indent, /2 \| \tconst value = compute\(\);/);
+
+    // 带了 read 的行号前缀
+    const prefixed = await editor.execute({
+      path: "near.ts",
+      oldText: "2 | \tconst value = compute();",
+      newText: "x",
+    });
+    assert.match(prefixed, /行号 \| 」前缀/);
+
+    // 锚点行已不存在：提示先 read，而不是凭记忆重试
+    const stale = await editor.execute({
+      path: "near.ts",
+      oldText: "const removed = old();",
+      newText: "x",
+    });
+    assert.match(stale, /请先用 read 重新读取/);
+    assert.equal(await fs.readFile(target, "utf8"), original);
+  });
+});
