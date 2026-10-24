@@ -147,11 +147,12 @@ test("edit and write reject stale hashes and replace files atomically", async ()
     await fs.writeFile(target, "external\n");
     const staleEdit = await editor.execute({
       path: "target.txt",
-      oldText: "external",
+      oldText: "before",
       newText: "edited",
       expectedHash: initialHash,
     });
-    assert.match(staleEdit, /文件已被修改/);
+    assert.match(staleEdit, /hash冲突/);
+    assert.match(staleEdit, /文件已被外部修改/);
     assert.equal(await fs.readFile(target, "utf8"), "external\n");
 
     const currentRead = await reader.execute({ path: "target.txt" });
@@ -186,6 +187,90 @@ test("edit and write reject stale hashes and replace files atomically", async ()
       (name) => name.includes(".haji-") && name.endsWith(".tmp"),
     );
     assert.deepEqual(tempFiles, []);
+  });
+});
+
+test("edit re-reads once and applies when oldText still uniquely matches a stale hash", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "retry.txt");
+    await fs.writeFile(target, "keep me\nchange me\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const initialRead = await reader.execute({ path: "retry.txt" });
+    const staleHash = initialRead.match(/hash=([a-f0-9]{16})/)?.[1];
+    assert.ok(staleHash);
+
+    // 外部写入改了别处（模拟 biome --write），oldText 所在区域仍然唯一可定位。
+    await fs.writeFile(target, "keep me edited externally\nchange me\n");
+    const result = await editor.execute({
+      path: "retry.txt",
+      oldText: "change me",
+      newText: "changed",
+      expectedHash: staleHash,
+    });
+    assert.match(result, /文件精准编辑成功/);
+    assert.match(result, /expectedHash 已过期/);
+    assert.equal(await fs.readFile(target, "utf8"), "keep me edited externally\nchanged\n");
+  });
+});
+
+test("edit still refuses a stale hash when oldText becomes ambiguous", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "ambiguous.txt");
+    await fs.writeFile(target, "value\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const initialRead = await reader.execute({ path: "ambiguous.txt" });
+    const staleHash = initialRead.match(/hash=([a-f0-9]{16})/)?.[1];
+    assert.ok(staleHash);
+
+    await fs.writeFile(target, "value\nvalue\n");
+    const result = await editor.execute({
+      path: "ambiguous.txt",
+      oldText: "value",
+      newText: "changed",
+      expectedHash: staleHash,
+    });
+    assert.match(result, /hash冲突/);
+    assert.match(result, /匹配到多处/);
+    assert.equal(await fs.readFile(target, "utf8"), "value\nvalue\n");
+  });
+});
+
+test("edit miss messages start with a stable error category", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "miss.txt");
+    await fs.writeFile(target, "alpha\n  beta\n");
+    const editor = new EditFileTool();
+
+    const lineNumbers = await editor.execute({
+      path: "miss.txt",
+      oldText: "1 | alpha\n2 | beta",
+      newText: "x",
+    });
+    assert.match(lineNumbers.split("\n")[0], /找不到指定的 oldText 原文（行号前缀）/);
+
+    const truncated = await editor.execute({
+      path: "miss.txt",
+      oldText: "alpha…\nbeta",
+      newText: "x",
+    });
+    assert.match(truncated.split("\n")[0], /找不到指定的 oldText 原文（截断省略）/);
+
+    const anchorMissing = await editor.execute({
+      path: "miss.txt",
+      oldText: "gamma",
+      newText: "x",
+    });
+    assert.match(anchorMissing.split("\n")[0], /找不到指定的 oldText 原文（锚点行不存在）/);
+
+    const whitespace = await editor.execute({
+      path: "miss.txt",
+      oldText: "alpha\n   beta",
+      newText: "x",
+    });
+    assert.match(whitespace.split("\n")[0], /找不到指定的 oldText 原文（缩进或空白不一致）/);
+    assert.equal(await fs.readFile(target, "utf8"), "alpha\n  beta\n");
   });
 });
 
@@ -271,7 +356,7 @@ test("edit miss shows the closest actual lines so the model can correct oldText"
       oldText: "  const value = compute();\n  return value;",
       newText: "x",
     });
-    assert.match(indent, /^编辑失败: 在文件中找不到指定的 oldText 原文。\n/);
+    assert.match(indent, /^编辑失败: 在文件中找不到指定的 oldText 原文（缩进或空白不一致）。\n/);
     assert.match(indent, /最接近的位置/);
     assert.match(indent, /2 \| \tconst value = compute\(\);/);
 

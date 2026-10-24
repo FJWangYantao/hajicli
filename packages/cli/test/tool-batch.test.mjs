@@ -6,6 +6,7 @@ import {
   buildRepeatedFailureNotice,
   createToolCallBatches,
   MAX_PARALLEL_READ_ONLY_TOOLS,
+  normalizeFailureReason,
   RepeatedFailureTracker,
   runToolCallBatch,
 } from "../dist/tool-batch.js";
@@ -147,6 +148,36 @@ test("repeated failure tracker resets after any success so fix-and-retest loops 
   assert.equal(tracker.record("bash", { command: "npm test" }, failed), 1);
   // 同一退出码、不同命令不算重复
   assert.equal(tracker.record("bash", { command: "npm run lint" }, failed), 1);
+});
+
+test("repeated failure tracker normalizes changing hashes into one reason", () => {
+  const tracker = new RepeatedFailureTracker();
+  const withHash = (expected, current) =>
+    `编辑失败: [hash冲突] 文件已被外部修改（期望 hash=${expected}，当前 hash=${current}）。请重新读取后再编辑。\n细节`;
+  assert.equal(
+    tracker.record("edit", { path: "src/a.ts" }, withHash("0123456789abcdef", "fedcba9876543210")),
+    1,
+  );
+  assert.equal(
+    tracker.record("edit", { path: "src/a.ts" }, withHash("ffffffffffffffff", "1111222233334444")),
+    2,
+  );
+  assert.equal(
+    tracker.record("edit", { path: "src/a.ts" }, withHash("9999999999999999", "abcdefabcdefabcd")),
+    3,
+  );
+});
+
+test("failure reason keeps distinct edit-miss categories separate", () => {
+  const tracker = new RepeatedFailureTracker();
+  const miss = (category) => `编辑失败: 在文件中找不到指定的 oldText 原文（${category}）。\n线索`;
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 1);
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("缩进或空白不一致")), 1);
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 2);
+  assert.equal(
+    normalizeFailureReason("编辑失败: hash=0123456789abcdef 当前 hash=fedcba9876543210\nmore"),
+    "编辑失败: hash=<hash> 当前 hash=<hash>",
+  );
 });
 
 test("repeated failure notice only appears from the second identical failure", () => {

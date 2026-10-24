@@ -40,18 +40,31 @@ function locateOldText(
   return { ...count(crlfOld), oldText: crlfOld, newText: toCrlf(newText) };
 }
 
+interface OldTextMissAnalysis {
+  /** 稳定、可归类的错误类别：重复失败保护用它区分不同的修正方向。 */
+  category: string;
+  /** 给模型看的详细线索。 */
+  detail: string;
+}
+
 /**
  * oldText 未命中时给出可据以修正的线索：常见的复制错误，或文件中最接近位置的实际内容（带行号）。
- * 让模型一步改对，而不是凭记忆反复猜原文。
+ * 同时给出稳定的错误类别，避免「行号前缀错误」和「缩进不一致」被当成同一种失败反复累计。
  */
-export function describeOldTextMiss(content: string, oldText: string): string {
+function analyzeOldTextMiss(content: string, oldText: string): OldTextMissAnalysis {
   const fileLines = content.split(/\r?\n/);
   const oldLines = oldText.split(/\r?\n/);
   if (oldLines.some((line) => LINE_NUMBER_PREFIX_RE.test(line))) {
-    return "oldText 带有 read 输出的「行号 | 」前缀，请去掉前缀后只保留文件原文。";
+    return {
+      category: "行号前缀",
+      detail: "oldText 带有 read 输出的「行号 | 」前缀，请去掉前缀后只保留文件原文。",
+    };
   }
   if (oldText.includes("…") && !content.includes("…")) {
-    return "oldText 含有 read 截断超长行时加的「…」，请改用该行中未被截断的部分作为上下文。";
+    return {
+      category: "截断省略",
+      detail: "oldText 含有 read 截断超长行时加的「…」，请改用该行中未被截断的部分作为上下文。",
+    };
   }
 
   // 用 oldText 中最长的一行做锚点，忽略缩进与行尾空白，在文件里找它的实际位置。
@@ -67,7 +80,10 @@ export function describeOldTextMiss(content: string, oldText: string): string {
     });
   }
   if (hits.length === 0) {
-    return `oldText 中最具特征的一行在文件里不存在（${anchorText.slice(0, 80) || "空白"}）。文件可能已被之前的编辑改动，请先用 read 重新读取相关区域，不要凭记忆重试。`;
+    return {
+      category: "锚点行不存在",
+      detail: `oldText 中最具特征的一行在文件里不存在（${anchorText.slice(0, 80) || "空白"}）。文件可能已被之前的编辑改动，请先用 read 重新读取相关区域，不要凭记忆重试。`,
+    };
   }
 
   const start = Math.max(0, hits[0] - anchorOffset - 1);
@@ -81,7 +97,20 @@ export function describeOldTextMiss(content: string, oldText: string): string {
     })
     .join("\n");
   const where = hits.length > 1 ? `（该行共出现 ${hits.length} 处，以下为第 1 处）` : "";
-  return `文件中最接近的位置${where}实际内容如下，请对照缩进、空白和字符逐字修正 oldText（不要带行号前缀）：\n${snippet}`;
+  return {
+    category: "缩进或空白不一致",
+    detail: `文件中最接近的位置${where}实际内容如下，请对照缩进、空白和字符逐字修正 oldText（不要带行号前缀）：\n${snippet}`,
+  };
+}
+
+/** 详细线索（保留旧导出，供调用方与测试按需使用）。 */
+export function describeOldTextMiss(content: string, oldText: string): string {
+  return analyzeOldTextMiss(content, oldText).detail;
+}
+
+/** 稳定的错误类别（行号前缀 / 截断省略 / 锚点行不存在 / 缩进或空白不一致）。 */
+export function classifyOldTextMiss(content: string, oldText: string): string {
+  return analyzeOldTextMiss(content, oldText).category;
 }
 
 export class EditFileTool implements BaseTool {
@@ -127,30 +156,58 @@ export class EditFileTool implements BaseTool {
     const filePath = args.path;
     try {
       const resolvedPath = await resolveWorkspacePath(filePath);
-      // 按原始字节计算 hash，与 read 工具返回的 hash 口径一致（UTF-8 解码有损的文件也能正确比对）。
-      const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
-      if (context?.abortSignal?.aborted) return "[文件编辑已中止]";
-      const content = buffer.toString("utf8");
-      const originalHash = contentHash(buffer);
-      if (expectedHash !== undefined && expectedHash !== originalHash) {
-        return `编辑失败: 文件已被修改，期望 hash=${expectedHash}，当前 hash=${originalHash}。请重新读取后再编辑。`;
-      }
+      const maxAttempts = expectedHash === undefined ? 1 : 2;
+      let retriedForStaleHash = false;
 
-      const match = locateOldText(content, args.oldText, args.newText);
-      if (match.count === 0) {
-        return `编辑失败: 在文件中找不到指定的 oldText 原文。\n${describeOldTextMiss(content, args.oldText)}`;
-      }
-      if (match.count > 1) {
-        return "编辑失败: oldText 匹配到多处，为安全起见已拒绝修改。请增加上下文确保唯一。";
-      }
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (context?.abortSignal?.aborted) return "[文件编辑已中止]";
+        // 按原始字节计算 hash，与 read 工具返回的 hash 口径一致（UTF-8 解码有损的文件也能正确比对）。
+        const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
+        if (context?.abortSignal?.aborted) return "[文件编辑已中止]";
+        const content = buffer.toString("utf8");
+        const currentHash = contentHash(buffer);
+        const stale = expectedHash !== undefined && expectedHash !== currentHash;
+        const match = locateOldText(content, args.oldText, args.newText);
 
-      const newContent =
-        content.slice(0, match.index) +
-        match.newText +
-        content.slice(match.index + match.oldText.length);
-      const newHash = contentHash(newContent);
-      await writeUtf8Atomically(resolvedPath, newContent, context?.abortSignal, originalHash);
-      return `[文件精准编辑成功]\n路径: ${filePath}\noldHash=${originalHash}\nnewHash=${newHash}\n替换次数=1`;
+        // expectedHash 过期：先重读一次再判定。真正的安全边界是 oldText 唯一命中，
+        // expectedHash 只是防覆盖提示；外部格式化改了别处不应让本次编辑无谓失败。
+        if (stale && attempt === 0) {
+          retriedForStaleHash = true;
+          continue;
+        }
+
+        if (stale) {
+          if (match.count === 0) {
+            const miss = analyzeOldTextMiss(content, args.oldText);
+            return `编辑失败: [hash冲突] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），且 oldText 在当前内容中未命中（${miss.category}）。\n${miss.detail}`;
+          }
+          if (match.count > 1) {
+            return `编辑失败: [hash冲突] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），且 oldText 在当前内容中匹配到多处。请重新读取后增加上下文确保唯一。`;
+          }
+          // 唯一命中：继续基于最新内容编辑；写入时用 currentHash 再做一次 CAS，
+          // 若重读之后文件又被改动，writeUtf8Atomically 仍会拒绝覆盖。
+        }
+
+        if (match.count === 0) {
+          const miss = analyzeOldTextMiss(content, args.oldText);
+          return `编辑失败: 在文件中找不到指定的 oldText 原文（${miss.category}）。\n${miss.detail}`;
+        }
+        if (match.count > 1) {
+          return "编辑失败: oldText 匹配到多处，为安全起见已拒绝修改。请增加上下文确保唯一。";
+        }
+
+        const newContent =
+          content.slice(0, match.index) +
+          match.newText +
+          content.slice(match.index + match.oldText.length);
+        const newHash = contentHash(newContent);
+        await writeUtf8Atomically(resolvedPath, newContent, context?.abortSignal, currentHash);
+        const retryNote = retriedForStaleHash
+          ? "\n说明: expectedHash 已过期，已重新读取并按最新内容应用。"
+          : "";
+        return `[文件精准编辑成功]\n路径: ${filePath}\noldHash=${currentHash}\nnewHash=${newHash}\n替换次数=1${retryNote}`;
+      }
+      return "编辑失败: [hash冲突] 重读后文件仍在变化，请稍后再试。";
     } catch (error) {
       if (
         context?.abortSignal?.aborted ||
@@ -159,7 +216,7 @@ export class EditFileTool implements BaseTool {
         return "[文件编辑已中止]";
       }
       if (error instanceof FileConflictError) {
-        return `编辑失败: ${error.message}。请重新读取后再编辑。`;
+        return `编辑失败: [hash冲突] ${error.message}。请重新读取后再编辑。`;
       }
       return `精准编辑文件失败: ${formatWorkspaceError(error, filePath)}`;
     }
