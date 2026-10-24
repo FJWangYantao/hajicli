@@ -48,6 +48,13 @@ import {
 import { type TextCell, TextSelectionModel } from "./text-selection.js";
 import { colors, fillUserMsgRowEol, themeEnter } from "./theme.js";
 import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
+import {
+  buildSidebarFrame,
+  composeSidebarRow,
+  resolveSidebarWidth,
+  SIDEBAR_GAP_WIDTH,
+  type SidebarState,
+} from "./tui-sidebar.js";
 
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
 // 保持既有 dist/terminal-input.js 导出面的兼容：拆分后的符号在此统一转发。
@@ -289,6 +296,30 @@ export class TerminalUI {
   private currentPath = "";
   private usedTokens = 0;
   private maxTokens = 1000000;
+  /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
+  private sidebarEnabled = true;
+  private costCny?: number;
+  private costRequests = 0;
+  private costHasUnpriced = false;
+  private costPromptTokens = 0;
+  private costCompletionTokens = 0;
+  /** 上一轮回合耗时（ms）；undefined 表示本会话还没跑完一轮。 */
+  private lastTurnMs?: number;
+  /** 本会话上下文压缩次数（自动 + 手动）；用于解释圆环为何突然掉下来。 */
+  private compactionCount = 0;
+  /** git 分支与未提交改动数：分支同步读 HEAD，改动数异步取，失败就留空。 */
+  private gitBranch = "";
+  private gitDirty?: number;
+  /** 鼠标是否悬停在上下文圆环上；命中区域每帧随布局更新。 */
+  private sidebarRingHovered = false;
+  private sidebarRingHit?: {
+    columnStart: number;
+    columnEnd: number;
+    rowStart: number;
+    rowEnd: number;
+  };
+  /** 悬停需要 any-event 鼠标跟踪（1003），仅在侧栏可见时开启。 */
+  private mouseMotionEnabled = false;
   private taskPanelTitle = "";
   private taskPanelItems: TaskPanelItem[] = [];
   private taskPanelExpanded = false;
@@ -401,6 +432,56 @@ export class TerminalUI {
   setContextUsage(usedTokens: number, maxTokens = 1000000): void {
     this.usedTokens = Math.max(0, usedTokens);
     this.maxTokens = Math.max(1, maxTokens);
+    this.scheduleRender();
+  }
+
+  /** 开关右侧会话信息栏（宽度不足时即使开启也不显示）。 */
+  setSidebarEnabled(enabled: boolean): void {
+    if (this.sidebarEnabled === enabled) return;
+    this.sidebarEnabled = enabled;
+    this.scheduleRender();
+  }
+
+  isSidebarEnabled(): boolean {
+    return this.sidebarEnabled;
+  }
+
+  /** 更新右侧栏的会话费用（元）；undefined 表示尚无已定价调用。 */
+  setCostInfo(
+    totalCostCny: number | undefined,
+    requests = 0,
+    hasUnpriced = false,
+    promptTokens = 0,
+    completionTokens = 0,
+  ): void {
+    this.costCny = totalCostCny;
+    this.costRequests = Math.max(0, requests);
+    this.costHasUnpriced = hasUnpriced;
+    this.costPromptTokens = Math.max(0, promptTokens);
+    this.costCompletionTokens = Math.max(0, completionTokens);
+    this.scheduleRender();
+  }
+
+  /** 记录上一轮回合耗时（回合结束时由 turn-runner 回调；0 表示忽略）。 */
+  setLastTurnDuration(durationMs: number): void {
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+    this.lastTurnMs = durationMs;
+    this.scheduleRender();
+  }
+
+  /** 记一次上下文压缩（自动或手动）；侧栏据此显示“已压缩”徽标。 */
+  noteCompaction(): void {
+    this.compactionCount += 1;
+    this.scheduleRender();
+  }
+
+  /** 更新侧栏的 git 信息；branch 为空或 dirty 未取到都只影响显示，不影响渲染。 */
+  setGitStatus(branch: string | undefined, dirty: number | undefined): void {
+    const nextBranch = branch ? sanitizeTerminalText(branch) : "";
+    const nextDirty = dirty === undefined ? undefined : Math.max(0, dirty);
+    if (this.gitBranch === nextBranch && this.gitDirty === nextDirty) return;
+    this.gitBranch = nextBranch;
+    this.gitDirty = nextDirty;
     this.scheduleRender();
   }
 
@@ -543,7 +624,14 @@ export class TerminalUI {
       Math.max(1, stdout.columns || 80),
       Math.max(1, stdout.rows || 24),
     );
-    return Math.max(1, layout.safeWidth - layout.chatPadding * 2);
+    const sidebarWidth = resolveSidebarWidth(
+      layout.safeWidth,
+      layout.safeHeight,
+      this.sidebarEnabled,
+    );
+    const leftAreaWidth =
+      layout.safeWidth - (sidebarWidth > 0 ? sidebarWidth + SIDEBAR_GAP_WIDTH : 0);
+    return Math.max(1, leftAreaWidth - layout.chatPadding * 2);
   }
 
   isInteractive(): boolean {
@@ -1230,6 +1318,11 @@ export class TerminalUI {
   }
 
   private handleMouseEvent(event: TerminalMouseEvent): void {
+    // 1003 any-event 跟踪下的纯移动（无按键按下）：只用于侧栏圆环的悬停提示。
+    if (event.action === "move" && (event.button & 3) === 3) {
+      this.updateSidebarHover(event.column, event.row);
+      return;
+    }
     if (event.action === "wheel") {
       this.pendingMouseSelection = undefined;
       this.queueWheelScroll(event.wheelRows ?? 0);
@@ -1707,6 +1800,61 @@ export class TerminalUI {
     );
   }
 
+  /**
+   * 悬停提示需要 1003（any-event）跟踪，但它会让终端把所有鼠标移动都发上来。
+   * 因此只在右侧栏真正显示的帧里开启，侧栏隐藏时立刻关闭，避免窄屏白付流量。
+   */
+  private setMouseMotionEnabled(enabled: boolean): void {
+    if (this.mouseMotionEnabled === enabled) return;
+    this.mouseMotionEnabled = enabled;
+    stdout.write(enabled ? "\x1b[?1003h" : "\x1b[?1003l");
+  }
+
+  /** 鼠标移动时只关心是否进入/离开圆环命中区域，避免每次移动都重绘。 */
+  private updateSidebarHover(column: number, row: number): void {
+    const hit = this.sidebarRingHit;
+    const hovered = Boolean(
+      hit &&
+        column >= hit.columnStart &&
+        column <= hit.columnEnd &&
+        row >= hit.rowStart &&
+        row <= hit.rowEnd,
+    );
+    if (hovered === this.sidebarRingHovered) return;
+    this.sidebarRingHovered = hovered;
+    this.scheduleRender(true);
+  }
+
+  private buildSidebarState(): SidebarState {
+    return {
+      sessionTitle: this.sessionTitle,
+      modelName: this.modelName,
+      providerName: this.providerName,
+      reasoningEffort: this.reasoningEffort,
+      permissionMode: this.permissionMode,
+      usedTokens: this.usedTokens,
+      maxTokens: this.maxTokens,
+      costCny: this.costCny,
+      costRequests: this.costRequests,
+      hasUnpricedCost: this.costHasUnpriced,
+      promptTokens: this.costPromptTokens,
+      completionTokens: this.costCompletionTokens,
+      lastTurnMs: this.lastTurnMs,
+      compactionCount: this.compactionCount,
+      gitBranch: this.gitBranch || undefined,
+      gitDirty: this.gitDirty,
+      activity: this.activityFrame,
+      taskPlan: this.taskPanelTitle
+        ? {
+            title: this.taskPanelTitle,
+            items: this.taskPanelItems,
+            expanded: this.taskPanelExpanded,
+          }
+        : undefined,
+      agents: this.agentPanelItems,
+    };
+  }
+
   private buildActivityRow(width: number): string {
     // 活动行右侧徽标：权限档 + ctx 用量（长任务期间随时可见是否仍在全放行）。
     const badge: ActivityBadge | undefined =
@@ -1768,6 +1916,13 @@ export class TerminalUI {
     );
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
+    // 右侧会话信息栏：只占对话区高度，输入框与状态栏仍保持整行宽度。
+    const sidebarWidth = resolveSidebarWidth(width, height, this.sidebarEnabled);
+    const sidebarVisible = sidebarWidth > 0;
+    const leftAreaWidth = Math.max(
+      1,
+      width - (sidebarVisible ? sidebarWidth + SIDEBAR_GAP_WIDTH : 0),
+    );
     const persistentHeader = this.sessionTitle
       ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, width - 7))}${SEQ.reset}`
       : this.options.compactHeader;
@@ -1788,11 +1943,13 @@ export class TerminalUI {
         ]
       : [];
     const panelBudget = Math.max(0, Math.min(layout.panelRows, height - headerRows.length - 4));
-    const taskRows = this.buildTaskPanel(
-      width,
-      this.taskPanelExpanded ? panelBudget : Math.min(5, panelBudget),
-    );
-    const agentRows = this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
+    // 侧栏出现时任务与子代理面板搬进侧栏，避免与对话区上方重复占用高度。
+    const taskRows = sidebarVisible
+      ? []
+      : this.buildTaskPanel(width, this.taskPanelExpanded ? panelBudget : Math.min(5, panelBudget));
+    const agentRows = sidebarVisible
+      ? []
+      : this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
     const topRows = [...headerRows, ...taskRows, ...agentRows];
     const divider = this.options.renderBorder(width);
     let inputLayout: VisibleInputLayout | undefined;
@@ -1805,8 +1962,9 @@ export class TerminalUI {
     // 活动状态不再单独占用输入框上方一行，而是与状态栏共用底部这一行：
     // 有活动时顶替状态栏显示，空闲时才显示常规状态，因此聊天区高度不会随动画变化。
     // 临时提示（Ctrl+C 确认等）优先级介于两者之间：没有活动时占位、超时自动消失。
+    // 侧栏出现时活动行搬进侧栏顶部（与任务/子代理面板同一策略），底部恢复常规状态行。
     const activityRow =
-      this.buildActivityRow(width) ||
+      (sidebarVisible ? "" : this.buildActivityRow(width)) ||
       (this.transientHintText ? truncateAnsiText(this.transientHintText, width) : "") ||
       (this.status ? truncateAnsiText(this.status, width) : "");
     const statusBar =
@@ -1897,7 +2055,7 @@ export class TerminalUI {
     // 对话区使用响应式内边距：内容按收窄后的宽度换行，
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
     const chatPadding = layout.chatPadding;
-    const chatWidth = Math.max(1, width - chatPadding * 2);
+    const chatWidth = Math.max(1, leftAreaWidth - chatPadding * 2);
     const contentWithStatus = this.liveTail
       ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith("\n") ? "\n" : ""}${this.liveTail}`
       : this.chatContent;
@@ -1953,7 +2111,37 @@ export class TerminalUI {
         (row, index) =>
           chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index),
       );
-    const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill("")];
+    const sidebarFrame = sidebarVisible
+      ? buildSidebarFrame(
+          this.buildSidebarState(),
+          sidebarWidth,
+          chatHeight,
+          Date.now(),
+          this.sidebarRingHovered,
+        )
+      : { rows: [] as string[], ring: undefined };
+    const sidebarRows = sidebarFrame.rows;
+    // 记录圆环在屏幕上的 1-based 命中区域，供鼠标移动时判断悬停。
+    if (sidebarVisible && sidebarFrame.ring) {
+      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.ring.left;
+      this.sidebarRingHit = {
+        columnStart,
+        columnEnd: columnStart + sidebarFrame.ring.width - 1,
+        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.ring.top + 1,
+        rowEnd: 0,
+      };
+      this.sidebarRingHit.rowEnd = this.sidebarRingHit.rowStart + sidebarFrame.ring.height - 1;
+    } else {
+      this.sidebarRingHit = undefined;
+      this.sidebarRingHovered = false;
+    }
+    this.setMouseMotionEnabled(sidebarVisible);
+    const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill("")].map(
+      (row, index) =>
+        sidebarVisible
+          ? composeSidebarRow(row, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
+          : row,
+    );
     const screenRows = emergencyMinimal
       ? [...chatRows, ...inputBlock].slice(0, height)
       : [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);

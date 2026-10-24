@@ -143,6 +143,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "切换配色主题（无参列出，/theme kero 应用并记住）",
         argHint: "[preset]",
       },
+      {
+        command: "/sidebar",
+        description: "开关右侧会话信息栏（上下文 / 费用 / 任务 / 子代理）",
+        argHint: "[on|off]",
+      },
     ],
   },
   {

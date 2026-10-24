@@ -107,6 +107,7 @@ import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
+import { readGitDirtyCount } from "./git-status.js";
 import { parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
@@ -648,6 +649,8 @@ async function main() {
       ctx.messages = [...result.messages, ...pendingTurn];
       skillRegistry.restoreScopeFromMessages("main", ctx.messages);
       if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
+      // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
+      if (result.layersApplied.length > 0) ui.noteCompaction();
       const layers =
         result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
       ui.writeLine(
@@ -880,6 +883,15 @@ async function main() {
   );
   ui.start();
   markStartupStage("ui_started");
+  ui.setSidebarEnabled(savedPreference?.sidebar !== false);
+  const initialCost = costTracker.getSummary();
+  ui.setCostInfo(
+    initialCost.totalCostCny,
+    initialCost.requests,
+    initialCost.hasUnpriced,
+    initialCost.promptTokens,
+    initialCost.completionTokens,
+  );
   for (const warning of [...mcpStartupWarnings, ...aliasSkillWarnings]) {
     // 无头模式下提示走 stderr，避免污染脚本消费的 stdout。
     if (headlessRequest) console.error(colors.warnLine(warning));
@@ -889,6 +901,17 @@ async function main() {
   // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
   const gitHeadPath = findGitHeadPath(process.cwd());
   ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
+  // 侧栏 git 摘要：分支同步读 .git/HEAD（一次文件读取），未提交条数异步子进程取；
+  // 只在侧栏可见时刷新，失败静默——绝不同步调 git 卡住渲染。
+  const refreshGitStatus = async (): Promise<void> => {
+    if (!ui.isSidebarEnabled()) return;
+    const dirty = await readGitDirtyCount(process.cwd());
+    ui.setGitStatus(readGitBranch(gitHeadPath), dirty);
+  };
+  if (!headlessRequest) {
+    void refreshGitStatus();
+    setInterval(() => void refreshGitStatus(), 15_000).unref();
+  }
   // Logo 下方的启动信息行：provider · model · effort + 权限档 + 工作区，与上次会话提示。
   // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
   const formatRelativeTime = (iso: string): string => {
@@ -1832,7 +1855,17 @@ async function main() {
     getProvider: () => provider,
     getSelectedModel: () => selectedModel,
     getReasoningEffort: () => reasoningEffort,
-    recordCost: (model, usage, purpose) => costTracker.record(model, usage, purpose),
+    recordCost: (model, usage, purpose) => {
+      costTracker.record(model, usage, purpose);
+      const summary = costTracker.getSummary();
+      ui.setCostInfo(
+        summary.totalCostCny,
+        summary.requests,
+        summary.hasUnpriced,
+        summary.promptTokens,
+        summary.completionTokens,
+      );
+    },
     getTitleUtility: getUtilityRuntime,
     getPermissionMode: () => permissionMode,
     getRiskThreshold: () => riskThreshold,
@@ -1877,6 +1910,9 @@ async function main() {
       if (durationMs > 30_000 && notifyPreference !== "off") {
         ui.notify(notifyPreference, "Haji 已完成");
       }
+      // 侧栏“上一轮 12.4s”：耗时本来就由 turn-runner 回调，顺手落到侧栏。
+      ui.setLastTurnDuration(durationMs);
+      void refreshGitStatus();
       maybeWarnContextUsage();
       maybeWarnBudget();
     },
@@ -2279,6 +2315,7 @@ async function main() {
           autoCompactionArmed = result.compactedTokens <= manualThresholds.rearmTokens;
           refreshAgentVerificationContext(messages);
           sessionManager.saveCurrentSession(messages);
+          if (result.layersApplied.length > 0) ui.noteCompaction();
           updateStatusUI();
           const layersStr =
             result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "已处于精简状态";
@@ -2481,6 +2518,35 @@ async function main() {
           if (permissionMode === "plan") {
             ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));
           }
+          continue;
+        }
+        if (command === "sidebar") {
+          const arg = parts[1]?.toLowerCase();
+          if (arg && arg !== "on" && arg !== "off") {
+            ui.writeLine(colors.failLine("用法：/sidebar [on|off]（无参切换当前状态）"));
+            continue;
+          }
+          const enabled = arg ? arg === "on" : !ui.isSidebarEnabled();
+          ui.setSidebarEnabled(enabled);
+          // 侧栏刚打开时立刻取一次 git 摘要，不用等下一个轮询周期。
+          if (enabled) void refreshGitStatus();
+          const currentPreference = loadPreference();
+          savePreference(
+            {
+              ...(currentPreference ?? {}),
+              model: currentPreference?.model || selectedModel,
+              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+              sidebar: enabled,
+            },
+            showRuntimeWarning,
+          );
+          ui.writeLine(
+            colors.okLine(
+              enabled
+                ? "右侧会话信息栏已开启（终端宽度不足时会自动隐藏）。"
+                : "右侧会话信息栏已关闭。",
+            ),
+          );
           continue;
         }
         if (command === "theme") {

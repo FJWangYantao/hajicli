@@ -492,13 +492,18 @@ test("activity row drops the pulse meter; Esc hint yields to the mode badge", ()
     };
   };
   // 阶段开始后的前 3 秒：宽屏右侧显示“Esc 中止”。
-  const wide = renderFrame(120, 30, (ui) => activity(ui, Date.now() - 1000)).plainRows.join("\n");
+  // 关掉右侧栏以单独验证底部活动行（侧栏显示时活动行会搬进侧栏）。
+  const wide = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(false);
+    activity(ui, Date.now() - 1000);
+  }).plainRows.join("\n");
   assert.match(wide, /⠋ 运行 bash {2}3s +Esc 中止/);
   assert.doesNotMatch(wide, /[▰▱]/);
   // 3 秒后：Esc 提示让位给 [权限] ctx 徽标（长任务期间保持可见）。
-  const settled = renderFrame(120, 30, (ui) => activity(ui, Date.now() - 5000)).plainRows.join(
-    "\n",
-  );
+  const settled = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(false);
+    activity(ui, Date.now() - 5000);
+  }).plainRows.join("\n");
   assert.match(settled, /⠋ 运行 bash {2}3s +\[\S+\] ctx \d+%/);
   assert.doesNotMatch(settled, /Esc 中止/);
   // 窄屏不显示 Esc 提示，任务信息本身保留。

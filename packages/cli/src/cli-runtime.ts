@@ -37,6 +37,8 @@ export interface Preferences {
   notify?: "off" | "bell" | "desktop";
   /** 会话预算（元）：累计费用超过后在回合小结给出提示。 */
   budget?: number;
+  /** 右侧会话信息栏开关；缺省视为开启（true），宽度不足时自动隐藏。 */
+  sidebar?: boolean;
 }
 
 function readPreferences(filePath: string): Preferences | null {
