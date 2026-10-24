@@ -32,7 +32,8 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     statusDetail: "full",
     panelRows: 8,
     showHints: true,
-    inputPaddingRows: 1,
+    // 输入区不再额外留空行：单行输入紧贴活动行与状态栏，减少纵向占用。
+    inputPaddingRows: 0,
   },
   comfortable: {
     chatPadding: 2,
@@ -40,7 +41,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     statusDetail: "full",
     panelRows: 6,
     showHints: true,
-    inputPaddingRows: 1,
+    inputPaddingRows: 0,
   },
   compact: {
     chatPadding: 1,
@@ -48,7 +49,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     statusDetail: "compact",
     panelRows: 4,
     showHints: true,
-    inputPaddingRows: 1,
+    inputPaddingRows: 0,
   },
   narrow: {
     chatPadding: 1,

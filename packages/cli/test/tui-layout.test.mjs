@@ -91,11 +91,12 @@ test("reduces vertical detail before changing the width mode", () => {
     statusDetail: "full",
     panelRows: 4,
     showHints: true,
-    inputPaddingRows: 1,
+    inputPaddingRows: 0,
   });
 
   assert.equal(resolveTuiLayout(120, 40).panelRows, 8);
-  assert.equal(resolveTuiLayout(120, 40).inputPaddingRows, 1);
+  // 输入区不再预留上下留白行：紧凑排布，换取更多对话可见行。
+  assert.equal(resolveTuiLayout(120, 40).inputPaddingRows, 0);
 });
 
 test("rejects invalid terminal dimensions", () => {

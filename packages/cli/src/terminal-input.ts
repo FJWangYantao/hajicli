@@ -1582,16 +1582,16 @@ export class TerminalUI {
     let inputCursorOffset = 0;
     let historyDividerIndex = -1;
 
-    const statusBar = this.buildStatusBar(width, layout.statusDetail);
     const minimal = layout.mode === "minimal";
     const emergencyMinimal = minimal && height < 8;
-    const inputPaddingRows = layout.inputPaddingRows;
-    const trailingInputPadding = new Array(inputPaddingRows).fill("");
-    // 活动轨道固定占据输入框上方一行。动画开始、更新和结束都不会改变
-    // 聊天区高度，也不会把活动文本送入聊天正文的软换行缓存。
-    const activityTrack =
+    // 活动状态不再单独占用输入框上方一行，而是与状态栏共用底部这一行：
+    // 有活动时顶替状态栏显示，空闲时才显示常规状态，因此聊天区高度不会随动画变化。
+    const activityRow =
       this.buildActivityRow(width) || (this.status ? truncateAnsiText(this.status, width) : "");
-    const activityTrackRows = emergencyMinimal ? [] : [activityTrack];
+    const statusBar =
+      !emergencyMinimal && activityRow
+        ? activityRow
+        : this.buildStatusBar(width, layout.statusDetail);
     const leadingInputRows: string[] = [];
     if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
     const emergencyLeadingBudget = Math.max(0, height - 2);
@@ -1605,34 +1605,19 @@ export class TerminalUI {
     if (this.activeSelection) {
       const maxSelectionRows = emergencyMinimal
         ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
-        : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 4 : 6));
+        : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 4));
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
       if (emergencyMinimal) {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
       } else if (minimal) {
-        inputBlock = [
-          ...visibleLeadingInputRows,
-          ...activityTrackRows,
-          ...selectionRows,
-          statusBar,
-        ];
+        inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputBlock = [
-          ...visibleLeadingInputRows,
-          divider,
-          ...activityTrackRows,
-          ...selectionRows,
-          divider,
-          statusBar,
-        ];
+        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, statusBar];
       }
     } else {
       const maxSuggestionRows = layout.showHints
-        ? Math.max(
-            0,
-            height - topRows.length - visibleLeadingInputRows.length - 7 - inputPaddingRows,
-          )
+        ? Math.max(0, height - topRows.length - visibleLeadingInputRows.length - 4)
         : 0;
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
       const maxInputRows = emergencyMinimal
@@ -1643,31 +1628,25 @@ export class TerminalUI {
               topRows.length -
               visibleLeadingInputRows.length -
               suggestionRows.length -
-              (minimal ? 4 : 6 + inputPaddingRows),
+              (minimal ? 3 : 4),
           );
       inputLayout = this.getInputLayout(width, maxInputRows);
       if (emergencyMinimal) {
         inputCursorOffset = visibleLeadingInputRows.length;
         inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, ...emergencyStatusRows];
       } else if (minimal) {
-        inputCursorOffset = visibleLeadingInputRows.length + activityTrackRows.length;
-        inputBlock = [
-          ...visibleLeadingInputRows,
-          ...activityTrackRows,
-          ...inputLayout.rows,
-          statusBar,
-        ];
+        inputCursorOffset = visibleLeadingInputRows.length;
+        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, statusBar];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputCursorOffset = visibleLeadingInputRows.length + 1 + activityTrackRows.length;
+        inputCursorOffset = visibleLeadingInputRows.length + 1;
+        // 输入区只有顶部一条分隔线：其下是输入行与补全候选，
+        // 底行由状态栏承担；有活动时活动状态顶替状态栏，不再单独占行。
         inputBlock = [
           ...visibleLeadingInputRows,
           divider,
-          ...activityTrackRows,
           ...inputLayout.rows,
           ...suggestionRows,
-          ...trailingInputPadding,
-          divider,
           statusBar,
         ];
       }

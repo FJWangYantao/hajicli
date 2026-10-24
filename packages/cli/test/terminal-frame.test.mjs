@@ -175,12 +175,13 @@ test("prioritizes the input on terminals only one to three rows tall", () => {
   }
 });
 
-test("adds breathing room around the input and keeps the cursor on the text row", () => {
+test("keeps the input compact and the cursor on the text row", () => {
   const frame = renderFrame(80, 24);
   const inputRow = frame.plainRows.findIndex((row) => row.includes("INPUT"));
   assert.ok(inputRow > 0);
-  assert.equal(frame.plainRows[inputRow - 1], "");
-  assert.equal(frame.plainRows[inputRow + 1], "");
+  // 输入区只有顶部一条分隔线，输入行下方直接是状态栏（活动信息也复用这一行）。
+  assert.match(frame.plainRows[inputRow - 1], /^-+$/, "divider sits directly above the input");
+  assert.ok(frame.plainRows[inputRow + 1].includes("ctx"), "status bar sits right below the input");
 
   const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
   assert.ok(cursorMatch, "cursor position is rendered");
@@ -200,7 +201,7 @@ test("accepts a multi-character Unicode commit from the terminal host", () => {
   });
 });
 
-test("renders transient activity on the fixed track above input without persisting it", () => {
+test("renders transient activity in the bottom line without persisting it", () => {
   const chatContent = "CHAT_SENTINEL";
   const frame = renderFrame(80, 24, (ui) => {
     ui.chatContent = chatContent;
@@ -211,7 +212,9 @@ test("renders transient activity on the fixed track above input without persisti
   const activityRow = frame.plainRows.findIndex((row) => row.includes("ACTIVITY_SENTINEL"));
   const inputRow = frame.plainRows.findIndex((row) => row.includes("INPUT"));
   assert.ok(activityRow > chatRow, "activity stays below chat content");
-  assert.equal(activityRow, inputRow - 1, "activity owns the fixed row directly above input");
+  // 活动状态与状态栏共用底部一行：出现在输入行下方，不再占用输入框上方。
+  assert.equal(activityRow, inputRow + 1, "activity takes over the status line below input");
+  assert.equal(activityRow, frame.plainRows.length - 1, "activity is the last screen row");
   assert.equal(frame.ui.chatContent, chatContent);
   assert.doesNotMatch(frame.ui.chatContent, /ACTIVITY_SENTINEL/);
 });
