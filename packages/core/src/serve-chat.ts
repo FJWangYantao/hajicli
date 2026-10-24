@@ -192,7 +192,9 @@ export async function startChatServer(
               } else {
                 try {
                   // 网页交互中默认自动授权执行本地工具，提高操作流畅性
-                  toolOutput = await targetTool.execute(args);
+                  const rawOutput = await targetTool.execute(args);
+                  // 工具可以返回结构化结果（带图片）；网页通道只取文字部分。
+                  toolOutput = typeof rawOutput === "string" ? rawOutput : rawOutput.output;
                 } catch (error) {
                   toolOutput = `执行出错: ${error instanceof Error ? error.message : String(error)}`;
                 }

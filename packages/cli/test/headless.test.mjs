@@ -36,7 +36,10 @@ test("parseHeadlessArgs combines -p with --permission-mode in any order", () => 
   assert.deepEqual(parseHeadlessArgs(["-p", "hi", "--output-format", "json"]), {
     request: { prompt: "hi", permissionMode: undefined, outputFormat: "json" },
   });
-  assert.match(parseHeadlessArgs(["-p", "hi", "--output-format", "xml"]).error ?? "", /text 或 json/);
+  assert.match(
+    parseHeadlessArgs(["-p", "hi", "--output-format", "xml"]).error ?? "",
+    /text 或 json/,
+  );
 });
 
 test("parseHeadlessArgs rejects missing prompt and invalid modes", () => {

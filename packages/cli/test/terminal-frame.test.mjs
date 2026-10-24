@@ -179,13 +179,34 @@ test("keeps the input compact and the cursor on the text row", () => {
   const frame = renderFrame(80, 24);
   const inputRow = frame.plainRows.findIndex((row) => row.includes("INPUT"));
   assert.ok(inputRow > 0);
-  // 输入区只有顶部一条分隔线，输入行下方直接是状态栏（活动信息也复用这一行）。
+  // 输入区上下各一条分隔线：输入行紧贴顶部分隔线，底部再一条分隔线后接状态栏。
   assert.match(frame.plainRows[inputRow - 1], /^-+$/, "divider sits directly above the input");
-  assert.ok(frame.plainRows[inputRow + 1].includes("ctx"), "status bar sits right below the input");
+  assert.match(frame.plainRows[inputRow + 1], /^-+$/, "divider sits directly below the input");
+  assert.ok(
+    frame.plainRows[inputRow + 2].includes("ctx"),
+    "status bar sits below the bottom divider",
+  );
 
   const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
   assert.ok(cursorMatch, "cursor position is rendered");
   assert.equal(Number(cursorMatch[1]), inputRow + 1);
+});
+
+test("粘贴的图片 chip 行压在输入行上方，光标仍在文字行", () => {
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.pendingImages = [
+      { path: ".haji/attachments/paste-1.png", displayName: "paste-1.png", bytes: 12 },
+    ];
+  });
+
+  const inputRow = frame.plainRows.findIndex((row) => row.includes("INPUT"));
+  assert.match(frame.plainRows[inputRow - 1], /\[paste-1\.png\]/, "chip row sits above the text");
+  assert.match(frame.plainRows[inputRow - 2], /^-+$/, "top divider stays above the chip row");
+  assert.match(frame.plainRows[inputRow + 1], /^-+$/, "bottom divider stays below the text");
+
+  const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
+  assert.ok(cursorMatch, "cursor position is rendered");
+  assert.equal(Number(cursorMatch[1]), inputRow + 1, "cursor stays on the text row");
 });
 
 test("accepts a multi-character Unicode commit from the terminal host", () => {
@@ -212,8 +233,9 @@ test("renders transient activity in the bottom line without persisting it", () =
   const activityRow = frame.plainRows.findIndex((row) => row.includes("ACTIVITY_SENTINEL"));
   const inputRow = frame.plainRows.findIndex((row) => row.includes("INPUT"));
   assert.ok(activityRow > chatRow, "activity stays below chat content");
-  // 活动状态与状态栏共用底部一行：出现在输入行下方，不再占用输入框上方。
-  assert.equal(activityRow, inputRow + 1, "activity takes over the status line below input");
+  // 活动状态与状态栏共用底部一行：位于输入行下方的底部分隔线之后。
+  assert.equal(activityRow, inputRow + 2, "activity takes over the status line below input");
+  assert.match(frame.plainRows[inputRow + 1], /^-+$/, "bottom divider stays above the activity");
   assert.equal(activityRow, frame.plainRows.length - 1, "activity is the last screen row");
   assert.equal(frame.ui.chatContent, chatContent);
   assert.doesNotMatch(frame.ui.chatContent, /ACTIVITY_SENTINEL/);
@@ -602,4 +624,30 @@ test("selector items are truncated with an ellipsis", () => {
     };
   });
   assert.match(frame.plainRows.join("\n"), /▸ \/effort {2}切换思考强度.*…/);
+});
+
+test("粘贴的图片以 [文件名] chip 显示在文字输入行上方", () => {
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.pendingImages = [
+      { path: ".haji/attachments/paste-1.png", displayName: "paste-1.png", bytes: 2048 },
+      { path: ".haji/attachments/paste-2.png", displayName: "paste-2.png", bytes: 4096 },
+    ];
+  });
+
+  const inputIndex = frame.plainRows.findIndex((row) => row.includes("INPUT"));
+  assert.ok(inputIndex > 0, "输入行存在");
+  const chipRows = frame.plainRows.slice(0, inputIndex).filter((row) => row.includes("paste-"));
+  assert.equal(chipRows.length, 1, "chip 只占一行");
+  assert.match(chipRows[0], /\[paste-1\.png\]/);
+  assert.match(chipRows[0], /\[paste-2\.png\]/);
+  assert.ok(frame.plainRows[inputIndex - 1].includes("paste-1.png"), "chip 紧贴输入行上方");
+  assert.match(
+    frame.plainRows[inputIndex - 2],
+    /^-+$/,
+    "顶部分隔线在 chip 之上（chip 在输入框内）",
+  );
+
+  const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
+  assert.ok(cursorMatch, "cursor position is rendered");
+  assert.equal(Number(cursorMatch[1]), inputIndex + 1, "光标仍在文字输入行");
 });

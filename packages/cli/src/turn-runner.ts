@@ -653,6 +653,19 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             deps.setPlanReviewSummaryRequested(false);
           }
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolOutput });
+          // read 读到图片时工具结果只有文字摘要，图片本身随一条用户消息以多模态附件补给模型，
+          // 模型才能真的“看到”图；顺序保持 tool → user，符合各 Provider 的消息拓扑。
+          const toolImages = execution.images ?? [];
+          if (toolImages.length > 0) {
+            messages.push({
+              role: "user",
+              content: `[图片内容] read 读取的图片：${toolImages.map((image) => image.path).join("、")}`,
+              attachments: toolImages.map((image) => ({
+                mimeType: image.mimeType,
+                base64: image.base64,
+              })),
+            });
+          }
           sessionManager.saveCurrentSession(messages);
           deps.updateStatusUI();
         }

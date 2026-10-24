@@ -9,11 +9,14 @@ import {
   type TaskItem,
   type TaskStore,
   type ToolExecutionContext,
+  type ToolImage,
   type ToolProgressEvent,
 } from "@hajicli/core";
 
 export interface ToolExecutionResult {
   output: string;
+  /** 工具附带的图片（read 读取图片文件）：调用方在工具消息之后补一条多模态用户消息。 */
+  images?: ToolImage[];
   /** 工具实际执行耗时；不含等待用户授权等前置钩子的时间。 */
   duration: number;
   blocked: boolean;
@@ -134,6 +137,7 @@ export class SharedToolExecutor {
     if (!context.agentId && !context.suppressStatus)
       this.options.setStatus?.(`${agentPrefix}运行 ${toolName}`);
     let output: string;
+    let images: ToolImage[] | undefined;
     let mutationWarning: string | undefined;
     let lastProgressAt = 0;
     const emitProgress = (progress: ToolProgressEvent): void => {
@@ -148,13 +152,20 @@ export class SharedToolExecutor {
     const startedAt = Date.now();
     let finishedAt = startedAt;
     try {
-      output = await performanceMonitor.measure("tool.execute", () =>
+      const raw = await performanceMonitor.measure("tool.execute", () =>
         targetTool.execute(args, {
           ...context,
           toolCallId: context.toolCallId,
           onProgress: emitProgress,
         }),
       );
+      // 工具可以只返回字符串；结构化结果额外携带图片（read 读图）。
+      if (typeof raw === "string") {
+        output = raw;
+      } else {
+        output = raw.output;
+        if (raw.images?.length) images = raw.images;
+      }
     } catch (error) {
       output = `执行出错: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
@@ -189,6 +200,7 @@ export class SharedToolExecutor {
     });
     return {
       output,
+      ...(images?.length ? { images } : {}),
       duration: finishedAt - startedAt,
       blocked: failed,
     };

@@ -201,6 +201,8 @@ export function resolveUtilityModel(
       total(entry.pricing) < total(cheapest.pricing) ? entry : cheapest,
     ).value;
   }
-  const heuristic = availableModels.find((model) => /flash|lite|mini|small|haiku/i.test(model.value));
+  const heuristic = availableModels.find((model) =>
+    /flash|lite|mini|small|haiku/i.test(model.value),
+  );
   return heuristic?.value;
 }

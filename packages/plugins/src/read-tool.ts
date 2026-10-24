@@ -1,5 +1,12 @@
 import * as fs from "node:fs/promises";
-import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
+import * as path from "node:path";
+import type {
+  BaseTool,
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolImage,
+  ToolOutput,
+} from "@hajicli/core";
 import { takeWholeRecords, truncateSingleLine } from "./bounded-output.js";
 import { contentHash } from "./file-content.js";
 import { parseIntegerOption } from "./search-filter.js";
@@ -21,6 +28,16 @@ const MAX_CONTEXT_LINES = 100;
 const MAX_BATCH_FILES = 10;
 const MAX_OUTPUT_LENGTH = 8_000;
 const MAX_RENDERED_LINE_LENGTH = 1_000;
+/** 读取图片时的单张体积上限，与 /image 命令保持一致。 */
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+});
 
 function parseReadRequest(value: Record<string, unknown>): ReadRequest {
   if (typeof value.path !== "string" || !value.path.trim() || value.path.length > 1_024) {
@@ -84,17 +101,41 @@ function throwIfAborted(context?: ToolExecutionContext): void {
   throw error;
 }
 
+/** 图片文件按多模态内容返回，而不是当成二进制拒绝。 */
+function renderImage(request: ReadRequest, buffer: Buffer, mimeType: string): ToolOutput {
+  const header = `[图片读取结果 - ${request.path}]`;
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    return {
+      output: `${header}\n类型=${mimeType}；大小=${(buffer.length / 1024 / 1024).toFixed(1)}MB；hash=${contentHash(buffer)}\n(图片超过 ${MAX_IMAGE_BYTES / 1024 / 1024}MB 上限，未随结果发送；请先压缩或用 bash 缩小尺寸)`,
+    };
+  }
+  return {
+    output: [
+      header,
+      `类型=${mimeType}；大小=${buffer.length}字节；hash=${contentHash(buffer)}`,
+      "(图片内容已随本条结果一并发送，可直接查看，无需再次读取)",
+    ].join("\n"),
+    images: [{ mimeType, base64: buffer.toString("base64"), path: request.path }],
+  };
+}
+
 async function renderFile(
   request: ReadRequest,
   outputBudget: number,
   context?: ToolExecutionContext,
-): Promise<string> {
+): Promise<ToolOutput> {
   const resolvedPath = await resolveWorkspacePath(request.path);
   const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
   throwIfAborted(context);
+  const imageMimeType = IMAGE_MIME_BY_EXTENSION[path.extname(resolvedPath).toLowerCase()];
+  if (imageMimeType) {
+    return renderImage(request, buffer, imageMimeType);
+  }
   for (let index = 0; index < Math.min(buffer.length, 1_024); index += 1) {
     if (buffer[index] === 0) {
-      return `[文件读取结果 - ${request.path}]\n类型=二进制；大小=${buffer.length}字节；hash=${contentHash(buffer)}\n(未输出二进制内容)`;
+      return {
+        output: `[文件读取结果 - ${request.path}]\n类型=二进制；大小=${buffer.length}字节；hash=${contentHash(buffer)}\n(未输出二进制内容)`,
+      };
     }
   }
 
@@ -113,7 +154,9 @@ async function renderFile(
   }
 
   if (firstLine > totalLines) {
-    return `[文件读取结果 - ${request.path}]\n总行数=${totalLines}；hash=${contentHash(buffer)}\n(起始行 ${firstLine} 超过文件总行数)`;
+    return {
+      output: `[文件读取结果 - ${request.path}]\n总行数=${totalLines}；hash=${contentHash(buffer)}\n(起始行 ${firstLine} 超过文件总行数)`,
+    };
   }
 
   const records: string[] = [];
@@ -134,7 +177,9 @@ async function renderFile(
   ]
     .filter(Boolean)
     .join("\n");
-  return bounded.text ? `${header}\n${bounded.text}` : `${header}\n(当前页没有可输出内容)`;
+  return {
+    output: bounded.text ? `${header}\n${bounded.text}` : `${header}\n(当前页没有可输出内容)`,
+  };
 }
 
 export class ReadFileTool implements BaseTool {
@@ -145,7 +190,7 @@ export class ReadFileTool implements BaseTool {
     function: {
       name: "read",
       description:
-        "按完整行读取一个或多个工作区文件。支持行分页、目标行上下文，并返回内容 hash 和 nextStartLine。",
+        "按完整行读取一个或多个工作区文件。支持行分页、目标行上下文，并返回内容 hash 和 nextStartLine。读取图片文件（png/jpg/jpeg/gif/webp/bmp，≤6MB）时返回图片本身，可直接查看。",
       parameters: {
         type: "object",
         properties: {
@@ -190,7 +235,7 @@ export class ReadFileTool implements BaseTool {
   public async execute(
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
-  ): Promise<string> {
+  ): Promise<string | ToolOutput> {
     let requests: ReadRequest[];
     try {
       requests = parseRequests(args);
@@ -201,10 +246,13 @@ export class ReadFileTool implements BaseTool {
 
     const perFileBudget = Math.max(700, Math.floor((MAX_OUTPUT_LENGTH - 250) / requests.length));
     const blocks: string[] = [];
+    const images: ToolImage[] = [];
     for (const request of requests) {
       try {
         throwIfAborted(context);
-        blocks.push(await renderFile(request, perFileBudget, context));
+        const rendered = await renderFile(request, perFileBudget, context);
+        blocks.push(rendered.output);
+        if (rendered.images?.length) images.push(...rendered.images);
       } catch (error) {
         if (
           context?.abortSignal?.aborted ||
@@ -215,11 +263,15 @@ export class ReadFileTool implements BaseTool {
         blocks.push(`读取文件失败 (${request.path}): ${formatWorkspaceError(error, request.path)}`);
       }
     }
-    if (blocks.length === 1) return blocks[0];
+    const withImages = <T extends string | ToolOutput>(result: T): string | ToolOutput =>
+      images.length === 0
+        ? result
+        : { output: typeof result === "string" ? result : result.output, images };
+    if (blocks.length === 1) return withImages(blocks[0]);
     const bounded = takeWholeRecords(blocks, MAX_OUTPUT_LENGTH - 180, "\n\n");
     const header = bounded.truncated
       ? `[批量文件读取结果 - 共 ${blocks.length} 个请求，本次返回 ${bounded.count} 个；其余请求请拆分重试]`
       : `[批量文件读取结果 - 共 ${blocks.length} 个请求]`;
-    return `${header}\n${bounded.text}`;
+    return withImages(`${header}\n${bounded.text}`);
   }
 }

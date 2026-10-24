@@ -7,6 +7,7 @@ import { performanceMonitor } from "@hajicli/core";
 import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { findSlashArgHint, matchSlashCommands } from "./cli-help.js";
+import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   buildActivityRow,
@@ -43,7 +44,7 @@ import {
   wrapAnsiWithState,
 } from "./terminal-text.js";
 import { type TextCell, TextSelectionModel } from "./text-selection.js";
-import { fillUserMsgRowEol, themeEnter } from "./theme.js";
+import { colors, fillUserMsgRowEol, themeEnter } from "./theme.js";
 import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
 
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
@@ -264,6 +265,9 @@ export class TerminalUI {
   private readonly textSelection = new TextSelectionModel();
   private readonly inputHistory = new InputHistoryBuffer();
   private readonly clipboardWriter = new ClipboardWriter();
+  /** Ctrl+V / Alt+V 暂存的本轮粘贴图片（已落盘），提交后由调用方 takePendingImages() 取走。 */
+  private pendingImages: PastedImage[] = [];
+  private clipboardCaptureInFlight = false;
   private readonly interactive: boolean;
   private readonly outputMuted: boolean;
   private started = false;
@@ -495,8 +499,38 @@ export class TerminalUI {
   cancelInput(): string | undefined {
     if (!this.activeInput) return undefined;
     const draft = this.activeInput.graphemes.join("");
+    this.pendingImages = [];
     this.finishInput(new TerminalInputCancelledError());
     return draft;
+  }
+
+  /** 取走本轮粘贴的图片；返回后内部缓冲清空，避免串到下一轮。 */
+  takePendingImages(): PastedImage[] {
+    const images = this.pendingImages;
+    this.pendingImages = [];
+    return images;
+  }
+
+  /** Ctrl+V / Alt+V：把剪贴板位图落盘为工作区 PNG，作为本轮图片附件显示在输入框上方。 */
+  private async captureClipboardAttachment(): Promise<void> {
+    const owner = this.activeInput;
+    if (!owner || this.clipboardCaptureInFlight) return;
+    this.clipboardCaptureInFlight = true;
+    try {
+      const result = await captureClipboardImage();
+      // 取图期间用户已回车提交：此时图片无处可挂，明确丢弃而不是悄悄带到下一轮。
+      if (this.activeInput !== owner) {
+        return;
+      }
+      if (!result.ok) {
+        this.writeLine(colors.yellow(`! ${result.error}`));
+        return;
+      }
+      this.pendingImages = [...this.pendingImages, result.image];
+    } finally {
+      this.clipboardCaptureInFlight = false;
+      this.scheduleRender(true);
+    }
   }
 
   start(): void {
@@ -857,6 +891,8 @@ export class TerminalUI {
       throw new Error("已有输入请求正在等待处理");
     }
 
+    // 新一轮输入从未携带附件的干净状态开始，避免上轮残留图片跟随新 prompt 发送。
+    this.pendingImages = [];
     const safeInitialValue = sanitizeTerminalText(options.initialValue ?? "");
     const initialGraphemes = safeInitialValue ? splitGraphemes(safeInitialValue) : [];
     if (!options.sensitive) this.inputHistory.begin(safeInitialValue);
@@ -1275,6 +1311,15 @@ export class TerminalUI {
     );
   };
 
+  /** 输入框上方的粘贴图片 chip 行：每张图显示为 [文件名]，Backspace 逐张移除。 */
+  private buildPastedImageRows(width: number): string[] {
+    if (this.pendingImages.length === 0 || !this.activeInput) return [];
+    const chips = this.pendingImages.map(
+      (image) => `${SEQ.softAccent}[${image.displayName}]${SEQ.reset}`,
+    );
+    return wrapAnsi(`  ${chips.join(" ")}`, width);
+  }
+
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
     const activeInput = this.activeInput;
     const prompt = activeInput?.prompt ?? this.options.inputPrompt;
@@ -1601,11 +1646,13 @@ export class TerminalUI {
         : leadingInputRows.slice(-emergencyLeadingBudget)
       : leadingInputRows;
     const emergencyStatusRows = emergencyMinimal && height < 2 ? [] : [statusBar];
+    // 粘贴图片占输入框上方的行：文字输入行保持在 chip 下方。
+    const pastedRows = this.buildPastedImageRows(width);
 
     if (this.activeSelection) {
       const maxSelectionRows = emergencyMinimal
         ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
-        : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 4));
+        : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 5));
       const selectionRows = this.getSelectionRows(width, maxSelectionRows);
       if (emergencyMinimal) {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
@@ -1613,40 +1660,57 @@ export class TerminalUI {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, statusBar];
+        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
       }
     } else {
       const maxSuggestionRows = layout.showHints
-        ? Math.max(0, height - topRows.length - visibleLeadingInputRows.length - 4)
+        ? Math.max(
+            0,
+            height - topRows.length - visibleLeadingInputRows.length - pastedRows.length - 5,
+          )
         : 0;
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
       const maxInputRows = emergencyMinimal
-        ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
+        ? Math.max(
+            1,
+            height -
+              visibleLeadingInputRows.length -
+              pastedRows.length -
+              emergencyStatusRows.length,
+          )
         : Math.max(
             1,
             height -
               topRows.length -
               visibleLeadingInputRows.length -
+              pastedRows.length -
               suggestionRows.length -
-              (minimal ? 3 : 4),
+              (minimal ? 3 : 5),
           );
       inputLayout = this.getInputLayout(width, maxInputRows);
       if (emergencyMinimal) {
-        inputCursorOffset = visibleLeadingInputRows.length;
-        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, ...emergencyStatusRows];
+        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          ...pastedRows,
+          ...inputLayout.rows,
+          ...emergencyStatusRows,
+        ];
       } else if (minimal) {
-        inputCursorOffset = visibleLeadingInputRows.length;
-        inputBlock = [...visibleLeadingInputRows, ...inputLayout.rows, statusBar];
+        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
+        inputBlock = [...visibleLeadingInputRows, ...pastedRows, ...inputLayout.rows, statusBar];
       } else {
         historyDividerIndex = visibleLeadingInputRows.length;
-        inputCursorOffset = visibleLeadingInputRows.length + 1;
-        // 输入区只有顶部一条分隔线：其下是输入行与补全候选，
-        // 底行由状态栏承担；有活动时活动状态顶替状态栏，不再单独占行。
+        inputCursorOffset = visibleLeadingInputRows.length + 1 + pastedRows.length;
+        // 输入区上下各一条分隔线：中间是输入行与补全候选，底行由状态栏承担；
+        // 有活动时活动状态顶替状态栏，不再单独占行。
         inputBlock = [
           ...visibleLeadingInputRows,
           divider,
+          ...pastedRows,
           ...inputLayout.rows,
           ...suggestionRows,
+          divider,
           statusBar,
         ];
       }
@@ -1956,6 +2020,11 @@ export class TerminalUI {
     if (!activeInput) {
       return;
     }
+    // Ctrl+V / Alt+V：剪贴板位图落盘并作为本轮图片附件挂在输入框上方，Enter 提交时交给模型 read。
+    if (key.name === "v" && ((key.ctrl && !key.shift) || (key.meta && !key.ctrl))) {
+      void this.captureClipboardAttachment();
+      return;
+    }
     if (isRealCtrlC(value, key) && this.copyChatSelection()) {
       return;
     }
@@ -2054,6 +2123,12 @@ export class TerminalUI {
     }
 
     if (key.name === "backspace") {
+      if (activeInput.cursorIndex === 0 && this.pendingImages.length > 0) {
+        // 输入框为空时 Backspace 先摘掉最后一张粘贴图片。
+        this.pendingImages = this.pendingImages.slice(0, -1);
+        this.scheduleRender(true);
+        return;
+      }
       if (activeInput.cursorIndex > 0) {
         activeInput.graphemes.splice(activeInput.cursorIndex - 1, 1);
         activeInput.cursorIndex -= 1;

@@ -23,6 +23,25 @@ export interface ToolDefinition {
 }
 
 /**
+ * 工具结果里携带的图片（如 read 读取图片文件）：随工具消息之后的用户消息
+ * 以多模态附件形式发给模型，模型才能“看到”图片本身。
+ */
+export interface ToolImage {
+  mimeType: string;
+  base64: string;
+  /** 展示用路径（优先工作区相对路径）。 */
+  path: string;
+}
+
+/**
+ * 结构化工具结果：文字输出 + 可选图片。返回 string 等价于只带 output。
+ */
+export interface ToolOutput {
+  output: string;
+  images?: ToolImage[];
+}
+
+/**
  * 通用工具执行契约接口。
  */
 export interface BaseTool {
@@ -30,7 +49,10 @@ export interface BaseTool {
   definition: ToolDefinition;
   /** 声明工具对工作区的潜在修改范围；未声明时由执行器按权限分类兜底。 */
   getMutationScope?(args: Record<string, unknown>): ToolMutationScope;
-  execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<string>;
+  execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string | ToolOutput>;
 }
 
 export type ToolMutationScope = "none" | "paths" | "workspace";

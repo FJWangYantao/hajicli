@@ -1747,9 +1747,19 @@ async function main() {
       }
       injectAgentNotifications();
 
-      const trimmedInput = userInput.trim();
+      // Ctrl+V / Alt+V 粘贴的图片：已落盘为工作区文件，本轮把路径交给模型 read。
+      const pastedImages = ui.takePendingImages();
+      let trimmedInput = userInput.trim();
       if (!trimmedInput) {
-        continue;
+        if (pastedImages.length === 0) {
+          continue;
+        }
+        // 只贴了图片没打字：用默认提示词发送，避免图片被静默丢弃。
+        trimmedInput = "请分析这张图片。";
+      }
+      // 斜杠命令不进入对话，粘贴的图片没有归宿，明确提示而不是静默丢弃。
+      if (pastedImages.length > 0 && trimmedInput.startsWith("/")) {
+        ui.writeLine(colors.yellow("  ↳ 图片未发送：斜杠命令不携带图片附件。"));
       }
       let forwardedPrompt: string | undefined;
       let manualSkillExchange: { toolCall: ToolCall; output: string } | undefined;
@@ -1782,6 +1792,22 @@ async function main() {
         }
         if (mentionExpansion.skipped.length > 0) {
           ui.writeLine(colors.yellow(`  ↳ 未附加：${mentionExpansion.skipped.join("、")}`));
+        }
+        if (pastedImages.length > 0) {
+          // 图片本身不进上下文，只把落盘路径交给模型：由它调用 read 看图。
+          const imageBlock = [
+            "[粘贴的图片]",
+            ...pastedImages.map((image) => `- ${image.path}`),
+            "请先用 read 工具读取上面的图片文件（read 支持 png/jpg/gif/webp/bmp），再回答用户的问题。",
+          ].join("\n");
+          forwardedPrompt = forwardedPrompt
+            ? `${forwardedPrompt}\n\n${imageBlock}`
+            : `${trimmedInput}\n\n${imageBlock}`;
+          ui.writeLine(
+            colors.gray(
+              `  ↳ 已附加图片：${pastedImages.map((image) => image.displayName).join("、")}`,
+            ),
+          );
         }
       }
 
