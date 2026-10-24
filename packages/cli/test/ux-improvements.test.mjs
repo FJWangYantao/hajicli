@@ -39,10 +39,10 @@ test("3.1 Ctrl+C 防误触：状态分支 + 2 秒窗口 + 草稿找回 + 退出�
   );
 });
 
-test("3.2/3.3 输入提示与上下文提醒：回合结束轮换 + 阈值各提醒一次 + 压缩重置", () => {
-  assert.match(inputSource, /setInputHint\(hint: string\)/);
-  assert.match(indexSource, /rotateInputHint\(\)/);
-  assert.match(indexSource, /inputHintsEnabled/);
+test("3.2/3.3 输入区不再显示占位/参数提示行 + 上下文提醒阈值各一次 + 压缩重置", () => {
+  // 3.2 占位提示已按用户要求移除：空输入与已输入参数时都不再渲染提示行。
+  assert.doesNotMatch(inputSource, /setInputHint/);
+  assert.doesNotMatch(inputSource, /findSlashArgHint/);
   assert.match(indexSource, /contextWarnedYellow/);
   assert.match(indexSource, /contextWarnedRed/);
   assert.match(indexSource, /resetContextUsageWarnings\(\);/);

@@ -1766,24 +1766,6 @@ async function main() {
     if (notifyPreference !== "off") ui.notify(notifyPreference, "Haji 正在等待你的操作");
   };
 
-  // 输入框占位提示：空输入框显示一条淡色轮换提示（偏好 inputHints: false 关闭）。
-  const inputHintsEnabled = savedPreference?.inputHints !== false;
-  const inputHintTemplates: ReadonlyArray<string | (() => string)> = [
-    "@ 引用文件 · / 打开指令中心",
-    () => `Shift+Tab 切换权限模式 · 当前 [${formatPermissionModeLabel(permissionMode)}]`,
-    "/image <路径> 让模型看图",
-    "/rewind 回到任意一步并撤销改动 · /undo 一键撤销上一轮",
-    "/diff 查看本会话累计改动",
-  ];
-  let inputHintIndex = 0;
-  const rotateInputHint = (): void => {
-    if (!inputHintsEnabled) return;
-    const template = inputHintTemplates[inputHintIndex % inputHintTemplates.length];
-    inputHintIndex += 1;
-    ui.setInputHint(typeof template === "function" ? template() : template);
-  };
-  rotateInputHint();
-
   // 上下文用量主动提醒：状态栏变黄（≥60%）/ 变红（≥85%）后各提示一次，压缩后重新计数。
   let contextWarnedYellow = false;
   let contextWarnedRed = false;
@@ -1895,7 +1877,6 @@ async function main() {
       if (durationMs > 30_000 && notifyPreference !== "off") {
         ui.notify(notifyPreference, "Haji 已完成");
       }
-      rotateInputHint();
       maybeWarnContextUsage();
       maybeWarnBudget();
     },

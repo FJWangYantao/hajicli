@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { performanceMonitor } from "@hajicli/core";
 import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
-import { findSlashArgHint, matchSlashCommands } from "./cli-help.js";
+import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
@@ -338,8 +338,6 @@ export class TerminalUI {
   /** 底栏临时提示（Ctrl+C 确认、清空草稿等），超时自动清除。 */
   private transientHintText = "";
   private transientHintTimer: NodeJS.Timeout | null = null;
-  /** 输入框为空时显示的淡色占位提示（由主循环在回合结束后轮换）。 */
-  private inputHint = "";
   /** @ 文件补全：当前输入的 @ 词（含 @），空串表示不在补全状态。 */
   private fileMentionQuery = "";
   private fileMentionCandidates: string[] = [];
@@ -513,12 +511,6 @@ export class TerminalUI {
     }, durationMs);
     this.transientHintTimer.unref?.();
     this.scheduleRender(true);
-  }
-
-  /** 输入框为空时显示的淡色占位提示（主循环在回合结束轮换；空串清除）。 */
-  setInputHint(hint: string): void {
-    this.inputHint = hint;
-    this.scheduleRender();
   }
 
   /**
@@ -1560,23 +1552,7 @@ export class TerminalUI {
     }
 
     const suggestions = this.getCommandSuggestions(activeInput);
-    if (suggestions.length === 0) {
-      // 已输入参数时显示一行参数格式提示（不可选择）。
-      const hint =
-        activeInput.sensitive || activeInput.historyNavigationActive
-          ? undefined
-          : findSlashArgHint(activeInput.graphemes.join(""), activeInput.slashCommands);
-      if (hint) {
-        return [
-          `  ${SEQ.muted}${fitText(`${hint.command} ${hint.argHint}  ${hint.description}`, Math.max(1, width - 2))}${SEQ.reset}`,
-        ];
-      }
-      // 空输入时显示一条淡色占位提示（主循环在回合结束轮换，偏好可关闭）。
-      if (this.inputHint && activeInput.graphemes.length === 0) {
-        return [`  ${SEQ.muted}${fitText(this.inputHint, Math.max(1, width - 2))}${SEQ.reset}`];
-      }
-      return [];
-    }
+    if (suggestions.length === 0) return [];
 
     activeInput.selectedCommandIndex = Math.min(
       activeInput.selectedCommandIndex,

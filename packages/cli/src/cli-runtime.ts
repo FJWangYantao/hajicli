@@ -35,8 +35,6 @@ export interface Preferences {
   utilityModel?: string;
   /** 完成 / 待授权提醒：off | bell | desktop，默认 bell。 */
   notify?: "off" | "bell" | "desktop";
-  /** 输入框占位提示轮换；false 关闭。 */
-  inputHints?: boolean;
   /** 会话预算（元）：累计费用超过后在回合小结给出提示。 */
   budget?: number;
 }
