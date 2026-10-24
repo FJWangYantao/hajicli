@@ -136,7 +136,11 @@ test("tool result summaries surface exit codes, counts and rejections", () => {
     "[命令执行结果 - 退出码 0；耗时 5ms]\n--- 标准输出 (stdout，保留头尾) ---\nstep 1\nstep 2\n\n[verification_evidence_id: c1]",
     { blocked: false },
   );
-  assert.deepEqual(bashOk, { status: "success", text: "2 行输出 · step 2" });
+  assert.deepEqual(bashOk, {
+    status: "success",
+    text: "2 行输出",
+    preview: ["step 1", "step 2"],
+  });
 
   const bashFailed = summarizeToolResult(
     "bash",
@@ -184,6 +188,77 @@ test("tool result summaries surface exit codes, counts and rejections", () => {
     status: "failed",
     text: "缺少 query 参数。",
   });
+});
+
+test("tool results preview a few lines: bash tail, error context, first search hits", () => {
+  const testRun = summarizeToolResult(
+    "bash",
+    `[命令执行结果 - 退出码 0；耗时 5ms]\n--- 标准输出 (stdout，保留头尾) ---\n${Array.from(
+      { length: 91 },
+      (_, i) => `ok ${i + 1}`,
+    ).join("\n")}\n# pass 91\n# fail 0\n\t# duration_ms 140.45  \n`,
+    { blocked: false },
+  );
+  assert.equal(testRun.text, "94 行输出");
+  assert.deepEqual(testRun.preview, ["# pass 91", "# fail 0", "  # duration_ms 140.45"]);
+
+  const build = summarizeToolResult(
+    "bash",
+    "[命令执行结果 - 退出码 2；耗时 5ms]\n--- 标准输出 (stdout，保留头尾) ---\n> tsc --build\nsrc/a.ts(3,1): error TS2304: Cannot find name 'x'.\n  3 x;\n    ~\nlog written to /tmp/x.log\n",
+    { blocked: false },
+  );
+  assert.equal(build.status, "failed");
+  assert.equal(build.text, "退出码 2 · 5 行输出");
+  assert.deepEqual(build.preview, [
+    "src/a.ts(3,1): error TS2304: Cannot find name 'x'.",
+    "  3 x;",
+    "    ~",
+  ]);
+
+  const grep = summarizeToolResult(
+    "grep",
+    "[Grep 搜索结果 - query=TODO]\n引擎=ripgrep；offset=0；limit=20；返回=4；hasMore=false\nsrc/a.ts:3:5: // TODO one\n\nsrc/b.ts:9:1\n  8 | x\n> 9 | TODO two\n\nsrc/c.ts:1:1: TODO three\n\nsrc/d.ts:2:1: TODO four",
+    { blocked: false },
+  );
+  assert.equal(grep.text, "4 条结果");
+  assert.deepEqual(grep.preview, [
+    "src/a.ts:3  // TODO one",
+    "src/b.ts:9  TODO two",
+    "src/c.ts:1  TODO three",
+  ]);
+
+  const global = summarizeToolResult(
+    "global",
+    "[全局文件查找结果 - pattern=test]\n引擎=ripgrep；offset=0；limit=50；返回=49；hasMore=false\ntest/a.test.mjs\ntest/b.test.mjs\ntest/c.test.mjs\ntest/d.test.mjs",
+    { blocked: false },
+  );
+  assert.deepEqual(global.preview, ["test/a.test.mjs", "test/b.test.mjs", "test/c.test.mjs"]);
+
+  const rows = formatToolCell({
+    status: "success",
+    toolName: "bash",
+    summary: "node --test",
+    width: 30,
+    timing: "206ms",
+    resultText: testRun.text,
+    preview: [...testRun.preview, "never shown"],
+  });
+  assert.deepEqual(rows.slice(1), [
+    "    └ 94 行输出",
+    "      # pass 91",
+    "      # fail 0",
+    "        # duration_ms 140.45",
+  ]);
+  const narrow = formatToolCell({
+    status: "success",
+    toolName: "global",
+    summary: "*",
+    width: 20,
+    resultText: "1 条结果",
+    preview: ["packages/cli/test/very-long-file-name.test.mjs"],
+  });
+  assert.ok(terminalWidth(narrow[2]) <= 20, `preview width ${terminalWidth(narrow[2])}`);
+  assert.match(narrow[2], /…$/);
 });
 
 test("tool durations use ms below a second and one decimal below a minute", () => {
@@ -357,5 +432,6 @@ test("failed bash summaries surface the first error line instead of trailing noi
     { blocked: false },
   );
   assert.equal(summary.status, "failed");
-  assert.match(summary.text, /退出码 1 · 2 行输出 · npm ERR! Missing script: test$/);
+  assert.equal(summary.text, "退出码 1 · 2 行输出");
+  assert.equal(summary.preview[0], "npm ERR! Missing script: test");
 });

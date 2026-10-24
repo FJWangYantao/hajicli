@@ -249,7 +249,12 @@ export type ToolCellStatus = "running" | "success" | "failed" | "rejected";
 export interface ToolResultSummary {
   status: Exclude<ToolCellStatus, "running">;
   text: string;
+  /** 结果说明下面的几行输出预览（已清洗，未按宽度截断）；没有可看的就不给。 */
+  preview?: string[];
 }
+
+/** 工具块结果说明下方最多预览几行输出（加上说明行一共四行）。 */
+export const TOOL_PREVIEW_LINES = 3;
 
 const VERIFICATION_EVIDENCE_RE = /\n\[verification_evidence_id: [^\]]*\]\s*$/;
 const BASH_HEADER_RE = /^\[命令执行结果 - 退出码 ([^；\]]+)；耗时 \d+ms\]/;
@@ -270,6 +275,11 @@ function countTextLines(text: string): number {
   return text ? text.replace(/\r?\n$/, "").split(/\r?\n/).length : 0;
 }
 
+/** 预览用的一行：Tab 展开、去掉行尾空白，保留行首缩进。 */
+function previewLine(line: string): string {
+  return line.replace(/\t/g, "  ").trimEnd();
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -288,21 +298,63 @@ function summarizeBashOutput(output: string): ToolResultSummary | undefined {
         line.trim() &&
         !line.startsWith("--- 标准输出") &&
         !line.startsWith("--- 标准错误") &&
+        !/^\[中间省略 \d+ 个字符\]$/.test(line) &&
         line !== "(命令执行完成，无控制台输出)",
     );
   const failed = exitCode !== "0";
+  const status = failed ? "failed" : "success";
+  const prefix = failed ? `退出码 ${exitCode} · ` : "";
+  if (bodyLines.length === 0) return { status, text: `${prefix}无输出` };
   // 失败时首个报错行通常比最后一行（多为日志路径等收尾信息）更有信息量。
-  const errorLine = failed
-    ? bodyLines.find((line) => /\b(?:error|failed|fatal|exception)\b|\berr!|错误|失败/i.test(line))
-    : undefined;
-  const lastLine = oneLine(errorLine || bodyLines.at(-1) || "");
-  const outputText = bodyLines.length
-    ? `${bodyLines.length} 行输出${lastLine ? ` · ${lastLine}` : ""}`
-    : "无输出";
+  const errorIndex = failed
+    ? bodyLines.findIndex((line) =>
+        /\b(?:error|failed|fatal|exception)\b|\berr!|错误|失败/i.test(line),
+      )
+    : -1;
+  if (bodyLines.length === 1) {
+    return { status, text: `${prefix}1 行输出 · ${oneLine(bodyLines[0])}` };
+  }
+  // 结果和汇总多在末尾（测试统计、dir 的可用空间）；失败时从首个报错行往下看。
+  const start = errorIndex >= 0 ? errorIndex : Math.max(0, bodyLines.length - TOOL_PREVIEW_LINES);
   return {
-    status: failed ? "failed" : "success",
-    text: failed ? `退出码 ${exitCode} · ${outputText}` : outputText,
+    status,
+    text: `${prefix}${bodyLines.length} 行输出`,
+    preview: bodyLines.slice(start, start + TOOL_PREVIEW_LINES).map(previewLine),
   };
+}
+
+/** 搜索类结果正文里，元信息行之后的条目。 */
+function searchBodyLines(body: string): string[] {
+  return body
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        line.trim() &&
+        !/^\[.*\]$/.test(line) &&
+        !/^(?:引擎=|nextOffset=|提示：)/.test(line) &&
+        !/^\((?:未找到匹配结果|没有找到匹配文件)\)$/.test(line),
+    );
+}
+
+/**
+ * grep 每条命中占一段（段间空行），首行是 `文件:行:列[: 内容]`，带上下文时下面是
+ * `> 行号 | 内容`；预览成 `文件:行  内容`。
+ */
+function grepPreview(body: string): string[] {
+  const records = body.split(/\r?\n\r?\n/);
+  const preview: string[] = [];
+  for (const record of records) {
+    const lines = record.split(/\r?\n/);
+    const index = lines.findIndex((line) => /^.+:\d+:\d+(?:: |$)/.test(line));
+    if (index < 0) continue;
+    const head = lines[index].match(/^(.+):(\d+):\d+(?:: (.*))?$/);
+    if (!head) continue;
+    const hit = lines.slice(index + 1).find((line) => line.startsWith(">"));
+    const content = head[3] ?? hit?.replace(/^>\s*\d+\s*\|\s?/, "") ?? "";
+    preview.push(previewLine(`${head[1]}:${head[2]}${content ? `  ${content.trim()}` : ""}`));
+    if (preview.length >= TOOL_PREVIEW_LINES) break;
+  }
+  return preview;
 }
 
 /**
@@ -348,12 +400,17 @@ export function summarizeToolResult(
   const searchCount = body.match(/返回=(\d+)；hasMore=(true|false)/);
   if (searchCount) {
     const count = Number(searchCount[1]);
+    if (count === 0) return { status: "success", text: "无匹配" };
+    const preview =
+      toolName === "grep"
+        ? grepPreview(body)
+        : toolName === "global"
+          ? searchBodyLines(body).slice(0, TOOL_PREVIEW_LINES).map(previewLine)
+          : [];
     return {
       status: "success",
-      text:
-        count === 0
-          ? "无匹配"
-          : `${count} 条结果${searchCount[2] === "true" ? "（还有更多）" : ""}`,
+      text: `${count} 条结果${searchCount[2] === "true" ? "（还有更多）" : ""}`,
+      ...(preview.length ? { preview } : {}),
     };
   }
   const writtenBytes = body.match(/^大小: (\d+) 字节$/m);
@@ -433,6 +490,8 @@ export interface ToolCellOptions {
   sourceLabel?: string;
   /** 完成后的结果说明，显示在第二行。 */
   resultText?: string;
+  /** 结果说明下面的输出预览（最多 TOOL_PREVIEW_LINES 行）。 */
+  preview?: readonly string[];
   /** 运行中滚动显示的最后几行输出。 */
   outputTail?: readonly string[];
 }
@@ -442,8 +501,10 @@ const TOOL_CELL_INDENT = "  ";
 /**
  * 渲染一个工具调用块（与对话正文统一的符号体系）：
  *   ✓ bash  npm test                      6.0s
- *     └ 12 行输出 · 全部通过
- * 运行中把符号换成动画帧，并在下方显示输出尾部。
+ *     └ 12 行输出
+ *       # pass 12
+ *       # fail 0
+ * 运行中把符号换成动画帧，并在下方显示输出尾部；完成后结果说明下面带几行预览。
  */
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
@@ -491,6 +552,11 @@ export function formatToolCell(options: ToolCellOptions): string[] {
           ? colors.yellow(text)
           : colors.gray(text);
     rows.push(`${TOOL_CELL_INDENT}  ${colors.gray("└")} ${styled}`);
+    // 预览和结果说明的文字对齐（└ 加一个空格占两格）。
+    const previewWidth = Math.max(1, bodyWidth - 2);
+    for (const line of (options.preview || []).slice(0, TOOL_PREVIEW_LINES)) {
+      rows.push(`${TOOL_CELL_INDENT}    ${colors.gray(fitText(line, previewWidth))}`);
+    }
   }
   return rows;
 }

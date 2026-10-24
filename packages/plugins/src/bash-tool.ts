@@ -1,4 +1,4 @@
-import { type ChildProcess, exec, execFile } from "node:child_process";
+import { type ChildProcess, exec, execFile, spawnSync } from "node:child_process";
 import type {
   BaseTool,
   ToolDefinition,
@@ -33,6 +33,133 @@ class HeadTailBuffer {
     if (omitted === 0) return `${this.head}${this.tail}`;
     return `${this.head}\n[中间省略 ${omitted} 个字符]\n${this.tail}`;
   }
+}
+
+/** Windows 控制台代码页 → WHATWG 编码名（TextDecoder 认得的那些）。 */
+const CODE_PAGE_ENCODINGS: Record<number, string> = {
+  866: "ibm866",
+  874: "windows-874",
+  932: "shift_jis",
+  936: "gbk",
+  949: "euc-kr",
+  950: "big5",
+  1250: "windows-1250",
+  1251: "windows-1251",
+  1252: "windows-1252",
+  1253: "windows-1253",
+  1254: "windows-1254",
+  1255: "windows-1255",
+  1256: "windows-1256",
+  1257: "windows-1257",
+  1258: "windows-1258",
+  54936: "gb18030",
+};
+
+/** 控制台是 UTF-8（chcp 65001）或查不到代码页时，按系统语言猜本地编码。 */
+function localeEncoding(): string {
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase();
+  if (/^zh-(?:tw|hk|mo)|^zh-hant/.test(locale)) return "big5";
+  if (locale.startsWith("zh")) return "gbk";
+  if (locale.startsWith("ja")) return "shift_jis";
+  if (locale.startsWith("ko")) return "euc-kr";
+  if (locale.startsWith("ru")) return "windows-1251";
+  return "windows-1252";
+}
+
+let cachedLegacyEncoding: string | undefined;
+
+/**
+ * Windows 上 cmd 内建命令（dir 等）和不少老程序按控制台代码页输出（中文系统是 GBK），
+ * 按 UTF-8 解码就是一串 �。只在真遇到非法 UTF-8 时才查一次 chcp，正常输出不多起进程。
+ * 其他平台返回 undefined（继续按 UTF-8，坏字节换成 �）。
+ */
+export function detectLegacyEncoding(): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  if (cachedLegacyEncoding) return cachedLegacyEncoding;
+  let codePage: number | undefined;
+  try {
+    const result = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], {
+      encoding: "latin1",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    const match = String(result.stdout || "").match(/(\d+)\s*$/);
+    if (match) codePage = Number(match[1]);
+  } catch {
+    // 查不到就按系统语言猜。
+  }
+  cachedLegacyEncoding =
+    (codePage !== undefined ? CODE_PAGE_ENCODINGS[codePage] : undefined) || localeEncoding();
+  return cachedLegacyEncoding;
+}
+
+/** 末尾有几个字节是「还没收全的 UTF-8 多字节序列」，留到下一块再解。 */
+function incompleteUtf8Tail(bytes: Uint8Array): number {
+  for (let back = 1; back <= Math.min(3, bytes.length); back += 1) {
+    const byte = bytes[bytes.length - back];
+    if ((byte & 0xc0) === 0x80) continue;
+    if (byte < 0xc0) return 0;
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : 2;
+    return needed > back ? back : 0;
+  }
+  return 0;
+}
+
+/**
+ * 命令输出的流式解码：先按 UTF-8（严格），一旦出现非法字节就整条流改用本地编码
+ * （之前解出来的多半是 ASCII，两种编码下一样）。块边界切断的多字节字符留到下一块。
+ */
+export class CommandOutputDecoder {
+  private readonly utf8 = new TextDecoder("utf-8", { fatal: true });
+  private legacy?: TextDecoder;
+  private carry: Uint8Array = new Uint8Array(0);
+
+  constructor(private readonly resolveLegacy: () => string | undefined = detectLegacyEncoding) {}
+
+  write(chunk: Uint8Array | string): string {
+    if (typeof chunk === "string") return chunk;
+    if (this.legacy) return this.legacy.decode(chunk, { stream: true });
+    const data = this.carry.length ? Buffer.concat([this.carry, chunk]) : chunk;
+    const cut = incompleteUtf8Tail(data);
+    try {
+      const text = this.utf8.decode(data.subarray(0, data.length - cut));
+      this.carry = data.slice(data.length - cut);
+      return text;
+    } catch {
+      this.carry = new Uint8Array(0);
+      this.legacy = createLegacyDecoder(this.resolveLegacy());
+      return this.legacy.decode(data, { stream: true });
+    }
+  }
+
+  end(): string {
+    if (this.legacy) return this.legacy.decode();
+    if (!this.carry.length) return "";
+    const rest = this.carry;
+    this.carry = new Uint8Array(0);
+    try {
+      return this.utf8.decode(rest);
+    } catch {
+      return createLegacyDecoder(this.resolveLegacy()).decode(rest);
+    }
+  }
+}
+
+function createLegacyDecoder(encoding: string | undefined): TextDecoder {
+  if (encoding) {
+    try {
+      return new TextDecoder(encoding);
+    } catch {
+      // Node 没带完整 ICU 时不认识这个编码，退回宽松 UTF-8。
+    }
+  }
+  return new TextDecoder("utf-8");
+}
+
+/** 一次性解完整段输出。 */
+function decodeWhole(value: Uint8Array | string): string {
+  const decoder = new CommandOutputDecoder();
+  return decoder.write(value) + decoder.end();
 }
 
 /**
@@ -131,6 +258,8 @@ export class BashTool implements BaseTool {
       const startedAt = Date.now();
       const stdoutBuffer = new HeadTailBuffer();
       const stderrBuffer = new HeadTailBuffer();
+      const stdoutDecoder = new CommandOutputDecoder();
+      const stderrDecoder = new CommandOutputDecoder();
       let sawStdoutChunk = false;
       let sawStderrChunk = false;
       const terminationLabel = () =>
@@ -143,10 +272,10 @@ export class BashTool implements BaseTool {
         child = undefined;
         resolve(value);
       };
-      // 允许使用 10MB 的缓冲区，防止长输出崩掉
+      // 允许使用 10MB 的缓冲区，防止长输出崩掉；按字节收，自己解码（见 CommandOutputDecoder）。
       child = this.commandExecutor(
         command,
-        { maxBuffer: 1024 * 1024 * 10 },
+        { maxBuffer: 1024 * 1024 * 10, encoding: "buffer" },
         (error, stdout, stderr) => {
           if (context?.abortSignal?.aborted) {
             if (!aborting) abort();
@@ -154,8 +283,10 @@ export class BashTool implements BaseTool {
           }
           if (aborting) return;
           const exitCode = error ? (error.code ?? 1) : 0;
-          if (!sawStdoutChunk && stdout) stdoutBuffer.append(String(stdout));
-          if (!sawStderrChunk && stderr) stderrBuffer.append(String(stderr));
+          if (sawStdoutChunk) stdoutBuffer.append(stdoutDecoder.end());
+          else if (stdout) stdoutBuffer.append(decodeWhole(stdout));
+          if (sawStderrChunk) stderrBuffer.append(stderrDecoder.end());
+          else if (stderr) stderrBuffer.append(decodeWhole(stderr));
           const boundedStdout = stdoutBuffer.render();
           const boundedStderr = stderrBuffer.render();
           const durationMs = Date.now() - startedAt;
@@ -173,18 +304,20 @@ export class BashTool implements BaseTool {
           finish(result);
         },
       );
-      child.stdout?.on("data", (chunk) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
         if (!settled) {
           sawStdoutChunk = true;
-          stdoutBuffer.append(String(chunk));
-          context?.onProgress?.({ type: "stdout", chunk: String(chunk) });
+          const text = stdoutDecoder.write(chunk);
+          stdoutBuffer.append(text);
+          if (text) context?.onProgress?.({ type: "stdout", chunk: text });
         }
       });
-      child.stderr?.on("data", (chunk) => {
+      child.stderr?.on("data", (chunk: Buffer | string) => {
         if (!settled) {
           sawStderrChunk = true;
-          stderrBuffer.append(String(chunk));
-          context?.onProgress?.({ type: "stderr", chunk: String(chunk) });
+          const text = stderrDecoder.write(chunk);
+          stderrBuffer.append(text);
+          if (text) context?.onProgress?.({ type: "stderr", chunk: text });
         }
       });
 

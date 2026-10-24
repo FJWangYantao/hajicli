@@ -170,6 +170,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext): Promise<v
                 summary: summarizeToolCall(tc.function.name, argsObj),
                 width: ui.getContentWidth(),
                 resultText: outcome?.text ?? "无执行结果",
+                preview: outcome?.preview,
               })) {
                 appendHistoryLine(row);
               }
