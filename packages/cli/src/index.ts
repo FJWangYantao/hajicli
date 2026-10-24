@@ -29,7 +29,6 @@ import {
   PermissionEngine,
   type PermissionMode,
   performanceMonitor,
-  REASONING_EFFORTS,
   type ReasoningEffort,
   type RiskLevel,
   repairToolCallPairs,
@@ -76,7 +75,7 @@ import {
   WriteFileTool,
 } from "@hajicli/plugins";
 import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
-import { formatAgentTokens, parsePresetCommand, parseSubagentCommand } from "./agent-commands.js";
+import { formatAgentTokens } from "./agent-commands.js";
 import {
   buildHubMenus,
   buildLogo,
@@ -109,44 +108,38 @@ import {
   shouldShowToolThinkingSummary,
 } from "./markdown-renderer.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
+import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
   isBuiltinProvider,
-  listVisibleProviderNames,
   loadProviderConfig,
-  loadProviderConfigScope,
   normalizeBaseUrl,
-  PROVIDER_NAMES,
-  type ProviderConfig,
-  type ProviderConfigScope,
-  parseModelContextWindows,
-  parseModelList,
   projectProviderConfigPath,
-  providerConfigPath,
   resolveProviderSetting,
-  saveProviderConfig,
-  testProviderConnection,
-  unsetProviderConfig,
   userProviderConfigPath,
-  validateProviderName,
 } from "./provider-config.js";
-import { queueRewindRefill, REWIND_CONFIRM_DEFAULT } from "./rewind-flow.js";
 import {
-  applySubagentPreset,
-  findSubagentPreset,
-  loadSubagentPresets,
-  type SubagentPreset,
-  saveSubagentPresets,
-  updateSubagentPreset,
-} from "./subagent-presets.js";
+  DEEPSEEK_MODELS,
+  detectProviderForModel,
+  EFFORT_OPTIONS,
+  normalizeReasoningEffort,
+  providerLabel,
+  providerPlainLabel,
+  resolveInitialSelection,
+  VOLCENGINE_MODELS,
+} from "./provider-models.js";
 import {
-  buildPresetFromParsed,
-  formatPresetDetail,
-  formatPresetSummary,
-  persistPreset,
-  runPresetWizard,
-  runSubagentWizard,
-  type WizardDeps,
-} from "./subagent-wizard.js";
+  handleClearCommand,
+  handleResumeCommand,
+  handleRewindCommand,
+  type SessionCommandContext,
+} from "./session-commands.js";
+import {
+  handleAgentsCommand,
+  handlePresetCommand,
+  handleSubagentCommand,
+  type SubagentCommandContext,
+} from "./subagent-commands.js";
+import type { WizardDeps } from "./subagent-wizard.js";
 import { detectTerminalAppearance } from "./terminal-appearance.js";
 import {
   shouldRestartBackgroundInput,
@@ -158,74 +151,6 @@ import { colors, setThemeAppearance } from "./theme.js";
 import { createToolCallBatches, runToolCallBatch } from "./tool-batch.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
-
-const DEEPSEEK_MODELS = MODEL_REGISTRY.filter((model) => model.provider === "deepseek");
-const VOLCENGINE_MODELS = MODEL_REGISTRY.filter((model) => model.provider === "volcengine");
-
-const EFFORT_OPTIONS = REASONING_EFFORTS.map((value) => ({
-  value,
-  label: value,
-  description: (
-    {
-      low: "快速",
-      medium: "均衡",
-      high: "深入",
-      xhigh: "严谨",
-      max: "极致",
-    } as const
-  )[value],
-}));
-
-/**
- * 判断给定 model value 属于哪个 provider：
- * 先查内置模型注册表，再查自定义 provider 声明的模型列表，最后回退 deepseek。
- */
-function detectProviderForModel(
-  modelValue: string,
-  config?: ProviderConfig,
-  preferProvider?: string,
-): string {
-  // 同名模型可能同时被内置与自定义 provider 声明（例如 opencode 也提供 deepseek-v4-flash）。
-  // 此时若已知用户当前/上次使用的 provider，应优先尊重它，避免静默回退到内置 provider，
-  // 导致请求发往官方端点而扣费。
-  if (preferProvider) {
-    const declaredByPrefer = isBuiltinProvider(preferProvider)
-      ? (preferProvider === "deepseek" ? DEEPSEEK_MODELS : VOLCENGINE_MODELS).some(
-          (m) => m.value === modelValue,
-        )
-      : Boolean(config?.providers[preferProvider]?.models?.includes(modelValue));
-    if (declaredByPrefer) return preferProvider;
-  }
-  if (DEEPSEEK_MODELS.some((m) => m.value === modelValue)) return "deepseek";
-  if (VOLCENGINE_MODELS.some((m) => m.value === modelValue)) return "volcengine";
-  if (config) {
-    for (const [name, entry] of Object.entries(config.providers)) {
-      if (entry?.models?.includes(modelValue)) return name;
-    }
-  }
-  return "deepseek";
-}
-
-/** 提供商显示名：内置带图标，自定义显示名称。 */
-function providerLabel(name: string): string {
-  if (name === "deepseek") return "🔵 DeepSeek";
-  if (name === "volcengine") return "🌋 火山引擎";
-  return `⚙️ ${name}`;
-}
-
-/** 状态栏用的提供商名称：不带图标，避免与启动信息重复且节省宽度。 */
-function providerPlainLabel(name: string): string {
-  if (name === "deepseek") return "DeepSeek";
-  if (name === "volcengine") return "火山引擎";
-  return name;
-}
-
-/** 将已配置的模型窗口格式化为展示文本；未配置时返回“未设置”。 */
-function formatModelContextWindows(windows?: Record<string, number>): string {
-  const entries = Object.entries(windows || {});
-  if (entries.length === 0) return "未设置";
-  return entries.map(([model, tokens]) => `${model}=${tokens}`).join("、");
-}
 
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
@@ -396,57 +321,19 @@ async function main() {
   // 构建所有可用的模型选项（仅包含有对应 API Key 的 Provider 的模型）
   let availableModels = buildAvailableModels();
 
-  // 确定初始模型：优先顺序 = 环境变量 > 上次保存偏好 > 硬编码默认值（deepseek-v4-flash）
-  const envModel = (
-    deepseekApiKey
-      ? resolveProviderSetting(
-          "deepseek",
-          "model",
-          process.env.DEEPSEEK_MODEL,
-          undefined,
-          providerConfig,
-        )
-      : resolveProviderSetting(
-          "volcengine",
-          "model",
-          process.env.VOLC_MODEL || process.env.ARK_MODEL,
-          undefined,
-          providerConfig,
-        )
-  )
-    ?.trim()
-    .toLowerCase();
-  let selectedModel: string =
-    envModel ||
-    (savedPreference?.model && availableModels.some((m) => m.value === savedPreference!.model)
-      ? savedPreference!.model
-      : availableModels[0]?.value || "deepseek-v4-flash");
-  // 确定初始 provider：优先沿用上次保存的 provider（API Key 可用且与模型归属不矛盾时），
-  // 否则回退到按模型反推。这样自定义 provider 在重启后也能被正确记住，
-  // 而不是因模型反推失败而静默回退到 deepseek。
-  const savedProvider = savedPreference?.provider;
-  const detectedProviderName = detectProviderForModel(selectedModel, providerConfig);
-  const providerHasApiKey = (name: string): boolean =>
-    name === "deepseek"
-      ? Boolean(deepseekApiKey)
-      : name === "volcengine"
-        ? Boolean(volcApiKey)
-        : Boolean(providerConfig.providers[name]?.apiKey);
-  const modelInBuiltinRegistry =
-    DEEPSEEK_MODELS.some((m) => m.value === selectedModel) ||
-    VOLCENGINE_MODELS.some((m) => m.value === selectedModel);
-  // 同名模型可能同时被自定义 provider 声明（例如 opencode 也提供 deepseek-v4-flash），
-  // 此时不能认为模型“明确属于”内置 provider，应尊重用户上次保存的 provider。
-  const modelDeclaredByCustomProvider = Object.entries(providerConfig.providers).some(
-    ([name, entry]) => !isBuiltinProvider(name) && entry?.models?.includes(selectedModel),
-  );
-  const modelOwnedByBuiltinOnly = modelInBuiltinRegistry && !modelDeclaredByCustomProvider;
-  let currentProviderName: string =
-    savedProvider &&
-    providerHasApiKey(savedProvider) &&
-    !(modelOwnedByBuiltinOnly && detectedProviderName !== savedProvider)
-      ? savedProvider
-      : detectedProviderName;
+  // 确定初始模型与 provider：优先级与回退规则见 provider-models.resolveInitialSelection
+  // （环境变量 > 上次保存偏好 > 第一个可用模型；provider 尽量沿用上次保存值）。
+  const initialSelection = resolveInitialSelection({
+    providerConfig,
+    env: process.env,
+    deepseekApiKey,
+    volcApiKey,
+    savedModel: savedPreference?.model,
+    savedProvider: savedPreference?.provider,
+    availableModels,
+  });
+  let selectedModel: string = initialSelection.model;
+  let currentProviderName: string = initialSelection.providerName;
 
   // 当前模型上下文窗口：provider 配置按模型声明优先于内置注册表；环境变量始终最高。
   const getSelectedContextWindowTokens = (): number =>
@@ -457,12 +344,10 @@ async function main() {
     );
 
   // 确定初始思考强度：优先顺序 = 环境变量 > 上次保存偏好 > 默认 medium
-  const configuredEffort = process.env.HAJI_REASONING_EFFORT?.trim().toLowerCase();
-  let reasoningEffort: ReasoningEffort = isReasoningEffort(configuredEffort)
-    ? configuredEffort
-    : isReasoningEffort(savedPreference?.reasoningEffort)
-      ? savedPreference!.reasoningEffort
-      : "medium";
+  let reasoningEffort: ReasoningEffort =
+    normalizeReasoningEffort(process.env.HAJI_REASONING_EFFORT) ??
+    normalizeReasoningEffort(savedPreference?.reasoningEffort) ??
+    "medium";
 
   const permissionEngine = new PermissionEngine();
   let permissionMode: PermissionMode = isPermissionMode(savedPreference?.permissionMode)
@@ -1402,6 +1287,82 @@ async function main() {
       });
   };
 
+  // /provider 命令族的会话状态注入：访问器保持与下方 let 绑定同步
+  const providerCommandContext: ProviderCommandContext = {
+    ui,
+    providerConfig,
+    getDeepseekApiKey: () => deepseekApiKey,
+    setDeepseekApiKey: (key) => {
+      deepseekApiKey = key;
+    },
+    getVolcApiKey: () => volcApiKey,
+    setVolcApiKey: (key) => {
+      volcApiKey = key;
+    },
+    getAvailableModels: () => availableModels,
+    rebuildAvailableModels: () => {
+      availableModels = buildAvailableModels();
+    },
+    getSelectedModel: () => selectedModel,
+    setSelectedModel: (model) => {
+      selectedModel = model;
+    },
+    getCurrentProviderName: () => currentProviderName,
+    setCurrentProviderName: (name) => {
+      currentProviderName = name;
+    },
+    getReasoningEffort: () => reasoningEffort,
+    buildProvider,
+    setProvider: (next) => {
+      provider = next;
+    },
+    refreshSystemPrompt: refreshSystemPromptPreservingContext,
+    updateStatusUI,
+    getSelectedContextWindowTokens,
+    onPreferenceWarning: showRuntimeWarning,
+  };
+
+  // /subagent、/preset、/agents 命令族的会话状态注入
+  const subagentCommandContext: SubagentCommandContext = {
+    ui,
+    agentManager,
+    wizardDeps,
+    launchManualAgent,
+    readSelectionSafely,
+    getSelectedModel: () => selectedModel,
+    getMessages: () => messages,
+    saveSession: () => sessionManager.saveCurrentSession(messages),
+    refreshAgentVerificationContext,
+    updateStatusUI,
+  };
+
+  // /clear、/resume、/rewind 命令族的会话状态注入
+  const sessionCommandContext: SessionCommandContext = {
+    ui,
+    sessionManager,
+    taskStore,
+    snapshotEngine,
+    agentManager,
+    skillRegistry,
+    readSelectionSafely,
+    getSlashCommands: () => slashCommands,
+    pendingInputs,
+    getMessages: () => messages,
+    setMessages: (next) => {
+      messages = next;
+    },
+    getSystemPrompt: () => systemPrompt,
+    resetPlanReviewState: () => {
+      planReadyForReview = false;
+      planReviewSummaryRequested = false;
+    },
+    syncTaskPlanUI,
+    refreshSystemPrompt: refreshSystemPromptPreservingContext,
+    refreshAgentVerificationContext,
+    saveSession: () => sessionManager.saveCurrentSession(messages),
+    updateStatusUI,
+  };
+
   let fatalExit: unknown;
   try {
     markStartupStage("ready");
@@ -1667,618 +1628,28 @@ async function main() {
           continue;
         }
         if (command === "subagent") {
-          try {
-            let parsed = parseSubagentCommand(trimmedInput.slice("/subagent".length));
-            if (!parsed.description) {
-              // ---- 交互式向导：预设选择 → 模式 → 角色/模型/预算 → Todo → 描述 → 确认 ----
-              const presets = loadSubagentPresets();
-              let initialPresetName: string | undefined;
-              if (parsed.preset) {
-                const found = findSubagentPreset(presets, parsed.preset);
-                if (!found) {
-                  ui.writeLine(
-                    colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`),
-                  );
-                  continue;
-                }
-                initialPresetName = found.name;
-              }
-              const wizardState = await runSubagentWizard(presets, initialPresetName, wizardDeps);
-              parsed = {
-                background: wizardState.background,
-                taskId: wizardState.taskId,
-                role: wizardState.role ?? wizardState.preset?.role,
-                model: wizardState.model ?? wizardState.preset?.model,
-                provider: wizardState.provider ?? wizardState.preset?.provider,
-                reasoningEffort: wizardState.reasoningEffort ?? wizardState.preset?.reasoningEffort,
-                instructions: wizardState.instructions ?? wizardState.preset?.instructions,
-                timeoutMs: wizardState.timeoutMs ?? wizardState.preset?.timeoutMs,
-                maxTokens: wizardState.maxTokens ?? wizardState.preset?.maxTokens,
-                maxToolCalls: wizardState.maxToolCalls ?? wizardState.preset?.maxToolCalls,
-                description: wizardState.description!,
-              };
-              // ---- 保存为预设（可选）----
-              const saveName = (
-                await ui.readInput({
-                  prompt: `${colors.gray("保存为预设 (输入名称或回车跳过)")} › `,
-                })
-              ).trim();
-              if (saveName) {
-                if (persistPreset(buildPresetFromParsed(saveName, parsed))) {
-                  ui.writeLine(
-                    colors.green(
-                      `✓ 已保存预设：${saveName}（下次可用 /subagent preset:${saveName} 复用）`,
-                    ),
-                  );
-                } else {
-                  ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
-                }
-              }
-            } else if (parsed.preset) {
-              // ---- 非交互式：应用预设（命令行显式参数优先）----
-              const preset = findSubagentPreset(loadSubagentPresets(), parsed.preset);
-              if (!preset) {
-                ui.writeLine(colors.red(`预设不存在: ${parsed.preset}。使用 /preset 查看或添加。`));
-                continue;
-              }
-              parsed = applySubagentPreset(parsed, preset);
-              ui.writeLine(
-                colors.gray(`已应用预设：${preset.name}（${formatPresetSummary(preset)}）`),
-              );
-            }
-            if (!parsed.description) {
-              ui.writeLine(colors.red("子代理任务描述不能为空。"));
-              continue;
-            }
-            const launch = launchManualAgent(
-              {
-                description: parsed.description,
-                role: parsed.role,
-                taskId: parsed.taskId,
-                model: parsed.model,
-                provider: parsed.provider,
-                reasoningEffort: parsed.reasoningEffort,
-                instructions: parsed.instructions,
-                timeoutMs: parsed.timeoutMs,
-                maxTokens: parsed.maxTokens,
-                maxToolCalls: parsed.maxToolCalls,
-              },
-              parsed.background,
-            );
-            ui.writeLine(
-              colors.cyan(
-                `🤖 ${launch.agent.id} ${parsed.background ? "已在后台排队/启动" : "已在前台启动"}。`,
-              ),
-            );
-            if (parsed.background) continue;
-            ui.onEsc(() => {
-              agentManager.abort(launch.agent.id);
-            });
-            const finished = await launch.completion;
-            ui.onEsc();
-            if (finished.result) {
-              ui.writeLine(finished.result.summary);
-              ui.writeLine(colors.yellow(`结果状态：${finished.status}，需要父 Agent 独立验证。`));
-              refreshAgentVerificationContext(messages);
-              sessionManager.saveCurrentSession(messages);
-              updateStatusUI();
-            }
-          } catch (error) {
-            if (error instanceof TerminalInputCancelledError) {
-              ui.writeLine(colors.gray("已取消创建子代理。"));
-            } else {
-              ui.writeLine(
-                colors.red(
-                  `启动子代理失败: ${error instanceof Error ? error.message : String(error)}`,
-                ),
-              );
-            }
-          }
+          await handleSubagentCommand(subagentCommandContext, { trimmedInput });
           continue;
         }
         if (command === "preset" || command === "presets") {
-          const action = parts[1]?.toLowerCase();
-          const presets = loadSubagentPresets();
-          if (!action || action === "list") {
-            if (presets.length === 0) {
-              ui.writeLine(
-                colors.gray(
-                  "暂无 subagent 预设。使用 /preset add 添加，或在 /subagent 交互式流程中保存。",
-                ),
-              );
-            } else {
-              ui.writeLine(colors.bold(`Subagent 预设 (${presets.length})`));
-              for (const preset of presets) {
-                ui.writeLine(
-                  `  ${colors.purple(preset.name)} ${colors.gray(formatPresetSummary(preset))}`,
-                );
-              }
-            }
-            continue;
-          }
-          if (action === "show") {
-            const name = parts[2];
-            if (!name) {
-              ui.writeLine(colors.red("用法: /preset show <name>"));
-              continue;
-            }
-            const preset = findSubagentPreset(presets, name);
-            if (!preset) {
-              ui.writeLine(colors.red(`预设不存在: ${name}`));
-              continue;
-            }
-            ui.writeLine(formatPresetDetail(preset));
-            continue;
-          }
-          if (action === "edit" || action === "update") {
-            const rawArgs = trimmedInput.replace(/^\/presets?\s+edit\s*/i, "");
-            if (!rawArgs) {
-              ui.writeLine(
-                colors.red(
-                  "用法: /preset edit <name> [--effort ...] [--max-tokens ...] ...（不带选项时交互式修改）",
-                ),
-              );
-              continue;
-            }
-            try {
-              const parsedPreset = parsePresetCommand(rawArgs);
-              const target = findSubagentPreset(presets, parsedPreset.name);
-              if (!target) {
-                ui.writeLine(colors.red(`预设不存在: ${parsedPreset.name}`));
-                continue;
-              }
-              const patch: Partial<Omit<SubagentPreset, "name">> = {
-                ...(parsedPreset.role ? { role: parsedPreset.role } : {}),
-                ...(parsedPreset.model ? { model: parsedPreset.model } : {}),
-                ...(parsedPreset.provider ? { provider: parsedPreset.provider } : {}),
-                ...(parsedPreset.reasoningEffort
-                  ? { reasoningEffort: parsedPreset.reasoningEffort }
-                  : {}),
-                ...(parsedPreset.instructions !== undefined
-                  ? { instructions: parsedPreset.instructions }
-                  : {}),
-                ...(parsedPreset.timeoutMs !== undefined
-                  ? { timeoutMs: parsedPreset.timeoutMs }
-                  : {}),
-                ...(parsedPreset.maxTokens !== undefined
-                  ? { maxTokens: parsedPreset.maxTokens }
-                  : {}),
-                ...(parsedPreset.maxToolCalls !== undefined
-                  ? { maxToolCalls: parsedPreset.maxToolCalls }
-                  : {}),
-              };
-              if (parsedPreset.model && parsedPreset.model !== target.model) {
-                const descriptor = MODEL_REGISTRY.find((item) => item.value === parsedPreset.model);
-                if (descriptor) patch.provider = descriptor.provider;
-              }
-              if (Object.keys(patch).length === 0) {
-                // 未指定任何字段 → 交互式修改（现有值作为初始默认，留空/回车保持原值）
-                const wizardState = await runPresetWizard(
-                  {
-                    role: target.role,
-                    model: target.model,
-                    provider: target.provider,
-                    reasoningEffort: target.reasoningEffort,
-                    instructions: target.instructions,
-                    maxTokens: target.maxTokens,
-                    maxToolCalls: target.maxToolCalls,
-                    timeoutMs: target.timeoutMs,
-                  },
-                  wizardDeps,
-                );
-                patch.role = wizardState.role;
-                patch.model = wizardState.model;
-                patch.provider = wizardState.provider;
-                patch.reasoningEffort = wizardState.reasoningEffort;
-                if (wizardState.instructions !== undefined)
-                  patch.instructions = wizardState.instructions;
-                patch.maxTokens = wizardState.maxTokens;
-                patch.maxToolCalls = wizardState.maxToolCalls;
-                patch.timeoutMs = wizardState.timeoutMs;
-              }
-              if (saveSubagentPresets(updateSubagentPreset(presets, target.name, patch))) {
-                ui.writeLine(
-                  colors.green(
-                    `✓ 已更新预设：${target.name}（/preset show ${target.name} 查看详情）`,
-                  ),
-                );
-              } else {
-                ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
-              }
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消编辑预设。"));
-              } else {
-                ui.writeLine(
-                  colors.red(
-                    `编辑预设失败: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                );
-              }
-            }
-            continue;
-          }
-          if (action === "remove" || action === "rm" || action === "delete") {
-            const name = parts[2];
-            if (!name) {
-              ui.writeLine(colors.red("用法: /preset remove <name>"));
-              continue;
-            }
-            const existing = findSubagentPreset(presets, name);
-            if (!existing) {
-              ui.writeLine(colors.red(`预设不存在: ${name}`));
-              continue;
-            }
-            const next = presets.filter(
-              (item) => item.name.toLowerCase() !== existing.name.toLowerCase(),
-            );
-            if (saveSubagentPresets(next)) {
-              ui.writeLine(colors.green(`✓ 已删除预设：${existing.name}`));
-            } else {
-              ui.writeLine(colors.yellow("! 删除失败（请检查磁盘权限）。"));
-            }
-            continue;
-          }
-          if (action === "add") {
-            const rawArgs = trimmedInput.replace(/^\/presets?\s+add\s*/i, "");
-            try {
-              let presetToAdd: SubagentPreset | undefined;
-              if (rawArgs) {
-                // 参数模式：/preset add <name> [--role ...] [--model ...] [--effort ...] [token 预算...]
-                const parsedPreset = parsePresetCommand(rawArgs);
-                presetToAdd = buildPresetFromParsed(parsedPreset.name, parsedPreset);
-              } else {
-                // 交互式引导（可导航向导：支持上一步 / 容错 / 确认页）
-                const nameInput = (await ui.readInput({ prompt: "预设名称（留空取消）" })).trim();
-                if (!nameInput) {
-                  ui.writeLine(colors.gray("已取消添加预设。"));
-                  continue;
-                }
-                const wizardState = await runPresetWizard({}, wizardDeps);
-                presetToAdd = buildPresetFromParsed(nameInput, {
-                  role: wizardState.role,
-                  model: wizardState.model,
-                  provider: wizardState.provider,
-                  reasoningEffort: wizardState.reasoningEffort,
-                  instructions: wizardState.instructions,
-                  timeoutMs: wizardState.timeoutMs,
-                  maxTokens: wizardState.maxTokens,
-                  maxToolCalls: wizardState.maxToolCalls,
-                });
-              }
-              if (!presetToAdd) continue;
-              if (persistPreset(presetToAdd)) {
-                ui.writeLine(
-                  colors.green(
-                    `✓ 已保存预设：${presetToAdd.name}（/preset show ${presetToAdd.name} 查看详情）`,
-                  ),
-                );
-              } else {
-                ui.writeLine(colors.yellow("! 预设保存失败（请检查磁盘权限）。"));
-              }
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消添加预设。"));
-              } else {
-                ui.writeLine(
-                  colors.red(
-                    `添加预设失败: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                );
-              }
-            }
-            continue;
-          }
-          ui.writeLine(colors.red(`未知操作: ${action}。支持 list / show / add / remove。`));
+          await handlePresetCommand(subagentCommandContext, { trimmedInput, parts });
           continue;
         }
         if (command === "agents") {
-          const action = parts[1]?.toLowerCase();
-          if (action === "stop") {
-            const target = parts[2];
-            if (!target) {
-              ui.writeLine(colors.red("用法: /agents stop <agentId|all>"));
-            } else if (target.toLowerCase() === "all") {
-              ui.writeLine(colors.yellow(`已请求中止 ${agentManager.abortAll()} 个 Agent。`));
-            } else {
-              ui.writeLine(
-                agentManager.abort(target)
-                  ? colors.yellow(`已请求中止 ${target}。`)
-                  : colors.red(`Agent 不存在或当前不可中止: ${target}`),
-              );
-            }
-            continue;
-          }
-          if (action === "clear") {
-            ui.writeLine(
-              colors.gray(`已清理 ${agentManager.clearFinished()} 条已结束 Agent 记录。`),
-            );
-            continue;
-          }
-          const agents = agentManager.list();
-          if (agents.length === 0) {
-            ui.writeLine(colors.gray("当前没有 Agent 记录。"));
-            continue;
-          }
-          try {
-            const selection = await readSelectionSafely({
-              title: "Agents — choose one and an action",
-              items: agents.map((agent) => ({
-                value: agent.id,
-                label: `${agent.id} ${agent.status}`,
-                description: `${agent.role} · ${agent.model || selectedModel}${agent.provider ? ` · ${agent.provider}` : ""} · ${agent.description}`,
-              })),
-              selectedValue: agents[0].id,
-              secondary: {
-                label: "Action",
-                items: [
-                  { value: "view", label: "View", description: "查看状态和结果" },
-                  { value: "stop", label: "Stop", description: "中止运行或排队中的 Agent" },
-                ],
-                selectedValue: "view",
-              },
-            });
-            const selected = agentManager.get(selection.value);
-            if (selection.secondaryValue === "stop") {
-              ui.writeLine(
-                agentManager.abort(selection.value)
-                  ? colors.yellow(`已请求中止 ${selection.value}。`)
-                  : colors.red(`Agent ${selection.value} 当前不可中止。`),
-              );
-            } else if (selected) {
-              ui.writeChat(JSON.stringify(selected, null, 2));
-            }
-          } catch (error) {
-            if (!(error instanceof TerminalInputCancelledError)) throw error;
-          }
+          await handleAgentsCommand(subagentCommandContext, { parts });
           continue;
         }
         if (command === "clear") {
-          sessionManager.startNewSession();
-          taskStore.setTaskScope(sessionManager.getCurrentSession().id);
-          snapshotEngine.setScope(sessionManager.getCurrentSession().id);
-          agentManager.setScope(sessionManager.getCurrentSession().id);
-          skillRegistry.clearLoaded("main");
-          planReadyForReview = false;
-          planReviewSummaryRequested = false;
-          syncTaskPlanUI();
-          messages = [{ role: "system", content: systemPrompt }];
-          refreshAgentVerificationContext(messages);
-          sessionManager.saveCurrentSession(messages);
-          updateStatusUI();
-          ui.clearChat();
-          ui.writeLine(colors.green("✓ 已开启全新对话并重置上下文。"));
+          await handleClearCommand(sessionCommandContext);
           continue;
         }
         if (command === "resume") {
-          await sessionManager.flush();
-          const sessions = sessionManager.listSessions();
-          if (sessions.length === 0) {
-            ui.writeLine(colors.yellow("! 暂无存盘的历史对话记录。"));
-            continue;
-          }
-
-          const items = sessions.map((s) => {
-            const timeStr = new Date(s.updatedAt).toLocaleString("zh-CN", {
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            const msgCount = s.messages.filter((m) => m.role === "user").length;
-            return {
-              value: s.id,
-              label: `[${timeStr}] ${s.title}`,
-              description: `(${msgCount} 条消息)`,
-            };
-          });
-
-          try {
-            const selection = await readSelectionSafely({
-              title: "选择要恢复的历史对话 (按最近时间排序)",
-              items,
-              selectedValue: sessionManager.getCurrentSession().id,
-            });
-
-            const loaded = sessionManager.loadSession(selection.value);
-            if (loaded && loaded.messages.length > 0) {
-              taskStore.setTaskScope(loaded.id);
-              snapshotEngine.setScope(loaded.id);
-              agentManager.setScope(loaded.id);
-              planReadyForReview = false;
-              planReviewSummaryRequested = false;
-              syncTaskPlanUI();
-              messages = loaded.messages;
-              skillRegistry.restoreScopeFromMessages("main", messages);
-              await refreshSystemPromptPreservingContext();
-              refreshAgentVerificationContext(messages);
-              sessionManager.saveCurrentSession(messages);
-              updateStatusUI();
-              const historyOutput: string[] = [];
-              const appendHistoryLine = (value: string = "") => historyOutput.push(`${value}\n`);
-              appendHistoryLine(
-                colors.boldGreen(
-                  `✓ 已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`,
-                ),
-              );
-              // 工具结果并入对应调用的工具块显示，这里先按调用 id 建立索引。
-              const historyToolOutputs = new Map<string, string>();
-              for (const m of messages) {
-                if (m.role === "tool" && m.tool_call_id && typeof m.content === "string") {
-                  historyToolOutputs.set(m.tool_call_id, m.content);
-                }
-              }
-              // 完整回显历史会话中的全量消息轨迹 (User / Assistant / Tool)
-              for (const m of messages) {
-                if (m.role === "system") continue;
-
-                if (m.role === "user" && typeof m.content === "string") {
-                  appendHistoryLine();
-                  appendHistoryLine(colors.userMsg(sanitizeTerminalText(m.content)));
-                  appendHistoryLine();
-                } else if (m.role === "assistant") {
-                  if (m.reasoning_content) {
-                    appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
-                  }
-                  if (m.content) {
-                    const mdRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
-                    const rendered = mdRenderer.render(m.content, true);
-                    appendHistoryLine(rendered);
-                  }
-                  if (m.tool_calls && m.tool_calls.length > 0) {
-                    for (const tc of m.tool_calls) {
-                      let argsObj: Record<string, unknown> = {};
-                      try {
-                        argsObj = JSON.parse(tc.function.arguments);
-                      } catch {}
-                      const output = historyToolOutputs.get(tc.id);
-                      const outcome =
-                        output === undefined
-                          ? undefined
-                          : summarizeToolResult(
-                              tc.function.name,
-                              output,
-                              {
-                                blocked: isFailedToolOutput(output),
-                                rejected: output === USER_REJECTED_TOOL_OUTPUT,
-                              },
-                              argsObj,
-                            );
-                      for (const row of formatToolCell({
-                        status: outcome?.status ?? "failed",
-                        toolName: tc.function.name,
-                        summary: summarizeToolCall(tc.function.name, argsObj),
-                        width: ui.getContentWidth(),
-                        resultText: outcome?.text ?? "无执行结果",
-                      })) {
-                        appendHistoryLine(row);
-                      }
-                    }
-                  }
-                  appendHistoryLine();
-                }
-              }
-              ui.replaceChat(historyOutput.join(""));
-            } else {
-              ui.writeLine(colors.yellow("! 选中的会话为空或加载失败。"));
-            }
-            continue;
-          } catch (error) {
-            if (error instanceof TerminalInputCancelledError) {
-              ui.writeLine(colors.gray("已取消会话切换。"));
-              continue;
-            }
-            throw error;
-          }
+          await handleResumeCommand(sessionCommandContext);
+          continue;
         }
         if (command === "rewind") {
-          const userMessageNodes: Array<{ index: number; content: string }> = [];
-          for (let i = 0; i < messages.length; i++) {
-            const m = messages[i];
-            if (m.role === "user" && typeof m.content === "string" && !m.content.startsWith("/")) {
-              userMessageNodes.push({ index: i, content: m.content });
-            }
-          }
-
-          if (userMessageNodes.length === 0) {
-            ui.writeLine(colors.yellow("! 当前会话中暂无合法的用户对话节点可供回退。"));
-            continue;
-          }
-
-          const items = [...userMessageNodes].reverse().map((node) => {
-            const preview =
-              node.content.length > 40 ? `${node.content.slice(0, 40)}...` : node.content;
-            return {
-              value: String(node.index),
-              label: `#${node.index}: ${preview}`,
-              description: node.content,
-            };
-          });
-
-          try {
-            const selection = await readSelectionSafely({
-              title: "选择要退回的用户历史节点",
-              items,
-              selectedValue: items[0].value,
-              secondary: {
-                label: "确认退回并重置代码？",
-                items: [
-                  { value: "yes", label: "Yes (确认回退消息与代码)" },
-                  { value: "no", label: "No (取消)" },
-                ],
-                selectedValue: REWIND_CONFIRM_DEFAULT,
-              },
-            });
-
-            if (selection.secondaryValue !== "yes") {
-              ui.writeLine(colors.gray("已取消 /rewind 退回操作。"));
-              continue;
-            }
-
-            const targetMsgIndex = parseInt(selection.value, 10);
-            const targetMsgNode = messages[targetMsgIndex];
-            const targetContent =
-              typeof targetMsgNode?.content === "string" ? targetMsgNode.content : "";
-
-            if (!targetMsgNode?.snapshotId) {
-              ui.writeLine(colors.yellow("! 该历史节点没有安全代码快照，未执行任何回退。"));
-              ui.writeLine(
-                colors.gray("旧会话节点无法精确恢复工作区；请从升级后的新消息开始使用 /rewind。"),
-              );
-              continue;
-            }
-
-            const rollbackResult = snapshotEngine.rollbackOwnedChanges(targetMsgNode.snapshotId);
-            if (!rollbackResult.ok) {
-              ui.writeLine(colors.boldRed("✕ 代码快照恢复失败，消息历史与工作区均未修改。"));
-              ui.writeLine(
-                colors.gray(rollbackResult.reason || "快照缺失，或当前 Git HEAD 已发生变化。"),
-              );
-              continue;
-            }
-
-            // 1. 截断消息历史（丢弃该节点之后的所有消息与回复）
-            messages = messages.slice(0, targetMsgIndex);
-            skillRegistry.restoreScopeFromMessages("main", messages);
-            sessionManager.saveCurrentSession(messages);
-            updateStatusUI();
-
-            // 3. 清理聊天重置界面提示
-            ui.clearChat();
-            const rollbackSummary =
-              rollbackResult.revertedPaths.length > 0
-                ? `，并撤销了本会话修改的 ${rollbackResult.revertedPaths.length} 个文件`
-                : "；未改动工作区文件";
-            ui.writeLine(
-              colors.boldGreen(`↺ 已成功退回历史至节点 #${targetMsgIndex}${rollbackSummary}。`),
-            );
-            if (rollbackResult.preservedPaths.length > 0) {
-              ui.writeLine(
-                colors.yellow(
-                  `! 已保留 ${rollbackResult.preservedPaths.length} 个后来被外部修改的文件，避免覆盖你的改动。`,
-                ),
-              );
-              ui.writeLine(colors.gray(rollbackResult.preservedPaths.join(", ")));
-            }
-            ui.writeLine(colors.gray("已将选中消息文本回填至底栏输入框，请修改后发送："));
-
-            // 4. 将选中的用户消息文本回填回底栏输入框
-            if (targetContent) {
-              userInput = await ui.readInput({ slashCommands, initialValue: targetContent });
-              if (!queueRewindRefill(pendingInputs, userInput)) continue;
-              // 交给下一轮统一处理，避免继续沿用旧的 /rewind 命令。
-              ui.setQueue(pendingInputs);
-              continue;
-            } else {
-              continue;
-            }
-          } catch (error) {
-            if (error instanceof TerminalInputCancelledError) {
-              ui.writeLine(colors.gray("已取消 /rewind 退回操作。"));
-              continue;
-            }
-            throw error;
-          }
+          await handleRewindCommand(sessionCommandContext);
+          continue;
         }
         if (command === "compact") {
           ui.writeLine(colors.boldPurple("正在执行四层上下文压缩管线..."));
@@ -2394,452 +1765,7 @@ async function main() {
           continue;
         }
         if (command === "provider" || command === "providers") {
-          const action = parts[1]?.toLowerCase();
-          const target = parts[2]?.toLowerCase();
-          const hasProjectScope = parts.some((part) => part.toLowerCase() === "--project");
-          const hasUserScope = parts.some(
-            (part) => part.toLowerCase() === "--global" || part.toLowerCase() === "--user",
-          );
-          if (hasProjectScope && hasUserScope) {
-            ui.writeLine(colors.red("不能同时指定 --project 与 --global。"));
-            continue;
-          }
-          const configScope: ProviderConfigScope = hasProjectScope ? "project" : "user";
-          const configScopeLabel = configScope === "project" ? "项目级" : "用户全局";
-
-          // 快速切换：/provider <name>（内置或自定义）
-          if (action && action !== "add" && action !== "set" && action !== "unset") {
-            const targetName = action;
-            const targetKey = isBuiltinProvider(targetName)
-              ? targetName === "deepseek"
-                ? deepseekApiKey
-                : volcApiKey
-              : providerConfig.providers[targetName]?.apiKey;
-            if (!targetKey) {
-              ui.writeLine(
-                colors.red(
-                  `未配置 ${providerLabel(targetName)} API Key。使用 /provider add 引导配置。`,
-                ),
-              );
-              continue;
-            }
-            const targetModel =
-              availableModels.find((m) => m.value === selectedModel && m.provider === targetName)
-                ?.value ||
-              (targetName === "deepseek"
-                ? DEEPSEEK_MODELS[0].value
-                : targetName === "volcengine"
-                  ? VOLCENGINE_MODELS[0].value
-                  : providerConfig.providers[targetName]?.model ||
-                    providerConfig.providers[targetName]?.models?.[0] ||
-                    "");
-            if (!targetModel) {
-              ui.writeLine(
-                colors.red(
-                  `${providerLabel(targetName)} 未配置任何模型。使用 /provider add 补充模型列表。`,
-                ),
-              );
-              continue;
-            }
-            provider = buildProvider(targetModel, targetName);
-            currentProviderName = targetName;
-            selectedModel = targetModel;
-            await refreshSystemPromptPreservingContext();
-            savePreference(
-              { model: selectedModel, reasoningEffort, provider: currentProviderName },
-              showRuntimeWarning,
-            );
-            updateStatusUI();
-            ui.writeLine(
-              colors.green(`已切换到 ${providerLabel(targetName)}，模型：${selectedModel}。`),
-            );
-            continue;
-          }
-
-          // 引导添加：/provider add [--project]（名称 → URL → Key → 模型列表 → 连通性测试）
-          if (action === "add") {
-            try {
-              while (true) {
-                const nameInput = (
-                  await ui.readInput({ prompt: "Provider 名称（如 openai、moonshot；留空取消）" })
-                ).trim();
-                if (!nameInput) {
-                  ui.writeLine(colors.gray("已取消添加 provider。"));
-                  break;
-                }
-                const nameError = validateProviderName(nameInput);
-                if (nameError) {
-                  ui.writeLine(colors.red(`✗ ${nameError}，请重新输入。`));
-                  continue;
-                }
-                const lowerName = nameInput.toLowerCase();
-                if (providerConfig.providers[lowerName]?.apiKey) {
-                  ui.writeLine(
-                    colors.yellow(`已存在 ${providerLabel(lowerName)} 的配置，继续输入将覆盖。`),
-                  );
-                }
-                const baseUrl = (
-                  await ui.readInput({
-                    prompt: "Base URL（OpenAI 兼容端点，如 https://api.openai.com/v1；留空取消）",
-                  })
-                ).trim();
-                if (!baseUrl) {
-                  ui.writeLine(colors.gray("已取消添加 provider。"));
-                  break;
-                }
-                const normalizedUrl = normalizeBaseUrl(baseUrl);
-                if (normalizedUrl.note) {
-                  ui.writeLine(
-                    colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
-                  );
-                }
-                if (!/^https?:\/\//i.test(normalizedUrl.url)) {
-                  ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrl}），请重新输入。`));
-                  continue;
-                }
-                const apiKey = (
-                  await ui.readInput({
-                    prompt: "API Key（留空取消）",
-                    sensitive: true,
-                  })
-                ).trim();
-                if (!apiKey) {
-                  ui.writeLine(colors.gray("已取消添加 provider。"));
-                  break;
-                }
-                const modelListInput = (
-                  await ui.readInput({
-                    prompt: "模型名称（多个用分号分隔，如 gpt-4o;gpt-4o-mini；留空取消）",
-                  })
-                ).trim();
-                const models = parseModelList(modelListInput);
-                if (models.length === 0) {
-                  ui.writeLine(colors.red("✗ 至少需要输入一个模型名称，请重新输入。"));
-                  continue;
-                }
-                // 连通性测试：用第一个模型发最小请求
-                ui.writeLine(colors.cyan(`正在测试连通性（${normalizedUrl.url} · ${models[0]}）…`));
-                const result = await testProviderConnection(normalizedUrl.url, apiKey, models[0]);
-                if (!result.ok) {
-                  ui.writeLine(
-                    colors.red(
-                      `✗ 连通性测试失败：${result.error}${result.ms !== undefined ? `（${result.ms}ms）` : ""}`,
-                    ),
-                  );
-                  if (result.normalizedNote) {
-                    ui.writeLine(
-                      colors.yellow(`提示：${result.normalizedNote}（实际请求 ${result.usedUrl}）`),
-                    );
-                  }
-                  const retry = (await ui.readInput({ prompt: "输入 r 重新配置，输入 c 取消" }))
-                    .trim()
-                    .toLowerCase();
-                  if (retry === "c" || retry === "") {
-                    ui.writeLine(colors.gray("已取消添加 provider。"));
-                    break;
-                  }
-                  continue; // 重新进入引导流程
-                }
-                const ok = saveProviderConfig(
-                  lowerName,
-                  {
-                    apiKey,
-                    baseUrl: normalizedUrl.url,
-                    model: models[0],
-                    models,
-                  },
-                  configScope,
-                );
-                if (!ok) {
-                  ui.writeLine(colors.red("保存配置失败，请检查磁盘权限。"));
-                  break;
-                }
-                // 同步内存状态，使配置立即生效
-                const refreshed = loadProviderConfig();
-                providerConfig.providers[lowerName] = refreshed.providers[lowerName];
-                availableModels = buildAvailableModels();
-                updateStatusUI();
-                ui.writeLine(
-                  colors.green(
-                    `✓ 已添加 ${providerLabel(lowerName)}（${configScopeLabel}，连通性测试通过，${result.ms}ms）。`,
-                  ),
-                );
-                ui.writeLine(colors.gray(`配置文件：${providerConfigPath(configScope)}`));
-                ui.writeLine(
-                  colors.gray(
-                    `模型：${models.join("、")}。输入 /provider ${lowerName} 切换到该提供商。`,
-                  ),
-                );
-                ui.writeLine(
-                  colors.gray(
-                    "注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。",
-                  ),
-                );
-                break;
-              }
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消添加 provider。"));
-                continue;
-              }
-              throw error;
-            }
-            continue;
-          }
-
-          // 配置：/provider set <name> [--project]（API Key 通过安全输入框录入）
-          if (action === "set") {
-            if (!target || validateProviderName(target)) {
-              ui.writeLine(colors.red("用法: /provider set <name> [--project]"));
-              continue;
-            }
-            const name = target.toLowerCase();
-            const label = providerLabel(name);
-            try {
-              const inlineArguments = parts
-                .slice(3)
-                .filter(
-                  (part) => !["--project", "--global", "--user"].includes(part.toLowerCase()),
-                );
-              if (inlineArguments.length > 0) {
-                ui.writeLine(colors.red("API Key 不再支持内联传入；请使用掩码输入框。"));
-                continue;
-              }
-              const apiKey = (
-                await ui.readInput({
-                  prompt: `输入 ${label} API Key（留空保留现有配置）`,
-                  sensitive: true,
-                })
-              ).trim();
-              const current = providerConfig.providers[name] || {};
-              const baseUrlInput = (
-                await ui.readInput({
-                  prompt: `Base URL（当前: ${current.baseUrl || "未设置"}，留空保留）`,
-                })
-              ).trim();
-              let baseUrlToSave = baseUrlInput || undefined;
-              if (baseUrlToSave) {
-                const normalizedUrl = normalizeBaseUrl(baseUrlToSave);
-                if (normalizedUrl.note) {
-                  ui.writeLine(
-                    colors.yellow(`提示：${normalizedUrl.note}，已自动修正为 ${normalizedUrl.url}`),
-                  );
-                }
-                if (!/^https?:\/\//i.test(normalizedUrl.url)) {
-                  ui.writeLine(colors.red(`✗ Base URL 无效（${baseUrlToSave}），已跳过保存。`));
-                  baseUrlToSave = undefined;
-                } else {
-                  baseUrlToSave = normalizedUrl.url;
-                }
-              }
-              const modelInput = (
-                await ui.readInput({
-                  prompt: `默认模型（当前: ${current.model || "未设置"}，留空保留）`,
-                })
-              ).trim();
-              const modelsInput = (
-                await ui.readInput({
-                  prompt: `模型列表（当前: ${current.models?.join("、") || "未设置"}，多个用分号分隔，留空保留）`,
-                })
-              ).trim();
-              const models = modelsInput ? parseModelList(modelsInput) : undefined;
-              const windowsInput = (
-                await ui.readInput({
-                  prompt: `模型上下文窗口（当前: ${formatModelContextWindows(current.modelContextWindows)}，格式 模型=tokens 多个用分号分隔，留空保留）`,
-                })
-              ).trim();
-              let modelContextWindows: Record<string, number> | undefined;
-              if (windowsInput) {
-                const parsedWindows = parseModelContextWindows(windowsInput);
-                if (parsedWindows.invalid.length > 0) {
-                  ui.writeLine(
-                    colors.yellow(
-                      `! 已忽略无法解析的窗口项：${parsedWindows.invalid.join("；")}（格式应为 模型=tokens 且 tokens ≥ 1000）`,
-                    ),
-                  );
-                }
-                if (Object.keys(parsedWindows.windows).length > 0) {
-                  modelContextWindows = parsedWindows.windows;
-                } else {
-                  ui.writeLine(colors.red("✗ 未解析出有效窗口，保持原有窗口配置不变。"));
-                }
-              }
-              const ok = saveProviderConfig(
-                name,
-                {
-                  apiKey: apiKey || undefined,
-                  baseUrl: baseUrlToSave,
-                  model: modelInput || undefined,
-                  modelContextWindows,
-                  models,
-                },
-                configScope,
-              );
-              if (!ok) {
-                ui.writeLine(colors.red(`保存 ${label} 配置失败，请检查磁盘权限。`));
-                continue;
-              }
-              // 同步内存状态，使配置立即生效
-              const refreshed = loadProviderConfig();
-              providerConfig.providers[name] = refreshed.providers[name];
-              if (name === "deepseek") {
-                deepseekApiKey = apiKey || deepseekApiKey;
-              } else if (name === "volcengine") {
-                volcApiKey = apiKey || volcApiKey;
-              }
-              availableModels = buildAvailableModels();
-              // 若当前正使用该 provider，则重建实例并同步模型
-              if (currentProviderName === name) {
-                const newModel = modelInput || selectedModel;
-                provider = buildProvider(newModel, name);
-                currentProviderName = name;
-                if (modelInput) {
-                  selectedModel = modelInput;
-                  await refreshSystemPromptPreservingContext();
-                  savePreference(
-                    { model: selectedModel, reasoningEffort, provider: currentProviderName },
-                    showRuntimeWarning,
-                  );
-                }
-                updateStatusUI();
-              }
-              ui.writeLine(
-                colors.green(
-                  `✓ 已保存 ${label} 的${configScopeLabel}配置（${providerConfigPath(configScope)}）。`,
-                ),
-              );
-              if (
-                configScope === "user" &&
-                Object.keys(loadProviderConfigScope("project").providers[name] || {}).length > 0
-              ) {
-                ui.writeLine(
-                  colors.yellow("当前项目仍有同名项目级配置，会继续覆盖对应的全局字段。"),
-                );
-              }
-              ui.writeLine(
-                colors.gray(
-                  "注意：API Key 以明文存储于本地 .haji/config.json（已被 git 忽略），请勿共享该文件。",
-                ),
-              );
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消配置。"));
-                continue;
-              }
-              throw error;
-            }
-            continue;
-          }
-
-          // 清除：/provider unset <name> [--project]
-          if (action === "unset") {
-            if (!target) {
-              ui.writeLine(colors.red("用法: /provider unset <name> [--project]"));
-              continue;
-            }
-            const name = target.toLowerCase();
-            const label = providerLabel(name);
-            if (!unsetProviderConfig(name, configScope)) {
-              ui.writeLine(colors.red(`清除 ${label} 的${configScopeLabel}配置失败。`));
-              continue;
-            }
-            const refreshed = loadProviderConfig();
-            providerConfig.providers[name] = refreshed.providers[name];
-            if (name === "deepseek") {
-              deepseekApiKey =
-                process.env.DEEPSEEK_API_KEY || providerConfig.providers.deepseek?.apiKey;
-            } else if (name === "volcengine") {
-              volcApiKey =
-                process.env.VOLC_API_KEY ||
-                process.env.ARK_API_KEY ||
-                providerConfig.providers.volcengine?.apiKey;
-            }
-            availableModels = buildAvailableModels();
-            updateStatusUI();
-            ui.writeLine(colors.green(`✓ 已清除 ${label} 的${configScopeLabel}配置。`));
-            const keyAfter = isBuiltinProvider(name)
-              ? name === "deepseek"
-                ? deepseekApiKey
-                : volcApiKey
-              : providerConfig.providers[name]?.apiKey;
-            if (currentProviderName === name && !keyAfter) {
-              ui.writeLine(
-                colors.yellow(
-                  `当前正在使用 ${label}，但已无可用 API Key。建议 /provider add 重新配置或切换提供商。`,
-                ),
-              );
-            }
-            continue;
-          }
-
-          // 状态查看：/provider
-          const rows = [
-            colors.bold("模型提供商状态："),
-            colors.gray(`当前窗口：${getSelectedContextWindowTokens().toLocaleString()} tokens`),
-          ];
-          const userConfig = loadProviderConfigScope("user");
-          const projectConfig = loadProviderConfigScope("project");
-          const sourceFor = (
-            name: string,
-            fields: Array<keyof ProviderConfig["providers"][string]>,
-          ): string => {
-            if (fields.some((field) => projectConfig.providers[name]?.[field] !== undefined))
-              return "项目级";
-            if (fields.some((field) => userConfig.providers[name]?.[field] !== undefined))
-              return "全局";
-            return "默认";
-          };
-          const allNames = listVisibleProviderNames(providerConfig, (name) =>
-            name === "deepseek" ? Boolean(deepseekApiKey) : Boolean(volcApiKey),
-          );
-          for (const name of allNames) {
-            const label = providerLabel(name);
-            const entry = providerConfig.providers[name] || {};
-            let key: string | undefined;
-            let envKey: string | undefined;
-            if (name === "deepseek") {
-              key = deepseekApiKey;
-              envKey = process.env.DEEPSEEK_API_KEY;
-            } else if (name === "volcengine") {
-              key = volcApiKey;
-              envKey = process.env.VOLC_API_KEY || process.env.ARK_API_KEY;
-            } else {
-              key = entry.apiKey;
-            }
-            const masked = key ? `${key.slice(0, 6)}***（共 ${key.length} 位）` : "未配置";
-            const source = key && key === envKey ? "环境变量" : sourceFor(name, ["apiKey"]);
-            rows.push(`  ${label}${currentProviderName === name ? colors.green("（当前）") : ""}`);
-            rows.push(
-              `    API Key: ${key ? colors.green(masked) + colors.gray(` [${source}]`) : colors.red("未配置")}`,
-            );
-            rows.push(
-              `    Base URL: ${entry.baseUrl || "默认"} ${colors.gray(`[${sourceFor(name, ["baseUrl"])}]`)}`,
-            );
-            const modelLabel = entry.models?.length
-              ? entry.models.join("、")
-              : entry.model || "默认";
-            rows.push(
-              `    模型: ${modelLabel} ${colors.gray(`[${sourceFor(name, ["models", "model"])}]`)}`,
-            );
-          }
-          if (allNames.filter((name) => isBuiltinProvider(name)).length < PROVIDER_NAMES.length) {
-            rows.push(
-              colors.gray(
-                "未配置 API Key 的内置 provider 不在此列出；可用 /provider set <名称> 重新配置。",
-              ),
-            );
-          }
-          rows.push(
-            colors.gray(
-              `当前模型：${selectedModel} · 提供商：${providerLabel(currentProviderName)}`,
-            ),
-          );
-          rows.push(
-            colors.gray(
-              "/provider add 引导添加；set/unset 默认全局，附加 --project 操作当前项目；/provider <name> 切换。",
-            ),
-          );
-          ui.writeChat(rows.join("\n"));
+          await handleProviderCommand(providerCommandContext, { parts });
           continue;
         }
         if (command === "permission" || command === "perm") {
