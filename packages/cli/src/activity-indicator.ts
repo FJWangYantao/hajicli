@@ -201,7 +201,6 @@ export class ActivityIndicator {
   }
 }
 
-const TOOL_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TOOL_OUTPUT_TAIL_LINES = 4;
 
 interface ToolRunEntry {
@@ -243,13 +242,13 @@ export class ToolRunView {
   private readonly cancel: NonNullable<ToolRunViewOptions["cancel"]>;
   private readonly entries: ToolRunEntry[] = [];
   private timer?: ReturnType<typeof setInterval>;
-  private tick = 0;
 
   constructor(options: ToolRunViewOptions) {
     this.renderText = options.render;
     this.getWidth = options.getWidth;
     this.now = options.now || Date.now;
-    this.intervalMs = Math.max(60, options.intervalMs || 120);
+    // 运行中的符号是静止的 ●（动画只留给对话区尾部的活动行），定时器只负责刷新耗时与判定结论的过期。
+    this.intervalMs = Math.max(60, options.intervalMs || 250);
     this.schedule =
       options.schedule || ((callback, intervalMs) => setInterval(callback, intervalMs));
     this.cancel = options.cancel || ((timer) => clearInterval(timer));
@@ -374,7 +373,6 @@ export class ToolRunView {
       summary: entry.summary,
       sourceLabel: entry.sourceLabel,
       width,
-      spinner: TOOL_SPINNER[this.tick % TOOL_SPINNER.length],
       timing: judging
         ? `判定中 ${formatActivityDuration(this.now() - entry.startedAt)}`
         : running
@@ -398,10 +396,7 @@ export class ToolRunView {
 
   private ensureTimer(): void {
     if (this.timer) return;
-    this.timer = this.schedule(() => {
-      this.tick += 1;
-      this.flush();
-    }, this.intervalMs);
+    this.timer = this.schedule(() => this.flush(), this.intervalMs);
     this.timer.unref?.();
   }
 
