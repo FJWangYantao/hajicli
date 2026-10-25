@@ -314,11 +314,10 @@ test("tool cells fit the given width and expand results on a second row", () => 
     toolName: "bash",
     summary: "make",
     width: 40,
-    spinner: "⠋",
     timing: "3s",
     outputTail: ["compiling a", "compiling b"],
   });
-  assert.match(running[0], /^ {2}⠋ bash {2}make +3s$/);
+  assert.match(running[0], /^ {2}● bash {2}make +3s$/);
   assert.deepEqual(running.slice(1), ["    │ compiling a", "    │ compiling b"]);
 });
 

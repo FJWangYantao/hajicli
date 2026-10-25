@@ -10,6 +10,7 @@ import { formatAgentTokens } from "./agent-panel.js";
 import {
   fitText,
   SEQ,
+  splitGraphemes,
   terminalWidth,
   truncateAnsiText,
   truncateTailText,
@@ -134,6 +135,60 @@ export function buildStatusBarRow(
   return `${fittedLeft}${padding}${rightAnsi}`;
 }
 
+/** 解码动效一轮的时长：前 70% 逐字还原，余下时间完整停留，随后重新打乱。 */
+const DECODE_CYCLE_MS = 2600;
+const DECODE_RESOLVE_RATIO = 0.7;
+/** 乱码字符只用 ASCII：方块/线框类字符在东亚终端里宽度不定，会把行宽撑乱。 */
+const DECODE_GLYPHS = "<>/{}=+*#%&$?!~^";
+const DECODE_GLYPH_STEP_MS = 140;
+
+/**
+ * 「解码」文字：从左到右把乱码还原成目标文字，刚还原的那个字加粗高亮。
+ * elapsedMs 为 undefined 时直接输出完整文字（静止态 / 测试）。
+ * 宽字符按列宽替换成等宽的乱码，动画过程中整行宽度不变。
+ */
+export function buildDecodedText(text: string, color: string, elapsedMs?: number): string {
+  const graphemes = splitGraphemes(text);
+  const plain = `${color}${text}${SEQ.reset}`;
+  if (elapsedMs === undefined || graphemes.length === 0) return plain;
+  const safeMs = Math.max(0, elapsedMs);
+  const progress = (safeMs % DECODE_CYCLE_MS) / (DECODE_CYCLE_MS * DECODE_RESOLVE_RATIO);
+  const resolved = Math.min(graphemes.length, Math.floor(progress * graphemes.length));
+  if (resolved >= graphemes.length) return plain;
+
+  const step = Math.floor(safeMs / DECODE_GLYPH_STEP_MS);
+  let output = "";
+  if (resolved > 1) output += `${color}${graphemes.slice(0, resolved - 1).join("")}${SEQ.reset}`;
+  if (resolved > 0) output += `${SEQ.bold}${graphemes[resolved - 1]}${SEQ.reset}`;
+  output += SEQ.faint;
+  for (let index = resolved; index < graphemes.length; index += 1) {
+    const cells = terminalWidth(graphemes[index]);
+    for (let cell = 0; cell < cells; cell += 1) {
+      output += DECODE_GLYPHS[(index * 7 + cell * 3 + step * 13) % DECODE_GLYPHS.length];
+    }
+  }
+  return `${output}${SEQ.reset}`;
+}
+
+/** 细节文字的阶段色：等待 / 停滞统一黄色，其余按阶段区分。 */
+function activityDetailColor(frame: ActivityFrame): string {
+  if (frame.tone === "stalled") return SEQ.boldYellow;
+  if (frame.tone === "waiting" || frame.phase === "permission") return SEQ.yellow;
+  switch (frame.phase) {
+    case "thinking":
+      return SEQ.magenta;
+    case "responding":
+      return SEQ.green;
+    case "tool":
+    case "batch":
+      return SEQ.blue;
+    case "stopping":
+      return SEQ.red;
+    default:
+      return SEQ.accent;
+  }
+}
+
 /** 构建活动状态行：图标 + 阶段标签 + 耗时/细节；宽屏右侧显示权限/ctx 徽标或 Esc 提示。 */
 export interface ActivityBadge {
   /** 权限档标签（如“自动”），空串时不显示。 */
@@ -159,9 +214,21 @@ export function buildActivityRow(
         : SEQ.accent;
   // 等待与停滞已由颜色区分；只有停滞时补一个文字提示，避免同一状态重复描述。
   const toneText = frame.tone === "stalled" ? "等待较久" : "";
-  const detail = [toneText, frame.idleText, frame.detail].filter(Boolean).join(" · ");
+  const meta = [toneText, frame.idleText].filter(Boolean).join(" · ");
+  // 细节（当前目标）以解码动效循环还原；停滞、等授权、终止时保持静止——
+  // 动画停下本身就是「没有新进展」的信号。
+  const decodeElapsedMs =
+    frame.startedAt !== undefined &&
+    frame.tone !== "stalled" &&
+    frame.phase !== "permission" &&
+    frame.phase !== "stopping"
+      ? now - frame.startedAt
+      : undefined;
+  const decodedDetail = frame.detail
+    ? buildDecodedText(frame.detail, activityDetailColor(frame), decodeElapsedMs)
+    : "";
   const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
-  const suffix = `${SEQ.muted}${frame.elapsed}${detail ? ` · ${detail}` : ""}${SEQ.reset}`;
+  const suffix = `${SEQ.muted}${frame.elapsed}${meta ? ` · ${meta}` : ""}${frame.detail ? " · " : ""}${SEQ.reset}${decodedDetail}`;
   if (width < 32) {
     return truncateAnsiText(`${primary}  ${SEQ.muted}${frame.elapsed}${SEQ.reset}`, width);
   }

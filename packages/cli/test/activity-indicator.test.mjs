@@ -159,7 +159,7 @@ test("tool run view hides calls until they start and streams an output tail", ()
   assert.equal(renders.length, 0, "a call waiting for permission is not shown");
 
   view.start("c1");
-  assert.match(renders.at(-1), /^ {2}⠋ bash {2}make all +0s\n$/);
+  assert.match(renders.at(-1), /^ {2}● bash {2}make all +0s\n$/);
   assert.ok(harness.ticking);
 
   view.output("c1", "step 1\nstep 2\nstep 3\nstep 4\nstep 5\nprogress 10%\rprogress 90%");
@@ -172,10 +172,14 @@ test("tool run view hides calls until they start and streams an output tail", ()
   ]);
 
   harness.advance(3_000);
-  assert.match(renders.at(-1), /^ {2}⠙ bash {2}make all +3s/);
+  assert.match(
+    renders.at(-1),
+    /^ {2}● bash {2}make all +3s/,
+    "the mark stays still; only the elapsed time advances",
+  );
 
   view.finish("c1", { status: "success", text: "5 行输出 · step 5" }, 6_049);
-  assert.equal(harness.ticking, false, "the spinner stops once nothing is running");
+  assert.equal(harness.ticking, false, "the refresh timer stops once nothing is running");
   assert.match(renders.at(-1), /^ {2}✓ bash {2}make all +6\.0s\n {4}└ 5 行输出 · step 5\n$/);
 });
 

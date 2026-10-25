@@ -623,8 +623,6 @@ export interface ToolCellOptions {
   toolName: string;
   summary: string;
   width: number;
-  /** 运行中显示的动画帧；完成态使用固定符号。 */
-  spinner?: string;
   /** 右侧的耗时文本（运行中为已用时间）。 */
   timing?: string;
   /** 子代理等来源标签，显示在工具名之前。 */
@@ -648,7 +646,7 @@ export const TOOL_CELL_INDENT = "  ";
  *     └ 12 行输出
  *       # pass 12
  *       # fail 0
- * 运行中把符号换成动画帧，并在下方显示输出尾部；完成后结果说明下面带几行预览。
+ * 运行中用静止的 ●（动画只在活动行），下方显示输出尾部；完成后结果说明下面带几行预览。
  */
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
@@ -656,7 +654,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     options.status === "judging"
       ? colors.accent("◈")
       : options.status === "running"
-        ? colors.accent(options.spinner || "●")
+        ? colors.accent("●")
         : options.status === "success"
           ? colors.boldGreen("✓")
           : options.status === "rejected"

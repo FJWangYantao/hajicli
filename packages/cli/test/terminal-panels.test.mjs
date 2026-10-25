@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildActivityRow,
+  buildDecodedText,
   buildStatusBarRow,
   buildTaskPanelRows,
   buildTurnSummary,
@@ -67,6 +68,44 @@ test("activity row returns empty without a frame and truncates on narrow widths"
   const tiny = buildActivityRow(frame, 20);
   assert.ok(terminalWidth(tiny) <= 20, "窄宽度下活动行必须截断");
   assert.match(tiny, /思考中|⏳/, "截断后至少保留阶段标识");
+});
+
+const stripAnsi = (value) => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+
+test("decoded text resolves left to right and keeps its column width", () => {
+  const target = "grep 读取结果 src/a.ts";
+  assert.equal(stripAnsi(buildDecodedText(target, "")), target, "无耗时即静止，直接给完整文字");
+  for (const elapsed of [0, 300, 900, 1500, 1800, 2400, 5300]) {
+    const plain = stripAnsi(buildDecodedText(target, "", elapsed));
+    assert.equal(terminalWidth(plain), terminalWidth(target), `${elapsed}ms 时整行宽度不变`);
+  }
+  // 一轮 2600ms：前 70% 逐字还原，中段只有前缀是原文、尾部是乱码。
+  const mid = stripAnsi(buildDecodedText(target, "", 900));
+  assert.notEqual(mid, target);
+  assert.ok(target.startsWith(mid.slice(0, 4)), "已还原部分与原文一致");
+  assert.equal(stripAnsi(buildDecodedText(target, "", 2400)), target, "还原完毕后停留完整文字");
+  assert.notEqual(stripAnsi(buildDecodedText(target, "", 2700)), target, "下一轮重新打乱");
+});
+
+test("activity detail decodes while active and freezes when stalled", () => {
+  const now = 10_000;
+  const frame = {
+    phase: "tool",
+    tone: "active",
+    icon: "⠹",
+    label: "运行 bash",
+    elapsed: "1s",
+    detail: "pnpm test --filter provider",
+    startedAt: now - 900,
+  };
+  assert.doesNotMatch(stripAnsi(buildActivityRow(frame, 80, undefined, now)), /--filter provider/);
+  const stalled = { ...frame, tone: "stalled", idleText: "34s 无新进展" };
+  assert.match(
+    stripAnsi(buildActivityRow(stalled, 100, undefined, now)),
+    /等待较久 · 34s 无新进展 · pnpm test --filter provider/,
+  );
+  const permission = { ...frame, phase: "permission", tone: "waiting" };
+  assert.match(stripAnsi(buildActivityRow(permission, 80, undefined, now)), /pnpm test --filter/);
 });
 
 test("task panel rows render status glyphs, agent sub-rows and collapse footer", () => {

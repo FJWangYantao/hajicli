@@ -328,7 +328,7 @@ test("terminal ui setters feed the sidebar stat lines", () => {
   }
 });
 
-test("activity stays in the bottom row while the sidebar keeps status only", () => {
+test("activity stays in the chat column while the sidebar keeps status only", () => {
   const ui = createTerminalUI();
   try {
     ui.activityFrame = {
@@ -342,7 +342,11 @@ test("activity stays in the bottom row while the sidebar keeps status only", () 
     const rows = renderPlain(ui);
     const hits = rows.filter((row) => row.includes("bash"));
     assert.equal(hits.length, 1, "activity is rendered exactly once");
-    assert.ok(!hits[0].includes("│"), "activity must not move into the sidebar");
+    const separator = hits[0].indexOf("│");
+    assert.ok(
+      separator === -1 || hits[0].indexOf("bash") < separator,
+      "activity stays left of the sidebar, in the chat column",
+    );
     assert.ok(
       rows.some((row) => row.includes("│ 上下文")),
       "the sidebar still shows status information",
