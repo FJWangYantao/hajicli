@@ -245,12 +245,19 @@ function isWide(codePoint: number): boolean {
 const LEADING_ZERO_WIDTH_PATTERN = /^[\p{Mn}\p{Me}\p{Cf}\p{Default_Ignorable_Code_Point}]+/u;
 /** 单个字符是否就是不占列的组合标记（UTF-16 长度 1 的快路径用）。 */
 const SINGLE_MARK_PATTERN = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
+/**
+ * emoji presentation 字符：终端按双宽 emoji 渲染，但码位常常落在窄字符区间
+ * （✅ U+2705、⏳ U+23F3、⚠ U+26A0），手写宽字符区间里没有它们，必须单独识别。
+ */
+const EMOJI_PRESENTATION_PATTERN = /\p{Emoji_Presentation}/u;
+/** 变体选择符 16（U+FE0F）把文本符号强制成 emoji 呈现（⚠️、™️），同样占 2 列。 */
+const EMOJI_VARIATION_SELECTOR = "\ufe0f";
 
 function measureGrapheme(grapheme: string): number {
   if (grapheme.length === 1) {
     const codePoint = grapheme.charCodeAt(0);
     if (isZeroWidth(codePoint) || SINGLE_MARK_PATTERN.test(grapheme)) return 0;
-    return isWide(codePoint) ? 2 : 1;
+    return isWide(codePoint) || EMOJI_PRESENTATION_PATTERN.test(grapheme) ? 2 : 1;
   }
   // 先剔除开头的组合标记：单独的变音符/尼空词（如泰文 SARA AM 拆分后的 U+0E4D）
   // 不占列，后面接基底字符时按基底字符计宽。
@@ -259,6 +266,9 @@ function measureGrapheme(grapheme: string): number {
   const codePoints = Array.from(visible, (character) => character.codePointAt(0) ?? 0);
   if (codePoints.every(isZeroWidth)) {
     return 0;
+  }
+  if (visible.includes(EMOJI_VARIATION_SELECTOR) || EMOJI_PRESENTATION_PATTERN.test(visible)) {
+    return 2;
   }
   return codePoints.some(isWide) ? 2 : 1;
 }

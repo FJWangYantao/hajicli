@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TerminalUI } from "../dist/terminal-input.js";
+import { terminalWidth } from "../dist/terminal-text.js";
 
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const FRAME_SIZES = [
@@ -127,6 +128,37 @@ function renderFrame(columns, rows, configure = () => {}) {
   });
 }
 
+test("侧栏分割线在推理预览含 emoji 时保持对齐", () => {
+  // 推理预览是纯文本行，模型常在里面写 ✅/⏳/⚠️。如果宽度算少 1 列，
+  // 行就比终端宽，右侧 │ 会随行偏移、行尾还会被软换行顶到下一行。
+  const frame = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(true);
+    ui.chatContent = "CHAT LINE";
+    ui.setLiveTail("  ┊ 推理 ✅ 已完成 ⏳ 等待 ⚠️ 注意 ✅\n");
+    ui.setActivity({
+      phase: "thinking",
+      tone: "active",
+      icon: "✦",
+      label: "思考中",
+      elapsed: "3s",
+      detail: "推理约 1.2K tokens",
+    });
+  });
+  const chatRows = frame.plainRows.filter((row) => row.includes("│"));
+  assert.ok(chatRows.length > 0, "sidebar is rendered");
+  const columns = new Set();
+  for (const row of chatRows) {
+    assert.equal(terminalWidth(row), 119, `row width: ${JSON.stringify(row)}`);
+    // 按显示列（不是 UTF-16 下标）定位分割线：中文占 2 列、emoji 占 2 列。
+    columns.add(terminalWidth(row.slice(0, row.indexOf("│"))));
+  }
+  assert.equal(columns.size, 1, `separator columns: ${[...columns].join(", ")}`);
+  assert.ok(
+    chatRows.some((row) => row.includes("✅")),
+    "reasoning preview with emoji is on screen",
+  );
+});
+
 test("renders bounded frames with the input and status bar at all target sizes", () => {
   for (const [columns, rows] of FRAME_SIZES) {
     const frame = renderFrame(columns, rows, (ui) => {
@@ -139,7 +171,7 @@ test("renders bounded frames with the input and status bar at all target sizes",
       `${columns}x${rows} input`,
     );
     assert.ok(
-      frame.plainRows.some((row) => row.includes("ctx")),
+      frame.plainRows.some((row) => row.includes("[默认]")),
       `${columns}x${rows} status bar`,
     );
     assert.ok(frame.writes.length > 0, `${columns}x${rows} writes a frame`);
@@ -170,7 +202,7 @@ test("prioritizes the input on terminals only one to three rows tall", () => {
     );
     if (rows >= 2) {
       assert.ok(
-        frame.plainRows.some((row) => row.includes("ctx")),
+        frame.plainRows.some((row) => row.includes("[默认]")),
         `20x${rows} status bar`,
       );
     }
@@ -185,7 +217,7 @@ test("keeps the input compact and the cursor on the text row", () => {
   assert.match(frame.plainRows[inputRow - 1], /^-+$/, "divider sits directly above the input");
   assert.match(frame.plainRows[inputRow + 1], /^-+$/, "divider sits directly below the input");
   assert.ok(
-    frame.plainRows[inputRow + 2].includes("ctx"),
+    frame.plainRows[inputRow + 2].includes("[默认]"),
     "status bar sits below the bottom divider",
   );
 
@@ -506,8 +538,8 @@ test("activity row sits at the chat tail; the status bar stays on the bottom lin
   const inputRow = wide.findIndex((row) => row.includes("INPUT"));
   assert.equal(activityRow, chatRow + 2, "activity follows the latest chat line after a blank row");
   assert.ok(activityRow < inputRow, "activity lives in the chat area above the input");
-  assert.match(wide.at(-1), /\[默认\].*ctx/, "status bar keeps the bottom line during activity");
-  // 3 秒后 Esc 提示消失；状态栏常驻底栏，活动行不再重复 [权限] ctx 徽标。
+  assert.match(wide.at(-1), /\[默认\]/, "status bar keeps the bottom line during activity");
+  // 3 秒后 Esc 提示消失；状态栏常驻底栏，底栏不再显示上下文用量。
   const settled = renderFrame(120, 30, (ui) => {
     ui.setSidebarEnabled(false);
     activity(ui, Date.now() - 5000);
@@ -515,7 +547,7 @@ test("activity row sits at the chat tail; the status bar stays on the bottom lin
   const settledActivity = settled.find((row) => row.includes("运行 bash")) ?? "";
   assert.match(settledActivity, /⠋ 运行 bash {2}3s\s*$/);
   assert.doesNotMatch(settled.join("\n"), /Esc 中止/);
-  assert.match(settled.at(-1), /\[默认\].*ctx/);
+  assert.match(settled.at(-1), /\[默认\]/);
   // 窄屏不显示 Esc 提示，任务信息本身保留。
   const narrow = renderFrame(80, 24, (ui) => activity(ui, Date.now() - 1000)).plainRows.join("\n");
   assert.match(narrow, /⠋ 运行 bash {2}3s/);
@@ -630,7 +662,7 @@ test("status bar shrinks the path before cutting the model or effort", () => {
   assert.match(statusRow, /🔵 DeepSeek · deepseek-v4-flash · medium {2}…/);
   assert.match(statusRow, /demo/);
 
-  const narrow = renderFrame(50, 24, (ui) => {
+  const narrow = renderFrame(44, 24, (ui) => {
     ui.modelName = "a-very-long-custom-model-name-v2";
     ui.reasoningEffort = "xhigh";
   }).plainRows.at(-1);
@@ -708,7 +740,7 @@ test("复制角标贴在顶行右端，不占用底栏", () => {
   // 顶行是标题行（HAJI），角标贴在右端且整行宽度恰好等于安全宽度。
   assert.ok(frame.plainRows[0].endsWith("Copied"), "Copied 出现在右上角");
   assert.equal(frame.plainRows[0].length, 79);
-  assert.ok(!frame.plainRows.some((row) => row.includes("ctx") && row.includes("Copied")));
+  assert.ok(!frame.plainRows.slice(1).some((row) => row.includes("Copied")), "角标不落到其它行");
 });
 
 test("头部隐藏时复制角标退回底栏提示", () => {

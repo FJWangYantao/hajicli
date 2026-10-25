@@ -21,8 +21,6 @@ import type { TuiStatusDetail } from "./tui-layout.js";
 /** 状态栏所需的会话状态（TerminalUI 持有，渲染时快照传入）。 */
 export interface StatusBarState {
   permissionMode: string;
-  usedTokens: number;
-  maxTokens: number;
   modelName: string;
   providerName: string;
   reasoningEffort: string;
@@ -41,12 +39,13 @@ export function formatPermissionModeLabel(mode: string): string {
   return modeLabels[mode] || mode.toUpperCase();
 }
 
-/** 构建状态栏单行：权限档 · 模型/强度 · 路径（左） 与 ctx 用量条（右）。 */
+/** 构建状态栏单行：权限档 · 模型/强度 · 路径。 */
 export function buildStatusBarRow(
   state: StatusBarState,
   width: number,
   detail: TuiStatusDetail = "full",
 ): string {
+  if (width <= 0) return "";
   const modeLabel = formatPermissionModeLabel(state.permissionMode);
   const permText = state.permissionMode ? `[${modeLabel}]` : "";
   // 底栏只有模式标签用强调色；「全放行」是真要警惕的状态，保留红色。
@@ -59,40 +58,10 @@ export function buildStatusBarRow(
         : SEQ.accent;
   const permAnsi = permText ? `${permColor}${permText}${SEQ.reset}` : "";
 
-  const used = state.usedTokens;
-  const max = state.maxTokens;
-  const ratio = Math.min(1, Math.max(0, used / max));
-
-  // 平时用淡紫、数字用灰，不抢眼；快满时才换成黄 / 红提醒。
-  let colorCode = SEQ.softAccent;
-  let valueColor = SEQ.muted;
-  if (ratio >= 0.85) {
-    colorCode = SEQ.boldRed;
-    valueColor = SEQ.boldRed;
-  } else if (ratio >= 0.6) {
-    colorCode = SEQ.yellow;
-    valueColor = SEQ.yellow;
-  }
-
-  const percentText = `${Math.round(ratio * 100)}%`;
-  const numText = `${formatAgentTokens(used)}/${formatAgentTokens(max)}`;
-  const ctxLabel = "ctx";
-  const barCapacity = detail === "full" && width >= 72 ? 8 : 0;
-
-  const filledCount = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
-  const emptyCount = Math.max(0, barCapacity - filledCount);
-  const barStr =
-    barCapacity > 0
-      ? `${colorCode}${"█".repeat(filledCount)}${SEQ.reset}${SEQ.faint}${"░".repeat(emptyCount)}${SEQ.reset} `
-      : "";
-  const valueText = detail === "full" ? numText : percentText;
-  const rightAnsi = `${barStr}${SEQ.muted}${ctxLabel}${SEQ.reset} ${valueColor}${valueText}${SEQ.reset}`;
-  const rightWidth = terminalWidth(rightAnsi);
-
   // 模型区按实际剩余空间分配（路径优先级最低，排在它之后）。
   const modelLimit = Math.max(
     6,
-    Math.min(detail === "full" ? 48 : 40, width - terminalWidth(permAnsi) - rightWidth - 4),
+    Math.min(detail === "full" ? 48 : 40, width - terminalWidth(permAnsi) - 3),
   );
   // 空间不足时依次舍弃提供商、截短模型名，思考强度始终完整保留。
   let modelStr = "";
@@ -115,24 +84,15 @@ export function buildStatusBarRow(
 
   let pathAnsi = "";
   if (detail === "full" && state.currentPath) {
-    const pathMaxWidth = Math.max(0, width - baseLeftWidth - rightWidth - 4);
+    const pathMaxWidth = Math.max(0, width - baseLeftWidth - 3);
     if (pathMaxWidth >= 3) {
       pathAnsi = `${SEQ.muted}${truncateTailText(state.currentPath, pathMaxWidth)}${SEQ.reset}`;
     }
   }
   const fullLeftAnsi = [baseLeftAnsi, pathAnsi].filter(Boolean).join("  ");
-  const fullLeftWidth = terminalWidth(fullLeftAnsi);
-
-  if (fullLeftWidth + rightWidth + 1 <= width) {
-    const padding = " ".repeat(width - fullLeftWidth - rightWidth);
-    return `${fullLeftAnsi}${padding}${rightAnsi}`;
-  }
-
-  if (rightWidth >= width) return truncateAnsiText(rightAnsi, width);
-  const availableLeft = Math.max(0, width - rightWidth - 1);
-  const fittedLeft = truncateAnsiText(fullLeftAnsi, availableLeft);
-  const padding = " ".repeat(Math.max(1, width - terminalWidth(fittedLeft) - rightWidth));
-  return `${fittedLeft}${padding}${rightAnsi}`;
+  const fitted = truncateAnsiText(fullLeftAnsi, width);
+  const padding = " ".repeat(Math.max(0, width - terminalWidth(fitted)));
+  return `${fitted}${padding}`;
 }
 
 /** 解码动效一轮的时长：前 70% 逐字还原，余下时间完整停留，随后重新打乱。 */

@@ -320,6 +320,18 @@ export class TerminalInputTakenOverError extends Error {
   }
 }
 
+/**
+ * 输入行已被占用：另一个输入请求或选择器还没结束。
+ * 单独成类是为了让主循环能把「偶发竞态」和真正的编码错误区分开——
+ * 前者等空闲后重取输入，不该把整场会话崩掉。
+ */
+export class TerminalInputBusyError extends Error {
+  constructor() {
+    super("已有输入请求正在等待处理");
+    this.name = "TerminalInputBusyError";
+  }
+}
+
 function isRealCtrlC(value: string, key: readline.Key): boolean {
   return value === "\x03" && key.ctrl === true && key.name === "c";
 }
@@ -512,6 +524,8 @@ export class TerminalUI {
   private pendingWheelRows = 0;
   private activeInput?: ActiveInput;
   private activeSelection?: ActiveSelection;
+  /** 等输入行空闲的挂起者：input/selection 全部收尾时统一唤醒。 */
+  private inputIdleWaiters: Array<() => void> = [];
   private chatViewport?: ChatViewport;
   private selectionLayout?: AnsiTextLayout;
   private pendingMouseSelection?: PendingMouseSelection;
@@ -1128,6 +1142,22 @@ export class TerminalUI {
     return Boolean(this.activeInput);
   }
 
+  /**
+   * 等输入行真正空闲（既没有待处理的输入请求，也没有打开的选择器）。
+   * 供主循环在偶发竞态下等待后台流程收尾，而不是把它升级成崩溃。
+   */
+  waitForInputIdle(): Promise<void> {
+    if (!this.activeInput && !this.activeSelection) return Promise.resolve();
+    return new Promise<void>((resolve) => this.inputIdleWaiters.push(resolve));
+  }
+
+  private notifyInputIdle(): void {
+    if (this.activeInput || this.activeSelection) return;
+    const waiters = this.inputIdleWaiters;
+    this.inputIdleWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
   cancelInput(): string | undefined {
     return this.abortInput(new TerminalInputCancelledError());
   }
@@ -1234,6 +1264,8 @@ export class TerminalUI {
     if (this.activeSelection) {
       this.activeSelection = undefined;
     }
+    // 关闭时没有任何输入行可用：唤醒等空闲者，避免它们永远挂着。
+    this.notifyInputIdle();
 
     if (this.interactive) {
       stdout.off("resize", this.handleResize);
@@ -1714,7 +1746,7 @@ export class TerminalUI {
     }
 
     if (this.activeInput || this.activeSelection) {
-      throw new Error("已有输入请求正在等待处理");
+      throw new TerminalInputBusyError();
     }
 
     // 新一轮输入从未携带附件的干净状态开始，避免上轮残留图片跟随新 prompt 发送。
@@ -1768,7 +1800,7 @@ export class TerminalUI {
       };
     }
     if (this.activeInput || this.activeSelection) {
-      throw new Error("已有输入请求正在等待处理");
+      throw new TerminalInputBusyError();
     }
 
     return new Promise<TerminalSelectionResult>((resolve, reject) => {
@@ -2808,8 +2840,6 @@ export class TerminalUI {
     return buildStatusBarRow(
       {
         permissionMode: this.permissionMode,
-        usedTokens: this.usedTokens,
-        maxTokens: this.maxTokens,
         modelName: this.modelName,
         providerName: this.providerName,
         reasoningEffort: this.reasoningEffort,
@@ -3411,6 +3441,8 @@ export class TerminalUI {
       }
       activeInput.resolve(value);
     }
+    // 选在 resolve 之后唤醒：先让提交方的后续（如恢复草稿的后台输入）排上队。
+    this.notifyInputIdle();
   }
 
   private finishSelection(error?: Error): void {
@@ -3433,6 +3465,8 @@ export class TerminalUI {
         secondaryValue: selectedSecondary?.value,
       });
     }
+    // 选在 resolve 之后唤醒：选择器结束后才把输入行交回去。
+    this.notifyInputIdle();
   }
 
   private insert(value: string): void {

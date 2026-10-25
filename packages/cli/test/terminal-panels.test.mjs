@@ -22,31 +22,33 @@ function baseStatusState(overrides = {}) {
   };
 }
 
-test("status bar row fits the requested width and shows context usage", () => {
+test("status bar row fits the requested width and no longer shows context usage", () => {
   for (const width of [60, 80, 120]) {
     const row = buildStatusBarRow(baseStatusState(), width);
     assert.equal(terminalWidth(row), width, `width ${width} 的状态栏应恰好占满一行（不足补空格）`);
   }
   const row = buildStatusBarRow(baseStatusState(), 120);
   assert.match(row, /\[默认\]/);
-  assert.match(row, /ctx/);
+  assert.doesNotMatch(row, /ctx/);
 });
 
 test("status bar degrades gracefully on narrow widths", () => {
   // 窄宽度下也不允许溢出：截断后仍等于请求宽度
   const narrow = buildStatusBarRow(baseStatusState(), 30);
   assert.equal(terminalWidth(narrow), 30);
-  // minimal 档位显示百分比而不是绝对数值
+  // minimal 档位只保留模式徽标，不再显示上下文用量（原先右侧只有它）
   const minimal = buildStatusBarRow(baseStatusState(), 40, "minimal");
-  assert.match(minimal, /3%/);
-  assert.ok(!minimal.includes("4K/128K"));
+  assert.equal(terminalWidth(minimal), 40);
+  assert.match(minimal, /\[默认\]/);
+  assert.ok(!minimal.includes("ctx"));
+  assert.ok(!minimal.includes("D:\\work"));
 });
 
 test("status bar prefers full model triple then degrades to model+effort", () => {
   const wide = buildStatusBarRow(baseStatusState(), 140, "full");
   assert.match(wide, /DeepSeek · deepseek-v4-flash · medium/);
   // 空间不足以放下 provider 时退化为 模型 · 强度
-  const mid = buildStatusBarRow(baseStatusState(), 52, "full");
+  const mid = buildStatusBarRow(baseStatusState(), 40, "full");
   assert.match(mid, /deepseek-v4-flash · medium/);
   assert.ok(!mid.includes("DeepSeek ·"));
 });

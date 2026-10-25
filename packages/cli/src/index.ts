@@ -204,6 +204,7 @@ import type { WizardDeps } from "./subagent-wizard.js";
 import { detectTerminalAppearance } from "./terminal-appearance.js";
 import {
   shouldRestartBackgroundInput,
+  TerminalInputBusyError,
   TerminalInputCancelledError,
   TerminalInputTakenOverError,
   TerminalUI,
@@ -2176,6 +2177,9 @@ async function main() {
       });
   };
 
+  /** 主循环连续「输入行被占」次数：用于把反复抢不到输入行的状况告知用户，而不是崩会话。 */
+  let busyInputRetries = 0;
+
   /**
    * 主循环等待用户输入。鼠标交互（侧栏点击）会用 TerminalInputTakenOverError 抢走输入行，
    * 这里返回 undefined 表示「本轮没拿到输入」，调用方 continue 重来即可，不能当用户取消退出。
@@ -2183,9 +2187,22 @@ async function main() {
   const readMainInput = async (initialValue?: string): Promise<string | undefined> => {
     mainLoopAwaitingInput = true;
     try {
-      return await ui.readInput({ slashCommands, initialValue });
+      const value = await ui.readInput({ slashCommands, initialValue });
+      busyInputRetries = 0;
+      return value;
     } catch (error) {
       if (error instanceof TerminalInputTakenOverError) return undefined;
+      // 后台流程（回合结束的定价提示、侧栏动作）可能刚好占着输入行：等它收尾后
+      // 让主循环重新取一次，不能把这次竞态升级成整场会话崩溃。
+      if (error instanceof TerminalInputBusyError) {
+        busyInputRetries += 1;
+        // 反复抢不到说明确实有交互占着输入行：告知一次，然后继续等它结束。
+        if (busyInputRetries === 3) {
+          ui.writeLine(colors.gray("  ↳ 输入行正被其他交互占用，等它结束后再继续。"));
+        }
+        await ui.waitForInputIdle();
+        return undefined;
+      }
       throw error;
     } finally {
       mainLoopAwaitingInput = false;
@@ -2933,7 +2950,10 @@ async function main() {
       maybeWarnContextUsage();
       maybeWarnBudget();
       // 未定价模型：本会话首次出现时问一次要不要交给后台 agent 查价。
-      void maybeOfferPricingAgent();
+      // 必须排队给主循环执行（不能就地 await 选择器）：回合刚结束时主循环马上就要
+      // 调用 readInput，而选择器与输入行互斥——就地打开会直接撞出
+      // 「已有输入请求正在等待处理」并让整个会话崩掉。
+      pendingUiAction ??= () => maybeOfferPricingAgent();
     },
   };
 

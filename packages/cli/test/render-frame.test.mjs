@@ -21,6 +21,17 @@ test("terminalWidth measures ASCII, CJK and emoji at their real cell widths", ()
   assert.equal(terminalWidth(""), 0);
 });
 
+test("terminalWidth counts emoji presentation (with or without VS16) as two cells", () => {
+  // 这些符号的码位不在手写宽字符区间里，但终端按 emoji 渲染成 2 列；
+  // 漏算会让推理预览行宽少 1 列，右侧侧栏分割线随之错位。
+  assert.equal(terminalWidth("✅"), 2);
+  assert.equal(terminalWidth("⏳"), 2);
+  assert.equal(terminalWidth("⚠️"), 2, "VS16 把文本符号强制成 emoji 呈现");
+  assert.equal(terminalWidth("1️⃣"), 2, "keycap 也是双宽");
+  assert.equal(terminalWidth("⚠"), 1, "没有 VS16 时仍按文本符号计宽");
+  assert.equal(terminalWidth("┊ 推理 ✅"), 9, "emoji 与中文、ASCII 混排逐字累加");
+});
+
 test("terminalWidth is memoised without changing results", () => {
   clearTerminalWidthCache();
   const sample = `${ESC}[38;2;1;2;3m中文 abc${ESC}[0m`;
