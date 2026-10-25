@@ -215,3 +215,21 @@ test("classifier prompt and parsing helpers behave as documented", () => {
   assert.ok(hardBlock("bash", { command: "rm -rf ~" }));
   assert.equal(hardBlock("bash", { command: "rm -rf ./dist" }), null);
 });
+test("built-in search tools are read-only and never prompt for approval", async () => {
+  const engine = new PermissionEngine();
+  // 工具实际注册名是 websearch / webfetch（无下划线）；写错名字会让只读工具落入“需授权”，
+  // 后台 agent 与主线的检索会因此被反复拦截。
+  for (const name of ["websearch", "webfetch"]) {
+    assert.equal(engine.isReadOnlyTool(name), true, name);
+    for (const mode of ["default", "accept-edit", "plan", "auto", "bypass-permissions"]) {
+      const result = await engine.evaluate({
+        mode,
+        toolName: name,
+        args: name === "websearch" ? { query: "deepseek pricing" } : { url: "https://example.com" },
+        userIntent: "查官方定价",
+        riskThreshold: "medium",
+      });
+      assert.equal(result.action, "allow", `${mode} / ${name}`);
+    }
+  }
+});

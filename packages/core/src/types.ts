@@ -127,6 +127,11 @@ export interface CompletionOptions {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /**
+     * 命中缓存的输入 token 数（DeepSeek 的 prompt_cache_hit_tokens、
+     * OpenAI 系 prompt_tokens_details.cached_tokens）。缺省表示 provider 未上报。
+     */
+    prompt_cache_hit_tokens?: number;
   }) => void;
   /** 接收 Provider 返回的停止原因，例如 stop、tool_calls 或 length。 */
   onFinish?: (finish: { reason?: string }) => void;

@@ -279,7 +279,7 @@ test("messageContentOrParts converts attachments to multimodal parts", () => {
 test("index.ts wires the new feature batch end to end", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   // 费用
-  assert.ok(source.includes("new CostTracker()"), "费用记账器");
+  assert.ok(source.includes("new CostTracker("), "费用记账器（注入注册表+本地覆盖的定价解析）");
   assert.ok(source.includes("recordCost:"), "turnDeps 注入记账回调");
   assert.ok(source.includes('command === "cost"'), "/cost 命令");
   // utility 路由

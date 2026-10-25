@@ -21,8 +21,16 @@ export interface SidebarState {
   costCny?: number;
   costRequests?: number;
   hasUnpricedCost?: boolean;
+  /** 仍未定价的模型名：费用区据此给出「点击配置单价」入口。 */
+  unpricedModels?: readonly string[];
+  /** 后台定价 agent 的当前状态；运行中时在费用区显示一行进度。 */
+  pricingAgent?: SidebarPricingAgentState;
   /** 会话累计输入/输出 tokens；用来解释费用构成（哪一头在烧钱）。 */
   promptTokens?: number;
+  /** 其中命中缓存的输入 tokens（有缓存折扣的模型才可能 > 0）。 */
+  cachedPromptTokens?: number;
+  /** 按谷时价计费的请求数。 */
+  offPeakRequests?: number;
   completionTokens?: number;
   /** 上一轮回合耗时（ms）；用于感知“慢在哪”。 */
   lastTurnMs?: number;
@@ -32,18 +40,34 @@ export interface SidebarState {
   agents?: readonly AgentPanelItem[];
 }
 
-/** 圆环在侧栏中的位置：相对侧栏首行的行偏移与相对侧栏首列的列偏移。 */
-export interface SidebarRingGeometry {
+/** 后台定价 agent 状态（费用区的单行提示）。 */
+export interface SidebarPricingAgentState {
+  status: "running" | "done" | "failed";
+  /** 正在查询的模型名。 */
+  model: string;
+  /** 失败原因或结果摘要（可选，过长会被截断）。 */
+  detail?: string;
+}
+
+/** 侧栏内一块可命中区域：相对侧栏首行的行偏移与相对侧栏首列的列偏移。 */
+export interface SidebarHitArea {
   top: number;
   height: number;
   left: number;
   width: number;
 }
 
+/** 上下文圆环的命中区域（沿用同一套几何描述）。 */
+export type SidebarRingGeometry = SidebarHitArea;
+
 export interface SidebarFrame {
   rows: string[];
   /** 上下文圆环的命中区域；侧栏高度不足以画环时为 undefined。 */
   ring?: SidebarRingGeometry;
+  /** 费用区块的命中区域（标题到最后一行的整段）；点击进入单价配置。 */
+  cost?: SidebarHitArea;
+  /** 费用区里那行定价 agent 状态；点击打开查询过程详情。 */
+  pricingAgent?: SidebarHitArea;
 }
 
 /** 低于该宽度或高度时右侧栏让位给对话区。 */
@@ -175,7 +199,8 @@ function buildContextRing(ratio: number, width: number, height: number): string[
 
 /**
  * 构建右侧栏各行：上下文（主指标块）→ 费用表 → 任务 → 子代理，按高度裁剪。
- * hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）。
+ * hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）；
+ * hoverCost 为 true 时高亮费用区的配置入口（鼠标悬停费用块）。
  */
 export function buildSidebarFrame(
   state: SidebarState,
@@ -183,6 +208,8 @@ export function buildSidebarFrame(
   maxRows: number,
   now = Date.now(),
   hoverContext = false,
+  hoverCost = false,
+  hoverPricingAgent = false,
 ): SidebarFrame {
   if (width <= 0 || maxRows <= 0) return { rows: [] };
   const w = Math.max(1, Math.floor(width));
@@ -269,7 +296,11 @@ export function buildSidebarFrame(
   }
 
   // ── 费用：标签左、数值右对齐的双列小表，耗时并进同一张表 ──
+  // 整段是可点击区域：未定价时点进去补单价，因此命中范围从章节标题算到最后一行。
+  // 先占位再回填标题行的下标：section() 会先插一个空行做呼吸，命中区不该从空行算起。
+  const costSectionTop = rows.length;
   section("费用");
+  const costHitTop = Math.max(costSectionTop, rows.length - 1);
   if (state.costCny === undefined) {
     push(`${SEQ.muted}${truncateText("暂无已计费调用", contentW)}${SEQ.reset}`);
   } else {
@@ -283,11 +314,52 @@ export function buildSidebarFrame(
   }
   const promptTokens = Math.max(0, state.promptTokens ?? 0);
   const completionTokens = Math.max(0, state.completionTokens ?? 0);
+  const cachedPromptTokens = Math.max(0, state.cachedPromptTokens ?? 0);
   if (promptTokens > 0) tableRow("输入", `↑${formatAgentTokens(promptTokens)}`);
+  if (cachedPromptTokens > 0) {
+    const hitRatio = Math.round((cachedPromptTokens / Math.max(1, promptTokens)) * 100);
+    tableRow("含缓存", `⛁${formatAgentTokens(cachedPromptTokens)} ${hitRatio}%`);
+  }
+  if ((state.offPeakRequests ?? 0) > 0) {
+    tableRow("谷时", `☾${state.offPeakRequests} 次`);
+  }
   if (completionTokens > 0) tableRow("输出", `↓${formatAgentTokens(completionTokens)}`);
   if (state.lastTurnMs !== undefined && state.lastTurnMs > 0) {
     tableRow("上一轮", formatTurnDuration(state.lastTurnMs));
   }
+  // 未定价：明确给出可点击的入口，否则用户只会看到「¥0.0000」不知道能修。
+  if (state.hasUnpricedCost || (state.unpricedModels?.length ?? 0) > 0) {
+    const hintColor = hoverCost ? SEQ.boldAccent : SEQ.accent;
+    push(`${hintColor}${truncateText("▸ 配置单价", contentW)}${SEQ.reset}`);
+  }
+  let pricingAgentRow: number | undefined;
+  if (state.pricingAgent) {
+    const note =
+      state.pricingAgent.status === "running"
+        ? `⟳ 由 agent 查询定价：${state.pricingAgent.model}`
+        : state.pricingAgent.status === "done"
+          ? `✓ 已定价：${state.pricingAgent.model}`
+          : `✕ 定价查询失败：${state.pricingAgent.model}`;
+    const color =
+      state.pricingAgent.status === "failed"
+        ? SEQ.yellow
+        : state.pricingAgent.status === "done"
+          ? SEQ.muted
+          : SEQ.accent;
+    pricingAgentRow = rows.length;
+    const label = hoverPricingAgent ? `${SEQ.boldAccent}${note}` : `${color}${note}`;
+    push(`${label}${SEQ.reset}`);
+  }
+  // 命中区覆盖整个费用区块（标题行到最后一行）；高度被裁到 0 时视为不可点。
+  const cost: SidebarHitArea | undefined =
+    rows.length > costHitTop
+      ? {
+          top: costHitTop,
+          height: rows.length - costHitTop,
+          left: 0,
+          width: contentW,
+        }
+      : undefined;
 
   if (state.taskPlan && state.taskPlan.items.length > 0) {
     blank();
@@ -307,7 +379,17 @@ export function buildSidebarFrame(
     }
   }
 
-  return { rows: rows.slice(0, maxRows), ring };
+  // 定价 agent 那行单独给出命中区：它落在费用区块内部，点击优先级更高。
+  const pricingAgent: SidebarHitArea | undefined =
+    pricingAgentRow !== undefined && pricingAgentRow < rows.length
+      ? { top: pricingAgentRow, height: 1, left: 0, width: contentW }
+      : undefined;
+  return {
+    rows: rows.slice(0, maxRows),
+    ring,
+    ...(cost ? { cost } : {}),
+    ...(pricingAgent ? { pricingAgent } : {}),
+  };
 }
 
 /** 仅需要行内容时的便捷入口（测试与不关心圆环位置的调用方使用）。 */
@@ -317,8 +399,11 @@ export function buildSidebarRows(
   maxRows: number,
   now = Date.now(),
   hoverContext = false,
+  hoverCost = false,
+  hoverPricingAgent = false,
 ): string[] {
-  return buildSidebarFrame(state, width, maxRows, now, hoverContext).rows;
+  return buildSidebarFrame(state, width, maxRows, now, hoverContext, hoverCost, hoverPricingAgent)
+    .rows;
 }
 
 /**

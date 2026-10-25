@@ -55,6 +55,7 @@ import {
   BashTool,
   DeepSeekProvider,
   EditFileTool,
+  formatOffPeakWindow,
   GlobalFindFilesTool,
   GrepSearchTool,
   getModelMetadata,
@@ -64,8 +65,10 @@ import {
   LoadSkillTool,
   McpManager,
   MODEL_REGISTRY,
+  type OffPeakPricing,
   OpenAICompatibleProvider,
   ProjectInfoTool,
+  parseOffPeakWindow,
   ReadFileTool,
   ReadSkillResourceTool,
   type RequestDecision,
@@ -110,6 +113,7 @@ import {
   type PermissionGrant,
   readGitBranch,
   savePreference,
+  saveUserPreference,
   summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
@@ -121,6 +125,17 @@ import { handleInstinctCommand, handleMemoryCommand } from "./experience-command
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
+import {
+  describeCurrentTier,
+  formatPricingLabel,
+  parsePriceInput,
+  pricingOrigin,
+  recentPricingFailure,
+  recordPricingAttempt,
+  removePricingOverride,
+  resolveModelPricing,
+  savePricingOverride,
+} from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import {
@@ -142,6 +157,12 @@ import {
   runProjectCheck,
   shouldPushVerificationNotice,
 } from "./post-edit-verify.js";
+import {
+  deriveUpstreamModel,
+  PRICING_AGENT_TOOLS,
+  resolveOfficialPricingUrls,
+  runPricingAgent,
+} from "./pricing-agent.js";
 import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
   isBuiltinProvider,
@@ -183,6 +204,7 @@ import { detectTerminalAppearance } from "./terminal-appearance.js";
 import {
   shouldRestartBackgroundInput,
   TerminalInputCancelledError,
+  TerminalInputTakenOverError,
   TerminalUI,
 } from "./terminal-input.js";
 import { formatPermissionModeLabel } from "./terminal-panels.js";
@@ -540,7 +562,8 @@ async function main() {
 
   const permissionEngine = new PermissionEngine();
   // 会话级费用记账：主线回合的 onUsage 按注册表单价估算（/cost 查看）。
-  const costTracker = new CostTracker();
+  // 会话级费用记账：单价来自内置注册表 + 本地覆盖表（/cost 查看，费用栏可点进去配置）。
+  const costTracker = new CostTracker((model) => resolveModelPricing(model));
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   let permissionRules = loadAllPermissionRules();
@@ -763,6 +786,7 @@ async function main() {
       // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
       if (result.layersApplied.length > 0) {
         ui.noteCompaction();
+        syncSessionUsage();
         lastCompaction = {
           at: new Date().toISOString(),
           beforeTokens: result.originalTokens,
@@ -965,6 +989,10 @@ async function main() {
   sessionManager.saveCurrentSession(messages);
   markStartupStage("session_saved");
 
+  // 侧栏「费用」区块的点击入口：定价流程定义在下方，这里先留一个可赋值的中转。
+  let openPricingConfigRef: () => void = () => {};
+  let openPricingAgentDetailsRef: () => void = () => {};
+
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: buildLogo().trim(),
@@ -975,6 +1003,8 @@ async function main() {
     renderBorder: (width) => colors.gray("─".repeat(width)),
     forceNonInteractive: Boolean(headlessRequest),
     muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
+    onCostSectionClick: () => openPricingConfigRef(),
+    onPricingAgentClick: () => openPricingAgentDetailsRef(),
   });
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
@@ -1014,13 +1044,31 @@ async function main() {
   ui.setSidebarEnabled(savedPreference?.sidebar !== false);
   ui.setFoldEnabled(savedPreference?.foldProcess !== false);
   const initialCost = costTracker.getSummary();
-  ui.setCostInfo(
-    initialCost.totalCostCny,
-    initialCost.requests,
-    initialCost.hasUnpriced,
-    initialCost.promptTokens,
-    initialCost.completionTokens,
-  );
+  // 费用信息只有一个出口：记账、补单价、agent 查价后都走这里刷新侧栏。
+  const publishCostInfo = (): void => {
+    const summary = costTracker.getSummary();
+    ui.setCostInfo(
+      summary.totalCostCny,
+      summary.requests,
+      summary.hasUnpriced,
+      summary.promptTokens,
+      summary.completionTokens,
+      summary.unpricedModels,
+      summary.cachedPromptTokens,
+      summary.offPeakRequests,
+    );
+  };
+  publishCostInfo();
+  void initialCost;
+  // 会话用量（费用明细 / 压缩次数 / 上轮耗时）属于会话而不是进程：写进会话文件，
+  // /resume 时才能把侧栏还原成那个会话自己的数，而不是沿用上一个会话的。
+  const syncSessionUsage = (): void => {
+    sessionManager.setUsage({
+      costRecords: costTracker.getRecords(),
+      compactionCount: ui.getSessionMetrics().compactionCount,
+      lastTurnMs: ui.getSessionMetrics().lastTurnMs,
+    });
+  };
   for (const warning of [...mcpStartupWarnings, ...aliasSkillWarnings]) {
     // 无头模式下提示走 stderr，避免污染脚本消费的 stdout。
     if (headlessRequest) console.error(colors.warnLine(warning));
@@ -1634,6 +1682,14 @@ async function main() {
   // 待处理并发消息队列
   const pendingInputs: string[] = [];
   const deferredInputDrafts: string[] = [];
+  /**
+   * 鼠标交互（目前是侧栏「费用」点击）排队到主循环执行的动作。
+   * 直接在执行期开对话框会取消掉主循环正 await 的 readInput，主循环把那次取消当成
+   * 用户退出（点一下定价就「弹出去」）。所以先接管输入行，再由主循环顺序执行。
+   */
+  let pendingUiAction: (() => Promise<void>) | undefined;
+  /** 主循环此刻是否正 await readInput：决定点击交互是排队还是就地执行。 */
+  let mainLoopAwaitingInput = false;
   // 最近一批工具的完整输出，供 /output 查看（回合进行中不插入，避免打断流式输出）。
   let lastToolBatchOutputs: Array<{ toolName: string; summary: string; output: string }> = [];
   /** /output：把最近一批工具的完整输出写进对话区。 */
@@ -2104,6 +2160,22 @@ async function main() {
       });
   };
 
+  /**
+   * 主循环等待用户输入。鼠标交互（侧栏点击）会用 TerminalInputTakenOverError 抢走输入行，
+   * 这里返回 undefined 表示「本轮没拿到输入」，调用方 continue 重来即可，不能当用户取消退出。
+   */
+  const readMainInput = async (initialValue?: string): Promise<string | undefined> => {
+    mainLoopAwaitingInput = true;
+    try {
+      return await ui.readInput({ slashCommands, initialValue });
+    } catch (error) {
+      if (error instanceof TerminalInputTakenOverError) return undefined;
+      throw error;
+    } finally {
+      mainLoopAwaitingInput = false;
+    }
+  };
+
   // /provider 命令族的会话状态注入：访问器保持与下方 let 绑定同步
   const providerCommandContext: ProviderCommandContext = {
     ui,
@@ -2180,6 +2252,17 @@ async function main() {
     refreshAgentVerificationContext,
     saveSession: () => sessionManager.saveCurrentSession(messages),
     updateStatusUI,
+    // 会话用量跟随会话走：/resume 还原历史会话自己的记账，/clear 归零。
+    applySessionUsage: (usage) => {
+      costTracker.loadRecords(usage?.costRecords);
+      publishCostInfo();
+      ui.setSessionMetrics({
+        compactionCount: usage?.compactionCount,
+        lastTurnMs: usage?.lastTurnMs,
+      });
+      syncSessionUsage();
+      updateStatusUI();
+    },
   };
 
   // 完成 / 待授权提醒（偏好 notify：off | bell | desktop，默认 bell）。
@@ -2236,6 +2319,526 @@ async function main() {
     }
   };
 
+  // ── 未定价模型：本会话只提醒一次，之后从侧栏「费用」或 /cost config 进入配置 ──
+  const pricingPrompted = new Set<string>(
+    Array.isArray(savedPreference?.pricingPromptedModels)
+      ? savedPreference.pricingPromptedModels.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : [],
+  );
+  /** 记下「已提醒过」的模型：跨会话持久化，避免每次启动都问同一批模型。 */
+  const markPricingPrompted = (models: readonly string[]): void => {
+    let changed = false;
+    for (const model of models) {
+      if (pricingPrompted.has(model)) continue;
+      pricingPrompted.add(model);
+      changed = true;
+    }
+    if (!changed) return;
+    const base = loadPreference();
+    saveUserPreference(
+      {
+        model: base?.model || selectedModel,
+        reasoningEffort: base?.reasoningEffort || reasoningEffort,
+        ...base,
+        pricingPromptedModels: [...pricingPrompted],
+      },
+      (message) => ui.writeLine(colors.warnLine(message)),
+    );
+  };
+
+  /** 把单价写进 ~/.haji/pricing.json，并按新单价立刻重算本会话已发生的调用。 */
+  const savePricingFor = (
+    model: string,
+    inputPerMTokens: number,
+    outputPerMTokens: number,
+    source: string,
+    cachedInputPerMTokens?: number,
+    offPeak?: OffPeakPricing,
+  ): boolean => {
+    const saved = savePricingOverride(model, {
+      inputPerMTokens,
+      outputPerMTokens,
+      source,
+      ...(cachedInputPerMTokens !== undefined ? { cachedInputPerMTokens } : {}),
+      ...(offPeak ? { offPeak } : {}),
+    });
+    if (!saved.ok) {
+      ui.writeLine(colors.red(`写入单价失败：${saved.error}`));
+      return false;
+    }
+    // 有单价了，之前「查不到」的记录就没意义了。
+    recordPricingAttempt(model, undefined);
+    publishCostInfo();
+    const cachedNote =
+      cachedInputPerMTokens !== undefined ? ` · 缓存命中 ¥${cachedInputPerMTokens}` : "";
+    const offPeakNote = offPeak
+      ? ` · 谷时 ¥${offPeak.inputPerMTokens} / ¥${offPeak.outputPerMTokens}（${formatOffPeakWindow(offPeak.window)}）`
+      : "";
+    ui.writeLine(
+      colors.okLine(
+        `${model} 单价已保存：输入 ¥${inputPerMTokens} / 输出 ¥${outputPerMTokens}${cachedNote}${offPeakNote} 每百万 token（~/.haji/pricing.json）。`,
+      ),
+    );
+    return true;
+  };
+
+  let pricingAgentRunning = false;
+  /** 最近一次定价查询的过程记录（侧栏那行点开就是它）；只保留本会话最后一次。 */
+  let pricingAgentLog: { model: string; startedAt: number; lines: string[] } | undefined;
+  const logPricing = (line: string): void => {
+    if (!pricingAgentLog) return;
+    if (pricingAgentLog.lines.length >= 200) return;
+    pricingAgentLog.lines.push(line);
+  };
+  /** 打开查询过程详情（侧栏点击 agent 状态行 / /cost agent）。 */
+  const showPricingAgentDetails = (): void => {
+    if (!pricingAgentLog) {
+      ui.writeLine(colors.gray("本次会话还没有定价查询记录；先在费用区点「配置单价」交给 agent。"));
+      return;
+    }
+    const { model, startedAt, lines } = pricingAgentLog;
+    ui.writeChat(
+      [
+        colors.bold(`定价查询过程 · ${model}`),
+        colors.gray(
+          `  开始于 ${new Date(startedAt).toLocaleTimeString("zh-CN")} · ${lines.length} 条记录`,
+        ),
+        ...lines.map((line) => `  ${line}`),
+      ].join(String.fromCharCode(10)),
+    );
+  };
+  openPricingAgentDetailsRef = () => showPricingAgentDetails();
+
+  /** 官方定价页候选：provider 自己的，加上按上游模型名反推到它上游 provider 的。 */
+  const pricingLookupUrls = (model: string): string[] => {
+    const owners = [
+      detectProviderForModel(model, providerConfig),
+      detectProviderForModel(deriveUpstreamModel(model), providerConfig),
+    ];
+    return [...new Set(owners.flatMap((provider) => resolveOfficialPricingUrls(provider)))];
+  };
+  /**
+   * 后台定价 agent：用杂活模型跑一个有界工具循环（只读检索：websearch / webfetch），
+   * 结论写回定价覆盖表。不占用输入行，进度显示在侧栏「费用」区。
+   */
+  const startPricingAgent = (model: string): void => {
+    if (pricingAgentRunning) {
+      ui.writeLine(colors.gray("  已有一个定价查询在后台运行，等它结束再试。"));
+      return;
+    }
+    // 只给 websearch 不够：国内网络下检索可能整体失败，webfetch 能直接抓官方定价页。
+    const agentTools = PRICING_AGENT_TOOLS.map((name) => toolsMap.get(name)).filter(
+      (tool): tool is NonNullable<typeof tool> => tool !== undefined,
+    );
+    if (agentTools.length === 0) {
+      ui.writeLine(
+        colors.warnLine("当前没有可用的只读检索工具（websearch / webfetch），请手动输入单价。"),
+      );
+      return;
+    }
+    const recentFailure = recentPricingFailure(model);
+    if (recentFailure) {
+      ui.writeLine(
+        colors.warnLine(
+          `${model} ${recentFailure}，这次仍会重试；再失败就建议直接用 /cost config 手填。`,
+        ),
+      );
+    }
+    pricingAgentRunning = true;
+    pricingAgentLog = { model, startedAt: Date.now(), lines: [] };
+    logPricing(`模型 ${model}（provider ${detectProviderForModel(model, providerConfig)}）`);
+    ui.setPricingAgentState({ status: "running", model });
+    ui.writeLine(colors.gray(`  ↳ 后台查询 ${model} 的官方定价（只读网页检索，不打断当前会话）。`));
+    void (async () => {
+      const utility = getUtilityRuntime();
+      const agentProvider = utility?.provider ?? provider;
+      const agentModel = utility?.model ?? selectedModel;
+      const controller = new AbortController();
+      try {
+        const outcome = await runPricingAgent({
+          query: {
+            model,
+            provider: detectProviderForModel(model, providerConfig),
+            officialUrls: pricingLookupUrls(model),
+          },
+          abortSignal: controller.signal,
+          onEvent: (event) => {
+            if (event.type === "step") {
+              logPricing(`第 ${event.step}/${event.maxSteps} 步：请求模型`);
+              return;
+            }
+            if (event.type === "tool") {
+              const target = event.args.query ?? event.args.url ?? "";
+              logPricing(`  → ${event.toolName}(${String(target)})`);
+              return;
+            }
+            if (event.type === "tool_result") {
+              logPricing(`  ← ${event.ok ? "成功" : "失败"}：${event.preview}`);
+              return;
+            }
+            if (event.type === "reply") {
+              logPricing(`模型回复：${event.preview}`);
+              return;
+            }
+            logPricing(
+              event.outcome.ok
+                ? `结论：输入 ¥${event.outcome.inputPerMTokens} / 输出 ¥${event.outcome.outputPerMTokens}${
+                    event.outcome.cachedInputPerMTokens !== undefined
+                      ? ` / 缓存 ¥${event.outcome.cachedInputPerMTokens}`
+                      : ""
+                  }${
+                    event.outcome.offPeak
+                      ? ` / 谷时 ¥${event.outcome.offPeak.inputPerMTokens} / ¥${event.outcome.offPeak.outputPerMTokens}`
+                      : ""
+                  }${event.outcome.source ? `（${event.outcome.source}）` : ""}`
+                : `未查到：${event.outcome.reason}`,
+            );
+          },
+          callModel: async (messages) => {
+            let toolCalls: ToolCall[] | undefined;
+            const text = await agentProvider.complete(messages, {
+              model: agentModel,
+              reasoningEffort: "low",
+              thinking: false,
+              maxTokens: 1200,
+              tools: agentTools.map((tool) => tool.definition),
+              abortSignal: controller.signal,
+              onToolCall: (calls) => {
+                toolCalls = calls;
+              },
+            });
+            return { text, toolCalls };
+          },
+          runTool: async (name, args) => {
+            const result = await toolExecutor.execute(name, args, {
+              agentId: "pricing-agent",
+              permissionMode,
+              riskThreshold,
+              abortSignal: controller.signal,
+            });
+            return result.output;
+          },
+        });
+        if (!outcome.ok) {
+          recordPricingAttempt(model, outcome.reason);
+          ui.setPricingAgentState({ status: "failed", model, detail: outcome.reason });
+          ui.writeLine(
+            colors.warnLine(`定价查询未成功：${outcome.reason}。可用 /cost config 手动输入单价。`),
+          );
+          return;
+        }
+        const saved = savePricingFor(
+          model,
+          outcome.inputPerMTokens,
+          outcome.outputPerMTokens,
+          outcome.source ? `agent: ${outcome.source}` : "agent 查询",
+          outcome.cachedInputPerMTokens,
+          outcome.offPeak
+            ? {
+                inputPerMTokens: outcome.offPeak.inputPerMTokens,
+                outputPerMTokens: outcome.offPeak.outputPerMTokens,
+                ...(outcome.offPeak.cachedInputPerMTokens !== undefined
+                  ? { cachedInputPerMTokens: outcome.offPeak.cachedInputPerMTokens }
+                  : {}),
+                window: {
+                  startMinute: outcome.offPeak.startMinute,
+                  endMinute: outcome.offPeak.endMinute,
+                  ...(outcome.offPeak.utcOffsetMinutes !== undefined
+                    ? { utcOffsetMinutes: outcome.offPeak.utcOffsetMinutes }
+                    : {}),
+                },
+              }
+            : undefined,
+        );
+        ui.setPricingAgentState(
+          saved ? { status: "done", model } : { status: "failed", model, detail: "写入失败" },
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        ui.setPricingAgentState({ status: "failed", model, detail: reason });
+        ui.writeLine(colors.warnLine(`定价查询失败：${reason}。可用 /cost config 手动配置。`));
+      } finally {
+        pricingAgentRunning = false;
+      }
+    })();
+  };
+
+  /**
+   * 定价录入要独占输入行：抢走（takeOver）而不是取消——主循环收到
+   * TerminalInputTakenOverError 会继续等待下一句，不会把这次操作当成用户退出。
+   */
+  const readPricingLine = async (prompt: string): Promise<string> => {
+    const draft = ui.takeOverInput();
+    try {
+      return await ui.readInput({ prompt });
+    } finally {
+      if (draft?.trim()) startBackgroundInput(draft);
+    }
+  };
+
+  /** 手动录入单价：输入/输出各问一次，两个都是正数才写入。 */
+  const configurePricingManually = async (model: string): Promise<void> => {
+    const current = resolveModelPricing(model);
+    const currentHint = current ? `（当前 ${formatPricingLabel(current)}）` : "";
+    try {
+      const inputText = await readPricingLine(
+        colors.muted(`${model} 输入单价（元 / 百万 token）${currentHint}：`),
+      );
+      const inputPrice = parsePriceInput(inputText);
+      if (inputPrice === undefined) {
+        ui.writeLine(colors.red("输入单价必须是大于 0 的数字，已取消。"));
+        return;
+      }
+      const outputText = await readPricingLine(
+        colors.muted(`${model} 输出单价（元 / 百万 token）：`),
+      );
+      const outputPrice = parsePriceInput(outputText);
+      if (outputPrice === undefined) {
+        ui.writeLine(colors.red("输出单价必须是大于 0 的数字，已取消。"));
+        return;
+      }
+      // 缓存命中价可选：留空表示该模型没有缓存折扣（或 provider 不上报命中数）。
+      const cachedText = await readPricingLine(
+        colors.muted(`${model} 缓存命中输入单价（元 / 百万 token，直接回车跳过）：`),
+      );
+      let cachedPrice: number | undefined;
+      if (cachedText.trim()) {
+        cachedPrice = parsePriceInput(cachedText);
+        if (cachedPrice === undefined) {
+          ui.writeLine(colors.yellow("缓存命中单价无效，已忽略（按普通输入价计费）。"));
+        } else if (cachedPrice > inputPrice) {
+          ui.writeLine(colors.yellow("缓存命中单价高于输入单价，已忽略（按普通输入价计费）。"));
+          cachedPrice = undefined;
+        }
+      }
+      // 谷时价可选：先问两个谷时单价，再问时段（回车用官方常见的 00:30–08:30 UTC+8）。
+      const offPeakText = await readPricingLine(
+        colors.muted(`${model} 谷时单价（格式 输入/输出，如 0.25/1；回车跳过）：`),
+      );
+      let offPeak: OffPeakPricing | undefined;
+      if (offPeakText.trim()) {
+        const [offInputRaw, offOutputRaw] = offPeakText.split("/").map((part) => part.trim());
+        const offInput = parsePriceInput(offInputRaw ?? "");
+        const offOutput = parsePriceInput(offOutputRaw ?? "");
+        if (offInput === undefined || offOutput === undefined) {
+          ui.writeLine(colors.yellow("谷时单价格式不对（要 输入/输出 两个数），已跳过谷时配置。"));
+        } else if (offInput >= inputPrice || offOutput >= outputPrice) {
+          ui.writeLine(colors.yellow("谷时单价不低于峰时单价，已跳过谷时配置。"));
+        } else {
+          const windowText = await readPricingLine(
+            colors.muted("谷时时段（如 00:30-08:30，默认北京时间；回车用 00:30-08:30）："),
+          );
+          const parsedWindow = parseOffPeakWindow(windowText.trim() || "00:30-08:30");
+          if (!parsedWindow) {
+            ui.writeLine(colors.yellow("谷时时段格式不对（要 HH:MM-HH:MM），已跳过谷时配置。"));
+          } else {
+            offPeak = {
+              inputPerMTokens: offInput,
+              outputPerMTokens: offOutput,
+              window: parsedWindow,
+            };
+          }
+        }
+      }
+      savePricingFor(model, inputPrice, outputPrice, "手动录入", cachedPrice, offPeak);
+    } catch {
+      ui.writeLine(colors.gray("  已取消单价录入。"));
+    }
+  };
+
+  /** /cost price <模型> <输入单价> <输出单价>：脚本化的一次写入。 */
+  const applyPricingFromArgs = async (args: readonly string[]): Promise<void> => {
+    const [modelArg, inputArg, outputArg, cachedArg, offPeakArg, windowArg] = args;
+    if (!modelArg || !inputArg || !outputArg) {
+      ui.writeLine(
+        colors.red(
+          "用法：/cost price <模型> <输入单价> <输出单价> [缓存命中单价] [谷时输入/谷时输出] [谷时时段]",
+        ),
+      );
+      return;
+    }
+    const inputPrice = parsePriceInput(inputArg);
+    const outputPrice = parsePriceInput(outputArg);
+    if (inputPrice === undefined || outputPrice === undefined) {
+      ui.writeLine(colors.red("单价必须是大于 0 的数字（元 / 百万 token）。"));
+      return;
+    }
+    let cachedPrice: number | undefined;
+    if (cachedArg?.trim()) {
+      cachedPrice = parsePriceInput(cachedArg);
+      if (cachedPrice === undefined || cachedPrice > inputPrice) {
+        ui.writeLine(colors.yellow("缓存命中单价无效或高于输入单价，已忽略。"));
+        cachedPrice = undefined;
+      }
+    }
+    let offPeak: OffPeakPricing | undefined;
+    if (offPeakArg?.trim()) {
+      const [offInputRaw, offOutputRaw] = offPeakArg.split("/").map((part) => part.trim());
+      const offInput = parsePriceInput(offInputRaw ?? "");
+      const offOutput = parsePriceInput(offOutputRaw ?? "");
+      const parsedWindow = windowArg?.trim()
+        ? parseOffPeakWindow(windowArg)
+        : // 省略时段时按官方常见谷时（北京 00:30–08:30）。
+          parseOffPeakWindow("00:30-08:30");
+      if (offInput === undefined || offOutput === undefined) {
+        ui.writeLine(colors.yellow("谷时单价格式不对（要 输入/输出），已跳过谷时配置。"));
+      } else if (offInput >= inputPrice || offOutput >= outputPrice) {
+        ui.writeLine(colors.yellow("谷时单价不低于峰时单价，已跳过谷时配置。"));
+      } else if (!parsedWindow) {
+        ui.writeLine(colors.yellow("谷时时段格式不对（要 HH:MM-HH:MM），已跳过谷时配置。"));
+      } else {
+        offPeak = { inputPerMTokens: offInput, outputPerMTokens: offOutput, window: parsedWindow };
+      }
+    }
+    savePricingFor(modelArg, inputPrice, outputPrice, "手动录入", cachedPrice, offPeak);
+  };
+
+  /** 费用栏点击与 /cost config 的入口：选模型 → 手动输入 / agent 查询 / 删除覆盖。 */
+  const openPricingConfig = async (): Promise<void> => {
+    const summary = costTracker.getSummary();
+    const candidates = [
+      ...new Set([...summary.unpricedModels, ...summary.byModel.map((entry) => entry.model)]),
+    ];
+    if (candidates.length === 0) {
+      ui.writeLine(
+        colors.gray("本会话还没有模型调用记录；可用 /cost price <模型> <输入> <输出> 直接配置。"),
+      );
+      return;
+    }
+    try {
+      const pickedModel = await readSelectionSafely(
+        {
+          title: "配置哪个模型的单价？",
+          items: candidates.map((model) => {
+            const origin = pricingOrigin(model);
+            return {
+              value: model,
+              label: model,
+              description:
+                origin === "none"
+                  ? "未定价 · 只能统计 tokens"
+                  : origin === "builtin"
+                    ? "内置单价"
+                    : "本地覆盖",
+            };
+          }),
+        },
+        "restore",
+      );
+      const model = pickedModel.value;
+      const origin = pricingOrigin(model);
+      const pricing = resolveModelPricing(model);
+      const originLabel =
+        origin === "none" ? "未定价" : origin === "builtin" ? "内置单价" : "本地覆盖单价";
+      const pickedAction = await readSelectionSafely(
+        {
+          title: `${model} · ${originLabel}`,
+          preview: [
+            pricing
+              ? colors.muted(`当前单价：${formatPricingLabel(pricing)}`)
+              : colors.muted("当前没有单价，费用只能统计 tokens"),
+            ...(pricing?.offPeak
+              ? [
+                  colors.accent(
+                    describeCurrentTier(model) === "offPeak"
+                      ? "当前时段：谷时（按谷时价计费）"
+                      : "当前时段：峰时（谷时时段外）",
+                  ),
+                ]
+              : []),
+          ],
+          items: [
+            {
+              value: "manual",
+              label: "手动输入单价",
+              description: "写入 ~/.haji/pricing.json",
+              hotkey: "m",
+            },
+            { value: "agent", label: "交给后台 agent 查官方定价", hotkey: "a" },
+            ...(origin === "override"
+              ? [{ value: "remove", label: "删除本地覆盖", hotkey: "d" }]
+              : []),
+          ],
+        },
+        "restore",
+      );
+      if (pickedAction.value === "manual") {
+        await configurePricingManually(model);
+      } else if (pickedAction.value === "agent") {
+        startPricingAgent(model);
+      } else if (pickedAction.value === "remove") {
+        if (removePricingOverride(model)) {
+          publishCostInfo();
+          ui.writeLine(colors.okLine(`已删除 ${model} 的本地单价覆盖。`));
+        } else {
+          ui.writeLine(colors.gray(`  ${model} 没有本地覆盖。`));
+        }
+      }
+    } catch {
+      ui.writeLine(colors.gray("  已取消（有输入/选择正在进行时，等它结束后再试）。"));
+    }
+  };
+  openPricingConfigRef = () => {
+    // 主循环可能正 await readInput。此时直接开对话框会取消掉那次等待，主循环把取消当成
+    // 用户退出（现象就是「点一下定价就弹出去」）。改成：抢走输入行、草稿还给下一轮，
+    // 由主循环按顺序执行定价流程。
+    if (mainLoopAwaitingInput) {
+      if (pendingUiAction) return;
+      const draft = ui.takeOverInput();
+      if (draft?.trim()) deferredInputDrafts.unshift(draft);
+      pendingUiAction = () => openPricingConfig();
+      return;
+    }
+    void openPricingConfig();
+  };
+
+  /**
+   * 出现未定价模型时问一次：后台查价 / 手动输入 / 稍后 / 不再提示。
+   * 无论选什么都会记为「已提醒」，后续入口只剩侧栏「费用」与 /cost config。
+   */
+  const maybeOfferPricingAgent = async (): Promise<void> => {
+    if (headlessRequest || pricingAgentRunning) return;
+    const summary = costTracker.getSummary();
+    const pending = summary.unpricedModels.filter((model) => !pricingPrompted.has(model));
+    if (pending.length === 0) return;
+    const model = pending[0];
+    try {
+      const choice = await readSelectionSafely(
+        {
+          title: `${model} 没有单价，本次费用只能统计 tokens`,
+          items: [
+            {
+              value: "agent",
+              label: "交给后台 agent 查官方定价",
+              description: "只读网页检索，不打断当前操作",
+              hotkey: "a",
+            },
+            { value: "manual", label: "我现在手动输入单价", hotkey: "m" },
+            { value: "later", label: "稍后再说（侧栏「费用」可随时点开）", hotkey: "l" },
+            { value: "never", label: "不再提示这个模型", hotkey: "n" },
+          ],
+        },
+        "restore",
+      );
+      markPricingPrompted(pending);
+      if (choice.value === "agent") {
+        startPricingAgent(model);
+      } else if (choice.value === "manual") {
+        await configurePricingManually(model);
+      } else if (choice.value === "later") {
+        ui.writeLine(colors.gray("  提示：点击侧栏「费用」或输入 /cost config 可随时补单价。"));
+      }
+    } catch {
+      // 用户正在输入/选择时插不进对话框：按「已提醒」处理，把入口留给 /cost config。
+      markPricingPrompted(pending);
+      ui.writeLine(
+        colors.gray("  点击侧栏「费用」或输入 /cost config 可配置单价，本会话不再追问。"),
+      );
+    }
+  };
+
   // 回合执行（turn-runner.ts）的状态注入：permissionMode / riskThreshold 用访问器
   // （Plan 审批会在回合中切档），provider / 模型 / 强度在回合开始时快照即可。
   const turnDeps: TurnDeps = {
@@ -2256,14 +2859,8 @@ async function main() {
     getReasoningEffort: () => reasoningEffort,
     recordCost: (model, usage, purpose) => {
       costTracker.record(model, usage, purpose);
-      const summary = costTracker.getSummary();
-      ui.setCostInfo(
-        summary.totalCostCny,
-        summary.requests,
-        summary.hasUnpriced,
-        summary.promptTokens,
-        summary.completionTokens,
-      );
+      publishCostInfo();
+      syncSessionUsage();
     },
     getTitleUtility: getUtilityRuntime,
     getPermissionMode: () => permissionMode,
@@ -2311,8 +2908,16 @@ async function main() {
       }
       // 侧栏“上一轮 12.4s”：耗时本来就由 turn-runner 回调，顺手落到侧栏。
       ui.setLastTurnDuration(durationMs);
+      syncSessionUsage();
+      // 回合已经收尾：此刻的消息是完整状态，把用量和消息一起落盘，
+      // 退出后 /resume 才能看到本会话真实的费用、压缩次数与上轮耗时。
+      sessionManager.saveCurrentSession(messages);
+      // 回合刚结束、消息已完整：此刻落盘最安全（用量与消息一起写，退出后 /resume 能还原）。
+      sessionManager.saveCurrentSession(messages);
       maybeWarnContextUsage();
       maybeWarnBudget();
+      // 未定价模型：本会话首次出现时问一次要不要交给后台 agent 查价。
+      void maybeOfferPricingAgent();
     },
   };
 
@@ -2382,6 +2987,12 @@ async function main() {
       slashCommands = buildSlashCommandCatalog(skillRegistry.list());
       let userInput: string;
       let forwardedFromHub = false;
+      if (pendingUiAction) {
+        const action = pendingUiAction;
+        pendingUiAction = undefined;
+        await action();
+        continue;
+      }
       if (hubForwardedCommand !== undefined) {
         userInput = hubForwardedCommand;
         hubForwardedCommand = undefined;
@@ -2389,13 +3000,17 @@ async function main() {
       } else if (deferredInputDrafts.length > 0) {
         const draft = deferredInputDrafts.shift()!;
         ui.cancelInput();
-        userInput = await ui.readInput({ slashCommands, initialValue: draft });
+        const typed = await readMainInput(draft);
+        if (typed === undefined) continue;
+        userInput = typed;
       } else if (pendingInputs.length > 0) {
         userInput = pendingInputs.shift()!;
         ui.setQueue(pendingInputs);
       } else {
         const draft = ui.cancelInput();
-        userInput = await ui.readInput({ slashCommands, initialValue: draft });
+        const typed = await readMainInput(draft);
+        if (typed === undefined) continue;
+        userInput = typed;
       }
       injectAgentNotifications();
 
@@ -2722,6 +3337,8 @@ async function main() {
           sessionManager.saveCurrentSession(messages);
           if (result.layersApplied.length > 0) {
             ui.noteCompaction();
+            syncSessionUsage();
+            sessionManager.saveCurrentSession(messages);
             lastCompaction = {
               at: new Date().toISOString(),
               beforeTokens: result.originalTokens,
@@ -3074,7 +3691,27 @@ async function main() {
           continue;
         }
         if (command === "cost") {
+          const costSub = (parts[1] || "").toLowerCase();
+          if (costSub === "config") {
+            await openPricingConfig();
+            continue;
+          }
+          if (costSub === "price") {
+            await applyPricingFromArgs(parts.slice(2));
+            continue;
+          }
+          if (costSub === "agent") {
+            showPricingAgentDetails();
+            continue;
+          }
           ui.writeChat(costTracker.formatCostReport().join("\n"));
+          if (costTracker.getSummary().hasUnpriced) {
+            ui.writeLine(
+              colors.gray(
+                "  补单价：点击侧栏「费用」，或 /cost config（也可 /cost price <模型> <输入单价> <输出单价>）。",
+              ),
+            );
+          }
           continue;
         }
         if (command === "diff") {

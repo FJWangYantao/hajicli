@@ -9,6 +9,7 @@ import {
   type ChatMessage,
   isFailedToolOutput,
   type SessionManager,
+  type SessionUsage,
   type SkillRegistry,
   type SnapshotEngine,
   type TaskStore,
@@ -53,6 +54,11 @@ export interface SessionCommandContext {
   refreshAgentVerificationContext(messages: ChatMessage[]): boolean;
   saveSession(): void;
   updateStatusUI(): void;
+  /**
+   * 把会话用量（费用明细 / 压缩次数 / 上轮耗时）整体应用到侧栏：
+   * /resume 用历史会话自己的记录，/clear 传 undefined 归零。
+   */
+  applySessionUsage(usage: SessionUsage | undefined): void;
 }
 
 /** 分发 /clear 指令；调用方负责其后的主循环 continue。 */
@@ -65,6 +71,8 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   skillRegistry.clearLoaded("main");
   ctx.resetPlanReviewState();
   ctx.syncTaskPlanUI();
+  // 新会话从零开始：费用、压缩次数、上轮耗时都必须退回 0，否则侧栏还挂着上一个会话的数。
+  ctx.applySessionUsage(undefined);
   ctx.setMessages([{ role: "system", content: ctx.getSystemPrompt() }]);
   ctx.refreshAgentVerificationContext(ctx.getMessages());
   ctx.saveSession();
@@ -93,6 +101,8 @@ async function loadAndRenderSession(
   skillRegistry.restoreScopeFromMessages("main", loaded.messages);
   await ctx.refreshSystemPrompt();
   ctx.refreshAgentVerificationContext(loaded.messages);
+  // 侧栏恢复到被恢复会话自己的用量：费用、压缩次数、上轮耗时都跟着换，不留上一个会话的数。
+  ctx.applySessionUsage(loaded.usage);
   ctx.saveSession();
   ctx.updateStatusUI();
   const pieces: ChatSegmentPiece[] = [];

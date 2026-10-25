@@ -9,6 +9,12 @@ import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
+import {
+  buildInputSelectionGeometry,
+  type InputSelectionGeometry,
+  inputCellFromPoint,
+  inputRowHighlightSpan,
+} from "./input-selection.js";
 import { type ChatSegmentView, type FoldGroupStats, renderSegmentText } from "./process-fold.js";
 import {
   type ActivityBadge,
@@ -55,6 +61,7 @@ import {
   composeSidebarRow,
   resolveSidebarWidth,
   SIDEBAR_GAP_WIDTH,
+  type SidebarPricingAgentState,
   type SidebarState,
 } from "./tui-sidebar.js";
 
@@ -119,6 +126,10 @@ export interface TerminalUIOptions {
   forceNonInteractive?: boolean;
   /** 无头 JSON 输出模式：非交互下正文也不写 stdout，由调用方统一输出 JSON。 */
   muteNonInteractiveOutput?: boolean;
+  /** 点击侧栏「费用」区块：打开单价配置（未定价模型补价）。 */
+  onCostSectionClick?: () => void;
+  /** 点击费用区里那行定价 agent 状态：打开查询过程详情。 */
+  onPricingAgentClick?: () => void;
 }
 
 export interface ReadInputOptions {
@@ -283,6 +294,18 @@ export class TerminalInputCancelledError extends Error {
   }
 }
 
+/**
+ * 输入行被鼠标交互（侧栏点击等）临时接管。
+ * 刻意不继承 TerminalInputCancelledError：用户取消（Ctrl+D）会让主循环退出，
+ * 而接管只是换一个交互继续，主循环必须继续等下一轮输入而不是收摊。
+ */
+export class TerminalInputTakenOverError extends Error {
+  constructor() {
+    super("Terminal input taken over");
+    this.name = "TerminalInputTakenOverError";
+  }
+}
+
 function isRealCtrlC(value: string, key: readline.Key): boolean {
   return value === "\x03" && key.ctrl === true && key.name === "c";
 }
@@ -392,6 +415,14 @@ export class TerminalUI {
   private costHasUnpriced = false;
   private costPromptTokens = 0;
   private costCompletionTokens = 0;
+  /** 其中命中缓存的输入 token（用来解释费用为何低于全价估算）。 */
+  private costCachedPromptTokens = 0;
+  /** 按谷时价计费的请求数。 */
+  private costOffPeakRequests = 0;
+  /** 仍未定价的模型名：侧栏费用区据此显示可点击的配置入口。 */
+  private costUnpricedModels: string[] = [];
+  /** 后台定价 agent 的状态行；undefined 表示没有在跑也没有结果。 */
+  private pricingAgentState?: SidebarPricingAgentState;
   /** 上一轮回合耗时（ms）；undefined 表示本会话还没跑完一轮。 */
   private lastTurnMs?: number;
   /** 本会话上下文压缩次数（自动 + 手动）；用于解释圆环为何突然掉下来。 */
@@ -404,6 +435,25 @@ export class TerminalUI {
     rowStart: number;
     rowEnd: number;
   };
+  /** 鼠标是否悬停在侧栏费用区块（可点击补单价）；命中区域每帧随布局更新。 */
+  private sidebarCostHovered = false;
+  private sidebarCostHit?: {
+    columnStart: number;
+    columnEnd: number;
+    rowStart: number;
+    rowEnd: number;
+  };
+  /** 费用区块按下时的屏幕行：松开仍在同一行才算一次点击。 */
+  private pendingCostClickRow?: number;
+  /** 定价 agent 状态行的悬停/命中/按下状态（它在费用区块内部，点击优先级更高）。 */
+  private sidebarPricingHovered = false;
+  private sidebarPricingHit?: {
+    columnStart: number;
+    columnEnd: number;
+    rowStart: number;
+    rowEnd: number;
+  };
+  private pendingPricingClickRow?: number;
   /** 悬停需要 any-event 鼠标跟踪（1003），仅在侧栏可见时开启。 */
   private mouseMotionEnabled = false;
   private taskPanelTitle = "";
@@ -418,6 +468,14 @@ export class TerminalUI {
   private chatViewport?: ChatViewport;
   private selectionLayout?: AnsiTextLayout;
   private pendingMouseSelection?: PendingMouseSelection;
+  /** 输入框自己的选区：与对话区互斥，复制的是输入的原文而不是渲染行。 */
+  private readonly inputSelection = new TextSelectionModel();
+  private inputSelectionGeometry?: InputSelectionGeometry;
+  /** 输入框正文首行在屏幕上的 0-based 行号与行数（鼠标命中判定用）。 */
+  private inputSelectionTop?: number;
+  private inputSelectionHeight = 0;
+  /** 按下但还没移动：单击输入框不产生选区，拖动才算选中。 */
+  private pendingInputSelection?: { column: number; row: number };
   private selectionPointer?: { column: number; row: number };
   private selectionLayoutContent = "";
   private selectionLayoutWidth = 0;
@@ -543,12 +601,24 @@ export class TerminalUI {
     hasUnpriced = false,
     promptTokens = 0,
     completionTokens = 0,
+    unpricedModels: readonly string[] = [],
+    cachedPromptTokens = 0,
+    offPeakRequests = 0,
   ): void {
     this.costCny = totalCostCny;
     this.costRequests = Math.max(0, requests);
     this.costHasUnpriced = hasUnpriced;
     this.costPromptTokens = Math.max(0, promptTokens);
     this.costCompletionTokens = Math.max(0, completionTokens);
+    this.costCachedPromptTokens = Math.max(0, cachedPromptTokens);
+    this.costOffPeakRequests = Math.max(0, offPeakRequests);
+    this.costUnpricedModels = [...unpricedModels];
+    this.scheduleRender();
+  }
+
+  /** 后台定价 agent 的状态行（费用区那一行）；传 null 清掉。 */
+  setPricingAgentState(state: SidebarPricingAgentState | null): void {
+    this.pricingAgentState = state ?? undefined;
     this.scheduleRender();
   }
 
@@ -563,6 +633,24 @@ export class TerminalUI {
   noteCompaction(): void {
     this.compactionCount += 1;
     this.scheduleRender();
+  }
+
+  /** 侧栏使用的会话用量快照（切会话 / 落盘时与费用一起同步）。 */
+  getSessionMetrics(): { compactionCount: number; lastTurnMs: number } {
+    return { compactionCount: this.compactionCount, lastTurnMs: this.lastTurnMs ?? 0 };
+  }
+
+  /**
+   * 整体恢复侧栏用量。与 setLastTurnDuration 不同，这里允许归零：
+   * /clear 与恢复一个没有记录的老会话时，侧栏必须真的退回 0。
+   */
+  setSessionMetrics(metrics: { compactionCount?: number; lastTurnMs?: number }): void {
+    const compactionCount = Math.max(0, Math.round(metrics.compactionCount ?? 0));
+    const lastTurnMs = Math.max(0, Math.round(metrics.lastTurnMs ?? 0));
+    if (compactionCount === this.compactionCount && lastTurnMs === this.lastTurnMs) return;
+    this.compactionCount = compactionCount;
+    this.lastTurnMs = lastTurnMs;
+    this.scheduleRender(true);
   }
 
   setTaskPlan(
@@ -835,10 +923,22 @@ export class TerminalUI {
   }
 
   cancelInput(): string | undefined {
+    return this.abortInput(new TerminalInputCancelledError());
+  }
+
+  /**
+   * 鼠标交互要独占输入行：结束当前输入并返回未发送的草稿。
+   * 与 cancelInput 的区别只在抛出的错误类型——主循环据此判断是「继续」还是「退出」。
+   */
+  takeOverInput(): string | undefined {
+    return this.abortInput(new TerminalInputTakenOverError());
+  }
+
+  private abortInput(error: Error): string | undefined {
     if (!this.activeInput) return undefined;
     const draft = this.activeInput.graphemes.join("");
     this.pendingImages = [];
-    this.finishInput(new TerminalInputCancelledError());
+    this.finishInput(error);
     return draft;
   }
 
@@ -1612,6 +1712,67 @@ export class TerminalUI {
     return true;
   }
 
+  /** 输入框正文在屏幕上的行号（0-based）是否落在输入框内；是则返回行内序号。 */
+  private inputRowIndexAt(row: number): number | undefined {
+    const top = this.inputSelectionTop;
+    if (top === undefined || this.inputSelectionHeight <= 0) return undefined;
+    // 鼠标报文的行号是 1-based，inputSelectionTop 是 0-based 屏幕行索引。
+    const screenRow = row - 1;
+    if (screenRow < top || screenRow >= top + this.inputSelectionHeight) return undefined;
+    return screenRow - top;
+  }
+
+  /** 拖动更新输入框选区；指针拖到输入框外时夹到首/末行，保证选区连续。 */
+  private updateInputSelection(column: number, row: number): void {
+    const geometry = this.inputSelectionGeometry;
+    if (!geometry || !this.inputSelection.dragging) return;
+    const top = this.inputSelectionTop ?? 0;
+    const targetRow = Math.max(0, Math.min(geometry.rowCount - 1, row - 1 - top));
+    const cell = inputCellFromPoint(geometry, targetRow, column);
+    if (cell) this.inputSelection.update(cell);
+    this.scheduleRender();
+  }
+
+  private getSelectedInputText(): string {
+    const geometry = this.inputSelectionGeometry;
+    if (!geometry) return "";
+    return this.inputSelection.selectedText(geometry.document);
+  }
+
+  /**
+   * 复制输入框里选中的原文。终端开着鼠标跟踪，原生拖选拿不到输入行，所以输入框
+   * 走自己的选区：复制完保留高亮（clearSelection=false 同对话区）。
+   */
+  private copyInputSelection(clearSelection = true): boolean {
+    const text = this.getSelectedInputText();
+    if (!text) return false;
+
+    void this.clipboardWriter.write(text).then((success) => {
+      if (!success) return;
+      this.flashCopied();
+      if (clearSelection && this.getSelectedInputText() === text) {
+        this.inputSelection.clear();
+      }
+      this.scheduleRender(true);
+    });
+    return true;
+  }
+
+  /** 把输入框行里的选区高亮写回 inputBlock（行的位置与内容都不变，只加反显）。 */
+  private highlightInputRows(inputBlock: string[], offset: number): void {
+    const geometry = this.inputSelectionGeometry;
+    const selection = this.inputSelection.range();
+    if (!geometry || !selection) return;
+    for (let index = 0; index < geometry.rowCount; index += 1) {
+      const target = offset + index;
+      const row = inputBlock[target];
+      if (row === undefined) break;
+      const span = inputRowHighlightSpan(geometry, selection, index);
+      if (!span) continue;
+      inputBlock[target] = highlightAnsiColumns(row, span.startColumn - 1, span.endColumn);
+    }
+  }
+
   /** 把复制角标贴到首行右端（顶部标题行）。宽度不够时不贴。 */
   private overlayCopiedNotice(rows: string[], width: number): void {
     if (!this.copiedNotice || rows.length === 0) return;
@@ -1726,8 +1887,39 @@ export class TerminalUI {
 
     const isLeftButton = (event.button & 3) === 0;
     if (event.action === "down" && isLeftButton) {
+      // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
+      const inputRow = this.inputRowIndexAt(event.row);
+      if (inputRow !== undefined) {
+        this.stopSelectionAutoScroll();
+        this.selectionPointer = undefined;
+        this.pendingMouseSelection = undefined;
+        this.pendingCostClickRow = undefined;
+        this.pendingPricingClickRow = undefined;
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        // 单击不产生选区：只有真的拖动才从锚点开始选，避免一点就复制一个字符。
+        this.pendingInputSelection = { column: event.column, row: event.row };
+        this.inputSelection.clear();
+        this.scheduleRender();
+        return;
+      }
+      // 定价 agent 状态行优先于费用区块：先记下按下的屏幕行，松开仍同一行才算点击。
+      if (this.isPointInPricingAgentRow(event.column, event.row)) {
+        this.pendingMouseSelection = undefined;
+        this.pendingPricingClickRow = event.row;
+        return;
+      }
+      // 侧栏费用区块：只记下屏幕行，松开仍在同一行才算一次点击（拖动时不误触）。
+      if (this.isPointInCostSection(event.column, event.row)) {
+        this.pendingMouseSelection = undefined;
+        this.pendingCostClickRow = event.row;
+        return;
+      }
       this.stopSelectionAutoScroll();
       this.selectionPointer = undefined;
+      this.pendingCostClickRow = undefined;
+      this.inputSelection.clear();
+      this.pendingInputSelection = undefined;
       const logicalRow = this.getLogicalChatRow(event.row);
       if (logicalRow === undefined) {
         this.pendingMouseSelection = undefined;
@@ -1749,6 +1941,30 @@ export class TerminalUI {
       return;
     }
 
+    if (event.action === "move" && isLeftButton && this.pendingInputSelection) {
+      const pending = this.pendingInputSelection;
+      if (pending.column === event.column && pending.row === event.row) {
+        return;
+      }
+      this.pendingInputSelection = undefined;
+      const geometry = this.inputSelectionGeometry;
+      const anchorRow = this.inputRowIndexAt(pending.row);
+      const anchor =
+        geometry && anchorRow !== undefined
+          ? inputCellFromPoint(geometry, anchorRow, pending.column)
+          : undefined;
+      if (anchor) {
+        this.inputSelection.begin(anchor);
+        this.updateInputSelection(event.column, event.row);
+      }
+      return;
+    }
+
+    if (event.action === "move" && isLeftButton && this.inputSelection.dragging) {
+      this.updateInputSelection(event.column, event.row);
+      return;
+    }
+
     if (event.action === "move" && isLeftButton && this.pendingMouseSelection) {
       const pending = this.pendingMouseSelection;
       if (pending.column === event.column && pending.row === event.row) {
@@ -1765,6 +1981,45 @@ export class TerminalUI {
 
     if (event.action === "move" && isLeftButton && this.textSelection.dragging) {
       this.updateMouseSelection(event.column, event.row);
+      return;
+    }
+
+    if (event.action === "up" && isLeftButton && this.pendingInputSelection) {
+      // 按下后没拖动：只是点了输入框，不产生选区，也不复制。
+      this.pendingInputSelection = undefined;
+      this.inputSelection.clear();
+      this.scheduleRender();
+      return;
+    }
+
+    if (event.action === "up" && isLeftButton && this.inputSelection.dragging) {
+      const geometry = this.inputSelectionGeometry;
+      const row = this.inputRowIndexAt(event.row);
+      const cell =
+        geometry && row !== undefined ? inputCellFromPoint(geometry, row, event.column) : undefined;
+      this.inputSelection.finish(cell);
+      // 与对话区一致：松开即自动复制，高亮保留，方便继续调整选区。
+      this.copyInputSelection(false);
+      this.scheduleRender();
+      return;
+    }
+
+    if (event.action === "up" && isLeftButton && this.pendingPricingClickRow !== undefined) {
+      const pressedRow = this.pendingPricingClickRow;
+      this.pendingPricingClickRow = undefined;
+      if (pressedRow === event.row && this.isPointInPricingAgentRow(event.column, event.row)) {
+        this.options.onPricingAgentClick?.();
+      }
+      return;
+    }
+
+    // 侧栏费用区块：按下与松开落在同一屏幕行、且仍在区块内，才算一次有意的点击。
+    if (event.action === "up" && isLeftButton && this.pendingCostClickRow !== undefined) {
+      const pressedRow = this.pendingCostClickRow;
+      this.pendingCostClickRow = undefined;
+      if (pressedRow === event.row && this.isPointInCostSection(event.column, event.row)) {
+        this.options.onCostSectionClick?.();
+      }
       return;
     }
 
@@ -1793,6 +2048,30 @@ export class TerminalUI {
       this.copyChatSelection(false);
       this.scheduleRender();
     }
+  }
+
+  /** 鼠标位置是否落在费用区里那行定价 agent 状态上。 */
+  private isPointInPricingAgentRow(column: number, row: number): boolean {
+    const hit = this.sidebarPricingHit;
+    return Boolean(
+      hit &&
+        column >= hit.columnStart &&
+        column <= hit.columnEnd &&
+        row >= hit.rowStart &&
+        row <= hit.rowEnd,
+    );
+  }
+
+  /** 鼠标位置是否落在侧栏费用区块的命中范围内。 */
+  private isPointInCostSection(column: number, row: number): boolean {
+    const hit = this.sidebarCostHit;
+    return Boolean(
+      hit &&
+        column >= hit.columnStart &&
+        column <= hit.columnEnd &&
+        row >= hit.rowStart &&
+        row <= hit.rowEnd,
+    );
   }
 
   private readonly handleMouseData = (data: Buffer | string) => {
@@ -1874,7 +2153,7 @@ export class TerminalUI {
    * - 空闲 / 空输入：第一次提示，2 秒内第二次退出（130）。
    */
   private handleCtrlCInteraction(): void {
-    if (this.copyChatSelection()) {
+    if (this.copyChatSelection() || this.copyInputSelection()) {
       this.lastCtrlCAt = 0;
       return;
     }
@@ -1952,8 +2231,17 @@ export class TerminalUI {
     const cursorIndex = activeInput?.cursorIndex ?? 0;
     const layout = layoutInput(prompt, graphemes, width, continuationPrompt);
     const cursor = layout.positions[cursorIndex];
+    // 输入框选区以 layoutInput 的 positions 为准（每行提示符、软换行都不进文档）。
+    const previousDocument = this.inputSelectionGeometry?.document;
 
     if (layout.rows.length <= maxRows) {
+      this.inputSelectionGeometry = buildInputSelectionGeometry(
+        graphemes,
+        layout,
+        layout.rows.length,
+        0,
+      );
+      this.dropStaleInputSelection(previousDocument);
       return { rows: layout.rows, cursor };
     }
 
@@ -1962,10 +2250,29 @@ export class TerminalUI {
       layout.rows.length - maxRows,
     );
 
+    this.inputSelectionGeometry = buildInputSelectionGeometry(
+      graphemes,
+      layout,
+      maxRows,
+      firstVisibleRow,
+    );
+    this.dropStaleInputSelection(previousDocument);
+
     return {
       rows: layout.rows.slice(firstVisibleRow, firstVisibleRow + maxRows),
       cursor: { row: cursor.row - firstVisibleRow, column: cursor.column },
     };
+  }
+
+  /**
+   * 输入内容变了（打字、退格、召回历史、粘贴）：旧的字符偏移已经指向别的文字，
+   * 选区必须丢弃——否则高亮会盖在错的字上，Ctrl+C 还会复制错内容。
+   */
+  private dropStaleInputSelection(previousDocument: string | undefined): void {
+    if (!this.inputSelection.active) return;
+    if (this.inputSelectionGeometry?.document === previousDocument) return;
+    this.inputSelection.clear();
+    this.pendingInputSelection = undefined;
   }
 
   private getCommandSuggestions(activeInput: ActiveInput): readonly SlashCommand[] {
@@ -2219,16 +2526,32 @@ export class TerminalUI {
 
   /** 鼠标移动时只关心是否进入/离开圆环命中区域，避免每次移动都重绘。 */
   private updateSidebarHover(column: number, row: number): void {
-    const hit = this.sidebarRingHit;
-    const hovered = Boolean(
-      hit &&
-        column >= hit.columnStart &&
-        column <= hit.columnEnd &&
-        row >= hit.rowStart &&
-        row <= hit.rowEnd,
-    );
-    if (hovered === this.sidebarRingHovered) return;
-    this.sidebarRingHovered = hovered;
+    const within = (hit?: {
+      columnStart: number;
+      columnEnd: number;
+      rowStart: number;
+      rowEnd: number;
+    }): boolean =>
+      Boolean(
+        hit &&
+          column >= hit.columnStart &&
+          column <= hit.columnEnd &&
+          row >= hit.rowStart &&
+          row <= hit.rowEnd,
+      );
+    const ringHovered = within(this.sidebarRingHit);
+    const costHovered = within(this.sidebarCostHit);
+    const pricingHovered = within(this.sidebarPricingHit);
+    if (
+      ringHovered === this.sidebarRingHovered &&
+      costHovered === this.sidebarCostHovered &&
+      pricingHovered === this.sidebarPricingHovered
+    ) {
+      return;
+    }
+    this.sidebarRingHovered = ringHovered;
+    this.sidebarCostHovered = costHovered;
+    this.sidebarPricingHovered = pricingHovered;
     this.scheduleRender(true);
   }
 
@@ -2239,6 +2562,12 @@ export class TerminalUI {
       costCny: this.costCny,
       costRequests: this.costRequests,
       hasUnpricedCost: this.costHasUnpriced,
+      ...(this.costUnpricedModels.length > 0 ? { unpricedModels: this.costUnpricedModels } : {}),
+      ...(this.pricingAgentState ? { pricingAgent: this.pricingAgentState } : {}),
+      ...(this.costCachedPromptTokens > 0
+        ? { cachedPromptTokens: this.costCachedPromptTokens }
+        : {}),
+      ...(this.costOffPeakRequests > 0 ? { offPeakRequests: this.costOffPeakRequests } : {}),
       promptTokens: this.costPromptTokens,
       completionTokens: this.costCompletionTokens,
       lastTurnMs: this.lastTurnMs,
@@ -2454,6 +2783,20 @@ export class TerminalUI {
     const chatHeight = emergencyMinimal
       ? Math.max(0, height - inputBlock.length)
       : Math.max(1, height - topRows.length - 1 - inputBlock.length);
+    // 输入框正文的屏幕行区间（供鼠标拖选命中）与选区高亮。
+    // 顺序：先按未着色的行算出几何，再把高亮写回 inputBlock 的对应位置。
+    if (inputLayout) {
+      const inputTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
+      this.inputSelectionTop = inputTop + inputCursorOffset;
+      this.inputSelectionHeight = inputLayout.rows.length;
+      this.highlightInputRows(inputBlock, inputCursorOffset);
+    } else {
+      // 选择器打开时输入框让位：选区一并清掉，避免残留高亮。
+      this.inputSelectionTop = undefined;
+      this.inputSelectionHeight = 0;
+      this.inputSelection.clear();
+      this.pendingInputSelection = undefined;
+    }
     // 对话区使用响应式内边距：内容按收窄后的宽度换行，
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
     const chatPadding = layout.chatPadding;
@@ -2535,6 +2878,8 @@ export class TerminalUI {
           chatHeight,
           Date.now(),
           this.sidebarRingHovered,
+          this.sidebarCostHovered,
+          this.sidebarPricingHovered,
         )
       : { rows: [] as string[], ring: undefined };
     const sidebarRows = sidebarFrame.rows;
@@ -2551,6 +2896,37 @@ export class TerminalUI {
     } else {
       this.sidebarRingHit = undefined;
       this.sidebarRingHovered = false;
+    }
+    // 费用区块同理：整段可点，点进去配单价（未定价时尤其需要入口）。
+    if (sidebarVisible && sidebarFrame.cost) {
+      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.cost.left;
+      this.sidebarCostHit = {
+        columnStart,
+        columnEnd: columnStart + sidebarFrame.cost.width - 1,
+        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.cost.top + 1,
+        rowEnd: 0,
+      };
+      this.sidebarCostHit.rowEnd = this.sidebarCostHit.rowStart + sidebarFrame.cost.height - 1;
+    } else {
+      this.sidebarCostHit = undefined;
+      this.sidebarCostHovered = false;
+      this.pendingCostClickRow = undefined;
+    }
+    // 定价 agent 那一行的命中区（落在费用区块内部，点击时优先命中）。
+    if (sidebarVisible && sidebarFrame.pricingAgent) {
+      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.pricingAgent.left;
+      this.sidebarPricingHit = {
+        columnStart,
+        columnEnd: columnStart + sidebarFrame.pricingAgent.width - 1,
+        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.pricingAgent.top + 1,
+        rowEnd: 0,
+      };
+      this.sidebarPricingHit.rowEnd =
+        this.sidebarPricingHit.rowStart + sidebarFrame.pricingAgent.height - 1;
+    } else {
+      this.sidebarPricingHit = undefined;
+      this.sidebarPricingHovered = false;
+      this.pendingPricingClickRow = undefined;
     }
     this.setMouseMotionEnabled(sidebarVisible);
     const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill("")].map(
@@ -2630,6 +3006,9 @@ export class TerminalUI {
     this.fileMentionQuery = "";
     this.fileMentionCandidates = [];
     this.fileMentionSelectedIndex = 0;
+    // 草稿已提交/取消：输入框选区随之作废，避免下一次输入被高亮到错误位置。
+    this.inputSelection.clear();
+    this.pendingInputSelection = undefined;
     this.scheduleRender(true);
 
     if (error) {

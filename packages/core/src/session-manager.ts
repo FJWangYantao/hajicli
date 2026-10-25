@@ -8,12 +8,38 @@ import type { ChatMessage } from "./types.js";
 
 const SESSION_FLUSH_DELAY_MS = 120;
 
+/**
+ * 一条模型调用的记账：只存 token 与时刻，不存金额。
+ * 金额在展示时按调用时刻的单价复算，因此事后补单价也能把旧调用算对。
+ */
+export interface SessionCostRecord {
+  model: string;
+  purpose: string;
+  /** 调用发生时刻（ms）；峰谷价按它判定。 */
+  at: number;
+  promptTokens: number;
+  /** 其中命中缓存的输入 token（≤ promptTokens）。 */
+  cachedPromptTokens: number;
+  completionTokens: number;
+}
+
+/** 会话内用量：/resume 时据此把侧栏的费用、压缩次数与上轮耗时复原。 */
+export interface SessionUsage {
+  costRecords?: SessionCostRecord[];
+  /** 本会话已发生的上下文压缩次数。 */
+  compactionCount?: number;
+  /** 上一轮回合耗时（ms）。 */
+  lastTurnMs?: number;
+}
+
 export interface StoredSession {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
+  /** 用量记账；老会话文件没有该字段，按零值处理。 */
+  usage?: SessionUsage;
 }
 
 interface PendingSessionWrite {
@@ -90,6 +116,8 @@ export class SessionManager {
   private currentSession: StoredSession;
   private lastQueuedMessages: ChatMessage[] = [];
   private lastQueuedTitle = "";
+  /** 已经入队的用量快照（JSON 序列化）；用于识别「只有用量变了」的保存请求。 */
+  private lastQueuedUsage = "";
   private readonly pendingWrites = new Map<string, PendingSessionWrite>();
   private writeChain: Promise<void> = Promise.resolve();
   private flushTimer: NodeJS.Timeout | null = null;
@@ -154,12 +182,26 @@ export class SessionManager {
     return this.currentSession;
   }
 
+  /**
+   * 更新当前会话的用量记账（费用明细 / 压缩次数 / 上轮耗时）。
+   * 只改内存并标脏：真正的落盘与消息一起由 flush 完成。
+   */
+  public setUsage(usage: SessionUsage): void {
+    this.currentSession.usage = {
+      costRecords: usage.costRecords?.map((record) => ({ ...record })) ?? [],
+      compactionCount: usage.compactionCount ?? 0,
+      lastTurnMs: usage.lastTurnMs ?? 0,
+    };
+  }
+
   /** Updates memory immediately and coalesces disk writes for the same session. */
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
     if (title) this.currentSession.title = title;
 
+    const usageKey = JSON.stringify(this.currentSession.usage ?? null);
     const unchanged =
       this.lastQueuedTitle === this.currentSession.title &&
+      this.lastQueuedUsage === usageKey &&
       sameMessages(this.lastQueuedMessages, messages);
     if (unchanged) return;
 
@@ -177,12 +219,24 @@ export class SessionManager {
         session: {
           ...this.currentSession,
           messages: snapshot,
+          ...(this.currentSession.usage
+            ? {
+                usage: {
+                  costRecords: this.currentSession.usage.costRecords?.map((record) => ({
+                    ...record,
+                  })),
+                  compactionCount: this.currentSession.usage.compactionCount,
+                  lastTurnMs: this.currentSession.usage.lastTurnMs,
+                },
+              }
+            : {}),
         },
       });
     }
 
     this.lastQueuedMessages = snapshot;
     this.lastQueuedTitle = this.currentSession.title;
+    this.lastQueuedUsage = usageKey;
     this.scheduleFlush();
   }
 
@@ -236,6 +290,7 @@ export class SessionManager {
       this.currentSession = session;
       this.lastQueuedMessages = session.messages.map(cloneMessage);
       this.lastQueuedTitle = session.title;
+      this.lastQueuedUsage = JSON.stringify(session.usage ?? null);
       return session;
     } catch {
       return null;
@@ -284,6 +339,7 @@ export class SessionManager {
     };
     this.lastQueuedMessages = [];
     this.lastQueuedTitle = "";
+    this.lastQueuedUsage = "null";
     return this.currentSession;
   }
 

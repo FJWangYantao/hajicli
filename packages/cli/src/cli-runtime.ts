@@ -44,6 +44,11 @@ export interface Preferences {
   foldProcess?: boolean;
   /** Auto 模式的信任边界（自然语言，拼进安全分类器系统提示词）；缺省为工作目录及其 git remote。 */
   autoEnvironment?: string;
+  /**
+   * 已经问过「要不要交给后台 agent 查定价」的模型名。
+   * 提醒只发生一次：之后统一走侧栏「费用」或 /cost config。
+   */
+  pricingPromptedModels?: string[];
 }
 
 function readPreferences(filePath: string): Preferences | null {

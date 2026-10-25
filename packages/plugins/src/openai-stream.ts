@@ -23,6 +23,10 @@ interface OpenAICompatibleStreamData {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /** DeepSeek / 火山方舟：命中缓存的输入 token。 */
+    prompt_cache_hit_tokens?: number;
+    /** OpenAI 系：缓存命中数放在 prompt_tokens_details.cached_tokens 里。 */
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 }
 
@@ -42,7 +46,26 @@ export interface OpenAICompatibleResponseData {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /** DeepSeek / 火山方舟：命中缓存的输入 token。 */
+    prompt_cache_hit_tokens?: number;
+    /** OpenAI 系：缓存命中数放在 prompt_tokens_details.cached_tokens 里。 */
+    prompt_tokens_details?: { cached_tokens?: number };
   };
+}
+
+/**
+ * 各家的缓存命中字段名不统一，统一映射成 prompt_cache_hit_tokens；
+ * 没有上报就返回空对象，费用仍按全价估算（宁可高估，也不要莫名打折）。
+ */
+export function cachedUsageFields(usage: {
+  prompt_cache_hit_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}): { prompt_cache_hit_tokens?: number } {
+  const direct = usage.prompt_cache_hit_tokens;
+  const nested = usage.prompt_tokens_details?.cached_tokens;
+  const value = typeof direct === "number" ? direct : nested;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return {};
+  return { prompt_cache_hit_tokens: value };
 }
 
 export interface OpenAIStreamParserOptions {

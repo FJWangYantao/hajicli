@@ -313,7 +313,22 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "查看性能指标（reset 清空采样）",
         subcommands: [{ command: "/perf reset", description: "读取后清空性能采样" }],
       },
-      { command: "/cost", description: "本会话费用估算（按模型单价与 token 用量）" },
+      {
+        command: "/cost",
+        description: "本会话费用估算（按模型单价与 token 用量）",
+        subcommands: [
+          { command: "/cost config", description: "配置未定价模型的单价（手动输入 / agent 查询）" },
+          {
+            command: "/cost price",
+            description:
+              "/cost price <模型> <输入> <输出> [缓存价] [谷时输入/谷时输出] [谷时时段]，元/百万",
+          },
+          {
+            command: "/cost agent",
+            description: "查看最近一次定价查询的过程（也可直接点侧栏那行）",
+          },
+        ],
+      },
       { command: "/diff", description: "查看本会话累计改动（文件与 diff）" },
       { command: "/output", description: "查看最后一批工具调用的完整输出" },
       { command: "/doctor", description: "一次性自检：Key 连通、引擎、ripgrep、MCP 等" },

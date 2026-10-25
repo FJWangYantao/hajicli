@@ -288,7 +288,10 @@ test("selector transitions cancel background input and preserve its draft", asyn
   assert.match(source, /pendingInputs\.push\(draft\)/);
   assert.doesNotMatch(source, /await ui\.readSelection\(/);
   assert.match(source, /shouldRestartBackgroundInput\(trimmed\)/);
-  assert.match(source, /ui\.readInput\(\{ slashCommands, initialValue: draft \}\)/);
+  assert.match(source, /ui\.readInput\(\{ slashCommands, initialValue \}\)/);
+  // 鼠标交互抢占输入行时用 takeOverInput（接管≠取消），否则主循环会当成用户退出。
+  assert.match(source, /ui\.takeOverInput\(\)/);
+  assert.match(source, /error instanceof TerminalInputTakenOverError/);
 });
 
 test("network policy reads dedicated and standard proxy variables deterministically", () => {

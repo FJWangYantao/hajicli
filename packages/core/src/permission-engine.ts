@@ -380,6 +380,9 @@ export class PermissionEngine {
       "projectinfo",
       "selfstate",
       "history",
+      // 内置网络工具的实际名字没有下划线；带下划线的写法保留兼容旧别名。
+      "websearch",
+      "webfetch",
       "web_search",
       "web_fetch",
       "loadskill",

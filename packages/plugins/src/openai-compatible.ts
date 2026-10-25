@@ -9,7 +9,11 @@ import {
 } from "@hajicli/core";
 import { messageContentOrParts } from "./image-attachments.js";
 import { fetchWithNetworkPolicy, getModelTimeoutMs } from "./network.js";
-import { type OpenAICompatibleResponseData, parseOpenAICompatibleStream } from "./openai-stream.js";
+import {
+  cachedUsageFields,
+  type OpenAICompatibleResponseData,
+  parseOpenAICompatibleStream,
+} from "./openai-stream.js";
 import { AlwaysThinkingAdapter } from "./thinking-compat.js";
 
 /** 模型请求最大重试次数（首次失败后最多再重试 5 次，指数退避）。 */
@@ -95,6 +99,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         prompt_tokens: data.usage.prompt_tokens,
         completion_tokens: data.usage.completion_tokens,
         total_tokens: data.usage.total_tokens,
+        ...cachedUsageFields(data.usage),
       });
     }
 
