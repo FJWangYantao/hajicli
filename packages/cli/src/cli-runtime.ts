@@ -549,6 +549,9 @@ export function summarizeToolResult(
       text: `已写入 ${formatBytes(Number(writtenBytes[1]))}${lines > 0 ? ` · ${lines} 行` : ""}`,
     };
   }
+  if (body.startsWith("[文件无需修改]")) {
+    return { status: "success", text: "目标内容已存在 · 无需修改" };
+  }
   if (body.startsWith("[文件精准编辑成功]")) {
     if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
       return { status: "success", text: "已替换 1 处" };

@@ -583,9 +583,62 @@ test("edit miss names the agent's own previous edit instead of blaming an extern
       newText: "again",
     });
     assert.match(second, /找不到指定的 oldText 原文/);
-    assert.match(second, /最近一次改动是你自己/);
+    assert.match(second, /最近一次改动来自本会话/);
     assert.doesNotMatch(second, /hash冲突/);
     assert.equal(await fs.readFile("own-edit.txt", "utf8"), "updated\n");
+  });
+});
+
+test("edit reports no-op when the target content is already in the file", async () => {
+  await withWorkspace(async () => {
+    const current = [
+      "/** 侧栏内一块可命中区域。 */",
+      "export interface SidebarHitArea {",
+      "  top: number;",
+      "  height: number;",
+      "  left: number;",
+      "  width: number;",
+      "}",
+      "",
+      "/** 上下文圆环的命中区域（沿用同一套几何描述）。 */",
+      "export type SidebarRingGeometry = SidebarHitArea;",
+      "",
+      "export interface SidebarFrame {",
+      "  rows: string[];",
+      "  ring?: SidebarRingGeometry;",
+      "  cost?: SidebarHitArea;",
+      "}",
+      "",
+    ].join("\n");
+    await fs.writeFile("applied.ts", current);
+    const result = await new EditFileTool().execute({
+      path: "applied.ts",
+      oldText: [
+        "/** 圆环在侧栏中的位置。 */",
+        "export interface SidebarRingGeometry {",
+        "  top: number;",
+        "  height: number;",
+        "  left: number;",
+        "  width: number;",
+        "}",
+      ].join("\n"),
+      newText: [
+        "/** 侧栏内的矩形命中区（点击、悬停共用）。 */",
+        "export interface SidebarHitArea {",
+        "  top: number;",
+        "  height: number;",
+        "  left: number;",
+        "  width: number;",
+        "}",
+        "",
+        "/** 圆环在侧栏中的位置。 */",
+        "export type SidebarRingGeometry = SidebarHitArea;",
+      ].join("\n"),
+    });
+    assert.match(result, /\[文件无需修改\]/);
+    assert.match(result, /newText 的主体已经在文件里/);
+    assert.doesNotMatch(result, /找不到指定的 oldText 原文/);
+    assert.equal(await fs.readFile("applied.ts", "utf8"), current);
   });
 });
 

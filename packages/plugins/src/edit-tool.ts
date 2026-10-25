@@ -25,6 +25,35 @@ const REGION_MAX_LINES = 12;
 /** 同一文件连续同类 oldText 未命中的计数；期间 read 过就重置。 */
 const missStreaks = new Map<string, { category: string; readSeq: number; count: number }>();
 
+/**
+ * 目标内容是否已经在文件里：忽略注释行与空白后，newText 的每一行按顺序出现。
+ * 用于识别「上一笔编辑（自己或子代理）已经写入了同一目标」——此时再按旧 oldText
+ * 定位必然失败，重试只会空转。
+ */
+function looksAlreadyApplied(content: string, newText: string): boolean {
+  const significant = (text: string): string[] =>
+    text
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.length > 0 &&
+          !line.startsWith("//") &&
+          !line.startsWith("/*") &&
+          !line.startsWith("*") &&
+          line !== "*/",
+      );
+  const needles = significant(newText);
+  if (needles.length < 3) return false;
+  let at = 0;
+  for (const line of significant(content)) {
+    if (line === needles[at]) at += 1;
+    if (at === needles.length) return true;
+  }
+  return false;
+}
+
 function missKey(agentId: string | undefined, filePath: string): string {
   return `${agentId ?? ""}\0${filePath}`;
 }
@@ -300,6 +329,16 @@ export class EditFileTool implements BaseTool {
           continue;
         }
 
+        // oldText 未命中但目标内容已在文件里：多半是上一笔编辑（自己或子代理）已经写入。
+        // 此时无论怎么重写 oldText 都不可能命中，直接按「无需修改」收尾，避免原地空转。
+        if (match.count === 0 && looksAlreadyApplied(content, args.newText)) {
+          clearEditMiss(context?.agentId, resolvedPath);
+          const staleNote = stale
+            ? `\n另: expectedHash 已过期（期望 ${expectedHash}，当前 ${currentHash}），当前文件仍满足本次修改目标。`
+            : "";
+          return `[文件无需修改]\n路径: ${filePath}\ncurrentHash=${currentHash}\n说明: oldText 未命中，但 newText 的主体已经在文件里（可能由你或子代理的上一笔编辑写入）。本次没有写盘。${staleNote}`;
+        }
+
         if (stale) {
           if (match.count > 1) {
             return `编辑失败: [hash冲突] [并发写入] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），${recentWriteNote}且 oldText 在当前内容中匹配到多处。请停止继续编辑，向用户说明并确认是否有另一个代理在跑。`;
@@ -321,7 +360,7 @@ export class EditFileTool implements BaseTool {
           const miss = analyzeOldTextMiss(content, args.oldText);
           const ownEdit = fileVersions.isOwnHead(context?.agentId, resolvedPath, currentHash);
           const hint = ownEdit
-            ? "\n注意: 该文件最近一次改动是你自己在本轮做的（当前 hash 就是你的版本链尾），oldText 很可能取自改动前的旧文本。"
+            ? "\n注意: 该文件最近一次改动来自本会话（你自己或子代理），当前 hash 就是版本链尾，oldText 很可能取自改动前的旧文本。"
             : "";
           const hashNote = stale
             ? `\n另: expectedHash 已过期（期望 ${expectedHash}，当前 ${currentHash}），本次已按最新内容判定。`

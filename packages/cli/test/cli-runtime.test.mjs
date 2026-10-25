@@ -205,6 +205,13 @@ test("tool result summaries surface exit codes, counts and rejections", () => {
   );
   assert.equal(hashConflict.status, "failed");
   assert.match(hashConflict.text, /hash冲突/);
+  const noop = summarizeToolResult(
+    "edit",
+    "[文件无需修改]\n路径: a.ts\ncurrentHash=0123456789abcdef\n说明: 目标内容已存在。",
+    { blocked: false },
+  );
+  assert.equal(noop.status, "success");
+  assert.match(noop.text, /目标内容已存在/);
   assert.deepEqual(summarizeToolResult("grep", "错误: 缺少 query 参数。", { blocked: true }), {
     status: "failed",
     text: "缺少 query 参数。",
