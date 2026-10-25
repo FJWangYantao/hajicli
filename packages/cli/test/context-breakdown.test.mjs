@@ -4,6 +4,7 @@ import test from "node:test";
 import { estimateMessagesTokens } from "@hajicli/core";
 import {
   buildContextBreakdown,
+  buildContextItemGroups,
   CONTEXT_CATEGORIES,
   CONTEXT_CATEGORY_LABELS,
   totalBreakdownTokens,
@@ -94,4 +95,85 @@ test("tool definition tokens are cached per tool set", () => {
   assert.equal(first, second);
   const wider = buildContextBreakdown([], [...definitions, toolDefinition("bash")]).tools;
   assert.ok(wider > first, "工具集合变化后必须重算");
+});
+
+test("item groups mirror the breakdown totals and keep every entry summed", () => {
+  const messages = [
+    { role: "system", content: "系统提示词".repeat(30) },
+    { role: "user", content: "问题".repeat(20) },
+    { role: "assistant", content: "", tool_calls: [toolCall("c1", "read")] },
+    { role: "tool", tool_call_id: "c1", content: "文件正文".repeat(40) },
+    { role: "assistant", content: "看完了".repeat(10) },
+  ];
+  const definitions = [toolDefinition("read"), toolDefinition("bash")];
+  const breakdown = buildContextBreakdown(messages, definitions);
+  const groups = buildContextItemGroups(messages, definitions);
+
+  assert.deepEqual(
+    groups.map((group) => group.category),
+    [...CONTEXT_CATEGORIES],
+    "分类顺序与侧栏图例一致",
+  );
+  for (const group of groups) {
+    assert.equal(
+      group.tokens,
+      breakdown[group.category],
+      `${group.category} 的合计必须等于圆环分项`,
+    );
+    const sum = group.items.reduce((acc, item) => acc + item.tokens, 0);
+    assert.equal(sum, group.tokens, `${group.category} 的条目 tokens 之和必须等于分类合计`);
+  }
+});
+
+test("tool results carry the call arguments and the result body", () => {
+  const call = {
+    id: "c9",
+    type: "function",
+    function: { name: "read", arguments: JSON.stringify({ path: "AGENTS.md" }) },
+  };
+  const messages = [
+    { role: "assistant", content: "", tool_calls: [call] },
+    { role: "tool", tool_call_id: "c9", content: "正文内容" },
+  ];
+  const fileGroup = buildContextItemGroups(messages).find((group) => group.category === "file");
+  assert.equal(fileGroup.items.length, 1);
+  assert.equal(fileGroup.items[0].label, "read AGENTS.md", "标题带工具名与关键参数");
+  assert.match(fileGroup.items[0].detail, /AGENTS\.md/, "详情里能看到入参");
+  assert.match(fileGroup.items[0].detail, /正文内容/, "详情里能看到结果");
+  assert.equal(fileGroup.items[0].messageIndex, 1, "记住消息下标，供页面跳回");
+});
+
+test("tool definitions and conversation entries are labelled by ordinal", () => {
+  const messages = [
+    { role: "user", content: "第一问" },
+    { role: "assistant", content: "第一答" },
+    { role: "assistant", content: "第二答" },
+  ];
+  const groups = buildContextItemGroups(messages, [toolDefinition("grep")]);
+  const conversation = groups.find((group) => group.category === "conversation");
+  assert.deepEqual(
+    conversation.items.map((item) => item.label),
+    ["用户 #1", "助手 #1", "助手 #2"],
+    "同角色条目按出现顺序编号",
+  );
+  const tools = groups.find((group) => group.category === "tools");
+  assert.equal(tools.items[0].label, "工具定义 grep");
+  assert.match(tools.items[0].detail, /"parameters"/, "详情是完整的 schema");
+});
+
+test("empty history still returns six empty groups", () => {
+  const groups = buildContextItemGroups([]);
+  assert.equal(groups.length, CONTEXT_CATEGORIES.length);
+  for (const group of groups) {
+    assert.equal(group.tokens, 0);
+    assert.equal(group.items.length, 0);
+  }
+});
+
+test("an untraceable tool call keeps its result but loses the name", () => {
+  const groups = buildContextItemGroups([{ role: "tool", tool_call_id: "gone", content: "孤立" }]);
+  const toolResult = groups.find((group) => group.category === "toolResult");
+  assert.equal(toolResult.items.length, 1);
+  assert.equal(toolResult.items[0].label, "(未知工具)");
+  assert.match(toolResult.items[0].detail, /孤立/);
 });

@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>上下文详情页 · 终端列宽原型</title>
+<style>
+  :root{
+    --fg:#d9dee7; --muted:#8f98a5; --faint:#5c6270; --accent:#a995d6;
+    --red:#e07a7a; --green:#78b892; --yellow:#d6a85f; --blue:#82aadd;
+    --magenta:#b8a1df; --cyan:#7dcfff; --bg:#14131a; --sel:#1f1d2b;
+    --cell:14px; --lh:19px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:24px 28px 48px;background:#0b0a10;color:var(--fg);
+    font-family:"JetBrains Mono","Cascadia Mono",Consolas,"Sarasa Term SC","Microsoft YaHei UI",monospace;
+    font-variant-ligatures:none;
+  }
+  h1{font-size:15px;font-weight:600;letter-spacing:.04em;margin:0 0 4px}
+  .sub{font-size:12px;color:var(--muted);margin:0 0 18px;line-height:1.7}
+  .bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  button{
+    background:#1b1a23;color:var(--muted);border:1px solid #2b2937;border-radius:7px;
+    padding:7px 13px;font:inherit;font-size:12px;cursor:pointer;transition:.12s;
+  }
+  button:hover{color:var(--fg);border-color:#3c394c}
+  button.on{background:#241f33;color:#cdbcf3;border-color:#584c7c}
+  .screen{
+    background:var(--bg);border:1px solid #272532;border-radius:9px;
+    padding:12px 0 12px 14px;width:max-content;max-width:100%;overflow:auto;
+    box-shadow:0 18px 40px -28px #000;
+  }
+  .row{height:var(--lh);line-height:var(--lh);white-space:pre;font-size:var(--cell);display:flex}
+  .row.selbg{background:var(--sel)}
+  .cell{display:inline-block;vertical-align:top;overflow:hidden;flex:none}
+  .fg{color:var(--fg)} .muted{color:var(--muted)} .faint{color:var(--faint)}
+  .accent{color:var(--accent)} .boldaccent{color:#c6b6ee;font-weight:600}
+  .green{color:var(--green)} .red{color:var(--red)} .yellow{color:var(--yellow)}
+  .blue{color:var(--blue)} .magenta{color:var(--magenta)} .cyan{color:var(--cyan)}
+  .ring{color:var(--accent);cursor:pointer}
+  .ringFaint{color:#4d4661;cursor:pointer}
+  .ring:hover,.ringFaint:hover{color:#e6dcff}
+  .sel{color:#efe9ff;font-weight:600}
+  .hint{margin-top:14px;font-size:12px;color:var(--muted);line-height:1.9}
+  .hint code{color:#bdb2e0;background:#191821;padding:1px 5px;border-radius:4px}
+  .ruler{font-size:12px;color:#4a4756;height:16px;line-height:16px;white-space:pre;display:flex}
+</style>
+</head>
+<body>
+  <h1>上下文详情页 · 终端列宽原型</h1>
+  <p class="sub">
+    每格按真实终端列宽渲染（中文 2 列、框线 1 列），所以对齐结果和 hajicli 里 <code>terminalWidth()</code> 算出来的一致。<br />
+    点侧栏的圆环 → 进入页面；<kbd>Esc</kbd> 或再点圆环 → 返回。
+  </p>
+
+  <div class="bar">
+    <button data-view="current" class="on">现状（点圆环）</button>
+    <button data-view="pageA">页面 A · 保留侧栏</button>
+    <button data-view="pageB">页面 B · 收起侧栏</button>
+    <button id="rulerBtn">列标尺</button>
+  </div>
+
+  <div id="ruler" class="ruler"></div>
+  <div class="screen" id="screen"></div>
+
+  <div class="hint">
+    <strong style="color:#c6b6ee">页面 A</strong>：对话区视口内（71 列），上下分段 —— 分类行 / 条目列表 / 原文详情。<br />
+    <strong style="color:#c6b6ee">页面 B</strong>：进页面时临时收起侧栏，拿回 100 列，左列表 + 右原文两栏。<br />
+    页面 B 的“侧栏已收起”提示行说明这是临时状态，退出即恢复；圆环在页面里保留为返回锚点。
+  </div>
+
+<script>
+// ────────────────────────── 终端网格 ──────────────────────────
+const W = 100, H = 30;
+const CHAT_W = 71;            // 对话区宽度（100 - 侧栏 26 - 分隔带 3）
+const SIDEBAR_START = 74;     // 侧栏起始列
+const SIDEBAR_W = 26;
+
+// East Asian Width：宽字符占 2 列
+const WIDE = [
+  [0x1100,0x115F],[0x2E80,0x303E],[0x3041,0x33FF],[0x3400,0x4DBF],
+  [0x4E00,0x9FFF],[0xA000,0xA4CF],[0xAC00,0xD7A3],[0xF900,0xFAFF],
+  [0xFE30,0xFE4F],[0xFF00,0xFF60],[0xFFE0,0xFFE6],[0x1F300,0x1F64F],
+  [0x1F900,0x1F9FF],[0x20000,0x2FFFD],[0x30000,0x3FFFD],
+];
+function cw(ch){
+  const cp = ch.codePointAt(0);
+  if (cp < 0x1100) return 1;
+  for (const [a,b] of WIDE) if (cp >= a && cp <= b) return 2;
+  return 1;
+}
+const widthOf = (s) => Array.from(s).reduce((n,ch)=>n+cw(ch),0);
+
+function newGrid(){ return { cells: Array.from({length:H},()=>new Array(W).fill(null)), rowCls: new Array(H).fill("") }; }
+
+function put(g,r,c,text,cls){
+  let col = c;
+  for (const ch of text){
+    const w = cw(ch);
+    if (col + w > W) break;
+    g.cells[r][col] = { ch, w, cls: cls || "" };
+    for (let k=1;k<w;k++) g.cells[r][col+k] = { skip: true };
+    col += w;
+  }
+  return col;
+}
+function fill(g,r,c1,c2,ch,cls){
+  for (let c=c1;c<c2;c++){
+    if (c<0||c>=W) continue;
+    g.cells[r][c] = { ch, w:1, cls: cls || "" };
+  }
+}
+/** 写文字后补空格到 c2（空格不加 class，保留底色） */
+function putPad(g,r,c1,c2,text,cls,cursor){
+  let col = put(g,r,c1,text,cls);
+  fill(g,r,col,c2," ","");
+  return cursor === undefined ? col : cursor;
+}
+/** 右边对齐写一段文字：结束列固定在 c2 */
+function putRight(g,r,c2,text,cls){
+  return put(g,r,c2 - widthOf(text), text, cls);
+}
+
+/** 顶部圆角边框：┌ 标题 ─── 右侧文字 ┐ */
+function topBorder(g,r,c0,c1,title,right,titleCls){
+  put(g,r,c0,"╭","faint");
+  let col = c0+1;
+  if (title){ col = put(g,r,col," ",""); col = put(g,r,col,title,titleCls||"boldaccent"); col = put(g,r,col," ",""); }
+  const rightW = right ? widthOf(right)+2 : 0;
+  fill(g,r,col,c1-1-rightW,"─","faint");
+  if (right){ col = put(g,r,c1-1-rightW," ",""); col = put(g,r,col,right,"muted"); col = put(g,r,col," ",""); }
+  put(g,r,c1-1,"╮","faint");
+}
+function bottomBorder(g,r,c0,c1,hint){
+  put(g,r,c0,"╰","faint");
+  let col = c0+1;
+  if (hint){ col = put(g,r,col," ",""); col = put(g,r,col,hint,"muted"); col = put(g,r,col," ",""); }
+  fill(g,r,col,c1-1,"─","faint");
+  put(g,r,c1-1,"╯","faint");
+}
+function hline(g,r,c0,c1,mode){
+  if (mode === "tee"){ put(g,r,c0,"├","faint"); put(g,r,c0+1,"─","faint"); }
+  // 简化：整行 ─，起止用 ├ ┤
+  for (let c=c0;c<c1;c++) put(g,r,c,"─","faint");
+  put(g,r,c0,"├","faint"); put(g,r,c1-1,"┤","faint");
+}
+function sideBorder(g,r,c0,c1){ put(g,r,c0,"│","faint"); put(g,r,c1-1,"│","faint"); }
+
+// ────────────────────────── 圆环（照 buildContextRing 的点阵逻辑）──────────────────────────
+function ringRows(width,height,ratio){
+  const dotsW = width*2, dotsH = height*4;
+  const cx = (dotsW-1)/2, cy = (dotsH-1)/2;
+  const out = [];
+  for (let row=0; row<height; row++){
+    const cells = [];
+    for (let col=0; col<width; col++){
+      let mask = 0, dots = 0, filled = 0;
+      for (let dx=0;dx<2;dx++) for (let dy=0;dy<4;dy++){
+        const bit = dy<3 ? dx*3+dy : 6+dx;
+        const nx = dotsW<=1 ? 0 : (col*2+dx-cx)/(dotsW/2);
+        const ny = dotsH<=1 ? 0 : (row*4+dy-cy)/(dotsH/2);
+        const d = Math.hypot(nx,ny);
+        if (d < 0.7 || d > 1.0) continue;
+        mask |= 1<<bit; dots++;
+        const angle = Math.atan2(nx,-ny);
+        const frac = (angle/(2*Math.PI)+1)%1;
+        if (frac <= ratio) filled++;
+      }
+      cells.push(dots>0 && filled*2>=dots ? { mask, on:true } : { mask, on:false });
+    }
+    out.push(cells);
+  }
+  return out;
+}
+
+function drawRing(g, r0, c0, width, height, ratio, pctText){
+  const rows = ringRows(width,height,ratio);
+  rows.forEach((cells,ri)=>{
+    cells.forEach((cell,ci)=>{
+      if (!cell.mask) { put(g,r0+ri,c0+ci," ",""); return; }
+      const ch = String.fromCodePoint(0x2800 | cell.mask);
+      put(g,r0+ri,c0+ci,ch, cell.on ? "ring" : "ringFaint");
+    });
+  });
+  const mid = Math.floor(height/2);
+  const start = c0 + Math.max(0, Math.floor((width - widthOf(pctText))/2));
+  put(g,r0+mid,start,pctText,"boldaccent ring");
+}
+
+// ────────────────────────── 侧栏 ──────────────────────────
+function drawSidebar(g, r0, r1){
+  const c0 = SIDEBAR_START, c1 = SIDEBAR_START + SIDEBAR_W;
+  for (let r=r0;r<=r1;r++){ put(g,r,c0-2,"│","faint"); }
+  put(g,r0,c0,"上下文","muted");
+  // 圆环 7 行 x 14 列，居中在 26 列内
+  const ringW = 14, ringH = 7;
+  const left = c0 + Math.floor((SIDEBAR_W - ringW)/2);
+  drawRing(g, r0+1, left, ringW, ringH, 0.62, "62%");
+  const used = "124k / 200k tokens";
+  put(g, r0+1+ringH, c0 + Math.floor((SIDEBAR_W-widthOf(used))/2), used, "muted");
+  const comp = "⟳ 已压缩 ×1";
+  put(g, r0+2+ringH, c0 + Math.floor((SIDEBAR_W-widthOf(comp))/2), comp, "accent");
+  // 费用
+  const fy = r0 + ringH + 3;
+  put(g,fy,c0,"费用","muted");
+  const kv = [["本轮","¥0.0412"],["累计","¥0.3180"],["耗时","12.4s"]];
+  kv.forEach(([k,v],i)=>{
+    put(g,fy+1+i,c0,k,"muted");
+    putRight(g,fy+1+i,c1,v,"fg");
+  });
+  // 任务
+  const ty = fy + kv.length + 2;
+  put(g,ty,c0,"任务","muted");
+  put(g,ty+1,c0,"〇 上下文详情页","fg");
+  put(g,ty+2,c0,"✓ 复现现状版式","green");
+}
+
+// ────────────────────────── 视图 1：现状 ──────────────────────────
+function viewCurrent(){
+  const g = newGrid();
+  put(g,0,0,"hajicli","boldaccent");
+  put(g,0,8,"master","muted");
+  put(g,0,16,"· accept-edit","accent");
+  putRight(g,0,CHAT_W,"deepseek-v4 · medium","muted");
+  fill(g,1,0,CHAT_W,"─","faint");
+
+  const chat = [
+    ["你","这个上下文圆环能点吗"],
+    ["",""],
+    ["助手","现在只有鼠标悬停的浮层卡片，点击没有反应。",""],
+    ["","圆环的命中区域已经存在（sidebarRingHit），只差一个点击回调。",""],
+    ["",""],
+    ["","▾ 过程 · 读取 3 个文件 · 运行 2 条命令 · 12.4k","muted"],
+    ["","  ① read AGENTS.md","faint"],
+    ["","  ② bash pnpm test ✗","red"],
+    ["","  ③ edit context-breakdown.ts","faint"],
+    ["","",""],
+    ["","点一下圆环试试 →","muted"],
+  ];
+  let r = 3;
+  for (const [who,text] of chat){
+    if (who){
+      put(g,r,2,who,who==="你"?"accent":"cyan");
+      put(g,r,2+widthOf(who)+1,text,"fg");
+    } else {
+      put(g,r,2,text,"fg");
+    }
+    r++;
+  }
+  // 输入框
+  fill(g,26,0,CHAT_W,"─","faint");
+  put(g,27,0,"❯","accent"); put(g,27,2,"这个圆环点进去会看到什么","fg");
+  fill(g,28,0,CHAT_W,"─","faint");
+  put(g,29,0,"accept-edit · ↑↓ 历史 · Tab 补全","muted");
+
+  drawSidebar(g, 3, 24);
+  return g;
+}
+
+// ────────────────────────── 视图 2：页面 A（保留侧栏）──────────────────────────
+function viewPageA(){
+  const g = newGrid();
+  put(g,0,0,"hajicli","boldaccent");
+  put(g,0,8,"master","muted");
+  put(g,0,16,"· accept-edit","accent");
+  putRight(g,0,CHAT_W,"deepseek-v4 · medium","muted");
+  fill(g,1,0,CHAT_W,"─","faint");
+
+  const c0 = 0, c1 = CHAT_W;
+  const rows = 24;              // 行 2..25
+  topBorder(g,2,c0,c1,"上下文 · 文件 · 9 项","Esc 返回");
+  // 分类行
+  sideBorder(g,3,c0,c1);
+  const tabs = [
+    ["系统","18k","blue"],["工具","21k","accent"],["记忆","3k","yellow"],
+    ["▣文件","42k","green"],["结果","28k","magenta"],["对话","12k","cyan"],
+  ];
+  let col = c0+2;
+  tabs.forEach(([label,tok,tone],i)=>{
+    if (i) { put(g,3,col," │ ","faint"); col += 3; }
+    const selected = label === "▣文件";
+    put(g,3,col,label, selected ? "green sel" : "muted"); col += widthOf(label);
+    put(g,3,col," ", ""); col += 1;
+    put(g,3,col,tok, selected ? "green" : "muted"); col += widthOf(tok);
+  });
+  hline(g,4,c0,c1);
+
+  // 条目列表
+  const items = [
+    ["①","read AGENTS.md","2.1k",""],
+    ["②","read turn-runner.ts","6.4k",""],
+    ["③","grep \"provider\"","18.0k",""],
+    ["④","read terminal-input.ts","9.1k",""],
+    ["⑤","projectinfo","1.2k",""],
+    ["⑥","grep \"tool_call\"","9.0k",""],
+    ["⑦","read context-breakdown.ts","2.6k",""],
+    ["⑧","global *.ts","0.9k",""],
+  ];
+  items.forEach(([num,label,tok],i)=>{
+    const r = 5+i;
+    const selected = i === 2;
+    if (selected) g.rowCls[r] = "selbg";
+    sideBorder(g,r,c0,c1);
+    put(g,r,c0+1," ", "");
+    put(g,r,c0+2,num, selected ? "sel" : "faint");
+    put(g,r,c0+5,label, selected ? "sel" : "fg");
+    putRight(g,r,c1-2,tok, selected ? "sel" : "muted");
+    put(g,r,c1-2," ", "");
+  });
+  hline(g,13,c0,c1);
+
+  // 原文详情
+  const body = [
+    ["read: AGENTS.md","accent"],
+    ["",""],
+    ["# AGENTS.md — hajicli 仓库约定","boldaccent"],
+    ["",""],
+    ["pnpm workspace monorepo：packages/core（@hajicli/core）、","fg"],
+    ["packages/plugins（@hajicli/plugins）、packages/cli（发布包名","fg"],
+    ["hajicli，bin 为 haji）。TypeScript strict + project references。","fg"],
+    ["",""],
+    ["## 常用命令","boldaccent"],
+    ["",""],
+    ["| 构建（TS） | pnpm run build（= tsc --build，按 references 增量编译到各包 dist/）","muted"],
+  ];
+  body.forEach(([text,tone],i)=>{
+    const r = 14+i;
+    sideBorder(g,r,c0,c1);
+    put(g,r,c0+1," ","");
+    if (text) put(g,r,c0+2,text,tone);
+  });
+  bottomBorder(g,25,c0,c1,"↑↓ 切条目 · ←→ 切分类 · Enter 跳到对话区 · y 复制 · Esc 返回");
+
+  drawSidebar(g, 3, 24);
+  return g;
+}
+
+// ────────────────────────── 视图 3：页面 B（收起侧栏）──────────────────────────
+function viewPageB(){
+  const g = newGrid();
+  put(g,0,0,"hajicli","boldaccent");
+  put(g,0,8,"master","muted");
+  put(g,0,16,"· accept-edit","accent");
+  putRight(g,0,W,"deepseek-v4 · medium","muted");
+  fill(g,1,0,W,"─","faint");
+
+  const c0 = 0, c1 = W;
+  topBorder(g,2,c0,c1,"上下文 · 文件 · 9 项","Esc 返回");
+
+  sideBorder(g,3,c0,c1);
+  const tabs = [
+    ["系统","18k"],["工具","21k"],["记忆","3k"],
+    ["▣文件","42k"],["结果","28k"],["对话","12k"],
+  ];
+  let col = c0+2;
+  tabs.forEach(([label,tok],i)=>{
+    if (i) { put(g,3,col," ｜ ","faint"); col += 4; }
+    const selected = label === "▣文件";
+    put(g,3,col,label, selected ? "green sel" : "muted"); col += widthOf(label);
+    put(g,3,col," ", ""); col += 1;
+    put(g,3,col,tok, selected ? "green" : "muted"); col += widthOf(tok);
+  });
+  putRight(g,3,c1-2,"侧栏已临时收起","accent");
+  hline(g,4,c0,c1);
+
+  // 两栏分隔
+  const split = 30;   // 左栏列 1..29，列 30 是分隔竖线，右栏 31..98
+  const left = [
+    ["①","read AGENTS.md","2.1k"],
+    ["②","read turn-runner.ts","6.4k"],
+    ["③","grep \"provider\"","18.0k"],
+    ["④","read terminal-input.ts","9.1k"],
+    ["⑤","projectinfo","1.2k"],
+    ["⑥","grep \"tool_call\"","9.0k"],
+    ["⑦","read context-breakdown.ts","2.6k"],
+    ["⑧","global *.ts","0.9k"],
+    ["⑨","read theme.ts","0.7k"],
+  ];
+  const body = [
+    ["read: AGENTS.md","accent"],
+    ["",""],
+    ["# AGENTS.md — hajicli 仓库约定","boldaccent"],
+    ["",""],
+    ["pnpm workspace monorepo：packages/core（@hajicli/core）、","fg"],
+    ["packages/plugins（@hajicli/plugins）、packages/cli（发布包名","fg"],
+    ["hajicli，bin 为 haji）。TypeScript strict + project references。","fg"],
+    ["整体架构与各子系统导览见 ARCHITECTURE.md。","fg"],
+    ["",""],
+    ["## 常用命令","boldaccent"],
+    ["",""],
+    ["| 构建（TS） | pnpm run build（= tsc --build，按 references 增量编译到各包 dist/） |","muted"],
+    ["| 测试 | pnpm test（先 build，再 node --test packages/cli/test/*.test.mjs） |","muted"],
+    ["",""],
+    ["## 版本号同步（关键）","boldaccent"],
+    ["",""],
+    ["任何改动 + 升版本后，三处 version 必须一致：","fg"],
+    ["",""],
+    ["· package.json（monorepo 根）","muted"],
+    ["· packages/cli/package.json（发布包 hajicli）","muted"],
+    ["· packages/plugins/package.json（@hajicli/plugins）","muted"],
+  ];
+
+  for (let r=5;r<=23;r++){
+    sideBorder(g,r,c0,c1);
+    put(g,r,split,"│","faint");
+    const i = r-5;
+    // 左栏
+    if (left[i]){
+      const [num,label,tok] = left[i];
+      const selected = i === 2;
+      if (selected) g.rowCls[r] = "selbg";
+      put(g,r,1," ","");
+      put(g,r,2,num, selected ? "sel" : "faint");
+      put(g,r,5,label, selected ? "sel" : "fg");
+      putRight(g,r,split-2,tok, selected ? "sel" : "muted");
+      put(g,r,split-2," ","");
+    }
+    // 右栏
+    if (body[i] && body[i][0]){
+      put(g,r,split+2,body[i][0],body[i][1]);
+    }
+  }
+  bottomBorder(g,24,c0,c1,"↑↓ 切条目 · ←→ 切分类 · Enter 跳到对话区 · y 复制 · Esc 返回");
+
+  // 底部状态行（页面不覆盖输入区）
+  fill(g,26,0,W,"─","faint");
+  put(g,27,0,"❯","accent"); put(g,27,2,"","fg");
+  fill(g,28,0,W,"─","faint");
+  put(g,29,0,"accept-edit · 上下文详情页 · 侧栏临时收起","muted");
+  return g;
+}
+
+// ────────────────────────── 渲染 ──────────────────────────
+const screen = document.getElementById("screen");
+let currentView = "current";
+
+function render(g){
+  const frag = document.createDocumentFragment();
+  for (let r=0;r<H;r++){
+    const row = document.createElement("div");
+    row.className = "row" + (g.rowCls[r] ? " " + g.rowCls[r] : "");
+    let c = 0;
+    while (c < W){
+      const cell = g.cells[r][c];
+      if (!cell){
+        let n = 0;
+        while (c+n < W && !g.cells[r][c+n]) n++;
+        const span = document.createElement("span");
+        span.className = "cell";
+        span.style.width = `calc(${n} * 1ch)`;
+        span.textContent = " ".repeat(n);
+        row.appendChild(span);
+        c += n;
+        continue;
+      }
+      if (cell.skip){ c++; continue; }
+      const span = document.createElement("span");
+      span.className = "cell" + (cell.cls ? " " + cell.cls : "");
+      span.style.width = `calc(${cell.w} * 1ch)`;
+      span.textContent = cell.ch;
+      row.appendChild(span);
+      c += cell.w;
+    }
+    frag.appendChild(row);
+  }
+  screen.replaceChildren(frag);
+}
+
+function draw(view){
+  currentView = view;
+  render(view === "current" ? viewCurrent() : view === "pageA" ? viewPageA() : viewPageB());
+  document.querySelectorAll(".bar button[data-view]").forEach(b=>{
+    b.classList.toggle("on", b.dataset.view === view);
+  });
+}
+
+document.querySelectorAll(".bar button[data-view]").forEach(b=>{
+  b.addEventListener("click", ()=>draw(b.dataset.view));
+});
+
+// 点圆环进入页面；页面里点圆环返回
+screen.addEventListener("click", (e)=>{
+  const t = e.target;
+  if (t.classList.contains("ring") || t.classList.contains("ringFaint")){
+    draw(currentView === "current" ? "pageA" : "current");
+  }
+});
+document.addEventListener("keydown", (e)=>{
+  if (e.key === "Escape" && currentView !== "current") draw("current");
+});
+
+// 列标尺
+const ruler = document.getElementById("ruler");
+let rulerOn = false;
+function buildRuler(){
+  let s = "";
+  for (let c=0;c<W;c++) s += c % 10 === 0 ? String((c/10)%10) : " ";
+  const line = document.createElement("div");
+  line.style.display = "flex";
+  for (let c=0;c<W;c++){
+    const span = document.createElement("span");
+    span.className = "cell";
+    span.style.width = "calc(1 * 1ch)";
+    span.textContent = s[c];
+    line.appendChild(span);
+  }
+  ruler.replaceChildren(line);
+}
+document.getElementById("rulerBtn").addEventListener("click", ()=>{
+  rulerOn = !rulerOn;
+  ruler.style.visibility = rulerOn ? "visible" : "hidden";
+});
+ruler.style.visibility = "hidden";
+buildRuler();
+
+draw("current");
+</script>
+</body>
+</html>

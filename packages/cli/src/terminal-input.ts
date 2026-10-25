@@ -8,7 +8,13 @@ import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
-import type { ContextBreakdown } from "./context-breakdown.js";
+import type { ContextBreakdown, ContextItemGroup } from "./context-breakdown.js";
+import {
+  buildContextInspectorFrame,
+  CONTEXT_INSPECTOR_MIN_COLUMNS,
+  CONTEXT_INSPECTOR_MIN_ROWS,
+  type ContextInspectorFrame,
+} from "./context-inspector.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   buildInputSelectionGeometry,
@@ -89,6 +95,10 @@ const PROTOCOL_FLUSH_MS = 80;
 const LONE_ESCAPE_FLUSH_MS = 16;
 /** 对话区尾部活动行占用的行数：与正文之间的空行 + 活动行本身。 */
 const CHAT_ACTIVITY_ROWS = 2;
+/** 详情页里 PgUp/PgDn 与滚轮一次翻多少行原文（按屏高太小、按行太碎）。 */
+const INSPECTOR_PAGE_ROWS = 8;
+/** 滚轮一格对应的原文行数。 */
+const INSPECTOR_WHEEL_ROWS = 3;
 
 function enableWindowsVirtualTerminalInput(): boolean {
   if (process.platform !== "win32") {
@@ -414,6 +424,31 @@ export class TerminalUI {
   private maxTokens = 1000000;
   /** 上下文分项估算（圆环悬停卡片用）；拿不到时不弹卡片。 */
   private contextBreakdown?: ContextBreakdown;
+  /**
+   * 上下文详情页状态；undefined 表示页面关闭。
+   * 打开时侧栏临时收起，对话区整块换成「分类 / 条目 / 原文」两栏。
+   */
+  private contextInspector?: {
+    groups: ContextItemGroup[];
+    categoryIndex: number;
+    selectedIndex: number;
+    scroll: number;
+  };
+  /** 详情页的数据来源：打开那一刻取一次快照（页面只读，回合更新不回溯）。 */
+  private contextItemsProvider?: () => ContextItemGroup[];
+  /** 上一帧的命中区域（屏幕绝对行，1 基）；点击条目与「Esc 返回」用。 */
+  private contextInspectorHit?: {
+    listTop: number;
+    listHeight: number;
+    listLeft: number;
+    listWidth: number;
+    listOffset: number;
+    backRow: number;
+    backLeft: number;
+    backWidth: number;
+  };
+  /** 上一帧原文区可滚动上限：PgUp/PgDn 与滚轮据此夹紧。 */
+  private inspectorMaxScroll = 0;
   /** 侧栏显示时对话区最右列（1-based）；0 表示侧栏隐藏，鼠标可整行选字。 */
   private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
@@ -443,6 +478,10 @@ export class TerminalUI {
     rowStart: number;
     rowEnd: number;
   };
+  /** 圆环按下时的屏幕行：松开仍在同一行才算一次点击，否则当成拖选。 */
+  private pendingRingClickRow?: number;
+  /** 详情页内的按下行：松开同一行才处理点击（选中条目 / 点返回）。 */
+  private pendingInspectorClickRow?: number;
   /** 鼠标是否悬停在侧栏费用区块（可点击补单价）；命中区域每帧随布局更新。 */
   private sidebarCostHovered = false;
   private sidebarCostHit?: {
@@ -590,6 +629,164 @@ export class TerminalUI {
     this.maxTokens = Math.max(1, maxTokens);
     this.contextBreakdown = breakdown;
     this.scheduleRender();
+  }
+
+  /** 注入详情页的数据来源：每次打开页面时调用一次，读当时最新的会话上下文。 */
+  setContextItemsProvider(provider: () => ContextItemGroup[]): void {
+    this.contextItemsProvider = provider;
+  }
+
+  /** 上下文详情页是否打开（打开期间侧栏临时收起，输入框保持可用）。 */
+  isContextInspectorOpen(): boolean {
+    return this.contextInspector !== undefined;
+  }
+
+  /**
+   * 打开上下文详情页。
+   *
+   * 数据在打开这一瞬间快照：页面是只读视图，回合继续跑也不会边看边跳；
+   * 想刷新就 Esc 关掉再点一次圆环。默认落在占用最大且有明细的那一类。
+   */
+  openContextInspector(): boolean {
+    if (!this.interactive) return false;
+    if (this.contextInspector) return true;
+    const provider = this.contextItemsProvider;
+    const groups = provider ? provider() : [];
+    const ranked = [...groups].sort((a, b) => b.tokens - a.tokens);
+    const initial = ranked.find((group) => group.items.length > 0);
+    if (!initial) {
+      this.showTransientHint("暂无上下文明细");
+      return false;
+    }
+    this.contextInspector = {
+      groups,
+      categoryIndex: Math.max(0, groups.indexOf(initial)),
+      selectedIndex: 0,
+      scroll: 0,
+    };
+    // 页面覆盖对话区：清掉进行中的选区与待点击状态，避免两套交互同时生效。
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
+    this.pendingRingClickRow = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+    return true;
+  }
+
+  closeContextInspector(): void {
+    if (!this.contextInspector) return;
+    this.contextInspector = undefined;
+    this.contextInspectorHit = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** 当前分类；页面关闭时为 undefined。 */
+  private inspectorGroup(): ContextItemGroup | undefined {
+    const state = this.contextInspector;
+    if (!state) return undefined;
+    return state.groups[state.categoryIndex];
+  }
+
+  /** ↑↓：换条目；换到边界不动，并把原文滚动送回顶部。 */
+  private moveInspectorItem(delta: number): void {
+    const state = this.contextInspector;
+    const group = this.inspectorGroup();
+    if (!state || !group) return;
+    const next = Math.min(
+      Math.max(0, state.selectedIndex + delta),
+      Math.max(0, group.items.length - 1),
+    );
+    if (next === state.selectedIndex) return;
+    state.selectedIndex = next;
+    state.scroll = 0;
+    this.scheduleRender(true);
+  }
+
+  /** ←→：换分类；分类变了就把选中项与滚动归零。 */
+  private moveInspectorCategory(delta: number): void {
+    const state = this.contextInspector;
+    if (!state) return;
+    const next = Math.min(Math.max(0, state.categoryIndex + delta), state.groups.length - 1);
+    if (next === state.categoryIndex) return;
+    state.categoryIndex = next;
+    state.selectedIndex = 0;
+    state.scroll = 0;
+    this.scheduleRender(true);
+  }
+
+  /** PgUp/PgDn 与滚轮：只滚原文；上限取上一帧的实际可滚动行数。 */
+  private scrollInspector(delta: number): void {
+    const state = this.contextInspector;
+    if (!state || delta === 0) return;
+    const next = Math.min(Math.max(0, state.scroll + delta), Math.max(0, this.inspectorMaxScroll));
+    if (next === state.scroll) return;
+    state.scroll = next;
+    this.scheduleRender(true);
+  }
+
+  /**
+   * 详情页打开时的按键：只接管导航键，其余键仍进输入框。
+   * 返回 true 表示已消费，调用方不要再走输入框的默认处理。
+   */
+  private handleInspectorKey(key: readline.Key): boolean {
+    if (!this.contextInspector) return false;
+    switch (key.name) {
+      case "escape":
+        this.closeContextInspector();
+        return true;
+      case "up":
+        this.moveInspectorItem(-1);
+        return true;
+      case "down":
+        this.moveInspectorItem(1);
+        return true;
+      case "left":
+        this.moveInspectorCategory(-1);
+        return true;
+      case "right":
+        this.moveInspectorCategory(1);
+        return true;
+      case "pageup":
+        this.scrollInspector(-INSPECTOR_PAGE_ROWS);
+        return true;
+      case "pagedown":
+        this.scrollInspector(INSPECTOR_PAGE_ROWS);
+        return true;
+      case "home":
+        if (!key.ctrl) return false;
+        this.scrollInspector(-Math.max(0, this.inspectorMaxScroll));
+        return true;
+      case "end":
+        if (!key.ctrl) return false;
+        this.scrollInspector(Math.max(0, this.inspectorMaxScroll));
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** 详情页内的点击：命中「Esc 返回」或列表行；其余位置忽略。 */
+  private handleInspectorClick(column: number, row: number): void {
+    const hit = this.contextInspectorHit;
+    const state = this.contextInspector;
+    if (!hit || !state) return;
+    if (row === hit.backRow && column >= hit.backLeft && column < hit.backLeft + hit.backWidth) {
+      this.closeContextInspector();
+      return;
+    }
+    if (column < hit.listLeft || column >= hit.listLeft + hit.listWidth) return;
+    const offset = row - hit.listTop;
+    if (offset < 0 || offset >= hit.listHeight) return;
+    const group = this.inspectorGroup();
+    if (!group) return;
+    const index = hit.listOffset + offset;
+    if (index < 0 || index >= group.items.length) return;
+    if (index === state.selectedIndex) return;
+    state.selectedIndex = index;
+    state.scroll = 0;
+    this.scheduleRender(true);
   }
 
   /** 开关右侧会话信息栏（宽度不足时即使开启也不显示）。 */
@@ -1901,6 +2098,14 @@ export class TerminalUI {
       return;
     }
     if (event.action === "wheel") {
+      // 详情页打开时滚轮归原文；内容不足一屏时 scrollInspector 自己会挡住。
+      if (this.contextInspector) {
+        const rows = event.wheelRows ?? 0;
+        this.scrollInspector(
+          rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS,
+        );
+        return;
+      }
       this.pendingMouseSelection = undefined;
       this.queueWheelScroll(event.wheelRows ?? 0);
       if (this.textSelection.dragging) {
@@ -1928,6 +2133,16 @@ export class TerminalUI {
         this.scheduleRender();
         return;
       }
+      // 详情页覆盖了对话区：按下只记录待点击行，不产生文本选区。
+      if (this.contextInspector) {
+        this.pendingMouseSelection = undefined;
+        this.pendingInputSelection = undefined;
+        this.pendingCostClickRow = undefined;
+        this.pendingPricingClickRow = undefined;
+        this.pendingRingClickRow = undefined;
+        this.pendingInspectorClickRow = event.row;
+        return;
+      }
       // 定价 agent 状态行优先于费用区块：先记下按下的屏幕行，松开仍同一行才算点击。
       if (this.isPointInPricingAgentRow(event.column, event.row)) {
         this.pendingMouseSelection = undefined;
@@ -1938,6 +2153,13 @@ export class TerminalUI {
       if (this.isPointInCostSection(event.column, event.row)) {
         this.pendingMouseSelection = undefined;
         this.pendingCostClickRow = event.row;
+        return;
+      }
+      // 上下文圆环：点一下进入详情页。与费用区同规则——按下与松开同一行才算点击。
+      if (this.isPointInContextRing(event.column, event.row)) {
+        this.pendingMouseSelection = undefined;
+        this.pendingCostClickRow = undefined;
+        this.pendingRingClickRow = event.row;
         return;
       }
       // 侧栏与分隔带不是对话内容：在这里按下不开选区，否则拖选会把侧栏文字带进复制结果。
@@ -2038,6 +2260,34 @@ export class TerminalUI {
       return;
     }
 
+    // 详情页内的点击：松开与按下同一行才处理（拖动时不误触）。
+    if (event.action === "up" && isLeftButton && this.pendingInspectorClickRow !== undefined) {
+      const pressedRow = this.pendingInspectorClickRow;
+      this.pendingInspectorClickRow = undefined;
+      if (pressedRow === event.row) this.handleInspectorClick(event.column, event.row);
+      return;
+    }
+
+    // 上下圆环：点一下进详情页；按下与松开同一行、且仍落在圆环上才算点击。
+    if (event.action === "up" && isLeftButton && this.pendingRingClickRow !== undefined) {
+      const pressedRow = this.pendingRingClickRow;
+      this.pendingRingClickRow = undefined;
+      if (pressedRow === event.row && this.isPointInContextRing(event.column, event.row)) {
+        this.openContextInspector();
+      }
+      return;
+    }
+
+    if (event.action === "up" && isLeftButton && this.pendingInspectorClickRow !== undefined) {
+      const pressedRow = this.pendingInspectorClickRow;
+      this.pendingInspectorClickRow = undefined;
+      // 同一行松开才算点击：拖动（跨行）当成本次误触，直接丢弃。
+      if (pressedRow === event.row) {
+        this.handleInspectorClick(event.column, event.row);
+      }
+      return;
+    }
+
     if (event.action === "up" && isLeftButton && this.pendingPricingClickRow !== undefined) {
       const pressedRow = this.pendingPricingClickRow;
       this.pendingPricingClickRow = undefined;
@@ -2053,6 +2303,16 @@ export class TerminalUI {
       this.pendingCostClickRow = undefined;
       if (pressedRow === event.row && this.isPointInCostSection(event.column, event.row)) {
         this.options.onCostSectionClick?.();
+      }
+      return;
+    }
+
+    // 上下文圆环：按下与松开同一行、且仍在圆环内，才进详情页。
+    if (event.action === "up" && isLeftButton && this.pendingRingClickRow !== undefined) {
+      const pressedRow = this.pendingRingClickRow;
+      this.pendingRingClickRow = undefined;
+      if (pressedRow === event.row && this.isPointInContextRing(event.column, event.row)) {
+        this.openContextInspector();
       }
       return;
     }
@@ -2099,6 +2359,18 @@ export class TerminalUI {
   /** 鼠标位置是否落在侧栏费用区块的命中范围内。 */
   private isPointInCostSection(column: number, row: number): boolean {
     const hit = this.sidebarCostHit;
+    return Boolean(
+      hit &&
+        column >= hit.columnStart &&
+        column <= hit.columnEnd &&
+        row >= hit.rowStart &&
+        row <= hit.rowEnd,
+    );
+  }
+
+  /** 鼠标位置是否落在上下文圆环的命中范围内（点击进入详情页）。 */
+  private isPointInContextRing(column: number, row: number): boolean {
+    const hit = this.sidebarRingHit;
     return Boolean(
       hit &&
         column >= hit.columnStart &&
@@ -2681,7 +2953,10 @@ export class TerminalUI {
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
     // 右侧会话信息栏：只占对话区高度，输入框与状态栏仍保持整行宽度。
-    const sidebarWidth = resolveSidebarWidth(width, height, this.sidebarEnabled);
+    // 上下文详情页打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
+    const sidebarWidth = this.contextInspector
+      ? 0
+      : resolveSidebarWidth(width, height, this.sidebarEnabled);
     const sidebarVisible = sidebarWidth > 0;
     const leftAreaWidth = Math.max(
       1,
@@ -2729,7 +3004,7 @@ export class TerminalUI {
     // 底栏的状态栏因此常驻。minimal 档对话区放不下，仍退回旧行为：活动行顶替状态栏。
     // 临时提示（Ctrl+C 确认等）、复制角标与状态栏轮换：有提示时占位、超时自动消失。
     // 活动行不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
-    let activityInChat = Boolean(this.activityFrame) && !minimal;
+    let activityInChat = Boolean(this.activityFrame) && !minimal && !this.contextInspector;
     const activityRow =
       (activityInChat ? "" : this.buildActivityRow(width)) ||
       (this.copiedNotice && topRows.length === 0
@@ -2996,7 +3271,53 @@ export class TerminalUI {
       const tail = " ".repeat(Math.max(0, leftAreaWidth - (left - 1) - cardWidth));
       return `${head}${pad}${truncateAnsiText(cardRow, cardWidth)}${tail}`;
     };
-    const chatColumn = [...visibleChat, ...activityRows];
+    // 上下文详情页：整块替换对话区（活动行、折叠段、悬停卡片都不参与本帧）。
+    const inspectorFrame: ContextInspectorFrame | undefined = this.contextInspector
+      ? buildContextInspectorFrame(
+          {
+            groups: this.contextInspector.groups,
+            categoryIndex: this.contextInspector.categoryIndex,
+            selectedIndex: this.contextInspector.selectedIndex,
+            scroll: this.contextInspector.scroll,
+          },
+          leftAreaWidth,
+          chatHeight,
+        )
+      : undefined;
+    // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
+    const inspectorTooSmall = Boolean(
+      inspectorFrame &&
+        (leftAreaWidth < CONTEXT_INSPECTOR_MIN_COLUMNS || chatHeight < CONTEXT_INSPECTOR_MIN_ROWS),
+    );
+    const chatColumn = inspectorTooSmall
+      ? [`${SEQ.muted}终端太小，放不下上下文详情页（Esc 返回）${SEQ.reset}`]
+      : inspectorFrame
+        ? inspectorFrame.rows
+        : [...visibleChat, ...activityRows];
+    if (inspectorFrame && !inspectorTooSmall) {
+      // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
+      const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
+      this.inspectorMaxScroll = inspectorFrame.maxScroll;
+      this.contextInspectorHit = {
+        listTop: chatScreenTop + inspectorFrame.listTop,
+        listHeight: inspectorFrame.listHeight,
+        listLeft: inspectorFrame.listLeft + 1,
+        listWidth: inspectorFrame.listWidth,
+        listOffset: inspectorFrame.listOffset,
+        backRow: chatScreenTop + inspectorFrame.back.row,
+        backLeft: inspectorFrame.back.left + 1,
+        backWidth: inspectorFrame.back.width,
+      };
+      if (this.contextInspector) {
+        // 内容变短（换分类/换条目）时把滚动位置夹回有效范围，避免“滚过头”卡住。
+        this.contextInspector.scroll = Math.min(
+          this.contextInspector.scroll,
+          inspectorFrame.maxScroll,
+        );
+      }
+    } else {
+      this.contextInspectorHit = undefined;
+    }
     const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")].map(
       (row, index) => {
         const painted = paintContextCard(row, index);
@@ -3279,6 +3600,11 @@ export class TerminalUI {
   };
 
   private readonly handleKeypress = (value: string, key: readline.Key) => {
+    // 详情页是只读覆盖层：导航键先归它；Esc 只关页面，不触发中止回合。
+    // 其余按键（含普通输入）继续走输入框，所以用户可以直接打字继续对话。
+    if (this.handleInspectorKey(key)) {
+      return;
+    }
     const activeInput = this.activeInput;
     if (!activeInput) {
       return;

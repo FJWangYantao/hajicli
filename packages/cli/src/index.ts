@@ -117,7 +117,7 @@ import {
   summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
-import { buildContextBreakdown } from "./context-breakdown.js";
+import { buildContextBreakdown, buildContextItemGroups } from "./context-breakdown.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { CostTracker, formatCostCny } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
@@ -1015,6 +1015,14 @@ async function main() {
     getWidth: () => ui.getContentWidth(),
   });
   markStartupStage("ui_ctor");
+  // 上下文详情页的数据来源：点圆环时现取一次当前会话的分项（含工具定义与工具结果）。
+  // 用 getter 而不是快照，保证页面打开那一刻看到的就是此刻真正发出去的内容。
+  ui.setContextItemsProvider(() =>
+    buildContextItemGroups(
+      messages,
+      activeTools().map((tool) => tool.definition),
+    ),
+  );
   // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
   // @ 文件补全：工作区文件列表缓存（60 秒刷新），输入 @ 时弹出模糊搜索。
