@@ -356,6 +356,67 @@ test("edit re-reads once and applies when oldText still uniquely matches a stale
   });
 });
 
+test("write treats an already-applied duplicate content as success instead of another conflict", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "dup.txt");
+    await fs.writeFile(target, "before\n");
+    const reader = new ReadFileTool();
+    const writer = new WriteFileTool();
+    const initialRead = await reader.execute({ path: "dup.txt" });
+    const staleHash = initialRead.match(/hash=([a-f0-9]{16})/)?.[1];
+    assert.ok(staleHash);
+
+    // 第一条 write 已落盘；模型在同一条消息里把同样的内容再写一次，带的还是读到的旧 hash。
+    const first = await writer.execute({
+      path: "dup.txt",
+      content: "after\n",
+      expectedHash: staleHash,
+    });
+    assert.match(first, /文件写入成功/);
+    const duplicate = await writer.execute({
+      path: "dup.txt",
+      content: "after\n",
+      expectedHash: staleHash,
+    });
+    assert.match(duplicate, /文件写入成功/);
+    assert.match(duplicate, /未重复写入/);
+    assert.doesNotMatch(duplicate, /写入失败/);
+    assert.equal(await fs.readFile(target, "utf8"), "after\n");
+
+    // 行尾差异不算内容变化，同样按已写入处理。
+    await fs.writeFile(target, "after\r\n");
+    const crlf = await writer.execute({
+      path: "dup.txt",
+      content: "after\n",
+      expectedHash: staleHash,
+    });
+    assert.match(crlf, /未重复写入/);
+  });
+});
+
+test("write conflict keeps telling the model the current hash when the content differs", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "conflict.txt");
+    await fs.writeFile(target, "before\n");
+    const reader = new ReadFileTool();
+    const writer = new WriteFileTool();
+    const initialRead = await reader.execute({ path: "conflict.txt" });
+    const staleHash = initialRead.match(/hash=([a-f0-9]{16})/)?.[1];
+    assert.ok(staleHash);
+
+    await fs.writeFile(target, "external\n");
+    const result = await writer.execute({
+      path: "conflict.txt",
+      content: "mine\n",
+      expectedHash: staleHash,
+    });
+    assert.match(result, /写入失败/);
+    assert.match(result, /当前 hash=[a-f0-9]{16}/);
+    assert.match(result, /当前 hash/);
+    assert.equal(await fs.readFile(target, "utf8"), "external\n");
+  });
+});
+
 test("edit still refuses a stale hash when oldText becomes ambiguous", async () => {
   await withWorkspace(async (workspace) => {
     const target = path.join(workspace, "ambiguous.txt");

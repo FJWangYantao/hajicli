@@ -34,6 +34,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 | `provider-commands.ts` | `/provider`（切换 / add / set / unset / 状态） |
 | `subagent-commands.ts` | `/subagent`、`/preset`、`/agents` |
 | `session-commands.ts` | `/clear`、`/resume`、`/rewind` |
+| `workspace-commands.ts` | `/workspace`（根与路径规则：list / add / remove / allow / deny / rules） |
 | `index.ts` 内联 | `/model`、`/effort`、`/permission`、`/compact`、`/skill(s)`、`/memory`、`/instinct`、`/mcp`、`/perf`、`/help`、枢纽入口等小命令 |
 
 命令模块通过 `*CommandContext` 接口注入会话状态：可变状态（当前模型、消息数组等）一律用 getter/setter 访问器，与 `main()` 的 `let` 绑定保持同步。这是新增命令时应遵循的模式。
@@ -64,11 +65,15 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 
 ## 工具与权限
 
-- 工具实现全部在 `packages/plugins/src/*-tool.ts`（bash / read / write / edit / grep / glob / web / skill / task / subagent / verifyagent）；MCP 外部工具由 `mcp.ts` 启动并转换为同一 `BaseTool` 接口。
+- 工具实现全部在 `packages/plugins/src/*-tool.ts`（bash / read / write / edit / grep / glob / web / skill / task / subagent / verifyagent）；MCP 外部工具由 `mcp.ts` 启动并转换为同一 `BaseTool` 接口。另有 `selfstate`（按需查询工作区根、权限档、模型、上下文用量与压缩状态）与 `history`（按 action=list/search/read 查询 `.haji/sessions`、`.haji/transcripts` 与当前会话；只读、输出有界、不接受任意路径）。
+- `request`（`plugins/request-tool.ts`）是 Agent 的受控申请通道：一次只申请一个具体目标（`workspace.add` 目录 / `permission.mode` 提到 accept-edit 或 auto），由 CLI 弹单次卡片；批准后复用 `/workspace add` 的 `addWorkspaceRoot` + `syncPathScope`，权限档只改会话内状态（`applyPermissionMode(..., { persist: false })`）不写 preferences。不能申请根目录、通配符或 bypass-permissions；被拒绝的目标本会话不再重复弹卡。
 - `SharedToolExecutor`（cli）统一执行：HookEngine `PreToolUse`（权限评估 → 授权卡片 / Auto 分类器拦截）→ 执行 → `PostToolUse`（Trace 记录、经验观测采集、Git 快照）。
 - `PermissionEngine`（core）按 `permissionMode`（plan / default / accept-edit / auto / bypass-permissions）+ `riskThreshold`（Auto 档危险阈值）决策；只读工具（含 MCP `readOnly: true`）自动放行。
-- 会话级授权按 key 记忆（bash 按命令前缀），切换会话即失效。
-- 跨会话持久授权（`permission-rules.ts`）：授权卡片可选「永久允许·本项目 / 全局」，写入 `.haji/permissions.json` / `~/.haji/permissions.json`（键与会话级同形态）；PreToolUse 在权限引擎评估前命中即放行（plan / bypass 两档不查表）。`/permissions` 列出并删除规则。
+- 受保护目标（`core/protected-targets.ts`）在 `evaluate()` 最前面做确定性判定，早于 plan / bypass 短路：`forbidden`（递归强删工作区或更外层）直接拒绝；`hard`（授权配置、技能/记忆目录、快照与审计数据、强推/发布等）任何档位都必须逐次确认且不可永久授权；`sensitive`（凭据文件、`AGENTS.md`）可确认后按会话/全局记住。PreToolUse 对 hard 级跳过持久放行规则；`HAJI_ALLOW_PROTECTED=1` 可整层关闭（仅受控环境）。用户级 `paths.deny` 优先于 bypass 档。
+- 文件工具的作用域判定在 `PermissionEngine` 里完成（`core/path-scope.ts`）：工具只把路径解析成绝对路径，边界由权限层给出 allow / prompt / deny。工作区根 = 启动目录 + `--add-dir`（本次进程）+ `/workspace add`（`~/.haji/workspaces.json`，按项目分组）；越界路径在 default / accept-edit / auto 档都走授权卡，授权键为「读/写 + 目录前缀」，`HAJI_ALLOW_OUTSIDE_WORKSPACE=1` 可整段跳过。
+- 用户级路径规则 `~/.haji/permissions.json` 的 `paths.allow / paths.deny`（`deny` 优先）：项目级文件里的 `paths` 段被刻意忽略，避免克隆仓库自带扩权；`/workspace allow|deny|rules` 管理。bash 的只读判定复用同一组根（根内绝对路径可自动只读，/etc 之类仍需审批）。
+- 会话级授权按 key 记忆（bash 按命令前缀，工作区外按目录前缀），切换会话即失效。
+- 跨会话持久授权（`permission-rules.ts`）：授权卡片可选「永久允许·本项目 / 全局」，写入 `.haji/permissions.json` / `~/.haji/permissions.json`（键与会话级同形态）；PreToolUse 在权限引擎评估前命中即放行（plan / bypass 两档不查表）。`/permissions` 列出并删除规则。路径授权键只会写用户级。
 - 无头单次模式 `haji -p "prompt"`（`headless.ts`）：跳过 logo 与交互主循环，跑完一个回合直接进入退出清理；TerminalUI 以 `forceNonInteractive` 强制走 stdout 直写降级，提示性输出一律改道 stderr（stdout 只含模型正文与工具块）。`--permission-mode` 可指定档位（plan 自动按 default 执行）；`--output-format json` 静音正文并输出结构化结果（text/usage/cost/sessionId）；prompt 传 `-` 从 stdin 管道读取。未命中放行规则的工具调用在 stdin 为 TTY 时 y/N 确认，管道/CI 下自动拒绝。退出码：回合完成 0 / 启动错误 1 / SIGINT 130。
 
 ## 费用、模型路由与目录
@@ -77,7 +82,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - `cost-tracker.ts`：主线回合 onUsage 记账，`/cost` 按模型汇总估算费用（未定价模型只计 tokens）。
 - 杂活模型路由（`provider-models.resolveUtilityModel`）：压缩摘要 / 会话标题 / 经验提炼优先走最便宜的可用模型；偏好 `utilityModel` 显式指定（不可用回退主模型）。跨 provider 时按需构建独立 provider 实例（`getUtilityRuntime` 缓存，provider 配置变更即失效）。
 - 用户模型表 `~/.haji/models.json`（`user-models.ts`，mtime 缓存）：内置 provider 上新模型无需发版——登记 model/provider/contextWindowTokens 即进入 `/model` 列表、`detectProviderForModel` 路由与上下文窗口解析。
-- `@路径` 文件引用（`file-mentions.ts`）：提交时把工作区内命中文件展开为 `<attached_file>` 附件块；越界/不存在/二进制记入 skipped 提示。
+- `@路径` 文件引用（`file-mentions.ts`）：提交时把工作区（含追加根）内命中文件展开为 `<attached_file>` 附件块；越界/不存在/二进制记入 skipped 提示。
 - 图片输入 `/image <路径> [提示词]`（`image-command.ts`）：本地图片（png/jpg/gif/webp/bmp，≤6MB）转 base64 附件，经 core `ChatMessage.attachments` → plugins `messageContentOrParts` 转多模态 content parts（需视觉模型）。
 - 编辑后验证（`post-edit-verify.ts`，LSP 轻量替代）：主 Agent write/edit 成功后跑项目 typecheck（`HAJI_POST_EDIT_VERIFY` 可指定/`"0"` 关闭），诊断以系统消息注入会话供模型自纠；10s 冷却防编辑连发拖慢回合。
 
@@ -94,7 +99,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 ## 会话、快照与 Rewind
 
 - `SessionManager`（core）：会话持久化于 `<cwd>/.haji/sessions/`，含异步标题生成。
-- `SnapshotEngine`：每条用户消息前 `createAnchor` 生成 Git 快照（`.haji/snapshots/`）。`/rewind` 选择历史节点 → `rollbackOwnedChanges` 撤销本会话拥有的改动（外部改动过的文件保留）→ 截断消息历史 → 消息文本回填输入框。
+- `SnapshotEngine`：每条用户消息前 `createAnchor` 生成 Git 快照（`.haji/snapshots/`）。快照键工作区内为 posix 相对路径，工作区外为 `external:<绝对路径>`，因此经授权的越界写入同样可回退、可进 `/diff`。`/rewind` 选择历史节点 → `rollbackOwnedChanges` 撤销本会话拥有的改动（外部改动过的文件保留）→ 截断消息历史 → 消息文本回填输入框。bash 的工作区外副作用不在快照范围内。
 - Trace：`trace-logger.ts` 落盘 `.haji/traces/`（meta + events.jsonl），`startTraceServer` 提供本地观测页（`/viewer`）。
 
 ## 经验系统

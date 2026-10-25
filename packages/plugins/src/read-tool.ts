@@ -192,7 +192,7 @@ export class ReadFileTool implements BaseTool {
     function: {
       name: "read",
       description:
-        "按完整行读取一个或多个工作区文件。支持行分页、目标行上下文，并返回内容 hash 和 nextStartLine。读取图片文件（png/jpg/jpeg/gif/webp/bmp，≤6MB）时返回图片本身，可直接查看。",
+        "按完整行读取一个或多个文件（默认工作区；工作区外需授权）。支持行分页、目标行上下文，并返回内容 hash 和 nextStartLine。读取图片文件（png/jpg/jpeg/gif/webp/bmp，≤6MB）时返回图片本身，可直接查看。",
       parameters: {
         type: "object",
         properties: {

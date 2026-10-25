@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { PermissionEngine } from "../../core/dist/index.js";
 import {
   DeepSeekProvider,
   fetchWithNetworkPolicy,
@@ -211,7 +212,7 @@ test("OpenAI-compatible providers share split SSE parsing for text, reasoning, t
   }
 });
 
-test("file tools reject paths outside the current workspace", async () => {
+test("outside paths are handled by the permission layer instead of tool-level rejection", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "haji-boundary-"));
   const workspace = path.join(root, "workspace");
   const outside = path.join(root, "outside.txt");
@@ -221,16 +222,39 @@ test("file tools reject paths outside the current workspace", async () => {
 
   try {
     process.chdir(workspace);
+    // 工具本身不再做边界拒绝：越界调用在 PreToolUse 阶段由权限引擎要求授权。
     const read = await new ReadFileTool().execute({ path: outside });
+    assert.match(read, /secret/);
+    assert.doesNotMatch(read, /路径越出当前工作区/);
     const write = await new WriteFileTool().execute({ path: outside, content: "changed\n" });
-    const grep = await new GrepSearchTool().execute({ query: "secret", path: root });
-    assert.match(read, /路径越出当前工作区/);
-    assert.match(write, /路径越出当前工作区/);
-    assert.match(grep, /路径越出当前工作区/);
-    // 首行是给界面看的拒绝原因；第二行告诉模型这是固定边界，并给出可行做法。
-    assert.match(write, /^写入文件失败: 路径越出当前工作区，已拒绝访问: .+\n.*固定的安全边界/);
-    assert.match(write, /HAJI_ALLOW_OUTSIDE_WORKSPACE=1/);
-    assert.equal(await fs.readFile(outside, "utf8"), "secret\n");
+    assert.match(write, /文件写入成功/);
+    assert.equal(await fs.readFile(outside, "utf8"), "changed\n");
+
+    const engine = new PermissionEngine();
+    engine.configurePathScope({ cwd: workspace });
+    const decision = await engine.evaluate({
+      mode: "default",
+      toolName: "write",
+      args: { path: outside, content: "again\n" },
+    });
+    assert.equal(decision.action, "prompt");
+    assert.match(decision.reason, /目标在工作区外/);
+    assert.match(decision.grant.key, /^write:/);
+
+    // 显式开关仍可整段跳过授权，供可信会话使用。
+    const previous = process.env.HAJI_ALLOW_OUTSIDE_WORKSPACE;
+    process.env.HAJI_ALLOW_OUTSIDE_WORKSPACE = "1";
+    try {
+      const allowed = await engine.evaluate({
+        mode: "default",
+        toolName: "write",
+        args: { path: outside, content: "again\n" },
+      });
+      assert.equal(allowed.action, "allow");
+    } finally {
+      if (previous === undefined) delete process.env.HAJI_ALLOW_OUTSIDE_WORKSPACE;
+      else process.env.HAJI_ALLOW_OUTSIDE_WORKSPACE = previous;
+    }
   } finally {
     process.chdir(originalCwd);
     await fs.rm(root, { recursive: true, force: true });

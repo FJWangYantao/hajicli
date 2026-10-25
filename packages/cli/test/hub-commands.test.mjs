@@ -38,6 +38,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
   const nested = [
     "/effort",
     "/permission",
+    "/workspace",
     "/provider",
     "/theme",
     "/agents new",
@@ -61,7 +62,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   // /model 已提升到顶层；/effort 与 /model 的强度轴重复，只保留直连与补全，不进菜单。
   assert.deepEqual(
     menus.config.items.map((item) => item.value),
-    ["/permission", "/provider", "/theme", "/sidebar", "/fold"],
+    ["/permission", "/workspace", "/provider", "/theme", "/sidebar", "/fold"],
   );
   assert.deepEqual(
     menus.agents.items.map((item) => item.value),

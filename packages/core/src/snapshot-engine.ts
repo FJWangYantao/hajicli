@@ -67,6 +67,12 @@ export interface OwnedChangeEntry {
   beforeContent?: string;
 }
 
+/**
+ * 工作区外文件的快照键前缀：键 = `external:<绝对路径(正斜杠)>`。
+ * 工作区内仍用相对的 posix 路径存键，老会话日志因此保持可读。
+ */
+const EXTERNAL_PREFIX = "external:";
+
 /** 按公共前后缀行近似计算增删行数（一侧为 undefined 时按整块新增 / 删除计）。 */
 function countLineChanges(
   before: string | undefined,
@@ -185,11 +191,11 @@ export class SnapshotEngine {
       const snapshotPaths =
         includedPaths === undefined
           ? this.listManagedPaths()
-          : [...new Set(includedPaths.map((file) => this.normalizeRelativePath(file)))];
+          : [...new Set(includedPaths.map((file) => this.normalizeSnapshotPath(file)))];
       const files: SnapshotFile[] = [];
       for (const relativePath of snapshotPaths) {
         if (this.isHajiRuntimePath(relativePath)) continue;
-        const absolutePath = this.resolveWorkspacePath(relativePath);
+        const absolutePath = this.resolveSnapshotPath(relativePath);
         if (!fs.existsSync(absolutePath)) continue;
 
         const stat = fs.lstatSync(absolutePath);
@@ -231,7 +237,7 @@ export class SnapshotEngine {
 
   beginMutation(anchorSnapshotId: string, paths?: readonly string[]): MutationCheckpoint | null {
     if (!this.readSnapshotMetadata(anchorSnapshotId)) return null;
-    const normalizedPaths = paths?.map((file) => this.normalizeRelativePath(file));
+    const normalizedPaths = paths?.map((file) => this.normalizeSnapshotPath(file));
     const beforeSnapshotId = this.createSnapshot("before Haji tool mutation", normalizedPaths);
     return beforeSnapshotId ? { anchorSnapshotId, beforeSnapshotId, paths: normalizedPaths } : null;
   }
@@ -329,8 +335,8 @@ export class SnapshotEngine {
     }
     return {
       ok: true,
-      revertedPaths: [...revertedPaths].sort(),
-      preservedPaths: [...preservedPaths].sort(),
+      revertedPaths: [...revertedPaths].map((key) => this.displaySnapshotPath(key)).sort(),
+      preservedPaths: [...preservedPaths].map((key) => this.displaySnapshotPath(key)).sort(),
     };
   }
 
@@ -383,7 +389,8 @@ export class SnapshotEngine {
               ? "deleted"
               : "modified";
         entries.push({
-          path: relativePath,
+          // 工作区内用相对路径，工作区外用绝对路径：/diff 可以直接拿它读文件。
+          path: this.displaySnapshotPath(relativePath),
           added,
           removed,
           kind,
@@ -426,7 +433,7 @@ export class SnapshotEngine {
   }
 
   private currentMatches(relativePath: string, expected: SnapshotFile | undefined): boolean {
-    const absolutePath = this.resolveWorkspacePath(relativePath);
+    const absolutePath = this.resolveSnapshotPath(relativePath);
     if (!expected) return !fs.existsSync(absolutePath);
     if (!fs.existsSync(absolutePath)) return false;
     const stat = fs.lstatSync(absolutePath);
@@ -445,7 +452,7 @@ export class SnapshotEngine {
   }
 
   private restoreFile(relativePath: string, target: SnapshotFile | undefined): void {
-    const absolutePath = this.resolveWorkspacePath(relativePath);
+    const absolutePath = this.resolveSnapshotPath(relativePath);
     if (!target) {
       if (fs.existsSync(absolutePath)) {
         fs.rmSync(absolutePath, { force: true, recursive: true });
@@ -485,33 +492,60 @@ export class SnapshotEngine {
     return output
       .split("\0")
       .filter(Boolean)
-      .map((file) => this.normalizeRelativePath(file));
+      .map((file) => this.normalizeSnapshotPath(file));
   }
 
   private isHajiRuntimePath(relativePath: string): boolean {
+    if (relativePath.startsWith(EXTERNAL_PREFIX)) return false;
     if (relativePath === ".haji/skills" || relativePath.startsWith(".haji/skills/")) return false;
     return relativePath === ".haji" || relativePath.startsWith(".haji/");
   }
 
-  private normalizeRelativePath(value: string): string {
-    const normalized = value.replace(/\\/g, "/");
-    if (
-      !normalized ||
-      path.posix.isAbsolute(normalized) ||
-      normalized.split("/").some((part) => part === "..")
-    ) {
-      throw new Error(`Invalid snapshot path: ${value}`);
-    }
-    return normalized;
+  /** 绝对路径 → 快照键：工作区内用 posix 相对路径，工作区外加 `external:` 前缀。 */
+  private encodeSnapshotPath(absolutePath: string): string {
+    const resolved = path.resolve(absolutePath);
+    const relative = path.relative(this.cwd, resolved);
+    const inside =
+      relative !== "" &&
+      !relative.startsWith(`..${path.sep}`) &&
+      relative !== ".." &&
+      !path.isAbsolute(relative);
+    if (inside) return relative.split(path.sep).join("/");
+    return `${EXTERNAL_PREFIX}${resolved.replace(/\\/g, "/")}`;
   }
 
-  private resolveWorkspacePath(relativePath: string): string {
-    const normalized = this.normalizeRelativePath(relativePath);
-    const resolved = path.resolve(this.cwd, ...normalized.split("/"));
+  /** 快照键 → 绝对路径。 */
+  private decodeSnapshotPath(key: string): string {
+    if (key.startsWith(EXTERNAL_PREFIX)) {
+      return path.resolve(key.slice(EXTERNAL_PREFIX.length));
+    }
+    const resolved = path.resolve(this.cwd, ...key.split("/"));
     if (resolved !== this.cwd && !resolved.startsWith(`${this.cwd}${path.sep}`)) {
-      throw new Error(`Snapshot path escaped workspace: ${relativePath}`);
+      throw new Error(`Snapshot path escaped workspace: ${key}`);
     }
     return resolved;
+  }
+
+  /** 展示/回退结果用的路径：工作区内保持相对，工作区外显示本机绝对路径。 */
+  private displaySnapshotPath(key: string): string {
+    return key.startsWith(EXTERNAL_PREFIX) ? path.resolve(key.slice(EXTERNAL_PREFIX.length)) : key;
+  }
+
+  /**
+   * 归一化快照键：接受相对路径、绝对路径与已编码的 `external:` 键。
+   * 工具执行器传入的是绝对路径，旧调用与旧会话日志传相对路径。
+   */
+  private normalizeSnapshotPath(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) throw new Error("Invalid snapshot path: empty");
+    const absolute = trimmed.startsWith(EXTERNAL_PREFIX)
+      ? path.resolve(trimmed.slice(EXTERNAL_PREFIX.length))
+      : path.resolve(this.cwd, trimmed);
+    return this.encodeSnapshotPath(absolute);
+  }
+
+  private resolveSnapshotPath(key: string): string {
+    return this.decodeSnapshotPath(this.normalizeSnapshotPath(key));
   }
 
   private storeBlob(content: Buffer, kind: string): string {

@@ -21,15 +21,19 @@ import {
   getContextCompactionThresholds,
   type HookContext,
   HookEngine,
+  inspectPathScope,
   isFailedToolOutput,
+  isHardProtectedTarget,
   isPermissionMode,
   isReasoningEffort,
   MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
+  normalizePathKey,
   normalizeSubagentInstructions,
   ObservableModelProvider,
   PERMISSION_MODES,
   PermissionEngine,
   type PermissionMode,
+  type ProtectedLevel,
   performanceMonitor,
   type ReasoningEffort,
   type RiskLevel,
@@ -55,6 +59,7 @@ import {
   GrepSearchTool,
   getModelMetadata,
   getModelPricing,
+  HistoryTool,
   ListSkillResourcesTool,
   LoadSkillTool,
   McpManager,
@@ -63,7 +68,12 @@ import {
   ProjectInfoTool,
   ReadFileTool,
   ReadSkillResourceTool,
+  type RequestDecision,
+  type RequestSpec,
+  RequestTool,
   readMcpServerConfigs,
+  type SelfStateSnapshot,
+  SelfStateTool,
   SubagentTool,
   TaskCreateTool,
   TaskFinishTool,
@@ -97,6 +107,7 @@ import {
   formatWorkspaceLabel,
   getPermissionGrant,
   loadPreference,
+  type PermissionGrant,
   readGitBranch,
   savePreference,
   summarizeToolCall,
@@ -108,17 +119,21 @@ import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
-import { parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
+import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import {
   isToolAllowedPersistently,
   loadAllPermissionRules,
+  loadUserPathRules,
+  type PermissionPathRules,
   type PermissionRuleEntry,
   type PermissionRuleScope,
   removePermissionRule,
+  removeUserPathRule,
   savePermissionRule,
+  saveUserPathRule,
 } from "./permission-rules.js";
 import {
   detectProjectCheckCommand,
@@ -184,6 +199,13 @@ import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
 import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
 import { loadUserModels } from "./user-models.js";
+import { handleWorkspaceCommand, type WorkspaceCommandContext } from "./workspace-commands.js";
+import {
+  addWorkspaceRoot,
+  loadWorkspaceRoots,
+  normalizeWorkspaceRoot,
+  removeWorkspaceRoot,
+} from "./workspace-roots.js";
 
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
@@ -211,6 +233,12 @@ async function main() {
   const headlessRequest = headlessParse.request;
   // 会话恢复参数（haji -c / haji -r）：只在交互模式生效，无头 -p 时忽略。
   const sessionResumeRequest = headlessRequest ? undefined : parseSessionResumeArgs(cliArgs);
+  // 追加工作区根（--add-dir，可重复）：只影响本次进程，不写配置。
+  const addDirParse = parseAddDirArgs(cliArgs);
+  if (addDirParse.error) {
+    console.error(colors.failLine(addDirParse.error));
+    process.exit(1);
+  }
   if (headlessRequest?.prompt === "-") {
     // prompt 传 "-" 表示从 stdin 管道读取（cat error.log | haji -p "-"）。
     if (process.stdin.isTTY) {
@@ -535,18 +563,74 @@ async function main() {
 
   const hookEngine = new HookEngine();
   const snapshotEngine = new SnapshotEngine(process.cwd());
+  // 工作区根 = 启动目录 + 持久化追加目录（/workspace add）+ 本次 --add-dir。
+  const workspaceRoots: string[] = loadWorkspaceRoots(process.cwd());
+  // 记录本次 --add-dir 的根，selfstate 展示时区分来源。
+  const addDirRoots = new Set<string>();
+  for (const raw of addDirParse.roots) {
+    const normalized = normalizeWorkspaceRoot(raw, process.cwd());
+    if (!normalized.ok) {
+      console.error(colors.failLine(`--add-dir 无效：${normalized.error}`));
+      process.exit(1);
+    }
+    const duplicate = workspaceRoots.some(
+      (root) => normalizePathKey(root) === normalizePathKey(normalized.root),
+    );
+    if (!duplicate) workspaceRoots.push(normalized.root);
+    addDirRoots.add(normalizePathKey(normalized.root));
+  }
+  let pathRules: PermissionPathRules = loadUserPathRules();
+  /** 根或路径规则变化后重新注入权限引擎（PreToolUse 判定读的是引擎里的副本）。 */
+  const syncPathScope = (): void => {
+    permissionEngine.configurePathScope({
+      cwd: process.cwd(),
+      roots: workspaceRoots,
+      rules: pathRules,
+    });
+  };
+  syncPathScope();
+
+  /**
+   * 计算一次调用的授权范围：工作区外使用「读/写 + 目录前缀」的键，
+   * 让「本会话内总是允许 / 永久允许」只放开这个目录，而不是放开全部写入。
+   */
+  const resolveToolGrant = (
+    toolName: string,
+    args: Record<string, unknown>,
+  ): PermissionGrant | undefined => {
+    const scope = inspectPathScope(toolName, args, {
+      cwd: process.cwd(),
+      roots: workspaceRoots,
+      rules: pathRules,
+    });
+    if (scope.applies && scope.status === "outside" && scope.grant) return scope.grant;
+    return getPermissionGrant(toolName, args);
+  };
+  const isPathScopedGrant = (grant: PermissionGrant | undefined): boolean =>
+    Boolean(grant && /^(?:read|write):/.test(grant.key));
   let autoCompactionArmed = true;
+  /** 最近一次压缩结果：selfstate 用它说明「上下文是怎么变小的」。 */
+  let lastCompaction:
+    | { at: string; beforeTokens: number; afterTokens: number; layers: string[] }
+    | undefined;
 
   // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
   hookEngine.register("PreToolUse", async (ctx) => {
     const mode = ctx.permissionMode as PermissionMode;
+    // `request` 自身只是“发起申请”：真正的变更由 CLI 在用户批准后执行，
+    // 而且它不碰文件。放它直接进入 execute，避免一次申请被确认两遍。
+    if ((ctx.toolName || "").toLowerCase() === "request") return null;
+    // 受保护目标（hard 级）不接受持久放行规则：历史上“永久允许 write/该目录”
+    // 不能覆盖 Authorization 配置、凭据、自我定义与审计数据的确认。
+    const hardProtected = isHardProtectedTarget(ctx.toolName || "", ctx.args || {}, process.cwd());
     // 用户明确“永久允许”过的命令/工具优先于权限引擎直接放行（含 Auto 分类器拦截）。
     // plan 模式是只读硬限制、bypass 本就全放行，这两种档位不查持久规则。
-    if (mode !== "plan" && mode !== "bypass-permissions") {
+    if (!hardProtected && mode !== "plan" && mode !== "bypass-permissions") {
       const persistentHit = isToolAllowedPersistently(
         ctx.toolName || "",
         ctx.args || {},
         permissionRules,
+        resolveToolGrant(ctx.toolName || "", ctx.args || {}),
       );
       if (persistentHit) return null;
     }
@@ -564,13 +648,21 @@ async function main() {
       return null;
     }
     if (checkResult.action === "prompt") {
-      return requestToolPermission(ctx);
+      return requestToolPermission(
+        ctx,
+        checkResult.grant,
+        checkResult.reason,
+        checkResult.protectedLevel,
+      );
     }
     if (checkResult.action === "deny") {
       // 拦截结果由工具块统一展示（⊘ + 原因），这里只返回给模型的说明。
       const deniedReason = checkResult.reason || "权限引擎安全拦截";
       if (mode === "plan") {
         return `[计划模式拦截] 工具 "${ctx.toolName}" 未执行。原因：${deniedReason}\n提交计划并等待用户批准后再执行修改。`;
+      }
+      if (checkResult.protectedLevel === "forbidden") {
+        return `[受保护目标拦截] 工具 "${ctx.toolName}" 未执行。原因：${deniedReason}\n这类操作任何权限档都不会执行；请改用范围更小的目标，或请用户手动处理。`;
       }
       return `[自动模式拦截] 工具 "${ctx.toolName}" 未执行。原因：${deniedReason}\n不要换个说法重试同一件事；改用更安全的做法，或询问用户是否需要执行。`;
     }
@@ -657,7 +749,15 @@ async function main() {
       skillRegistry.restoreScopeFromMessages("main", ctx.messages);
       if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
       // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
-      if (result.layersApplied.length > 0) ui.noteCompaction();
+      if (result.layersApplied.length > 0) {
+        ui.noteCompaction();
+        lastCompaction = {
+          at: new Date().toISOString(),
+          beforeTokens: result.originalTokens,
+          afterTokens: result.compactedTokens,
+          layers: [...result.layersApplied],
+        };
+      }
       const layers =
         result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
       ui.writeLine(
@@ -758,6 +858,15 @@ async function main() {
     new EditFileTool(),
     new GlobalFindFilesTool(),
     new ProjectInfoTool(),
+    new SelfStateTool(() => buildSelfStateSnapshot()),
+    new RequestTool({ approve: (spec) => approveAgentRequest(spec) }),
+    new HistoryTool({
+      current: () => ({
+        id: sessionManager.getCurrentSession().id,
+        title: sessionManager.getCurrentSession().title,
+        messages,
+      }),
+    }),
     new GrepSearchTool(),
     new WebSearchTool(),
     new WebFetchTool(),
@@ -1401,6 +1510,46 @@ async function main() {
     );
   };
 
+  /** selfstate 的数据源：全部取自当前运行态；拿不到的字段不猜，直接省略。 */
+  function buildSelfStateSnapshot(): SelfStateSnapshot {
+    const thresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
+    const branch = readGitBranch(gitHeadPath);
+    const current = sessionManager.getCurrentSession();
+    const roots = [
+      { path: process.cwd(), source: "cwd" as const },
+      ...workspaceRoots.map((root) => ({
+        path: root,
+        source: (addDirRoots.has(normalizePathKey(root)) ? "add-dir" : "workspace") as
+          | "add-dir"
+          | "workspace",
+      })),
+    ];
+    return {
+      cwd: process.cwd(),
+      os: `${os.type()} ${os.release()} ${process.platform}/${process.arch}`,
+      roots,
+      permissionMode,
+      riskThreshold,
+      model: selectedModel,
+      provider: currentProviderName,
+      reasoningEffort,
+      context: {
+        usedTokens: estimateMessagesTokens(messages, { includeSystem: true }),
+        windowTokens: thresholds.contextWindowTokens,
+        triggerTokens: thresholds.triggerTokens,
+        emergencyTokens: thresholds.emergencyTokens,
+        armed: autoCompactionArmed,
+        ...(lastCompaction ? { lastCompaction } : {}),
+      },
+      session: {
+        id: current.id,
+        title: current.title,
+        userTurns: messages.filter((message) => message.role === "user").length,
+      },
+      ...(branch ? { gitBranch: branch } : {}),
+    };
+  }
+
   const updateStatusUI = () => {
     ui.setModelInfo(selectedModel, reasoningEffort, providerPlainLabel(currentProviderName));
     ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
@@ -1410,7 +1559,10 @@ async function main() {
   };
   updateStatusUI();
 
-  const applyPermissionMode = async (nextMode: PermissionMode): Promise<void> => {
+  const applyPermissionMode = async (
+    nextMode: PermissionMode,
+    options: { persist?: boolean } = {},
+  ): Promise<void> => {
     if (nextMode === "plan" && permissionMode !== "plan") {
       taskStore.clearTasks();
       planReadyForReview = false;
@@ -1419,18 +1571,22 @@ async function main() {
     }
     permissionMode = nextMode;
     await refreshSystemPromptPreservingContext();
-    const currentPreference = loadPreference();
-    savePreference(
-      {
-        ...(currentPreference ?? {}),
-        model: selectedModel,
-        reasoningEffort,
-        provider: currentProviderName,
-        permissionMode,
-        riskThreshold,
-      },
-      showRuntimeWarning,
-    );
+    // Agent 申请的临时提级只改会话内状态（persist: false）：写进 preferences.json
+    // 会变成跨会话的永久提权，而这必须由用户自己用 /permission 决定。
+    if (options.persist !== false) {
+      const currentPreference = loadPreference();
+      savePreference(
+        {
+          ...(currentPreference ?? {}),
+          model: selectedModel,
+          reasoningEffort,
+          provider: currentProviderName,
+          permissionMode,
+          riskThreshold,
+        },
+        showRuntimeWarning,
+      );
+    }
     sessionManager.saveCurrentSession(messages);
     ui.setPermissionMode(permissionMode);
     updateStatusUI();
@@ -1507,16 +1663,14 @@ async function main() {
 
   const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
   // “本会话内总是允许”只对当前会话有效；/clear、/resume 切换会话后自动失效。
-  // bash 按命令前缀授权（见 getPermissionGrant），其余工具按工具名授权。
+  // 键由 resolveToolGrant 给出：bash 按命令前缀，工作区外按「读/写 + 目录前缀」，其余按工具名。
   let sessionToolGrants = { sessionId: "", keys: new Set<string>() };
-  const isToolGrantedForSession = (toolName: string, args: Record<string, unknown>): boolean => {
-    const grant = getPermissionGrant(toolName, args);
-    return Boolean(
+  const isToolGrantedForSession = (grant: PermissionGrant | undefined): boolean =>
+    Boolean(
       grant &&
         sessionToolGrants.sessionId === sessionManager.getCurrentSession().id &&
         sessionToolGrants.keys.has(grant.key),
     );
-  };
   const grantToolForSession = (grantKey: string): void => {
     const sessionId = sessionManager.getCurrentSession().id;
     if (sessionToolGrants.sessionId !== sessionId) {
@@ -1533,31 +1687,46 @@ async function main() {
           ? "编辑文件"
           : `调用 ${toolName}`;
 
-  const promptToolPermission = async (ctx: HookContext): Promise<string | null> => {
+  const promptToolPermission = async (
+    ctx: HookContext,
+    overrideGrant?: PermissionGrant,
+    outsideReason?: string,
+    protectedLevel?: ProtectedLevel,
+  ): Promise<string | null> => {
+    // hard / forbidden 级受保护目标：不给「本会话/永久」选项，也不查会话授权记忆。
+    const hardProtected = protectedLevel === "hard" || protectedLevel === "forbidden";
     const toolName = ctx.toolName || "";
     const args = ctx.args || {};
-    if (isToolGrantedForSession(toolName, args)) return null;
+    const grant = overrideGrant ?? resolveToolGrant(toolName, args);
+    if (!hardProtected && isToolGrantedForSession(grant)) return null;
     const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "主 Agent";
+    const outsideHint = isPathScopedGrant(grant) ? "（工作区外）" : "";
+    const protectedHint = hardProtected ? "（受保护目标 · 不可永久授权）" : "";
     if (!ui.isInteractive()) {
       // 无头且 stdin 非 TTY（管道/CI）时没有交互确认的机会，自动拒绝并把原因反馈给模型。
       if (headlessRequest && !process.stdin.isTTY) {
-        return USER_REJECTED_TOOL_OUTPUT;
+        if (!hardProtected) return USER_REJECTED_TOOL_OUTPUT;
+        return `${USER_REJECTED_TOOL_OUTPUT}\n该操作命中受保护目标，无头模式无法确认。请在交互会话中执行，或显式设置 HAJI_ALLOW_PROTECTED=1（会跳过整层保护，仅建议在受控环境使用）。`;
       }
       const answer = await ui.readInput({
-        prompt: `${requester} 请求${permissionVerb(toolName)}：${summarizeToolCall(toolName, args)}，授权？(y/N) › `,
+        prompt: `${requester} 请求${permissionVerb(toolName)}${outsideHint}${protectedHint}：${summarizeToolCall(toolName, args)}，授权？(y/N) › `,
       });
       return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
     }
-    const grant = getPermissionGrant(toolName, args);
     notifyUserAttention();
     const selection = await readSelectionSafely(
       {
-        title: `需要授权 · ${requester} 请求${permissionVerb(toolName)}`,
-        preview: buildPermissionPreview(toolName, args, process.cwd()),
-        items: buildPermissionCardItems(grant),
+        title: hardProtected
+          ? `需要授权 · ${requester} 请求${permissionVerb(toolName)}${protectedHint}`
+          : `需要授权 · ${requester} 请求${permissionVerb(toolName)}${outsideHint}`,
+        preview: [
+          ...buildPermissionPreview(toolName, args, process.cwd()),
+          ...(outsideReason ? [colors.gray(outsideReason)] : []),
+        ],
+        items: buildPermissionCardItems(grant, { persistent: !hardProtected }),
         selectedValue: "once",
         // 永久允许的作用域（本项目 ⇄ 全局）：Tab 或 ←→ 切换，仅对“永久允许”一项生效。
-        ...(grant
+        ...(grant && !hardProtected
           ? {
               secondary: {
                 label: "永久作用域",
@@ -1565,11 +1734,15 @@ async function main() {
                   { value: "project", label: "本项目" },
                   { value: "user", label: "全局" },
                 ],
-                selectedValue: "project",
+                selectedValue: isPathScopedGrant(grant) ? "user" : "project",
               },
             }
           : {}),
-        hint: "↑↓ 选择 · Tab 切作用域 · Enter 确认 · Esc 中止本轮",
+        hint: hardProtected
+          ? "受保护目标 · 仅本次可授权 · Esc 中止本轮"
+          : outsideReason
+            ? `工作区外操作 · ↑↓ 选择 · Tab 切作用域 · Enter 确认 · Esc 中止本轮`
+            : "↑↓ 选择 · Tab 切作用域 · Enter 确认 · Esc 中止本轮",
         confirmDelayMs: 300,
       },
       "restore",
@@ -1596,8 +1769,12 @@ async function main() {
       ui.writeLine(colors.gray(`  本会话内 ${grant.scope} 将不再询问。`));
     }
     if (selection.value === "always" && grant) {
-      const ruleScope: PermissionRuleScope =
-        selection.secondaryValue === "user" ? "user" : "project";
+      // 路径授权键只能写用户级：项目级文件会随仓库分发，等于让别人替你扩权。
+      const ruleScope: PermissionRuleScope = isPathScopedGrant(grant)
+        ? "user"
+        : selection.secondaryValue === "user"
+          ? "user"
+          : "project";
       grantToolForSession(grant.key);
       const saved = savePermissionRule(
         { key: grant.key, scope: grant.scope, createdAt: new Date().toISOString() },
@@ -1618,10 +1795,167 @@ async function main() {
   };
   // 并行的子代理可能同时请求授权，逐个弹出卡片，避免争用同一个选择器。
   let permissionQueue: Promise<unknown> = Promise.resolve();
-  const requestToolPermission = (ctx: HookContext): Promise<string | null> => {
-    const pending = permissionQueue.then(() => promptToolPermission(ctx));
+  const requestToolPermission = (
+    ctx: HookContext,
+    grant?: PermissionGrant,
+    reason?: string,
+    protectedLevel?: ProtectedLevel,
+  ): Promise<string | null> => {
+    const pending = permissionQueue.then(() =>
+      promptToolPermission(ctx, grant, reason, protectedLevel),
+    );
     permissionQueue = pending.catch(() => undefined);
     return pending;
+  };
+
+  // /workspace 命令族：根与路径规则的读写在闭包里完成，变更后立刻刷新权限引擎。
+  const workspaceCommandContext: WorkspaceCommandContext = {
+    ui,
+    cwd: process.cwd(),
+    listRoots: () => workspaceRoots,
+    addRoot: (input) => {
+      const result = addWorkspaceRoot(input, process.cwd());
+      if (!result.ok) return result;
+      const duplicate = workspaceRoots.some(
+        (root) => normalizePathKey(root) === normalizePathKey(result.root),
+      );
+      if (!duplicate) workspaceRoots.push(result.root);
+      syncPathScope();
+      return result;
+    },
+    removeRoot: (input) => {
+      // 先尝试删除持久化条目；--add-dir 的会话根只在内存里，再按路径键匹配一次。
+      const raw = input.trim().replace(/^["']|["']$/g, "");
+      const persisted = removeWorkspaceRoot(raw, process.cwd());
+      const targetKey = normalizePathKey(persisted.root ?? raw);
+      const index = workspaceRoots.findIndex((root) => normalizePathKey(root) === targetKey);
+      const sessionRoot = index >= 0 ? workspaceRoots[index] : undefined;
+      if (index >= 0) workspaceRoots.splice(index, 1);
+      if (persisted.ok || sessionRoot) {
+        syncPathScope();
+        return { ok: true, root: sessionRoot ?? persisted.root };
+      }
+      return { ok: false, error: persisted.error ?? `未找到工作区根：${input}` };
+    },
+    refreshPathScope: () => {
+      pathRules = loadUserPathRules();
+      syncPathScope();
+    },
+    listPathRules: () => pathRules,
+    savePathRule: (kind, pattern) => saveUserPathRule(kind, pattern),
+    removePathRule: (kind, pattern) => removeUserPathRule(kind, pattern),
+    readSelectionSafely,
+  };
+
+  // Agent 的受控申请通道：一次只批准一个具体目标，批准后调用与斜杠命令相同的落盘函数。
+  const REQUEST_TITLES: Record<RequestSpec["action"], string> = {
+    "workspace.add": "加入工作区根",
+    "permission.mode": "临时提级权限档",
+  };
+
+  const confirmAgentRequest = async (
+    title: string,
+    spec: RequestSpec,
+    preview: string[],
+  ): Promise<RequestDecision> => {
+    const requester = spec.agentId ? `子代理 ${spec.agentId}` : "主 Agent";
+    if (!ui.isInteractive()) {
+      if (headlessRequest && !process.stdin.isTTY) {
+        return {
+          approved: false,
+          detail:
+            "无头模式没有交互确认的机会。请在交互会话中重试，或由用户提前用 /workspace add 配置该目录。",
+        };
+      }
+      const answer = await ui.readInput({
+        prompt: `${requester} 申请${title}：${spec.target}。批准？(y/N) › `,
+      });
+      return answer.trim().toLowerCase() === "y"
+        ? { approved: true }
+        : { approved: false, detail: "用户未批准。" };
+    }
+    notifyUserAttention();
+    const selection = await readSelectionSafely(
+      {
+        title: `Agent 申请 · ${title}`,
+        preview: [...preview, "", colors.gray(`目标：${spec.target} · 发起方：${requester}`)],
+        items: [
+          { value: "approve", label: "批准", hotkey: "y" },
+          { value: "deny", label: "拒绝", hotkey: "n" },
+          { value: "deny-reason", label: "拒绝并说明…", hotkey: "e" },
+        ],
+        hint: "受控申请 · 只改变这一项 · Enter 确认 · Esc 中止本轮",
+        confirmDelayMs: 300,
+      },
+      "restore",
+    );
+    if (selection.value === "approve") return { approved: true };
+    if (selection.value !== "deny-reason") return { approved: false, detail: "用户拒绝。" };
+
+    const draft = ui.cancelInput();
+    try {
+      const reason = (
+        await ui.readInput({ prompt: "拒绝原因（回传给模型，留空则直接拒绝）› " })
+      ).trim();
+      return { approved: false, detail: reason || "用户拒绝且未说明理由。" };
+    } catch (error) {
+      if (error instanceof TerminalInputCancelledError)
+        return { approved: false, detail: "用户拒绝。" };
+      throw error;
+    } finally {
+      startBackgroundInput(draft);
+    }
+  };
+
+  const approveAgentRequest = async (spec: RequestSpec): Promise<RequestDecision> => {
+    const title = REQUEST_TITLES[spec.action] ?? spec.action;
+    let preview: string[];
+
+    if (spec.action === "workspace.add") {
+      // 先按 /workspace add 的规则解析，卡片上展示的就是最终会写入的绝对路径。
+      const normalized = normalizeWorkspaceRoot(spec.target, process.cwd());
+      if (!normalized.ok) return { approved: false, detail: `申请无效：${normalized.error}` };
+      preview = [
+        `目录：${normalized.root}`,
+        `理由：${spec.reason}`,
+        "生效：该目录内所有文件读写不再询问；bash 的只读判定同步扩大。",
+        "落地：写入用户级 ~/.haji/workspaces.json（跨会话，/workspace remove 可撤销）。",
+      ];
+    } else {
+      if (permissionMode === "plan") {
+        return { approved: false, detail: "Plan 模式下不能提级权限档；请先提交计划并等待批准。" };
+      }
+      if (permissionMode === spec.target) {
+        return { approved: true, detail: `当前权限档已是 ${spec.target}，无需变更。` };
+      }
+      preview = [
+        `目标档位：${spec.target}`,
+        `理由：${spec.reason}`,
+        spec.target === "accept-edit"
+          ? "生效：写文件/编辑不再询问；bash 与其它命令仍需逐次确认。"
+          : "生效：由安全分类器判定；高风险与受保护目标仍会被拦截或要求确认。",
+        "范围：仅本会话，不写入 preferences.json；重启后恢复原档位。",
+      ];
+    }
+
+    const decision = await confirmAgentRequest(title, spec, preview);
+    if (!decision.approved) return decision;
+
+    if (spec.action === "workspace.add") {
+      const result = workspaceCommandContext.addRoot(spec.target);
+      if (!result.ok) return { approved: false, detail: `申请未生效：${result.error}` };
+      return {
+        approved: true,
+        detail: `已加入工作区根：${result.root}（用户级 ~/.haji/workspaces.json，跨会话生效）。可以继续该目录内的读写。`,
+      };
+    }
+
+    const nextMode = spec.target as PermissionMode;
+    await applyPermissionMode(nextMode, { persist: false });
+    return {
+      approved: true,
+      detail: `权限档已临时切换为 ${nextMode}（仅本会话，不写入 preferences.json；重启后恢复）。`,
+    };
   };
 
   // 枢纽指令：弹出细分菜单，选中项交给下一轮主循环立即分发（不进入待处理队列）。
@@ -2091,7 +2425,7 @@ async function main() {
         ui.writeLine(colors.userMsg(displayInput));
         ui.writeLine();
         // @ 文件引用：提交时把命中文件的内容展开为附件块（对话回显保持用户原话）。
-        const mentionExpansion = expandFileMentions(trimmedInput, process.cwd());
+        const mentionExpansion = expandFileMentions(trimmedInput, process.cwd(), workspaceRoots);
         if (mentionExpansion.attached.length > 0) {
           forwardedPrompt = mentionExpansion.prompt;
           ui.writeLine(colors.gray(`  ↳ 已附加文件：${mentionExpansion.attached.join("、")}`));
@@ -2367,7 +2701,15 @@ async function main() {
           autoCompactionArmed = result.compactedTokens <= manualThresholds.rearmTokens;
           refreshAgentVerificationContext(messages);
           sessionManager.saveCurrentSession(messages);
-          if (result.layersApplied.length > 0) ui.noteCompaction();
+          if (result.layersApplied.length > 0) {
+            ui.noteCompaction();
+            lastCompaction = {
+              at: new Date().toISOString(),
+              beforeTokens: result.originalTokens,
+              afterTokens: result.compactedTokens,
+              layers: [...result.layersApplied],
+            };
+          }
           updateStatusUI();
           const layersStr =
             result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "已处于精简状态";
@@ -2478,6 +2820,10 @@ async function main() {
         }
         if (command === "provider") {
           await handleProviderCommand(providerCommandContext, { parts });
+          continue;
+        }
+        if (command === "workspace") {
+          await handleWorkspaceCommand(workspaceCommandContext, { parts });
           continue;
         }
         if (command === "permission") {

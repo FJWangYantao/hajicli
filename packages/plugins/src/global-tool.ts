@@ -174,7 +174,7 @@ export class GlobalFindFilesTool implements BaseTool {
     function: {
       name: "global",
       description:
-        "查找工作区文件。支持名称字面量或正则、glob、文件类型，以及通过 offset/limit 分页。",
+        "查找文件（默认工作区；工作区外需授权）。支持名称字面量或正则、glob、文件类型，以及通过 offset/limit 分页。",
       parameters: {
         type: "object",
         properties: {

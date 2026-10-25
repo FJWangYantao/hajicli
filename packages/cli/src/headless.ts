@@ -59,8 +59,40 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
   return { request: { prompt, permissionMode, outputFormat } };
 }
 
-/** 会话恢复启动参数：`haji -c` 继续上次会话；`haji -r [关键词]` 搜索恢复。 */
-export interface SessionResumeRequest {
+/**
+ * 追加工作区根参数：`--add-dir <path>`（可重复，也接受 `--add-dir=<path>`）。
+ * 只在本次进程内生效，不写配置；需要长期生效用 `/workspace add`。
+ */
+export interface AddDirParseResult {
+  roots: string[];
+  error?: string;
+}
+
+export function parseAddDirArgs(args: readonly string[]): AddDirParseResult {
+  const roots: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--add-dir") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return { roots, error: "--add-dir 需要一个目录参数，例如：haji --add-dir ../other-repo" };
+      }
+      roots.push(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--add-dir=")) {
+      const value = arg.slice("--add-dir=".length);
+      if (!value) {
+        return { roots, error: "--add-dir 需要一个目录参数，例如：haji --add-dir ../other-repo" };
+      }
+      roots.push(value);
+    }
+  }
+  return { roots };
+}
+
+/** 会话恢复启动参数：`haji -c` 继续上次会话；`haji -r [关键词]` 搜索恢复。 */ export interface SessionResumeRequest {
   mode: "latest" | "search";
   keyword?: string;
 }

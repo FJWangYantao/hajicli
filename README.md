@@ -175,11 +175,26 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 
 ## 安全边界
 
-文件读取、写入、编辑和 Grep 默认只能访问启动 HAJI 时的当前工作区，并校验符号链接是否逃逸。若确实需要访问工作区外路径，可在可信会话中显式设置：
+文件读取、写入、编辑和检索的作用域是「工作区根」：启动目录，加上 `--add-dir <目录>`（本次进程）与 `/workspace add <目录>`（持久化到 `~/.haji/workspaces.json`，按项目分组）追加的目录。路径判定会解析符号链接：目标不存在时按最近的已存在上级目录判断，因此 `../`、绝对路径和指向外部的符号链接都绕不过去。
 
-```powershell
-$env:HAJI_ALLOW_OUTSIDE_WORKSPACE = '1'
+工作区外的读写不再由工具直接拒绝，而是交给权限层：
+
+- `default` / `accept-edit` / `auto` 档都会弹出授权卡，可以「允许本次」「本会话内总是允许该目录」或「永久允许该目录」（路径授权只写用户级 `permissions.json`，不会写进项目）；
+- `plan` 档的越界读取同样需要授权，越界写入按计划模式拦截；
+- `bypass-permissions` 与 `HAJI_ALLOW_OUTSIDE_WORKSPACE=1` 跳过授权（后者供可信会话临时使用）；
+- 无头模式（`haji -p`）没有人可确认，越界调用会被拒绝，除非命中用户级路径规则或设置了上面的环境变量。
+
+路径规则写在用户级 `~/.haji/permissions.json` 的 `paths` 段，`deny` 优先于 `allow`；项目级文件的 `paths` 段不会生效，避免克隆仓库自带扩权配置：
+
+```json
+{
+  "version": 1,
+  "allow": [],
+  "paths": { "allow": ["~/scratch/**"], "deny": ["**/.ssh/**"] }
+}
 ```
+
+对应命令：`/workspace`（查看根与规则）、`/workspace add|remove <目录>`、`/workspace allow|deny <glob>`、`/workspace rules`（删除规则）。经文件工具授权写入工作区外的文件同样进入快照日志，`/rewind` 与 `/diff` 能回退和查看；bash 命令造成的工作区外改动不在快照范围内。路径规则只作用于文件工具；bash 命令仍按只读判定与授权流程处理（`--add-dir` 的目录内相对路径可被判定为只读）。
 
 `default` 与 `accept-edit` 模式下，可静态确认为只读的命令无需审批：`ls`、`pwd`、`cat`/`head`/`tail`/`wc`、`rg`、`git status|diff|log|show|blame|rev-parse|ls-files`、只列出分支的 `git branch` 以及对应的 PowerShell 查询命令。含命令组合、重定向、变量展开或替换的命令，以及指向工作区外（绝对路径、`~`、`..`、经符号链接逃逸）的路径参数一律仍需审批。授权卡片中的“本会话内总是允许”按命令前缀生效（如 `npm test`、`git commit`），不会一次放行全部命令；无法按前缀安全匹配的组合命令只提供单次允许。
 

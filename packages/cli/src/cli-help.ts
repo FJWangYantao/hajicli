@@ -111,6 +111,38 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         aliases: ["perm"],
       },
       {
+        command: "/workspace",
+        description: "工作区根与工作区外路径规则（/workspace add 持久化）",
+        argHint: "[list|add|remove|rules|allow|deny]",
+        subcommands: [
+          { command: "/workspace list", description: "查看工作区根与路径规则" },
+          {
+            command: "/workspace add",
+            description: "追加工作区根（持久化到 ~/.haji/workspaces.json）",
+            argHint: "<目录>",
+            argRequired: true,
+          },
+          {
+            command: "/workspace remove",
+            description: "移除追加的工作区根（无参数进入选择器）",
+            argHint: "[目录]",
+          },
+          {
+            command: "/workspace allow",
+            description: "放行工作区外路径（glob，用户级）",
+            argHint: "<glob>",
+            argRequired: true,
+          },
+          {
+            command: "/workspace deny",
+            description: "禁止路径（优先级高于放行，用户级）",
+            argHint: "<glob>",
+            argRequired: true,
+          },
+          { command: "/workspace rules", description: "查看 / 删除路径规则" },
+        ],
+      },
+      {
         command: "/provider",
         description: "查看 / 切换 / 添加 / 配置提供商",
         argHint: "[名称|add|set|unset]",
@@ -804,6 +836,7 @@ ${colors.bold("选项:")}
   -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文；prompt 传 "-" 从 stdin 管道读取）
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
   --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）
+  --add-dir <目录>      追加工作区根（可重复；只对本次进程生效，/workspace add 可持久化）
 
 ${colors.bold("快捷命令 (对话内，枢纽进入后选择细分项):")}
 ${renderCommandSurfaceLines().join("\n")}
@@ -814,7 +847,7 @@ ${colors.bold("环境变量配置:")}
   VOLC_API_KEY        火山引擎 API Key (或 ARK_API_KEY)
   HAJI_PROXY          HTTP/HTTPS 统一代理（也支持 HTTP_PROXY / HTTPS_PROXY）
   HAJI_HTTP_TIMEOUT_MS  网络连接超时，默认 60000ms
-  HAJI_ALLOW_OUTSIDE_WORKSPACE  设为 1 时允许文件工具访问工作区外（谨慎）
+  HAJI_ALLOW_OUTSIDE_WORKSPACE  设为 1 时放行全部工作区外路径（跳过授权，谨慎）
   HAJI_CONTEXT_WINDOW_TOKENS  可选：覆盖当前模型的上下文 Token 上限
 `);
     process.exit(0);

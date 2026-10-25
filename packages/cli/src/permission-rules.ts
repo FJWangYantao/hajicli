@@ -6,7 +6,7 @@ import { getPermissionGrant } from "./cli-runtime.js";
 export type PermissionRuleScope = "user" | "project";
 
 export interface PermissionRuleEntry {
-  /** 与会话授权表同形态的键：bash 为命令前缀（bash:npm test），其余为工具名。 */
+  /** 与会话授权表同形态的键：bash 为命令前缀（bash:npm test），其余为工具名或路径前缀。 */
   key: string;
   /** 授权范围描述（如“npm test 开头的命令”），用于 /permissions 列表展示。 */
   scope: string;
@@ -20,6 +20,12 @@ export interface LoadedPermissionRules {
   project: PermissionRuleEntry[];
 }
 
+/** 用户级路径规则：工作区外的读写按 glob 放行 / 禁止。 */
+export interface PermissionPathRules {
+  allow: string[];
+  deny: string[];
+}
+
 export interface PersistentPermissionHit {
   entry: PermissionRuleEntry;
   scope: PermissionRuleScope;
@@ -28,6 +34,8 @@ export interface PersistentPermissionHit {
 interface PermissionRuleFile {
   version: number;
   allow: PermissionRuleEntry[];
+  /** 路径规则只从用户级文件读取：项目级配置不能自行扩大可写范围。 */
+  paths?: { allow: string[]; deny: string[] };
 }
 
 export function userPermissionRulesPath(): string {
@@ -42,18 +50,37 @@ export function permissionRulesPath(scope: PermissionRuleScope): string {
   return scope === "project" ? projectPermissionRulesPath() : userPermissionRulesPath();
 }
 
-function readRulesFile(filePath: string): PermissionRuleEntry[] {
+/** 读取完整规则文档（allow 条目 + 路径规则），损坏时返回空文档。 */
+function readRulesDocument(filePath: string): PermissionRuleFile {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<PermissionRuleFile>;
-    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.allow)) return [];
-    return parsed.allow.filter(
-      (entry): entry is PermissionRuleEntry =>
-        Boolean(entry) && typeof entry.key === "string" && entry.key.trim().length > 0,
-    );
+    if (!parsed || typeof parsed !== "object") return { version: 1, allow: [] };
+    const allow = Array.isArray(parsed.allow)
+      ? parsed.allow.filter(
+          (entry): entry is PermissionRuleEntry =>
+            Boolean(entry) && typeof entry.key === "string" && entry.key.trim().length > 0,
+        )
+      : [];
+    const paths = sanitizePathRules(parsed.paths);
+    return { version: 1, allow, ...(paths ? { paths } : {}) };
   } catch {
     // 文件不存在、损坏或结构非法时一律按空规则处理
-    return [];
+    return { version: 1, allow: [] };
   }
+}
+
+function sanitizePathRules(input: unknown): { allow: string[]; deny: string[] } | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const candidate = input as { allow?: unknown; deny?: unknown };
+  const pick = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+  return { allow: pick(candidate.allow), deny: pick(candidate.deny) };
+}
+
+function readRulesFile(filePath: string): PermissionRuleEntry[] {
+  return readRulesDocument(filePath).allow;
 }
 
 /** 读取单一作用域的持久化放行规则。 */
@@ -69,16 +96,53 @@ export function loadAllPermissionRules(): LoadedPermissionRules {
 }
 
 /**
+ * 路径规则只认用户级 `~/.haji/permissions.json`。项目级文件随仓库分发，
+ * 若允许它声明 `paths.allow: ["C:/"]` 就等于克隆即扩权，因此这里刻意忽略项目级。
+ */
+export function loadUserPathRules(): PermissionPathRules {
+  const paths = readRulesDocument(userPermissionRulesPath()).paths;
+  return { allow: paths?.allow ?? [], deny: paths?.deny ?? [] };
+}
+
+export type PermissionPathRuleKind = "allow" | "deny";
+
+/** 追加一条用户级路径规则（读盘—去重—写回）。成功返回 true。 */
+export function saveUserPathRule(kind: PermissionPathRuleKind, pattern: string): boolean {
+  const trimmed = pattern.trim();
+  if (!trimmed || trimmed.length > 500 || trimmed.includes("\0")) return false;
+  const file = readRulesDocument(userPermissionRulesPath());
+  const paths = file.paths ?? { allow: [], deny: [] };
+  const list = kind === "allow" ? paths.allow : paths.deny;
+  if (!list.includes(trimmed)) list.push(trimmed);
+  file.paths = paths;
+  return writeRulesDocument(file, "user");
+}
+
+/** 删除一条用户级路径规则；不存在时不写盘。 */
+export function removeUserPathRule(kind: PermissionPathRuleKind, pattern: string): boolean {
+  const file = readRulesDocument(userPermissionRulesPath());
+  const paths = file.paths;
+  if (!paths) return false;
+  const before = kind === "allow" ? paths.allow : paths.deny;
+  const next = before.filter((item) => item !== pattern);
+  if (next.length === before.length) return false;
+  if (kind === "allow") paths.allow = next;
+  else paths.deny = next;
+  file.paths = paths;
+  return writeRulesDocument(file, "user");
+}
+
+/**
  * 判断工具调用是否命中持久化放行规则：项目级与用户级任一命中即放行。
- * 键由 getPermissionGrant 计算（bash 按命令前缀；无法按前缀安全匹配的组合命令
- * 永远不会命中，也不会被写入）。
+ * 键由调用方给出（getPermissionGrant 或工作区外路径的路径前缀授权键；
+ * 无法按前缀安全匹配的组合命令永远不会命中，也不会被写入）。
  */
 export function isToolAllowedPersistently(
   toolName: string,
   args: Record<string, unknown>,
   rules: LoadedPermissionRules,
+  grant = getPermissionGrant(toolName, args),
 ): PersistentPermissionHit | undefined {
-  const grant = getPermissionGrant(toolName, args);
   if (!grant) return undefined;
   const projectHit = rules.project.find((entry) => entry.key === grant.key);
   if (projectHit) return { entry: projectHit, scope: "project" };
@@ -87,12 +151,16 @@ export function isToolAllowedPersistently(
   return undefined;
 }
 
-function writeRulesFile(entries: PermissionRuleEntry[], scope: PermissionRuleScope): boolean {
+function writeRulesDocument(file: PermissionRuleFile, scope: PermissionRuleScope): boolean {
   const filePath = permissionRulesPath(scope);
-  const file: PermissionRuleFile = { version: 1, allow: entries };
+  const document: PermissionRuleFile = {
+    version: 1,
+    allow: file.allow,
+    ...(file.paths ? { paths: { allow: file.paths.allow, deny: file.paths.deny } } : {}),
+  };
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(file, null, 2), "utf8");
+    fs.writeFileSync(filePath, JSON.stringify(document, null, 2), "utf8");
     // 尽量收紧文件权限；Windows 上可能无效，忽略失败
     try {
       fs.chmodSync(filePath, 0o600);
@@ -113,22 +181,25 @@ export function savePermissionRule(
   entry: PermissionRuleEntry,
   scope: PermissionRuleScope,
 ): boolean {
-  const entries = readRulesFile(permissionRulesPath(scope));
+  const document = readRulesDocument(permissionRulesPath(scope));
+  const entries = document.allow;
   const existing = entries.find((item) => item.key === entry.key);
   if (existing) {
     existing.scope = entry.scope;
   } else {
     entries.push({ ...entry });
   }
-  return writeRulesFile(entries, scope);
+  document.allow = entries;
+  return writeRulesDocument(document, scope);
 }
 
 /**
  * 删除一条持久化放行规则。key 不存在时不写盘并返回 false。
  */
 export function removePermissionRule(key: string, scope: PermissionRuleScope): boolean {
-  const entries = readRulesFile(permissionRulesPath(scope));
-  const next = entries.filter((item) => item.key !== key);
-  if (next.length === entries.length) return false;
-  return writeRulesFile(next, scope);
+  const document = readRulesDocument(permissionRulesPath(scope));
+  const next = document.allow.filter((item) => item.key !== key);
+  if (next.length === document.allow.length) return false;
+  document.allow = next;
+  return writeRulesDocument(document, scope);
 }

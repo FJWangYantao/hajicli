@@ -77,6 +77,29 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目 typecheck 并以系统消息回注诊断；
   `HAJI_POST_EDIT_VERIFY=0` 关闭。测试涉及真实回合时注意它会真的执行 `npx tsc --noEmit`。
 
+## 工作区与路径边界（2026-10 重构）
+
+- 文件工具**不再**在工具内部硬拒绝越界路径：边界判定在 `packages/core/src/path-scope.ts`，由
+  `PermissionEngine.configurePathScope()` 注入根与规则，`evaluate()` 输出 allow / prompt / deny；
+  越界授权键是 `read|write:<目录>`（只放开该目录），写入路径授权永远落用户级。
+- 工作区根 = 启动目录 + `--add-dir`（本次进程）+ `~/.haji/workspaces.json`（`/workspace add` 持久化，
+  按项目 realpath 分组，不写进项目配置）。路径规则只认用户级 `~/.haji/permissions.json` 的 `paths` 段，
+  项目级同名段刻意忽略（防止克隆仓库自带扩权）。
+- 快照键：工作区内 posix 相对路径，工作区外 `external:<绝对路径>`。新增任何写文件能力都必须经由
+  `tool-executor.ts` 的 `mutationPaths` 传**绝对路径**，否则 `/rewind` 覆盖不到。
+- 相关测试：`packages/cli/test/workspace-scope.test.mjs`（scope / engine / roots / 规则 / 外部快照）。
+
+## Shell / bash 工具（Windows）
+
+- `bash` 工具在 Windows 上不再走 cmd.exe：`resolveShellEnvironment()`（`packages/plugins/src/bash-tool.ts`）优先找
+  **Git Bash**（只从 PATH 里带 `git` 的目录和常见 Git 安装位置推导，**排除** `System32\bash.exe` 这个 WSL 入口），
+  找不到才回退 PowerShell；cmd 始终作为候选。`HAJI_SHELL=cmd|powershell|bash`、`HAJI_BASH_PATH` 可强制首选。
+- 每条命令会按语法自动选 shell：`detectShellDialect()` 识别 heredoc / `[[ ]]`（bash）、`$env:` / here-string /
+  谓词-名词（PowerShell）、`%VAR%` / `dir`（cmd），`selectShell()` 依次按「显式 `shell` 参数 → 命令方言 → 环境首选」选择。
+  工具描述由 `describeEnvironment()` 列出当前可用方言，模型据此写语法。
+- 显式 shell 用 `execFile(file, [...args, command])` 传 argv，命令作为单个参数原样交给 shell，
+  多行命令与提交信息不会被 cmd 的引号规则拆坏。
+
 ## 代码风格与提交
 
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。

@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@hajicli/core": "workspace:^",
-    "@hajicli/plugins": "workspace:^"
+    "@hajicli/plugins": "workspace:^",
+    "diff": "8.0.4"
   }
 }

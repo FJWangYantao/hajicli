@@ -8,6 +8,18 @@ import {
   hardBlock,
   parseDecision,
 } from "./auto-classifier.js";
+import {
+  formatPathScopeReason,
+  inspectPathScope,
+  type PathScopeConfig,
+  type PathScopeGrant,
+} from "./path-scope.js";
+import {
+  formatProtectedReason,
+  inspectProtectedTarget,
+  type ProtectedLevel,
+  protectedTargetsDisabled,
+} from "./protected-targets.js";
 import { type RiskLevel, SecurityClassifier } from "./security-classifier.js";
 import { HajiError } from "./types.js";
 
@@ -72,6 +84,14 @@ export interface PermissionCheckResult {
   action: PermissionAction;
   reason?: string;
   riskLevel?: RiskLevel;
+  /** 工作区外操作对应的授权范围（授权卡据此给出「本会话/永久允许 该目录」）。 */
+  grant?: PathScopeGrant;
+  /**
+   * 命中受保护目标时的级别：
+   * - hard 不接受永久授权，也不能被持久放行规则命中；
+   * - sensitive 允许用户按会话或全局记住。
+   */
+  protectedLevel?: ProtectedLevel;
 }
 
 /**
@@ -212,12 +232,16 @@ const GIT_BRANCH_LIST_FLAGS = new Set(["-a", "-r", "-l", "-v", "-vv", "--list", 
 const CONTENT_READING_SHELL_COMMANDS = new Set(["cat", "head", "tail", "type", "get-content"]);
 
 /**
- * 路径（解析符号链接后）是否位于工作区内。目标不存在时按最近的已存在上级目录判断，
+ * 路径（解析符号链接后）是否位于任一工作区根内。目标不存在时按最近的已存在上级目录判断，
  * 防止经由指向工作区外的符号链接目录访问其下的文件。
  */
-function isInsideWorkspace(target: string, cwd: string): boolean {
+function isInsideAnyWorkspace(
+  target: string,
+  cwd: string,
+  extraRoots: readonly string[] = [],
+): boolean {
   try {
-    const root = fs.realpathSync(cwd);
+    const roots = [cwd, ...extraRoots].map((root) => fs.realpathSync(root));
     let existing = path.resolve(cwd, target);
     while (!fs.existsSync(existing)) {
       const parent = path.dirname(existing);
@@ -225,7 +249,7 @@ function isInsideWorkspace(target: string, cwd: string): boolean {
       existing = parent;
     }
     const real = fs.realpathSync(existing);
-    return real === root || real.startsWith(`${root}${path.sep}`);
+    return roots.some((root) => real === root || real.startsWith(`${root}${path.sep}`));
   } catch {
     return false;
   }
@@ -238,11 +262,15 @@ const UNSAFE_SHELL_FLAG_RE = /^--?(?:output|pre|pre-glob|ext-diff|exec|follow|f)
  * 判断 bash 命令是否为可静态确认的只读查询。规则刻意保守：
  * - 不允许任何命令组合、重定向、替换、变量展开或换行；
  * - 首个词必须在白名单内（git 只允许查询类子命令）；
- * - 路径参数只能是工作区内的相对路径（拒绝绝对路径、`~` 与 `..`），输出文件内容的命令
- *   还会解析符号链接，避免绕过文件工具的工作区边界读取工作区外的内容。
+ * - 路径参数只能是某个工作区根内的相对路径（拒绝绝对路径、`~` 与 `..`），输出文件内容的命令
+ *   还会解析符号链接，避免绕过文件工具的路径判定读取工作区外的内容。
  * 无法确认时返回 false，交由正常审批流程处理。
  */
-export function isReadOnlyShellCommand(command: string, cwd: string = process.cwd()): boolean {
+export function isReadOnlyShellCommand(
+  command: string,
+  cwd: string = process.cwd(),
+  extraRoots: readonly string[] = [],
+): boolean {
   const trimmed = command.trim();
   if (!trimmed || trimmed.length > 300) return false;
   if (/[;&|<>`$\r\n(){}]/.test(trimmed)) return false;
@@ -263,11 +291,25 @@ export function isReadOnlyShellCommand(command: string, cwd: string = process.cw
     if (UNSAFE_SHELL_FLAG_RE.test(arg)) return false;
     if (arg.startsWith("-")) continue;
     const unquoted = arg.replace(/^["']+|["']+$/g, "");
-    if (/^[\\/~]/.test(unquoted) || /^[a-z]:/i.test(unquoted)) return false;
+    if (/^~/.test(unquoted)) return false;
     if (unquoted.split(/[\\/]/).includes("..")) return false;
+    const absoluteArg = path.isAbsolute(unquoted) || /^[a-z]:/i.test(unquoted);
+    if (absoluteArg) {
+      // 绝对路径只对「只读取内容」的命令、且位于某个工作区根内时放行；
+      // 这样 `cat D:/added-root/a.txt` 不必审批，而 /etc/passwd 仍需审批。
+      if (
+        !CONTENT_READING_SHELL_COMMANDS.has(name) ||
+        !isInsideAnyWorkspace(unquoted, cwd, extraRoots)
+      ) {
+        return false;
+      }
+      continue;
+    }
     if (CONTENT_READING_SHELL_COMMANDS.has(name)) {
       // 通配符可能展开到指向工作区外的符号链接，无法静态确认。
-      if (/[*?[\]]/.test(unquoted) || !isInsideWorkspace(unquoted, cwd)) return false;
+      if (/[*?[\]]/.test(unquoted) || !isInsideAnyWorkspace(unquoted, cwd, extraRoots)) {
+        return false;
+      }
     }
   }
   return true;
@@ -282,10 +324,30 @@ const extraReadOnlyTools = new Set<string>();
 export class PermissionEngine {
   private classifier: SecurityClassifier;
   private autoConfig: AutoClassifierConfig;
+  /** 工作区根与用户级路径规则；由 CLI 在启动与根变更时注入。 */
+  private pathScopeConfig: PathScopeConfig = { cwd: process.cwd() };
 
   constructor(autoConfig: AutoClassifierConfig = {}) {
     this.classifier = new SecurityClassifier();
     this.autoConfig = { ...autoConfig };
+  }
+
+  /**
+   * 配置工作区根（cwd + 追加目录）与用户级路径规则（permissions.json 的 paths 段）。
+   * CLI 在启动、`--add-dir`、`/workspace add|remove` 与规则变更后调用。
+   */
+  public configurePathScope(config: PathScopeConfig): void {
+    const rules = config.rules
+      ? {
+          allow: [...(config.rules.allow ?? [])],
+          deny: [...(config.rules.deny ?? [])],
+        }
+      : undefined;
+    this.pathScopeConfig = {
+      cwd: path.resolve(config.cwd),
+      roots: (config.roots ?? []).map((root) => path.resolve(root)),
+      ...(rules ? { rules } : {}),
+    };
   }
 
   /**
@@ -316,6 +378,8 @@ export class PermissionEngine {
       "global_find_files",
       "find_files",
       "projectinfo",
+      "selfstate",
+      "history",
       "web_search",
       "web_fetch",
       "loadskill",
@@ -338,9 +402,59 @@ export class PermissionEngine {
 
   /**
    * 根据当前权限模式和工具入参，评估工具调用的处理动作。
+   * 文件路径的作用域判定在这里完成：工作区外不再是工具内部硬拒绝，
+   * 而是按模式给出「允许 / 询问 / 拒绝」，授权范围随结果一起返回。
    */
   public async evaluate(options: PermissionEvaluateOptions): Promise<PermissionCheckResult> {
     const { mode, toolName, args } = options;
+
+    // 0. 受保护目标：任何档位（plan / auto / bypass）都不能跳过。
+    //    必须在 plan 与 bypass 的短路之前判定，否则这两个分支会直接放行。
+    if (!protectedTargetsDisabled()) {
+      const protectedHit = inspectProtectedTarget(toolName, args, this.pathScopeConfig.cwd);
+      if (protectedHit) {
+        const reason = formatProtectedReason(protectedHit);
+        // 灾难性操作直接拒绝：连“本次允许”都不提供。
+        if (protectedHit.level === "forbidden") {
+          if (mode === "auto") {
+            this.emitAutoJudge({
+              phase: "done",
+              toolName,
+              toolCallId: options.toolCallId,
+              source: "hard-block",
+              allowed: false,
+              reason,
+            });
+          }
+          return {
+            action: "deny",
+            riskLevel: "critical",
+            reason,
+            protectedLevel: protectedHit.level,
+          };
+        }
+        return {
+          action: "prompt",
+          riskLevel: protectedHit.level === "hard" ? "critical" : "high",
+          reason,
+          protectedLevel: protectedHit.level,
+        };
+      }
+    }
+
+    const pathScope = inspectPathScope(toolName, args, this.pathScopeConfig);
+    const allowOutside = process.env.HAJI_ALLOW_OUTSIDE_WORKSPACE === "1";
+    const denyByRule = (): PermissionCheckResult => ({
+      action: "deny",
+      riskLevel: "high",
+      reason: `命中禁止路径规则（${pathScope.rule}）：${pathScope.targets[0] ?? ""}`,
+    });
+    const promptOutside = (): PermissionCheckResult => ({
+      action: "prompt",
+      riskLevel: "medium",
+      reason: formatPathScopeReason(pathScope),
+      ...(pathScope.grant ? { grant: pathScope.grant } : {}),
+    });
 
     // Plan 模式只允许只读调研与计划管理，禁止修改工作区。
     if (mode === "plan") {
@@ -349,6 +463,8 @@ export class PermissionEngine {
         ["subagent", "verifyagent"].includes(toolName.toLowerCase()) ||
         ["taskcreate", "tasklist", "updatetask"].includes(toolName.toLowerCase())
       ) {
+        if (pathScope.status === "deny") return denyByRule();
+        if (pathScope.status === "outside" && !allowOutside) return promptOutside();
         return { action: "allow", riskLevel: "safe" };
       }
       return {
@@ -358,12 +474,36 @@ export class PermissionEngine {
       };
     }
 
-    // 1. Bypass Permissions 模式：无条件全部允许
+    // 用户级禁止路径规则优先于任何放行（含 bypass 与只读路径）。
+    if (pathScope.status === "deny") return denyByRule();
+
+    // 1. Bypass Permissions 模式：跳过常规审批（受保护目标已在最前面拦截）
     if (mode === "bypass-permissions") {
       return { action: "allow", riskLevel: "safe" };
     }
 
-    // 2. 只读型工具：在任何模式下均自动允许
+    // 命中用户级放行规则的越界路径等同于工作区内。
+    if (pathScope.status === "allowed") {
+      return {
+        action: "allow",
+        riskLevel: "low",
+        reason: `命中路径放行规则（${pathScope.rule}）：${pathScope.targets[0] ?? ""}`,
+      };
+    }
+
+    // 2. 工作区外：全局开关放行，否则交人工授权（auto 档也不交给分类器静默决定）。
+    if (pathScope.status === "outside") {
+      if (allowOutside) {
+        return {
+          action: "allow",
+          riskLevel: "medium",
+          reason: `HAJI_ALLOW_OUTSIDE_WORKSPACE=1 已放行工作区外路径：${pathScope.targets[0] ?? ""}`,
+        };
+      }
+      return promptOutside();
+    }
+
+    // 3. 只读型工具：在任何模式下均自动允许
     if (this.isReadOnlyTool(toolName)) {
       return { action: "allow", riskLevel: "safe" };
     }
@@ -372,7 +512,11 @@ export class PermissionEngine {
     if (
       toolName.toLowerCase() === "bash" &&
       typeof args.command === "string" &&
-      isReadOnlyShellCommand(args.command)
+      isReadOnlyShellCommand(
+        args.command,
+        this.pathScopeConfig.cwd,
+        this.pathScopeConfig.roots ?? [],
+      )
     ) {
       return { action: "allow", riskLevel: "safe" };
     }

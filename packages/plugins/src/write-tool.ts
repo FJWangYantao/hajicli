@@ -9,6 +9,24 @@ import {
 } from "./file-content.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
+/**
+ * hash 冲突后的自愈判断：磁盘上是否**已经**是本次要写入的内容。
+ * 模型在同一回合里重复发出同一条 write（第一条已落盘）时，第二次会带着过期 hash 失败，
+ * 若继续报错就会陷入「同样的调用反复失败 → 本轮被强制停止」。内容一致时直接按成功处理。
+ */
+async function detectAlreadyWritten(targetPath: string, content: string): Promise<boolean> {
+  let buffer: Buffer;
+  try {
+    buffer = await fs.readFile(targetPath);
+  } catch {
+    return false;
+  }
+  if (contentHash(buffer) === contentHash(Buffer.from(content, "utf8"))) return true;
+  // 编辑器 / 格式化把行尾从 LF 改成 CRLF 时，语义内容并未变化，同样视为已写入。
+  const normalize = (text: string) => text.replace(/\r\n/g, "\n");
+  return normalize(buffer.toString("utf8")) === normalize(content);
+}
+
 function parseExpectedHash(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !/^[a-f0-9]{16}$/i.test(value)) {
@@ -78,7 +96,7 @@ export class WriteFileTool implements BaseTool {
 
     const filePath = args.path;
     try {
-      const resolvedPath = await resolveWorkspacePath(filePath, { mustExist: false });
+      const resolvedPath = await resolveWorkspacePath(filePath);
       await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
       if (context?.abortSignal?.aborted) return "[文件写入已中止]";
       const agentId = context?.agentId;
@@ -89,6 +107,13 @@ export class WriteFileTool implements BaseTool {
       if (expectedHash !== undefined) {
         const currentHash = await readCurrentHash(resolvedPath);
         if (currentHash !== expectedHash) {
+          // 内容已经落盘（同一回合重复 write）：按成功处理，避免多余写入与冲突循环。
+          if (await detectAlreadyWritten(resolvedPath, args.content)) {
+            const hash = contentHash(args.content);
+            fileVersions.advance(agentId, resolvedPath, undefined, hash);
+            const stats = await fs.stat(resolvedPath);
+            return `[文件写入成功]\n路径: ${filePath}\n大小: ${stats.size} 字节\nhash=${hash}\n说明: expectedHash=${expectedHash} 已过期，磁盘内容与本次要写入的内容一致，未重复写入。`;
+          }
           if (
             currentHash === undefined ||
             !fileVersions.isOwnChain(agentId, resolvedPath, expectedHash, currentHash)

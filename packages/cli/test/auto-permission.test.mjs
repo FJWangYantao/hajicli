@@ -174,10 +174,19 @@ test("without a judge auto mode falls back to the deterministic classifier", asy
   const risky = await engine.evaluate({
     mode: "auto",
     toolName: "bash",
-    args: { command: "git reset --hard HEAD~3" },
+    args: { command: "chmod 777 ." },
   });
   assert.equal(risky.action, "deny");
   assert.ok(events.some((event) => event.source === "fallback"));
+
+  // git reset --hard 由受保护目标层拦截：auto 档也必须由用户确认，不再交给分类器。
+  const protectedCommand = await engine.evaluate({
+    mode: "auto",
+    toolName: "bash",
+    args: { command: "git reset --hard HEAD~3" },
+  });
+  assert.equal(protectedCommand.action, "prompt");
+  assert.equal(protectedCommand.protectedLevel, "hard");
 });
 
 test("new sessions default to the auto permission mode", () => {

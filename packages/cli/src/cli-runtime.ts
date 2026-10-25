@@ -267,12 +267,23 @@ export interface PermissionCardItem {
  * 构造授权卡片的选项列表：允许本次 / 本会话内总是允许（有明确授权范围时）/
  * 永久允许（本项目 ⇄ 全局，作用域经 secondary 轴切换）/ 拒绝 / 拒绝并说明。
  * 永久允许跨会话写入 permissions.json；「拒绝并说明」把理由回传给模型。
+ *
+ * `options.persistent === false` 用于受保护目标：只给「本次 / 拒绝」，
+ * 因为「永久允许修改授权配置」会让这层保护本身失效。
  */
-export function buildPermissionCardItems(grant: PermissionGrant | undefined): PermissionCardItem[] {
+export function buildPermissionCardItems(
+  grant: PermissionGrant | undefined,
+  options: { persistent?: boolean } = {},
+): PermissionCardItem[] {
+  const persistent = options.persistent !== false;
   return [
     { value: "once", label: "允许本次", hotkey: "y" },
-    ...(grant ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }] : []),
-    ...(grant ? [{ value: "always", label: `永久允许 ${grant.scope}`, hotkey: "p" }] : []),
+    ...(grant && persistent
+      ? [{ value: "session", label: `本会话内总是允许 ${grant.scope}`, hotkey: "a" }]
+      : []),
+    ...(grant && persistent
+      ? [{ value: "always", label: `永久允许 ${grant.scope}`, hotkey: "p" }]
+      : []),
     { value: "deny", label: "拒绝", hotkey: "n" },
     { value: "deny-reason", label: "拒绝并说明…", hotkey: "e" },
   ];

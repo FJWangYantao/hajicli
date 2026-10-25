@@ -1,15 +1,19 @@
 /**
- * 编辑 / 写入的 diff 预览（纯函数）：行级 LCS 对比 + 行内差异高亮，
+ * 编辑 / 写入的 diff 预览（纯函数）：底层用标准 unified patch
+ * （与 opencode 同一套 jsdiff `createTwoFilesPatch`），再解析成
+ * `@@` hunk 头 + 双列（旧 / 新）行号 + 行内差异高亮。
  * 授权卡片与工具块完成后的预览共用同一套渲染。
  * 所有行按显示宽度 ANSI 感知截断，颜色走 theme 的 token 保证对比度。
  */
 
+import { createTwoFilesPatch } from "diff";
 import { splitGraphemes, truncateAnsiText } from "./terminal-text.js";
 import { colors } from "./theme.js";
 
-/** 行级 LCS 的规模上限：超过后退化为整块删除 + 整块新增，避免 O(n²) 拖慢渲染。 */
-const LCS_MAX_LINES = 600;
-const LCS_MAX_CELLS = 90_000;
+/** 与 opencode 一致：unified patch 默认前后各 4 行上下文。 */
+export const DEFAULT_PATCH_CONTEXT = 4;
+/** 双列行号的单列宽度（右对齐）。 */
+const LINE_NUMBER_WIDTH = 4;
 
 export interface DiffStats {
   added: number;
@@ -26,10 +30,11 @@ export interface DiffBody {
   startLine: number;
 }
 
-interface DiffOp {
-  type: "same" | "del" | "add";
-  aLine?: number;
-  bLine?: number;
+/** patch 解析后的展示行；hunk 头与「no newline」提示也各占一行。 */
+interface PatchRow {
+  type: "hunk" | "same" | "del" | "add" | "note";
+  oldLine?: number;
+  newLine?: number;
   text: string;
 }
 
@@ -42,62 +47,80 @@ export function normalizeDiffLines(text: string): string[] {
   return lines;
 }
 
-/** 经典 DP 行级 LCS；规模超限或一侧为空时按整块新增 / 删除展示。 */
-function diffLines(a: string[], b: string[]): DiffOp[] {
-  if (a.length === 0) {
-    return b.map((text, index) => ({ type: "add" as const, bLine: index + 1, text }));
-  }
-  if (b.length === 0) {
-    return a.map((text, index) => ({ type: "del" as const, aLine: index + 1, text }));
-  }
-  if (a.length > LCS_MAX_LINES || b.length > LCS_MAX_LINES || a.length * b.length > LCS_MAX_CELLS) {
-    return [
-      ...a.map((text, index) => ({ type: "del" as const, aLine: index + 1, text })),
-      ...b.map((text, index) => ({ type: "add" as const, bLine: index + 1, text })),
-    ];
-  }
-  // dp[i][j] = a[i:] 与 b[j:] 的 LCS 长度；回读时先删除再插入，与 git 的展示顺序一致。
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () =>
-    Array<number>(b.length + 1).fill(0),
+function normalizeDiffText(text: string): string {
+  return normalizeDiffLines(text).join("\n");
+}
+
+/**
+ * 生成标准 unified patch（`Index` / `---` / `+++` / `@@`）。导出供 `/diff` 等
+ * 需要原始 patch 文本的调用方复用，和 opencode 的 `fileDiff` 口径一致。
+ */
+export function buildUnifiedPatch(
+  before: string,
+  after: string,
+  path = "",
+  contextLines = DEFAULT_PATCH_CONTEXT,
+): string {
+  return createTwoFilesPatch(
+    path,
+    path,
+    normalizeDiffText(before),
+    normalizeDiffText(after),
+    undefined,
+    undefined,
+    { context: contextLines },
   );
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+}
+
+/** 解析 unified patch：跳过文件头，记录 hunk 起点并逐行推进双列行号。 */
+function parseUnifiedPatch(patch: string): { rows: PatchRow[]; stats: DiffStats } {
+  const rows: PatchRow[] = [];
+  const stats: DiffStats = { added: 0, removed: 0 };
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) {
+      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (!match) continue;
+      inHunk = true;
+      oldLine = Number(match[1]);
+      newLine = Number(match[3]);
+      rows.push({ type: "hunk", oldLine, newLine, text: line });
+      continue;
+    }
+    if (line.startsWith("\\")) {
+      rows.push({ type: "note", text: line });
+      continue;
+    }
+    if (
+      !inHunk &&
+      (line.startsWith("Index:") ||
+        line.startsWith("===") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ "))
+    ) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      rows.push({ type: "add", newLine, text: line.slice(1) });
+      newLine += 1;
+      stats.added += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      rows.push({ type: "del", oldLine, text: line.slice(1) });
+      oldLine += 1;
+      stats.removed += 1;
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      rows.push({ type: "same", oldLine, newLine, text: line.slice(1) });
+      oldLine += 1;
+      newLine += 1;
     }
   }
-  const ops: DiffOp[] = [];
-  let i = 0;
-  let j = 0;
-  let aLine = 1;
-  let bLine = 1;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      ops.push({ type: "same", aLine, bLine, text: a[i] });
-      i += 1;
-      j += 1;
-      aLine += 1;
-      bLine += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ type: "del", aLine, text: a[i] });
-      i += 1;
-      aLine += 1;
-    } else {
-      ops.push({ type: "add", bLine, text: b[j] });
-      j += 1;
-      bLine += 1;
-    }
-  }
-  while (i < a.length) {
-    ops.push({ type: "del", aLine, text: a[i] });
-    i += 1;
-    aLine += 1;
-  }
-  while (j < b.length) {
-    ops.push({ type: "add", bLine, text: b[j] });
-    j += 1;
-    bLine += 1;
-  }
-  return ops;
+  return { rows, stats };
 }
 
 /** 相邻删除/新增行的行内高亮：公共前后缀之外的中间段用红底 / 绿底标出。 */
@@ -146,7 +169,7 @@ function highlightIntraLine(
 }
 
 /** 行号列宽（右对齐）；行数超出时收缩为省略号，避免挤占正文。 */
-function lineNumberLabel(line: number | undefined, columnWidth: number): string {
+function lineNumberLabel(line: number | undefined, columnWidth = LINE_NUMBER_WIDTH): string {
   if (line === undefined) return " ".repeat(columnWidth);
   const text = String(line);
   return text.length > columnWidth
@@ -154,56 +177,92 @@ function lineNumberLabel(line: number | undefined, columnWidth: number): string 
     : text.padStart(columnWidth);
 }
 
-/** 把 LCS 结果渲染成带行号与上下文的展示行。 */
-function renderOps(
-  ops: DiffOp[],
-  options: { width: number; maxLines: number; lineNumberColumn: number; plainContext?: boolean },
-): DiffBody {
-  const stats: DiffStats = { added: 0, removed: 0 };
-  type RenderedRow = { row: string; changed: boolean };
-  const rendered: RenderedRow[] = [];
-  for (let index = 0; index < ops.length; index++) {
-    const op = ops[index];
-    if (op.type === "same") {
-      const label = lineNumberLabel(op.aLine, options.lineNumberColumn);
-      const text = options.plainContext ? op.text : colors.muted(op.text);
-      rendered.push({ row: ` ${label}   ${text}`, changed: false });
+/** 一行的固定布局：` 旧行号 新行号 标记 内容`。 */
+function layoutRow(
+  oldLine: number | undefined,
+  newLine: number | undefined,
+  mark: string,
+  text: string,
+): string {
+  return ` ${lineNumberLabel(oldLine)} ${lineNumberLabel(newLine)} ${mark} ${text}`;
+}
+
+/** 把解析后的 patch 行渲染成带 hunk 头、双列行号与行内高亮的展示行。 */
+function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
+  const { rows, stats } = parseUnifiedPatch(patch);
+  // 配对相邻的删除块与新增块，按位置做行内高亮（与 patch 的输出顺序一致）。
+  const delPair = new Map<number, number>();
+  const addPair = new Map<number, number>();
+  for (let index = 0; index < rows.length; ) {
+    if (rows[index].type !== "del") {
+      index += 1;
       continue;
     }
-    if (op.type === "del") {
-      stats.removed += 1;
-      const next = ops[index + 1];
-      const pair = next?.type === "add" ? next : undefined;
-      const highlighted = pair
-        ? highlightIntraLine(op.text, pair.text)
-        : highlightIntraLine(op.text, undefined);
-      const label = lineNumberLabel(op.aLine, options.lineNumberColumn);
-      rendered.push({ row: ` ${label} ${colors.boldRed("−")} ${highlighted.del}`, changed: true });
-      continue;
+    let delEnd = index;
+    while (delEnd < rows.length && rows[delEnd].type === "del") delEnd += 1;
+    let addEnd = delEnd;
+    while (addEnd < rows.length && rows[addEnd].type === "add") addEnd += 1;
+    const pairs = Math.min(delEnd - index, addEnd - delEnd);
+    for (let offset = 0; offset < pairs; offset += 1) {
+      delPair.set(index + offset, delEnd + offset);
+      addPair.set(delEnd + offset, index + offset);
     }
-    stats.added += 1;
-    const previous = ops[index - 1];
-    // 与前面删除行配对过的高亮已在删除侧完成，这里独立着色。
-    const highlighted =
-      previous?.type === "del"
-        ? highlightIntraLine(previous.text, op.text)
-        : highlightIntraLine(undefined, op.text);
-    const label = lineNumberLabel(op.bLine, options.lineNumberColumn);
-    rendered.push({ row: ` ${label} ${colors.boldGreen("+")} ${highlighted.add}`, changed: true });
+    index = addEnd;
   }
 
-  const visible = rendered.slice(0, Math.max(0, options.maxLines));
-  const lines = visible.map((item) => truncateAnsiText(item.row, Math.max(1, options.width)));
+  type RenderedRow = { row: string; changed: boolean };
+  const rendered: RenderedRow[] = [];
+  let startLine = 1;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row.type === "hunk") {
+      if (startLine === 1 && row.oldLine !== undefined) startLine = row.oldLine;
+      rendered.push({ row: colors.cyan(row.text), changed: false });
+      continue;
+    }
+    if (row.type === "note") {
+      rendered.push({ row: colors.gray(row.text), changed: false });
+      continue;
+    }
+    if (row.type === "same") {
+      rendered.push({
+        row: layoutRow(row.oldLine, row.newLine, " ", colors.muted(row.text)),
+        changed: false,
+      });
+      continue;
+    }
+    if (row.type === "del") {
+      const pairIndex = delPair.get(index);
+      const pair = pairIndex === undefined ? undefined : rows[pairIndex];
+      const highlighted = highlightIntraLine(row.text, pair?.text);
+      rendered.push({
+        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("-"), highlighted.del),
+        changed: true,
+      });
+      continue;
+    }
+    const pairIndex = addPair.get(index);
+    const pair = pairIndex === undefined ? undefined : rows[pairIndex];
+    const highlighted = highlightIntraLine(pair?.text, row.text);
+    rendered.push({
+      row: layoutRow(row.oldLine, row.newLine, colors.boldGreen("+"), highlighted.add),
+      changed: true,
+    });
+  }
+
+  const visible = rendered.slice(0, Math.max(0, maxLines));
+  const lines = visible.map((item) => truncateAnsiText(item.row, Math.max(1, width)));
   const hiddenLines = rendered.length - visible.length;
   if (hiddenLines > 0) {
     lines.push(colors.gray(`… 还有 ${hiddenLines} 行`));
   }
-  return { lines, stats, hiddenLines, startLine: 1 };
+  return { lines, stats, hiddenLines, startLine };
 }
 
 /**
- * 精准编辑（edit）的 diff 预览：在原文中定位 oldText，带前后各 2 行上下文与行号。
- * 定位不到（如编辑已应用或空白口径差异）时退化为无行号的整块对比。
+ * 精准编辑（edit）的 diff 预览：还原编辑后的完整内容，再用标准 unified patch
+ * 对比前后全文，定位 hunk、带行号与上下文。定位不到 oldText（或调用方拿不到
+ * 原文）时退化为 oldText/newText 片段的 patch 对比。
  */
 export function buildEditDiff(
   original: string,
@@ -211,55 +270,30 @@ export function buildEditDiff(
   newText: string,
   width: number,
   maxLines = 14,
-  contextLines = 2,
+  contextLines = DEFAULT_PATCH_CONTEXT,
 ): DiffBody {
-  const originalLines = normalizeDiffLines(original);
-  const normalizedOriginal = originalLines.join("\n");
-  const normalizedOld = normalizeDiffLines(oldText).join("\n");
-  const normalizedNew = normalizeDiffLines(newText);
-
-  const located = normalizedOriginal.indexOf(normalizedOld);
-  if (located < 0 || !normalizedOld) {
-    const ops: DiffOp[] = [
-      ...normalizeDiffLines(oldText).map((text, index) => ({
-        type: "del" as const,
-        aLine: index + 1,
-        text,
-      })),
-      ...normalizedNew.map((text, index) => ({ type: "add" as const, bLine: index + 1, text })),
-    ];
-    return renderOps(ops, { width, maxLines, lineNumberColumn: 0 });
+  const normalizedOriginal = normalizeDiffText(original);
+  const normalizedOld = normalizeDiffText(oldText);
+  const normalizedNew = normalizeDiffText(newText);
+  let before: string;
+  let after: string;
+  if (normalizedOriginal) {
+    const located = normalizedOld ? normalizedOriginal.indexOf(normalizedOld) : -1;
+    if (located >= 0) {
+      before = normalizedOriginal;
+      after =
+        normalizedOriginal.slice(0, located) +
+        normalizedNew +
+        normalizedOriginal.slice(located + normalizedOld.length);
+    } else {
+      before = normalizedOld;
+      after = normalizedNew;
+    }
+  } else {
+    before = normalizedOld;
+    after = normalizedNew;
   }
-
-  const beforeText = normalizedOriginal.slice(0, located);
-  const startLine = (beforeText.match(/\n/g)?.length ?? 0) + 1;
-  const oldCount = normalizedOld.split("\n").length;
-  const contextBefore = normalizedOriginal
-    .slice(0, located)
-    .split("\n")
-    .slice(0, -1)
-    .slice(-contextLines);
-  const contextAfter = normalizedOriginal
-    .slice(located + normalizedOld.length)
-    .split("\n")
-    .slice(1, 1 + contextLines);
-
-  const ops: DiffOp[] = [];
-  for (const [index, text] of contextBefore.entries()) {
-    ops.push({ type: "same", aLine: startLine - contextBefore.length + index, bLine: 0, text });
-  }
-  const replacedOps = diffLines(normalizeDiffLines(oldText), normalizedNew);
-  for (const op of replacedOps) {
-    if (op.aLine !== undefined) op.aLine += startLine - 1;
-    if (op.bLine !== undefined) op.bLine += startLine - 1;
-    ops.push(op);
-  }
-  const afterStart = startLine + oldCount;
-  for (const [index, text] of contextAfter.entries()) {
-    ops.push({ type: "same", aLine: afterStart + index, bLine: 0, text });
-  }
-  const body = renderOps(ops, { width, maxLines, lineNumberColumn: 4 });
-  return { ...body, startLine };
+  return renderPatch(buildUnifiedPatch(before, after, "", contextLines), width, maxLines);
 }
 
 /**
@@ -271,13 +305,8 @@ export function buildWriteDiff(
   width: number,
   maxLines = 14,
 ): DiffBody {
-  const newLines = normalizeDiffLines(content);
-  if (original === undefined) {
-    const ops: DiffOp[] = newLines.map((text, index) => ({ type: "add", bLine: index + 1, text }));
-    return renderOps(ops, { width, maxLines, lineNumberColumn: 4 });
-  }
-  const ops = diffLines(normalizeDiffLines(original), newLines);
-  return renderOps(ops, { width, maxLines, lineNumberColumn: 4 });
+  const before = original === undefined ? "" : original;
+  return renderPatch(buildUnifiedPatch(before, content), width, maxLines);
 }
 
 /** diff 头部行：`路径  +a −r`（新增/删除行数来自 stats）。 */

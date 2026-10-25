@@ -188,6 +188,7 @@ test("repeated failure notice only appears from the second identical failure", (
   assert.match(buildRepeatedFailureNotice(2), /相同原因失败 2 次.*不要再发起同样的调用/);
   assert.match(buildRepeatedFailureNotice(2), /先 read 重新读取/);
   assert.match(buildRepeatedFailureNotice(2), /hash 冲突.*必须先 read 拿到当前内容与新 hash/);
+  assert.match(buildRepeatedFailureNotice(2), /已经是目标内容则无需再写/);
 });
 
 test("repeated failure skip message names the stop reason for the remaining calls", () => {

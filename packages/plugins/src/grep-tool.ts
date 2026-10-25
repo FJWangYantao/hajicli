@@ -302,7 +302,7 @@ export class GrepSearchTool implements BaseTool {
     function: {
       name: "grep",
       description:
-        "在工作区文本文件中搜索。支持字面量或正则、glob、文件类型、上下文行，以及通过 offset/limit 分页。",
+        "在文本文件中搜索（默认工作区；工作区外需授权）。支持字面量或正则、glob、文件类型、上下文行，以及通过 offset/limit 分页。",
       parameters: {
         type: "object",
         properties: {

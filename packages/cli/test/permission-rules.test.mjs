@@ -211,9 +211,11 @@ test("index.ts wires persistent rules into the PreToolUse hook and the card", ()
   assert.ok(earlyCheck > hookStart && evaluateCall > earlyCheck, "持久规则早于权限引擎评估");
   assert.ok(/mode !== "plan" && mode !== "bypass-permissions"/.test(source));
   // 授权卡片选项来自纯函数；永久允许（作用域走 secondary 轴）写盘后刷新缓存并给出确认提示
-  assert.ok(source.includes("buildPermissionCardItems(grant)"));
+  assert.ok(source.includes("buildPermissionCardItems(grant, { persistent: !hardProtected })"));
   assert.ok(source.includes('selection.value === "always"'));
-  assert.ok(source.includes('selection.secondaryValue === "user" ? "user" : "project"'));
+  // 永久作用域经 secondary 轴切换；路径授权键只能写用户级（项目级会随仓库分发）
+  assert.ok(source.includes('selection.secondaryValue === "user"'));
+  assert.ok(source.includes("isPathScopedGrant(grant)"));
   assert.ok(source.includes('selection.value === "deny-reason"'));
   assert.ok(source.includes("savePermissionRule"));
   assert.ok(source.includes("permissionRules = loadAllPermissionRules()"));

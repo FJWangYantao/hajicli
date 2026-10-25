@@ -39,9 +39,14 @@ function readAttachment(resolvedPath: string): { content: string; note?: string 
 /**
  * 展开 prompt 中的 `@路径` 引用：命中的文件内容以附件块追加到 prompt 尾部，
  * 原位置的 @ 前缀去掉（对话回显仍是用户原话）。
- * 仅允许工作区内的普通文件；目录、不存在、二进制与越界路径记入 skipped。
+ * 允许的文件范围 = cwd + 追加的工作区根；目录、不存在、二进制与越界路径记入 skipped。
  */
-export function expandFileMentions(input: string, cwd: string): FileMentionExpansion {
+export function expandFileMentions(
+  input: string,
+  cwd: string,
+  extraRoots: readonly string[] = [],
+): FileMentionExpansion {
+  const roots = [cwd, ...extraRoots];
   const tokens: string[] = [];
   for (const match of input.matchAll(MENTION_TOKEN_RE)) {
     const token = match[2];
@@ -65,7 +70,7 @@ export function expandFileMentions(input: string, cwd: string): FileMentionExpan
       skipped.push(`${token}（不是普通文件）`);
       continue;
     }
-    if (!isWithinCwd(resolved, cwd)) {
+    if (!roots.some((root) => isWithinCwd(resolved, root))) {
       skipped.push(`${token}（超出工作区）`);
       continue;
     }

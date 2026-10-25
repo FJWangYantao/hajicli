@@ -1,10 +1,268 @@
 import { type ChildProcess, exec, execFile, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type {
   BaseTool,
   ToolDefinition,
   ToolExecutionContext,
   ToolMutationScope,
 } from "@hajicli/core";
+
+export type ShellKind = "bash" | "sh" | "powershell" | "cmd";
+
+export interface ShellSpec {
+  kind: ShellKind;
+  /** 显式 shell 可执行文件；POSIX 交给 exec 的默认 shell 时为 undefined。 */
+  file?: string;
+  /** 拼在命令之前的固定参数（如 -c / -Command）。 */
+  args: string[];
+}
+
+const POWERSHELL_SHELL: ShellSpec = {
+  kind: "powershell",
+  file: "powershell.exe",
+  args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+};
+
+const CMD_SHELL: ShellSpec = { kind: "cmd", file: "cmd.exe", args: ["/d", "/s", "/c"] };
+
+/**
+ * 找 Git Bash。Windows 自带的 `System32\bash.exe` 是 WSL，路径与文件系统语义都不同，
+ * 不能拿来当本地 shell；这里只从 PATH 里带 "git" 的目录和常见 Git 安装位置推导。
+ */
+function findGitBash(
+  env: NodeJS.ProcessEnv,
+  fileExists: (candidate: string) => boolean,
+): string | undefined {
+  const override = env.HAJI_BASH_PATH?.trim();
+  if (override && fileExists(override)) return override;
+
+  const candidates: string[] = [];
+  const pathValue = env.PATH ?? env.Path ?? "";
+  for (const entry of pathValue.split(path.delimiter)) {
+    if (!entry || !/git/i.test(entry)) continue;
+    const root = path.resolve(entry, "..");
+    candidates.push(
+      path.join(root, "bin", "bash.exe"),
+      path.join(root, "usr", "bin", "bash.exe"),
+      path.join(root, "..", "bin", "bash.exe"),
+      path.join(root, "..", "usr", "bin", "bash.exe"),
+    );
+  }
+  const programDirs = [env.ProgramFiles, env["ProgramFiles(x86)"]].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (env.LOCALAPPDATA) programDirs.push(path.join(env.LOCALAPPDATA, "Programs"));
+  for (const dir of programDirs) candidates.push(path.join(dir, "Git", "bin", "bash.exe"));
+
+  return candidates.find((candidate) => fileExists(candidate));
+}
+
+export interface ShellEnvironment {
+  preferred: ShellSpec;
+  /** 其他可用方言（有 Git Bash 时的 PowerShell/cmd 等），供按命令语法切换。 */
+  alternatives: ShellSpec[];
+}
+
+/**
+ * 探测可用 shell：Windows 优先 Git Bash（模型默认按 bash 语法写），
+ * 没有则回退 PowerShell；cmd 始终作为候选，供识别到 cmd 语法时使用。
+ * `HAJI_SHELL=cmd|powershell|bash` 可强制首选。
+ */
+export function resolveShellEnvironment(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (candidate: string) => boolean = existsSync,
+): ShellEnvironment {
+  if (platform !== "win32") {
+    // POSIX 上有 bash 就用 bash（heredoc / [[ ]] 都能用），否则交给 exec 的默认 sh。
+    const bash: ShellSpec | undefined = fileExists("/bin/bash")
+      ? { kind: "bash", file: "/bin/bash", args: ["-c"] }
+      : undefined;
+    const sh: ShellSpec = { kind: "sh", args: [] };
+    return { preferred: bash ?? sh, alternatives: bash ? [sh] : [] };
+  }
+
+  const bashPath = findGitBash(env, fileExists);
+  const bash: ShellSpec | undefined = bashPath
+    ? { kind: "bash", file: bashPath, args: ["-c"] }
+    : undefined;
+  const available = [bash, POWERSHELL_SHELL, CMD_SHELL].filter((spec): spec is ShellSpec =>
+    Boolean(spec),
+  );
+
+  const forced = (env.HAJI_SHELL ?? "").trim().toLowerCase();
+  const preferred =
+    forced === "cmd"
+      ? CMD_SHELL
+      : forced === "powershell" || forced === "pwsh"
+        ? POWERSHELL_SHELL
+        : (bash ?? POWERSHELL_SHELL);
+
+  return {
+    preferred,
+    alternatives: available.filter((spec) => spec.kind !== preferred.kind),
+  };
+}
+
+/** 兼容入口：只取首选 shell。 */
+export function resolveShell(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (candidate: string) => boolean = existsSync,
+): ShellSpec {
+  return resolveShellEnvironment(platform, env, fileExists).preferred;
+}
+
+const DIALECT_HINTS: Record<ShellKind, string> = {
+  bash: "bash 支持 heredoc、;、&&、$(...)",
+  sh: "sh（POSIX shell）支持 heredoc、;、&&、$(...)",
+  powershell: "PowerShell 用 ; 串联、多行用 here-string @'...'@（不支持 && 与 heredoc）",
+  cmd: "cmd.exe 用 && 串联（不支持 heredoc、多行字符串与 ;）",
+};
+
+/** 单个 shell 的方言说明。 */
+export function describeShell(shell: ShellSpec): string {
+  return `在本地终端执行一条命令并返回控制台输出：${DIALECT_HINTS[shell.kind]}。`;
+}
+
+/** 工具描述：列出可用方言与自动选择规则，避免模型按错误语法重试。 */
+export function describeEnvironment(environment: ShellEnvironment): string {
+  const kinds = [
+    ...new Set([environment.preferred, ...environment.alternatives].map((spec) => spec.kind)),
+  ];
+  return `在本地终端执行一条命令并返回控制台输出。会按命令语法自动选择 shell（当前可用：${kinds.join(" / ")}）：${kinds.map((kind) => DIALECT_HINTS[kind]).join("；")}。可用 shell 参数强制指定。`;
+}
+
+export type ShellDialect = Extract<ShellKind, "bash" | "powershell" | "cmd">;
+
+const POWERSHELL_CMDLET_RE =
+  /\b(?:Get|Set|New|Remove|Test|Select|Where|ForEach|Sort|Measure|Write|Start|Stop|Copy|Move|Rename|Invoke|Out|Import|Export|ConvertTo|ConvertFrom|Join|Split|Add|Clear|Update|Resolve|Push|Pop)-[A-Z][A-Za-z]+\b/;
+
+const POWERSHELL_MARKERS: RegExp[] = [
+  /\$env:[A-Za-z_]/i,
+  /\$_(\b|\.)/,
+  /-(?:ErrorAction|ErrorVariable|WarningAction|OutVariable|PipelineVariable)\b/i,
+  POWERSHELL_CMDLET_RE,
+  /\|\s*(?:Select|Where|ForEach|Sort|Measure|ConvertTo|Out)-[A-Z]/,
+];
+
+const BASH_MARKERS: RegExp[] = [
+  /\$\{/,
+  /\$\?/,
+  /(?:^|[\n;&|])\s*(?:export|source|chmod|chown|sudo|apt|apt-get|brew|yum|dnf|pacman)\b/,
+  /(?:^|[\n;&|])\s*(?:ls|cat|grep|sed|awk|find|xargs|rm|cp|mv|touch|mkdir|pwd|which|head|tail|wc|ln|basename|dirname)\b/,
+];
+
+const CMD_MARKERS: RegExp[] = [
+  /%[A-Za-z_][A-Za-z0-9_]*%/,
+  /(?:^|[\n;&|])\s*(?:dir|type|copy|del|erase|move|ren|rename|where|chcp|mklink|setlocal|endlocal|call|start)\b/i,
+  />\s*nul\b/i,
+];
+
+/** 去掉引号里的内容：引号中的词是数据，不该决定 shell 方言。 */
+function stripQuoted(command: string): string {
+  let result = "";
+  let quote: "'" | '"' | "`" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === "\\" && quote !== "'") {
+        index += 1;
+        continue;
+      }
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+
+function countMatches(value: string, patterns: RegExp[]): number {
+  let count = 0;
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    count += (value.match(new RegExp(pattern.source, flags)) ?? []).length;
+  }
+  return count;
+}
+
+/**
+ * 按命令本身判断它属于哪种方言。只在有明确信号时返回结果：
+ * heredoc / $(...) / [[ ]] 只有 POSIX shell 认，$env: / 谓词-名词 只有 PowerShell 认，
+ * %VAR% / dir / type 一类则是 cmd 的写法。
+ */
+export function detectShellDialect(command: string): ShellDialect | undefined {
+  if (!command.trim()) return undefined;
+  const code = stripQuoted(command);
+  // heredoc 与 [[ ]] 是 POSIX shell 独有的结构，内容里出现别的词也不改变这一点。
+  if (/<<-?\s*['"]?[A-Za-z_]/.test(command) || /\[\[/.test(command)) return "bash";
+  // here-string 与 $env:/[System.] 是 PowerShell 独有写法。
+  if (/@['"]\s*\n/.test(command) || /\$env:|\$PSVersionTable|\[System\./i.test(code)) {
+    return "powershell";
+  }
+  // $(...) 两种 shell 都有，先看里面是不是 PowerShell 谓词-名词。
+  if (POWERSHELL_CMDLET_RE.test(code)) return "powershell";
+  if (/\$\(/.test(code)) return "bash";
+
+  const powershell = countMatches(code, POWERSHELL_MARKERS);
+  const bash = countMatches(code, BASH_MARKERS);
+  const cmd = countMatches(code, CMD_MARKERS);
+
+  if (powershell > 0 && powershell >= bash) return "powershell";
+  if (bash > powershell && bash >= cmd) return "bash";
+  if (cmd > Math.max(powershell, bash)) return "cmd";
+  return undefined;
+}
+
+/** 选中执行命令的 shell：显式指定 > 命令方言 > 环境首选。 */
+export function selectShell(
+  environment: ShellEnvironment,
+  command: string,
+  override?: string,
+): ShellSpec {
+  const available = [environment.preferred, ...environment.alternatives];
+  if (override) {
+    const explicit = available.find((spec) => spec.kind === override);
+    if (explicit) return explicit;
+  }
+  const dialect = detectShellDialect(command);
+  if (dialect) {
+    const match = available.find((spec) => spec.kind === dialect);
+    if (match) return match;
+  }
+  // Windows PowerShell 5.1 不支持 && / ||：首选是 PowerShell 时交给 cmd。
+  if (environment.preferred.kind === "powershell" && /&&|\|\|/.test(stripQuoted(command))) {
+    const cmd = available.find((spec) => spec.kind === "cmd");
+    if (cmd) return cmd;
+  }
+  return environment.preferred;
+}
+
+const DEFAULT_ENVIRONMENT = resolveShellEnvironment();
+
+/**
+ * 显式 shell 用 execFile 传 argv，命令作为单个参数原样交给 shell，
+ * 不再经过 cmd.exe 的引号/换行重写——多行提交信息因此能直接写。
+ */
+function createCommandLauncher(shell: ShellSpec): typeof exec {
+  if (!shell.file) return exec;
+  const file = shell.file;
+  const args = shell.args;
+  const launch = (command: string, options: unknown, callback: unknown): ChildProcess =>
+    execFile(
+      file,
+      [...args, command],
+      { ...(options as object), windowsHide: true },
+      callback as (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void,
+    );
+  return launch as unknown as typeof exec;
+}
 
 class HeadTailBuffer {
   private head = "";
@@ -190,37 +448,61 @@ export function classifyBashMutationScope(command: string): ToolMutationScope {
 export class BashTool implements BaseTool {
   public readonly name = "bash";
 
+  public readonly definition: ToolDefinition;
+
+  private readonly environment: ShellEnvironment;
+  private readonly launchers = new Map<ShellKind, typeof exec>();
+  private readonly fileExecutor: typeof execFile;
+  private readonly processKiller: (pid: number, signal: NodeJS.Signals) => boolean;
+
   /** 可注入执行器，便于验证 Windows 进程清理失败的兜底路径。 */
   constructor(
-    private readonly commandExecutor: typeof exec = exec,
-    private readonly fileExecutor: typeof execFile = execFile,
-    private readonly processKiller: (pid: number, signal: NodeJS.Signals) => boolean = (
-      pid,
-      signal,
-    ) => process.kill(pid, signal),
-  ) {}
+    commandExecutor?: typeof exec,
+    fileExecutor: typeof execFile = execFile,
+    processKiller: (pid: number, signal: NodeJS.Signals) => boolean = (pid, signal) =>
+      process.kill(pid, signal),
+    environment: ShellEnvironment = DEFAULT_ENVIRONMENT,
+  ) {
+    this.environment = environment;
+    this.fileExecutor = fileExecutor;
+    this.processKiller = processKiller;
+    for (const spec of [environment.preferred, ...environment.alternatives]) {
+      this.launchers.set(
+        spec.kind,
+        spec.kind === environment.preferred.kind && commandExecutor
+          ? commandExecutor
+          : createCommandLauncher(spec),
+      );
+    }
 
-  public readonly definition: ToolDefinition = {
-    type: "function",
-    function: {
-      name: "bash",
-      description: "在本地终端中运行一条 Shell 命令 (Bash/PowerShell) 并返回控制台输出。",
-      parameters: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description: "要在终端运行的完整命令行指令。",
+    const kinds = [...this.launchers.keys()];
+    this.definition = {
+      type: "function",
+      function: {
+        name: "bash",
+        description: describeEnvironment(environment),
+        parameters: {
+          type: "object",
+          properties: {
+            command: {
+              type: "string",
+              description: "要在终端运行的完整命令行指令。",
+            },
+            timeoutMs: {
+              type: "number",
+              description: "可选超时，1000-600000 毫秒；超时后清理命令进程树。",
+            },
+            shell: {
+              type: "string",
+              enum: kinds,
+              description: "可选：强制指定 shell 方言；默认按命令语法自动选择。",
+            },
           },
-          timeoutMs: {
-            type: "number",
-            description: "可选超时，1000-600000 毫秒；超时后清理命令进程树。",
-          },
+          required: ["command"],
         },
-        required: ["command"],
       },
-    },
-  };
+    };
+  }
 
   public getMutationScope(args: Record<string, unknown>): ToolMutationScope {
     return classifyBashMutationScope(typeof args.command === "string" ? args.command : "");
@@ -245,6 +527,16 @@ export class BashTool implements BaseTool {
     ) {
       return "错误: timeoutMs 必须是 1000 到 600000 之间的整数。";
     }
+
+    if (args.shell !== undefined && typeof args.shell !== "string") {
+      return "错误: shell 参数必须是字符串。";
+    }
+    const override = typeof args.shell === "string" ? args.shell.trim() : undefined;
+    const selected = selectShell(this.environment, command, override);
+    if (override && selected.kind !== override) {
+      return `错误: 当前环境不支持 shell "${override}"（可用：${[...this.launchers.keys()].join(" / ")}）。`;
+    }
+    const launcher = this.launchers.get(selected.kind) ?? createCommandLauncher(selected);
 
     if (context?.abortSignal?.aborted) return "[命令已中止]";
 
@@ -273,7 +565,7 @@ export class BashTool implements BaseTool {
         resolve(value);
       };
       // 允许使用 10MB 的缓冲区，防止长输出崩掉；按字节收，自己解码（见 CommandOutputDecoder）。
-      child = this.commandExecutor(
+      child = launcher(
         command,
         { maxBuffer: 1024 * 1024 * 10, encoding: "buffer" },
         (error, stdout, stderr) => {

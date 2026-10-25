@@ -111,15 +111,9 @@ export class SharedToolExecutor {
     );
     let mutationPaths: string[] | undefined;
     if (mutationScope === "paths" && typeof args.path === "string") {
-      const absoluteTarget = path.resolve(this.options.cwd, args.path);
-      const relativeTarget = path.relative(this.options.cwd, absoluteTarget);
-      if (
-        relativeTarget &&
-        !relativeTarget.startsWith(`..${path.sep}`) &&
-        !path.isAbsolute(relativeTarget)
-      ) {
-        mutationPaths = [relativeTarget];
-      }
+      // 传给快照引擎的是绝对路径：工作区内会被编码成相对键，工作区外编码成 external: 键，
+      // 这样 /rewind 也能覆盖经授权写入的外部文件。
+      mutationPaths = [path.resolve(this.options.cwd, args.path)];
     }
     const checkpoint =
       shouldTrackMutation && context.anchorSnapshotId
