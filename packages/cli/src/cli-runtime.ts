@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { contentHash } from "@hajicli/plugins";
 import { buildEditDiff, buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
@@ -403,6 +404,80 @@ function grepPreview(body: string): string[] {
 }
 
 /**
+ * 编辑成功后文件已经是「改动后」的状态。把 newText 换回 oldText 即可重建
+ * 「改动前」的全文，让工具块完成后的预览与授权卡片渲染同一份 patch
+ * （真实行号 + 上下文，而不是块内相对行号的片段）。
+ * 用工具输出里的 oldHash 校验重建结果：校验不上就返回 undefined，退回片段对比。
+ */
+function rebuildPreEditContent(
+  after: string,
+  oldText: string,
+  newText: string,
+  beforeHash?: string,
+  regionStartLine?: number,
+): string | undefined {
+  if (!newText) return undefined;
+  const attempt = (needle: string, replacement: string): string | undefined => {
+    const hits: number[] = [];
+    for (
+      let at = after.indexOf(needle);
+      at !== -1;
+      at = after.indexOf(needle, at + needle.length)
+    ) {
+      hits.push(at);
+    }
+    if (hits.length === 0) return undefined;
+    // newText 在同一文件里出现多次时，优先用工具回显的「改后片段（第 N 行起）」定位。
+    const lineOf = (at: number) => after.slice(0, at).split("\n").length;
+    const ordered =
+      hits.length > 1 && regionStartLine !== undefined
+        ? [
+            ...hits.filter((at) => lineOf(at) === regionStartLine),
+            ...hits.filter((at) => lineOf(at) !== regionStartLine),
+          ]
+        : hits;
+    for (const at of ordered) {
+      const rebuilt = `${after.slice(0, at)}${replacement}${after.slice(at + needle.length)}`;
+      if (beforeHash === undefined || contentHash(rebuilt) === beforeHash) return rebuilt;
+    }
+    return undefined;
+  };
+  const exact = attempt(newText, oldText);
+  if (exact !== undefined) return exact;
+  // 文件是 CRLF 而工具入参只有 LF（read 会去掉 \r）：按 CRLF 再试一次。
+  if (after.includes("\r\n") && !newText.includes("\r")) {
+    const toCrlf = (value: string) => value.replace(/\r?\n/g, "\r\n");
+    return attempt(toCrlf(newText), toCrlf(oldText));
+  }
+  return undefined;
+}
+
+/** 从 edit 的入参与输出还原「改动前」全文；读不到文件或缺信息时返回 undefined。 */
+function preEditContentForEdit(
+  args: Record<string, unknown>,
+  output: string,
+  cwd: string,
+): string | undefined {
+  if (typeof args.path !== "string" || typeof args.newText !== "string") return undefined;
+  const oldText = typeof args.oldText === "string" ? args.oldText : undefined;
+  if (oldText === undefined) return undefined;
+  const regionLine = output.match(/改后片段（第 (\d+) 行起）/)?.[1];
+  const beforeHash = output.match(/oldHash=([0-9a-f]{16})/i)?.[1]?.toLowerCase();
+  try {
+    const after = fs.readFileSync(path.resolve(cwd, args.path), "utf8");
+    return rebuildPreEditContent(
+      after,
+      oldText,
+      args.newText,
+      beforeHash,
+      regionLine === undefined ? undefined : Number(regionLine),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 把工具输出压缩成一行结果说明，并给出展示用的成败判定：
  * bash 非零退出码与“xx失败:”类输出在界面上同样标记为失败。
  */
@@ -411,6 +486,8 @@ export function summarizeToolResult(
   output: string,
   outcome: { blocked: boolean; rejected?: boolean },
   args: Record<string, unknown> = {},
+  /** edit 完成块重建「改动前」全文用；回放历史时不传，避免拿当前磁盘内容冒充旧状态。 */
+  cwd?: string,
 ): ToolResultSummary {
   const body = sanitizeTerminalText(output.replace(VERIFICATION_EVIDENCE_RE, ""));
   const policyLabel = body.startsWith("[计划模式拦截]")
@@ -476,8 +553,10 @@ export function summarizeToolResult(
     if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
       return { status: "success", text: "已替换 1 处" };
     }
-    // 工具块完成后的预览与授权卡片共用同一 diff 渲染（此时文件已改，行号为块内相对行号）。
-    const diff = buildEditDiff("", args.oldText, args.newText, 240, TOOL_PREVIEW_LINES);
+    // 与授权卡片共用同一份 patch：先还原「改动前」全文，行号与上下文才和授权阶段一致。
+    // 回放历史（不传 cwd）或还原不出来时退回 oldText/newText 片段对比。
+    const original = cwd === undefined ? undefined : preEditContentForEdit(args, body, cwd);
+    const diff = buildEditDiff(original ?? "", args.oldText, args.newText, 240, TOOL_PREVIEW_LINES);
     return {
       status: "success",
       text: `已替换 1 处 · +${diff.stats.added} −${diff.stats.removed} 行`,

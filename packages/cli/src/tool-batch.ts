@@ -135,6 +135,12 @@ export const REPEATED_FAILURE_NOTICE_AT = 2;
 export const REPEATED_FAILURE_STOP_AT = 3;
 
 /**
+ * edit 检测到「文件在本次编辑前被其他进程/会话改写」时附带的标记。
+ * turn-runner 据此立刻结束本回合，避免模型在写者未退出时反复抢写。
+ */
+export const EDIT_CONCURRENT_MARKER = "[并发写入]";
+
+/**
  * 归并「同一种失败」的判定口径：只取输出首行，并把 16 位 hash 抹成占位符。
  * 否则「文件已被修改，期望 hash=A，当前 hash=B」这类每次 hash 都变的失败
  * 会永远算成不同原因，重复失败保护形同虚设。
@@ -145,20 +151,83 @@ export function normalizeFailureReason(output: string): string {
 }
 
 /**
- * 统计一个回合内"连续"失败中，相同工具、相同目标（命令/路径）、相同原因（归一化后的输出首行）的次数。
- * 不比较其余参数：模型换一份内容重写同一个越界路径，仍算同一种失败。
- * 期间任何一次工具调用成功即清零，避免"测试失败→修改→再测"的正常迭代被误判。
+ * edit 失败原因的稳定枚举。错误文本里的 hash、行号、最近位置片段每次都不同，
+ * 直接按首行比对会让「同一个文件连续改不动」永远停在第一次。
+ */
+export function classifyEditFailure(output: string): string {
+  if (output.includes(EDIT_CONCURRENT_MARKER)) return "hash-conflict-external";
+  if (output.includes("[hash冲突]")) {
+    return output.includes("最近一次改动是你自己") ? "hash-conflict-own" : "hash-conflict-external";
+  }
+  if (output.includes("匹配到多处")) return "oldtext-ambiguous";
+  if (output.includes("已连续")) return "oldtext-miss-repeat";
+  const miss = output.match(/找不到指定的 oldText 原文（([^）]+)）/);
+  if (miss) return `oldtext-miss:${miss[1]}`;
+  return normalizeFailureReason(output);
+}
+
+/** 失败计数键：edit 只按文件计；其他工具沿用「工具 + 目标 + 归一化原因」。 */
+export function failureKey(
+  toolName: string,
+  args: Record<string, unknown>,
+  output: string,
+): string {
+  const target = typeof args.command === "string" ? args.command : args.path;
+  const targetKey = typeof target === "string" ? target : "";
+  if (toolName === "edit") {
+    // 原因（hash 冲突 / 未命中类别 / 匹配多处）每次重读都会变，
+    // 但「同一个文件连续改不动」才是需要止损的信号。
+    return JSON.stringify(["edit", targetKey, "sequence"]);
+  }
+  return JSON.stringify([toolName, targetKey, normalizeFailureReason(output)]);
+}
+
+/**
+ * 统计一个回合内失败次数的口径：
+ * - edit 按「文件」累计，原因变化不重置（重读后换个写法仍是同一个文件改不动）；
+ * - 其他工具仍按「工具 + 目标 + 原因」累计。
+ * 成功的清零规则见 noteSuccess：read 不能清 edit 的账。
  */
 export class RepeatedFailureTracker {
-  private readonly counts = new Map<string, number>();
+  private readonly counts = new Map<string, { count: number; reason: string }>();
 
   public record(toolName: string, args: Record<string, unknown>, output: string): number {
-    const target = typeof args.command === "string" ? args.command : args.path;
-    const reason = normalizeFailureReason(output);
-    const key = JSON.stringify([toolName, typeof target === "string" ? target : "", reason]);
-    const count = (this.counts.get(key) ?? 0) + 1;
-    this.counts.set(key, count);
+    const key = failureKey(toolName, args, output);
+    const reason =
+      toolName === "edit" ? classifyEditFailure(output) : normalizeFailureReason(output);
+    const count = (this.counts.get(key)?.count ?? 0) + 1;
+    this.counts.set(key, { count, reason });
     return count;
+  }
+
+  /** 某条失败记录最近一次的原因（用于提示里点名「最近原因」）。 */
+  public lastReason(toolName: string, args: Record<string, unknown>): string | undefined {
+    const target = typeof args.command === "string" ? args.command : args.path;
+    const targetKey = typeof target === "string" ? target : "";
+    for (const [key, value] of this.counts) {
+      const [tool, keyTarget] = JSON.parse(key) as [string, string];
+      if (tool === toolName && keyTarget === targetKey) return value.reason;
+    }
+    return undefined;
+  }
+
+  /**
+   * 工具成功后的清零口径：只清「同一工具 + 同一目标」。
+   * 其他工具的成功只清非编辑类计数——read 是 edit 失败后的标准恢复动作，
+   * 若它也能把 edit 的账清零，熔断器就永远等不到第二次失败。
+   */
+  public noteSuccess(toolName: string, args: Record<string, unknown>): void {
+    const target = typeof args.command === "string" ? args.command : args.path;
+    const targetKey = typeof target === "string" ? target : "";
+    for (const key of [...this.counts.keys()]) {
+      const [tool, keyTarget] = JSON.parse(key) as [string, string];
+      if (tool === toolName && keyTarget === targetKey) this.counts.delete(key);
+    }
+    if (toolName === "edit" || toolName === "write") return;
+    for (const key of [...this.counts.keys()]) {
+      const [tool] = JSON.parse(key) as [string];
+      if (tool !== "edit") this.counts.delete(key);
+    }
   }
 
   public reset(): void {
@@ -166,13 +235,35 @@ export class RepeatedFailureTracker {
   }
 }
 
-/** 追加到工具结果末尾、提示模型换方案的系统说明；未达阈值时返回空串。 */
-export function buildRepeatedFailureNotice(count: number): string {
+/** edit 连续失败时点名「哪个文件、最近什么原因」，并要求先诊断再动手。 */
+export function buildRepeatedFailureNotice(
+  count: number,
+  context: { toolName?: string; target?: string; reason?: string } = {},
+): string {
   if (count < REPEATED_FAILURE_NOTICE_AT) return "";
+  if (context.toolName === "edit") {
+    const target = context.target ? `（${context.target}）` : "";
+    return `\n\n[系统提示] 同一文件${target}的编辑已连续失败 ${count} 次（最近原因: ${context.reason ?? "未知"}）。继续重试不会改变结果：请先 read 确认当前内容与 hash；若原因含 hash 冲突，说明文件正被其他进程/会话写入，请停止编辑并向用户说明，不要在本回合继续抢写。`;
+  }
   return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。若失败来自 edit 的 oldText 未命中，请先 read 重新读取目标区域，再用完整整行重试；若失败来自 write/edit 的 hash 冲突（文件已变化），必须先 read 拿到当前内容与新 hash；若 read 确认磁盘内容已经是目标内容则无需再写，不要带着旧 expectedHash 重新生成整份内容。`;
 }
 
 /** 达到停止阈值后，同一条消息里剩余的工具调用不再执行，只留一条工具结果维持消息拓扑。 */
 export function buildRepeatedFailureSkipMessage(): string {
   return `[工具调用已跳过：同一工具已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，本轮自动重试已停止]`;
+}
+
+/** 确认是并发写后，本回合不再执行对该文件的编辑。 */
+export function isConcurrentWriteFailure(toolName: string, output: string): boolean {
+  return toolName === "edit" && output.includes(EDIT_CONCURRENT_MARKER);
+}
+
+/** 并发写停止后，补在失败结果末尾的系统说明。 */
+export function buildConcurrentWriteNotice(target: string): string {
+  return `\n\n[系统提示] 检测到 ${target || "该文件"} 在本次编辑前被其他进程/会话写入（并发写）。本回合已停止对该文件的自动编辑：请向用户说明，并确认是否还有另一个代理在跑；等写入方退出后重新 read 再改。`;
+}
+
+/** 并发写停止后，同一条消息里剩余调用的占位结果。 */
+export function buildConcurrentWriteSkipMessage(target: string): string {
+  return `[工具调用已跳过：${target || "目标文件"} 正被其他进程/会话写入，本回合已停止自动编辑]`;
 }

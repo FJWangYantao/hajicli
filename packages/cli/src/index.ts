@@ -1262,7 +1262,14 @@ async function main() {
         ...context,
         toolCallId: toolCall.id,
       });
-      const outcome = summarizeToolResult(toolCall.function.name, result.output, result, args);
+      // 传 cwd 是为了让 edit 完成块的 diff 能还原「改动前」全文（真实行号）。
+      const outcome = summarizeToolResult(
+        toolCall.function.name,
+        result.output,
+        result,
+        args,
+        process.cwd(),
+      );
       for (const row of formatToolCell({
         status: outcome.status,
         toolName: toolCall.function.name,

@@ -153,6 +153,7 @@ test("edit and write reject stale hashes and replace files atomically", async ()
     });
     assert.match(staleEdit, /hash冲突/);
     assert.match(staleEdit, /文件已被外部修改/);
+    assert.match(staleEdit, /并发写入/);
     assert.equal(await fs.readFile(target, "utf8"), "external\n");
 
     const currentRead = await reader.execute({ path: "target.txt" });
@@ -546,6 +547,69 @@ test("edit hash stays consistent for non-UTF-8 files read as raw bytes", async (
     });
     assert.match(edited, /文件精准编辑成功/);
     assert.equal(await fs.readFile(target, "utf8"), "cafe\n");
+  });
+});
+
+test("edit success echoes the edited region so the next edit can quote it", async () => {
+  await withWorkspace(async () => {
+    await fs.writeFile("edit-region.txt", "alpha\nbeta\n");
+    const result = await new EditFileTool().execute({
+      path: "edit-region.txt",
+      oldText: "beta",
+      newText: "beta\nchanged",
+    });
+    assert.match(result, /文件精准编辑成功/);
+    assert.match(result, /改后片段（第 2 行起）/);
+    assert.match(result, /2 \| beta/);
+    assert.match(result, /3 \| changed/);
+  });
+});
+
+test("edit miss names the agent's own previous edit instead of blaming an external change", async () => {
+  await withWorkspace(async () => {
+    await fs.writeFile("own-edit.txt", "value\n");
+    const editor = new EditFileTool();
+    const first = await editor.execute({
+      path: "own-edit.txt",
+      oldText: "value",
+      newText: "updated",
+    });
+    assert.match(first, /文件精准编辑成功/);
+
+    // 拿「改动前」的文本再改一次：应指出这是自己上一步改的，而不是谎报外部修改。
+    const second = await editor.execute({
+      path: "own-edit.txt",
+      oldText: "value",
+      newText: "again",
+    });
+    assert.match(second, /找不到指定的 oldText 原文/);
+    assert.match(second, /最近一次改动是你自己/);
+    assert.doesNotMatch(second, /hash冲突/);
+    assert.equal(await fs.readFile("own-edit.txt", "utf8"), "updated\n");
+  });
+});
+
+test("repeated identical edit misses require a read before they can keep retrying", async () => {
+  await withWorkspace(async () => {
+    await fs.writeFile("mistake.txt", "alpha\n  beta\n");
+    const editor = new EditFileTool();
+    const reader = new ReadFileTool();
+    const wrong = { path: "mistake.txt", oldText: "alpha\n   beta", newText: "x" };
+
+    const first = await editor.execute(wrong);
+    assert.match(first.split("\n")[0], /找不到指定的 oldText 原文（缩进或空白不一致）/);
+    assert.doesNotMatch(first, /已连续/);
+
+    const second = await editor.execute(wrong);
+    assert.match(second, /已连续 2 次同类未命中/);
+    assert.match(second, /先 read/);
+
+    // read 之后重新计数：同一条错误 oldText 又能得到正常的分类提示。
+    await reader.execute({ path: "mistake.txt" });
+    const third = await editor.execute(wrong);
+    assert.match(third.split("\n")[0], /找不到指定的 oldText 原文（缩进或空白不一致）/);
+    assert.doesNotMatch(third, /已连续/);
+    assert.equal(await fs.readFile("mistake.txt", "utf8"), "alpha\n  beta\n");
   });
 });
 

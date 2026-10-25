@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildPermissionPreview } from "../dist/cli-runtime.js";
+import {
+  buildPermissionPreview,
+  summarizeToolResult,
+  TOOL_PREVIEW_LINES,
+} from "../dist/cli-runtime.js";
 import {
   buildEditDiff,
   buildWriteDiff,
@@ -137,4 +142,77 @@ test("normalizeDiffLines strips a single trailing newline and keeps empty input 
   assert.deepEqual(normalizeDiffLines("a\nb\n"), ["a", "b"]);
   assert.deepEqual(normalizeDiffLines(""), []);
   assert.deepEqual(normalizeDiffLines("a"), ["a"]);
+});
+
+/** 与工具层 contentHash 同口径（sha256 前 16 位），用来构造 edit 成功输出。 */
+function sha16(text) {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/** 构造 edit 工具的成功输出（含 oldHash 与「改后片段」行号回显）。 */
+function editSuccessOutput(before, after, newText, startLine) {
+  return [
+    "[文件精准编辑成功]",
+    "路径: sample.ts",
+    `oldHash=${sha16(before)}`,
+    `newHash=${sha16(after)}`,
+    "替换次数=1",
+    `改后片段（第 ${startLine} 行起）:`,
+    `   ${startLine} | ${newText}`,
+  ].join("\n");
+}
+
+test("completed edit block reuses the pre-edit content (same patch as the permission card)", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-diff-complete-"));
+  try {
+    const oldText = "const b = load(path);";
+    const newText = "const b = await load(path);";
+    const after = SAMPLE.replace(oldText, newText);
+    fs.writeFileSync(path.join(cwd, "sample.ts"), after, "utf8");
+    const args = { path: "sample.ts", oldText, newText };
+    const output = editSuccessOutput(SAMPLE, after, newText, 2);
+
+    // 传了 cwd：从磁盘内容把 newText 换回 oldText 重建原文，渲染出与授权卡片同一份 patch。
+    const summary = summarizeToolResult("edit", output, { blocked: false }, args, cwd);
+    assert.equal(summary.status, "success");
+    assert.match(summary.text, /\+1 −1/);
+    assert.deepEqual(
+      summary.preview,
+      buildEditDiff(SAMPLE, oldText, newText, 240, TOOL_PREVIEW_LINES).lines,
+    );
+    assert.ok(summary.preview.some((line) => plain(line).includes("@@")));
+    assert.ok(summary.preview.some((line) => plain(line).includes("− const b = load(path);")));
+    assert.ok(
+      summary.preview.some((line) => plain(line).includes("+ const b = await load(path);")),
+    );
+
+    // 回放历史（不传 cwd）时退回片段对比：仍有增删行，但没有真实行号与上下文。
+    const replayed = summarizeToolResult("edit", output, { blocked: false }, args);
+    assert.ok(replayed.preview.some((line) => plain(line).includes("− const b = load(path);")));
+    assert.ok(!replayed.preview.some((line) => plain(line).includes("const a = 1;")));
+
+    // oldHash 对不上（重建结果不可信）时也退回片段对比，不拿错版本冒充真实行号。
+    const tampered = summarizeToolResult(
+      "edit",
+      output.replace(/oldHash=.*/, `oldHash=${sha16("另一个版本")}`),
+      { blocked: false },
+      args,
+      cwd,
+    );
+    assert.ok(!tampered.preview.some((line) => plain(line).includes("const a = 1;")));
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("truncated previews keep the changed rows instead of the leading context", () => {
+  const original = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n");
+  const body = buildEditDiff(original, "line 6", "line six", 80, 3);
+  const lines = body.lines.map(plain);
+  assert.ok(body.hiddenLines > 0);
+  // 3 行窗口：hunk 头 + 删除 + 新增，上下文让位。
+  assert.match(lines[0], /^@@ /);
+  assert.ok(lines[1].includes("− line 6"));
+  assert.ok(lines[2].includes("+ line six"));
+  assert.ok(lines.some((line) => line.includes("还有")));
 });

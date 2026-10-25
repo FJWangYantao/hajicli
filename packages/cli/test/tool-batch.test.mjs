@@ -4,9 +4,14 @@ import test from "node:test";
 
 import { performanceMonitor } from "@hajicli/core";
 import {
+  buildConcurrentWriteNotice,
+  buildConcurrentWriteSkipMessage,
   buildRepeatedFailureNotice,
   buildRepeatedFailureSkipMessage,
+  classifyEditFailure,
   createToolCallBatches,
+  EDIT_CONCURRENT_MARKER,
+  isConcurrentWriteFailure,
   MAX_PARALLEL_READ_ONLY_TOOLS,
   normalizeFailureReason,
   RepeatedFailureTracker,
@@ -143,11 +148,11 @@ test("repeated failure tracker counts same tool, target and reason regardless of
   assert.equal(tracker.record("write", { path: "D:\\Desktop\\a.html", content: "v3" }, denied), 3);
 });
 
-test("repeated failure tracker resets after any success so fix-and-retest loops are not flagged", () => {
+test("repeated failure tracker resets the same tool and target after success", () => {
   const tracker = new RepeatedFailureTracker();
   const failed = "[退出码: 1]\nFAIL";
   assert.equal(tracker.record("bash", { command: "npm test" }, failed), 1);
-  tracker.reset();
+  tracker.noteSuccess("bash", { command: "npm test" });
   assert.equal(tracker.record("bash", { command: "npm test" }, failed), 1);
   // 同一退出码、不同命令不算重复
   assert.equal(tracker.record("bash", { command: "npm run lint" }, failed), 1);
@@ -171,16 +176,52 @@ test("repeated failure tracker normalizes changing hashes into one reason", () =
   );
 });
 
-test("failure reason keeps distinct edit-miss categories separate", () => {
+test("edit failures keep counting across categories and are not cleared by read", () => {
   const tracker = new RepeatedFailureTracker();
   const miss = (category) => `编辑失败: 在文件中找不到指定的 oldText 原文（${category}）。\n线索`;
   assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 1);
-  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("缩进或空白不一致")), 1);
-  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 2);
+  // 换了失败类别（缩进不一致）仍算同一个文件改不动
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("缩进或空白不一致")), 2);
+  // 失败后先 read 是标准恢复动作；read 成功不能把 edit 的账洗掉
+  tracker.noteSuccess("read", { path: "src/a.ts" });
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 3);
+  // 真正改成功才清零
+  tracker.noteSuccess("edit", { path: "src/a.ts" });
+  assert.equal(tracker.record("edit", { path: "src/a.ts" }, miss("锚点行不存在")), 1);
   assert.equal(
     normalizeFailureReason("编辑失败: hash=0123456789abcdef 当前 hash=fedcba9876543210\nmore"),
     "编辑失败: hash=<hash> 当前 hash=<hash>",
   );
+});
+
+test("edit failure reasons are classified into a stable enum", () => {
+  assert.equal(
+    classifyEditFailure(
+      "编辑失败: [hash冲突] [并发写入] 文件已被外部修改（期望 hash=a，当前 hash=b）",
+    ),
+    "hash-conflict-external",
+  );
+  assert.equal(
+    classifyEditFailure("编辑失败: [hash冲突] 文件已被外部修改\n注意: 该文件最近一次改动是你自己"),
+    "hash-conflict-own",
+  );
+  assert.equal(
+    classifyEditFailure("编辑失败: 在文件中找不到指定的 oldText 原文（缩进或空白不一致）。"),
+    "oldtext-miss:缩进或空白不一致",
+  );
+  assert.equal(
+    classifyEditFailure("编辑失败: oldText 匹配到多处，为安全起见已拒绝修改。"),
+    "oldtext-ambiguous",
+  );
+});
+
+test("concurrent-write failures are detected and stop further edits", () => {
+  const output = `编辑失败: [hash冲突] ${EDIT_CONCURRENT_MARKER} 文件已被外部修改`;
+  assert.equal(isConcurrentWriteFailure("edit", output), true);
+  assert.equal(isConcurrentWriteFailure("write", output), false);
+  assert.equal(isConcurrentWriteFailure("edit", "编辑失败: oldText 匹配到多处"), false);
+  assert.match(buildConcurrentWriteNotice("src/a.ts"), /本回合已停止对该文件的自动编辑/);
+  assert.match(buildConcurrentWriteSkipMessage("src/a.ts"), /正被其他进程\/会话写入/);
 });
 
 test("repeated failure notice only appears from the second identical failure", () => {
@@ -189,6 +230,17 @@ test("repeated failure notice only appears from the second identical failure", (
   assert.match(buildRepeatedFailureNotice(2), /先 read 重新读取/);
   assert.match(buildRepeatedFailureNotice(2), /hash 冲突.*必须先 read 拿到当前内容与新 hash/);
   assert.match(buildRepeatedFailureNotice(2), /已经是目标内容则无需再写/);
+});
+
+test("edit failure notice names the file and the latest reason", () => {
+  const text = buildRepeatedFailureNotice(2, {
+    toolName: "edit",
+    target: "src/a.ts",
+    reason: "hash-conflict-external",
+  });
+  assert.match(text, /同一文件（src\/a\.ts）的编辑已连续失败 2 次/);
+  assert.match(text, /最近原因: hash-conflict-external/);
+  assert.match(text, /停止编辑并向用户说明/);
 });
 
 test("repeated failure skip message names the stop reason for the remaining calls", () => {
@@ -204,6 +256,24 @@ test("turn-runner skips the remaining tool calls once the repeated-failure limit
     "停止后跳过同一条消息里剩余的批次",
   );
   assert.ok(source.includes("buildRepeatedFailureSkipMessage()"), "为跳过的调用补上工具结果");
+});
+
+test("turn-runner keeps edit failures counted across reads and stops on concurrent writes", () => {
+  const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
+  assert.ok(
+    source.includes("repeatedFailures.noteSuccess(toolName, args)"),
+    "成功时按工具+目标清零，read 不能洗掉 edit 的失败计数",
+  );
+  assert.ok(
+    !source.includes("repeatedFailures.reset()"),
+    "不要再无条件清零：read 会因此把 edit 的失败计数洗掉",
+  );
+  assert.ok(
+    source.includes("isConcurrentWriteFailure(toolName, toolOutput)"),
+    "并发写要单独识别并结束本回合",
+  );
+  assert.ok(source.includes("buildConcurrentWriteNotice(concurrentWriteTarget)"));
+  assert.ok(source.includes("buildConcurrentWriteSkipMessage(concurrentWriteTarget)"));
 });
 
 test("raceWithAbort returns the tool result when it finishes first", async () => {

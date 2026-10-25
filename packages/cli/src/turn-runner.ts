@@ -49,9 +49,12 @@ import {
 import { buildTurnSummary } from "./terminal-panels.js";
 import { colors } from "./theme.js";
 import {
+  buildConcurrentWriteNotice,
+  buildConcurrentWriteSkipMessage,
   buildRepeatedFailureNotice,
   buildRepeatedFailureSkipMessage,
   createToolCallBatches,
+  isConcurrentWriteFailure,
   REPEATED_FAILURE_STOP_AT,
   RepeatedFailureTracker,
   raceWithAbort,
@@ -602,6 +605,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         .find((message) => message.role === "user" && message.snapshotId)?.snapshotId;
       const batches = createToolCallBatches(toolCalls);
       let stoppedByRepeatedFailure = false;
+      /** 触发停止的并发写入目标；用于给剩余调用和结束提示换成并发写的说法。 */
+      let concurrentWriteTarget: string | undefined;
 
       for (const batch of batches) {
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
@@ -610,7 +615,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             messages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: buildRepeatedFailureSkipMessage(),
+              content: concurrentWriteTarget
+                ? buildConcurrentWriteSkipMessage(concurrentWriteTarget)
+                : buildRepeatedFailureSkipMessage(),
             });
           }
           continue;
@@ -659,7 +666,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             if (!execution) {
               return { tc, toolName, args, duration: 0, skipped: true };
             }
-            const summary = summarizeToolResult(toolName, execution.output, execution, args);
+            const summary = summarizeToolResult(
+              toolName,
+              execution.output,
+              execution,
+              args,
+              process.cwd(),
+            );
             toolRunView.finish(tc.id, summary, execution.duration);
             return {
               tc,
@@ -728,11 +741,23 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
 
           let toolOutput = execution.output;
           if (result.failed) {
-            const failureCount = repeatedFailures.record(toolName, args, toolOutput);
-            toolOutput += buildRepeatedFailureNotice(failureCount);
-            if (failureCount >= REPEATED_FAILURE_STOP_AT) stoppedByRepeatedFailure = true;
+            if (isConcurrentWriteFailure(toolName, toolOutput)) {
+              // 文件正在被其他进程/会话改写：继续编辑只会在 read→edit 的窗口里反复过期，
+              // 直接结束本回合，把「有并发写者」这件事交回给用户确认。
+              concurrentWriteTarget = String(args.path ?? "");
+              stoppedByRepeatedFailure = true;
+              toolOutput += buildConcurrentWriteNotice(concurrentWriteTarget);
+            } else {
+              const failureCount = repeatedFailures.record(toolName, args, toolOutput);
+              toolOutput += buildRepeatedFailureNotice(failureCount, {
+                toolName,
+                target: String(args.path ?? ""),
+                reason: repeatedFailures.lastReason(toolName, args),
+              });
+              if (failureCount >= REPEATED_FAILURE_STOP_AT) stoppedByRepeatedFailure = true;
+            }
           } else {
-            repeatedFailures.reset();
+            repeatedFailures.noteSuccess(toolName, args);
           }
           if (
             deps.getPermissionMode() === "plan" &&
@@ -769,7 +794,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       } else if (stoppedByRepeatedFailure) {
         ui.writeLine(
           colors.warnLine(
-            `同一工具调用已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，已停止本轮自动重试。请调整要求后再试。`,
+            concurrentWriteTarget
+              ? `检测到 ${concurrentWriteTarget} 正被其他进程/会话写入，已停止本回合自动编辑。请确认没有并行运行的代理后再试。`
+              : `同一工具调用已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，已停止本轮自动重试。请调整要求后再试。`,
           ),
         );
         keepCalling = false;

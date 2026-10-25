@@ -35,6 +35,7 @@ const MAX_TRACKED_HASHES = 32;
  */
 export class FileVersionRegistry {
   private readonly chains = new Map<string, { latest: string; seen: Set<string> }>();
+  private readonly reads = new Map<string, number>();
 
   private key(agentId: string | undefined, filePath: string): string {
     return `${agentId ?? ""}\0${filePath}`;
@@ -47,7 +48,18 @@ export class FileVersionRegistry {
   /** read 等只读观察：磁盘版本不是链尾说明发生过外部修改，版本链从该版本重新开始。 */
   public observe(agentId: string | undefined, filePath: string, hash: string): void {
     const key = this.key(agentId, filePath);
+    this.reads.set(key, (this.reads.get(key) ?? 0) + 1);
     if (this.chains.get(key)?.latest !== hash) this.restart(key, hash);
+  }
+
+  /** 该代理对该文件的 read 次数；edit 用它判断失败后有没有重新读取过。 */
+  public readCount(agentId: string | undefined, filePath: string): number {
+    return this.reads.get(this.key(agentId, filePath)) ?? 0;
+  }
+
+  /** 磁盘当前版本是否正是该代理最后一次写出的版本（用于识别「被自己的上一步改动」）。 */
+  public isOwnHead(agentId: string | undefined, filePath: string, hash: string): boolean {
+    return this.chains.get(this.key(agentId, filePath))?.latest === hash;
   }
 
   /**

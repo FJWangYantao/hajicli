@@ -47,8 +47,14 @@ export function normalizeDiffLines(text: string): string[] {
   return lines;
 }
 
+/**
+ * 生成 patch 前的归一化：统一换行为 LF，并把「末尾有无换行」抹平。
+ * 预览关心的是内容差异；仅结尾换行不同不应算作改动行，也不该刷出
+ * `\ No newline at end of file` 噪声。
+ */
 function normalizeDiffText(text: string): string {
-  return normalizeDiffLines(text).join("\n");
+  const lines = normalizeDiffLines(text);
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
 /**
@@ -210,53 +216,78 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
     index = addEnd;
   }
 
-  type RenderedRow = { row: string; changed: boolean };
+  type RenderedRow = { row: string; kind: "head" | "context" | "change" };
   const rendered: RenderedRow[] = [];
-  let startLine = 1;
+  /** 第一条真正改动所在的原文件行号；纯新增时取新文件行号。 */
+  let startLine: number | undefined;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (row.type === "hunk") {
-      if (startLine === 1 && row.oldLine !== undefined) startLine = row.oldLine;
-      rendered.push({ row: colors.cyan(row.text), changed: false });
+      rendered.push({ row: colors.cyan(row.text), kind: "head" });
       continue;
     }
     if (row.type === "note") {
-      rendered.push({ row: colors.gray(row.text), changed: false });
+      rendered.push({ row: colors.gray(row.text), kind: "head" });
       continue;
     }
     if (row.type === "same") {
       rendered.push({
         row: layoutRow(row.oldLine, row.newLine, " ", colors.muted(row.text)),
-        changed: false,
+        kind: "context",
       });
       continue;
     }
     if (row.type === "del") {
+      startLine ??= row.oldLine;
       const pairIndex = delPair.get(index);
       const pair = pairIndex === undefined ? undefined : rows[pairIndex];
       const highlighted = highlightIntraLine(row.text, pair?.text);
       rendered.push({
-        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("-"), highlighted.del),
-        changed: true,
+        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("−"), highlighted.del),
+        kind: "change",
       });
       continue;
     }
+    startLine ??= row.newLine;
     const pairIndex = addPair.get(index);
     const pair = pairIndex === undefined ? undefined : rows[pairIndex];
     const highlighted = highlightIntraLine(pair?.text, row.text);
     rendered.push({
       row: layoutRow(row.oldLine, row.newLine, colors.boldGreen("+"), highlighted.add),
-      changed: true,
+      kind: "change",
     });
   }
 
-  const visible = rendered.slice(0, Math.max(0, maxLines));
+  const { visible, hidden } = fitDiffRows(rendered, maxLines);
   const lines = visible.map((item) => truncateAnsiText(item.row, Math.max(1, width)));
-  const hiddenLines = rendered.length - visible.length;
-  if (hiddenLines > 0) {
-    lines.push(colors.gray(`… 还有 ${hiddenLines} 行`));
+  if (hidden > 0) {
+    lines.push(colors.gray(`… 还有 ${hidden} 行`));
   }
-  return { lines, stats, hiddenLines, startLine };
+  return { lines, stats, hiddenLines: hidden, startLine: startLine ?? 1 };
+}
+
+/**
+ * 行数超限时的取窗：先保证「第一处改动」可见——改动之前的上下文行让位，
+ * 只保留紧邻的 hunk 头（或 no-newline 提示），改动之后的行按剩余额度填充。
+ * 这样紧凑的工具块（3 行）也不会被上下文挤掉真正的增删行。
+ */
+function fitDiffRows(
+  rows: { row: string; kind: "head" | "context" | "change" }[],
+  maxLines: number,
+): { visible: { row: string; kind: "head" | "context" | "change" }[]; hidden: number } {
+  const limit = Math.max(0, maxLines);
+  if (rows.length <= limit) return { visible: rows, hidden: 0 };
+  const firstChange = rows.findIndex((item) => item.kind === "change");
+  let ordered = rows;
+  if (firstChange > 0) {
+    const headRow = rows
+      .slice(0, firstChange)
+      .reverse()
+      .find((item) => item.kind === "head");
+    ordered = [...(headRow ? [headRow] : []), ...rows.slice(firstChange)];
+  }
+  const visible = ordered.slice(0, limit);
+  return { visible, hidden: rows.length - visible.length };
 }
 
 /**

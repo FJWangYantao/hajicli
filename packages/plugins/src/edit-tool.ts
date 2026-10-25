@@ -19,6 +19,50 @@ function parseExpectedHash(value: unknown): string | undefined {
 /** 诊断片段的最大行数与单行最大长度，避免失败信息本身撑爆上下文。 */
 const HINT_MAX_LINES = 12;
 const HINT_MAX_LINE_LENGTH = 200;
+/** 改后回显的最大行数。 */
+const REGION_MAX_LINES = 12;
+
+/** 同一文件连续同类 oldText 未命中的计数；期间 read 过就重置。 */
+const missStreaks = new Map<string, { category: string; readSeq: number; count: number }>();
+
+function missKey(agentId: string | undefined, filePath: string): string {
+  return `${agentId ?? ""}\0${filePath}`;
+}
+
+function noteEditMiss(agentId: string | undefined, filePath: string, category: string): number {
+  const key = missKey(agentId, filePath);
+  const readSeq = fileVersions.readCount(agentId, filePath);
+  const previous = missStreaks.get(key);
+  const count =
+    previous && previous.category === category && previous.readSeq === readSeq
+      ? previous.count + 1
+      : 1;
+  missStreaks.set(key, { category, readSeq, count });
+  return count;
+}
+
+function clearEditMiss(agentId: string | undefined, filePath: string): void {
+  missStreaks.delete(missKey(agentId, filePath));
+}
+
+/**
+ * 编辑成功后回显改后片段：模型下一次编辑可以直接引用这里的原文，
+ * 不必凭记忆重写 oldText（这是「改完自己又拿旧文本去改」的常见来源）。
+ */
+function formatEditedRegion(text: string, startLine: number): string {
+  if (!text) return "\n改后片段: （该段已被删除）";
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const shown = lines.slice(0, REGION_MAX_LINES).map((line, index) => {
+    const clipped =
+      line.length > HINT_MAX_LINE_LENGTH ? `${line.slice(0, HINT_MAX_LINE_LENGTH)}…` : line;
+    return `${String(startLine + index).padStart(4)} | ${clipped}`;
+  });
+  const more =
+    lines.length > REGION_MAX_LINES
+      ? `\n…（改后共 ${lines.length} 行，只显示前 ${REGION_MAX_LINES} 行）`
+      : "";
+  return `\n改后片段（第 ${startLine} 行起）:\n${shown.join("\n")}${more}`;
+}
 /** read 默认输出的「行号 | 」前缀。 */
 const LINE_NUMBER_PREFIX_RE = /^\s*\d+ \| /;
 
@@ -241,6 +285,13 @@ export class EditFileTool implements BaseTool {
         const currentHash = contentHash(buffer);
         const stale = expectedHash !== undefined && expectedHash !== currentHash;
         const match = locateOldText(content, args.oldText, args.newText);
+        // 并发写的可能性只在 hash 过期时才有意义：用它说明「多久之前被写过」。
+        const fileStat = stale ? await fs.stat(resolvedPath).catch(() => undefined) : undefined;
+        const writeAge = fileStat
+          ? Math.max(0, Math.round((Date.now() - fileStat.mtimeMs) / 1000))
+          : undefined;
+        const recentWriteNote =
+          writeAge === undefined ? "" : `该文件在最近 ${writeAge} 秒内被写入。`;
 
         // expectedHash 过期：先重读一次再判定。真正的安全边界是 oldText 唯一命中，
         // expectedHash 只是防覆盖提示；外部格式化改了别处不应让本次编辑无谓失败。
@@ -250,12 +301,17 @@ export class EditFileTool implements BaseTool {
         }
 
         if (stale) {
-          if (match.count === 0) {
-            const miss = analyzeOldTextMiss(content, args.oldText);
-            return `编辑失败: [hash冲突] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），且 oldText 在当前内容中未命中（${miss.category}）。\n${miss.detail}`;
-          }
           if (match.count > 1) {
-            return `编辑失败: [hash冲突] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），且 oldText 在当前内容中匹配到多处。请重新读取后增加上下文确保唯一。`;
+            return `编辑失败: [hash冲突] [并发写入] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），${recentWriteNote}且 oldText 在当前内容中匹配到多处。请停止继续编辑，向用户说明并确认是否有另一个代理在跑。`;
+          }
+          // oldText 未命中时先区分来源：当前版本仍是本代理自己写出的链尾，
+          // 说明是「改完又拿旧文本去改」，比「外部修改」更值得说清楚。
+          if (
+            match.count === 0 &&
+            !fileVersions.isOwnHead(context?.agentId, resolvedPath, currentHash)
+          ) {
+            const miss = analyzeOldTextMiss(content, args.oldText);
+            return `编辑失败: [hash冲突] [并发写入] 文件已被外部修改（期望 hash=${expectedHash}，当前 hash=${currentHash}），${recentWriteNote}且 oldText 在当前内容中未命中（${miss.category}）。\n请停止继续编辑，向用户说明并确认是否有另一个代理在跑。\n${miss.detail}`;
           }
           // 唯一命中：继续基于最新内容编辑；写入时用 currentHash 再做一次 CAS，
           // 若重读之后文件又被改动，writeUtf8Atomically 仍会拒绝覆盖。
@@ -263,7 +319,18 @@ export class EditFileTool implements BaseTool {
 
         if (match.count === 0) {
           const miss = analyzeOldTextMiss(content, args.oldText);
-          return `编辑失败: 在文件中找不到指定的 oldText 原文（${miss.category}）。\n${miss.detail}`;
+          const ownEdit = fileVersions.isOwnHead(context?.agentId, resolvedPath, currentHash);
+          const hint = ownEdit
+            ? "\n注意: 该文件最近一次改动是你自己在本轮做的（当前 hash 就是你的版本链尾），oldText 很可能取自改动前的旧文本。"
+            : "";
+          const hashNote = stale
+            ? `\n另: expectedHash 已过期（期望 ${expectedHash}，当前 ${currentHash}），本次已按最新内容判定。`
+            : "";
+          const streak = noteEditMiss(context?.agentId, resolvedPath, miss.category);
+          if (streak >= 2) {
+            return `编辑失败: 同一文件的 oldText 已连续 ${streak} 次同类未命中（${miss.category}），本次不再重复判定。${hint}${hashNote}\n下一步：先 read 该文件（拿当前内容与 hash），再按原文重写 oldText。\n${miss.detail}`;
+          }
+          return `编辑失败: 在文件中找不到指定的 oldText 原文（${miss.category}）。${hint}${hashNote}\n${miss.detail}`;
         }
         if (match.count > 1) {
           return "编辑失败: oldText 匹配到多处，为安全起见已拒绝修改。请增加上下文确保唯一。";
@@ -276,12 +343,14 @@ export class EditFileTool implements BaseTool {
         const newHash = contentHash(newContent);
         await writeUtf8Atomically(resolvedPath, newContent, context?.abortSignal, currentHash);
         fileVersions.advance(context?.agentId, resolvedPath, currentHash, newHash);
+        clearEditMiss(context?.agentId, resolvedPath);
         const retryNote = retriedForStaleHash
           ? "\n说明: expectedHash 已过期，已重新读取并按最新内容应用。"
           : "";
-        return `[文件精准编辑成功]\n路径: ${filePath}\noldHash=${currentHash}\nnewHash=${newHash}\n替换次数=1${retryNote}`;
+        const regionStartLine = content.slice(0, match.index).split("\n").length;
+        return `[文件精准编辑成功]\n路径: ${filePath}\noldHash=${currentHash}\nnewHash=${newHash}\n替换次数=1${retryNote}${formatEditedRegion(match.newText, regionStartLine)}`;
       }
-      return "编辑失败: [hash冲突] 重读后文件仍在变化，请稍后再试。";
+      return "编辑失败: [hash冲突] [并发写入] 重读后文件仍在被其他进程/会话改写，本回合不要再重试。请向用户说明并确认是否有另一个代理在跑。";
     } catch (error) {
       if (
         context?.abortSignal?.aborted ||
@@ -290,7 +359,7 @@ export class EditFileTool implements BaseTool {
         return "[文件编辑已中止]";
       }
       if (error instanceof FileConflictError) {
-        return `编辑失败: [hash冲突] ${error.message}。请重新读取后再编辑。`;
+        return `编辑失败: [hash冲突] [并发写入] ${error.message}。文件在本次 read 之后被其他进程/会话写入，请停止重试并向用户说明。`;
       }
       return `精准编辑文件失败: ${formatWorkspaceError(error, filePath)}`;
     }
