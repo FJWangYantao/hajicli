@@ -54,6 +54,24 @@ function looksAlreadyApplied(content: string, newText: string): boolean {
   return false;
 }
 
+/**
+ * 给一个「文件里只出现一次」的短行作锚点：大段 oldText 只要被上一笔编辑改过一行
+ * 就必然失配，而单行锚点几乎总是稳定，模型据此把 oldText 收缩到最小范围。
+ */
+function suggestUniqueAnchor(content: string, oldText: string): string | undefined {
+  const lines = oldText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 8);
+  const seen = new Set<string>();
+  for (const line of lines.sort((a, b) => b.length - a.length).slice(0, 20)) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    if (content.split(line).length === 2) return line;
+  }
+  return undefined;
+}
+
 function missKey(agentId: string | undefined, filePath: string): string {
   return `${agentId ?? ""}\0${filePath}`;
 }
@@ -366,10 +384,14 @@ export class EditFileTool implements BaseTool {
             ? `\n另: expectedHash 已过期（期望 ${expectedHash}，当前 ${currentHash}），本次已按最新内容判定。`
             : "";
           const streak = noteEditMiss(context?.agentId, resolvedPath, miss.category);
+          const anchor = suggestUniqueAnchor(content, args.oldText);
+          const anchorNote = anchor
+            ? `\n建议: 把 oldText 收缩成文件里唯一的短锚点（例如「${anchor}」），再带上紧邻的 1-2 行。大段原文被上一笔编辑改过一行就会失配——bash 的 grep/sed 只负责显示，改文件仍要 oldText 精确命中。`
+            : "";
           if (streak >= 2) {
-            return `编辑失败: 同一文件的 oldText 已连续 ${streak} 次同类未命中（${miss.category}），本次不再重复判定。${hint}${hashNote}\n下一步：先 read 该文件（拿当前内容与 hash），再按原文重写 oldText。\n${miss.detail}`;
+            return `编辑失败: 同一文件的 oldText 已连续 ${streak} 次同类未命中（${miss.category}），本次不再重复判定。${hint}${hashNote}\n下一步：先 read 该文件（拿当前内容与 hash），再按原文重写 oldText。${anchorNote}\n${miss.detail}`;
           }
-          return `编辑失败: 在文件中找不到指定的 oldText 原文（${miss.category}）。${hint}${hashNote}\n${miss.detail}`;
+          return `编辑失败: 在文件中找不到指定的 oldText 原文（${miss.category}）。${hint}${hashNote}${anchorNote}\n${miss.detail}`;
         }
         if (match.count > 1) {
           return "编辑失败: oldText 匹配到多处，为安全起见已拒绝修改。请增加上下文确保唯一。";

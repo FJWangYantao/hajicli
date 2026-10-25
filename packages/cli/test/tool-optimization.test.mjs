@@ -747,3 +747,19 @@ test("edit miss shows the closest actual lines so the model can correct oldText"
     assert.equal(await fs.readFile(target, "utf8"), original);
   });
 });
+
+test("edit miss suggests a unique short anchor instead of a stale block quote", async () => {
+  await withWorkspace(async () => {
+    // 上一笔编辑在 a 与 c 之间插了一行注释：引用 a..c 的大段 oldText 必然失配。
+    await fs.writeFile("anchor.txt", "const a = 1;\n// 上一笔编辑插入的注释\nconst c = 3;\n");
+    const result = await new EditFileTool().execute({
+      path: "anchor.txt",
+      oldText: "const a = 1;\nconst c = 3;",
+      newText: "const a = 1;\nconst c = 30;",
+    });
+    assert.match(result, /找不到指定的 oldText 原文/);
+    assert.match(result, /唯一的短锚点/);
+    assert.match(result, /const a = 1;/);
+    assert.match(result, /grep\/sed 只负责显示/);
+  });
+});
