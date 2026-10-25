@@ -55,7 +55,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - **prompt 收回**：请求真正发出前按 Esc，prompt 不入会话、回填输入框（`commitPromptForRequest` 由 `onRequestStart` 划界）。
 - **中止**：发出后 Esc → AbortController，部分输出保留，工具进程后台清理。
 - **Plan 模式**：只读工具 + Todo 计划，`PLAN_READY_MARKER` 后进入审批选择，批准后切换权限档继续执行。
-- **失败止损**：`RepeatedFailureTracker` 按「工具 + 目标」累计；`edit` 只按文件计、原因变化不重置，且只有 `edit` 成功才清零（`read` 是恢复动作，不能洗掉计数）。同一文件第 3 次编辑失败即结束本回合。
+- **失败止损**：`RepeatedFailureTracker` 按「工具 + 目标」累计；`edit` 只按文件计、原因变化不重置，且只有 `edit` 成功才清零（`read` 是恢复动作，不能洗掉计数）。同一文件第 5 次编辑失败即结束本回合。
 - **并发写**：`edit` 发现 hash 过期且当前版本不是自己的版本链尾时，返回带 `[并发写入]` 的冲突并附「最近 N 秒内被写入」；`turn-runner` 立刻停止本回合自动编辑，把「可能有另一个代理在跑」交回用户确认。
 - **状态注入**：`permissionMode` / `riskThreshold` 经 `TurnDeps` 访问器读取（Plan 审批会在回合中切档）；provider / 模型 / 思考强度在回合开始时快照。
 

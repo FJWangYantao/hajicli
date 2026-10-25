@@ -130,9 +130,9 @@ export async function runToolCallBatch<T, R extends TimedToolResult>(
 }
 
 /** 同一失败原因在一个回合内出现到该次数时，追加提示要求模型停止原样重试。 */
-export const REPEATED_FAILURE_NOTICE_AT = 2;
+export const REPEATED_FAILURE_NOTICE_AT = 3;
 /** 同一失败原因在一个回合内出现到该次数时，直接结束本轮自动循环。 */
-export const REPEATED_FAILURE_STOP_AT = 3;
+export const REPEATED_FAILURE_STOP_AT = 5;
 
 /**
  * edit 检测到「文件在本次编辑前被其他进程/会话改写」时附带的标记。

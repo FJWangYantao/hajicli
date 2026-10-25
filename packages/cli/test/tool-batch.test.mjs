@@ -224,27 +224,28 @@ test("concurrent-write failures are detected and stop further edits", () => {
   assert.match(buildConcurrentWriteSkipMessage("src/a.ts"), /正被其他进程\/会话写入/);
 });
 
-test("repeated failure notice only appears from the second identical failure", () => {
+test("repeated failure notice only appears from the third identical failure", () => {
   assert.equal(buildRepeatedFailureNotice(1), "");
-  assert.match(buildRepeatedFailureNotice(2), /相同原因失败 2 次.*不要再发起同样的调用/);
-  assert.match(buildRepeatedFailureNotice(2), /先 read 重新读取/);
-  assert.match(buildRepeatedFailureNotice(2), /hash 冲突.*必须先 read 拿到当前内容与新 hash/);
-  assert.match(buildRepeatedFailureNotice(2), /已经是目标内容则无需再写/);
+  assert.equal(buildRepeatedFailureNotice(2), "");
+  assert.match(buildRepeatedFailureNotice(3), /相同原因失败 3 次.*不要再发起同样的调用/);
+  assert.match(buildRepeatedFailureNotice(3), /先 read 重新读取/);
+  assert.match(buildRepeatedFailureNotice(3), /hash 冲突.*必须先 read 拿到当前内容与新 hash/);
+  assert.match(buildRepeatedFailureNotice(3), /已经是目标内容则无需再写/);
 });
 
 test("edit failure notice names the file and the latest reason", () => {
-  const text = buildRepeatedFailureNotice(2, {
+  const text = buildRepeatedFailureNotice(3, {
     toolName: "edit",
     target: "src/a.ts",
     reason: "hash-conflict-external",
   });
-  assert.match(text, /同一文件（src\/a\.ts）的编辑已连续失败 2 次/);
+  assert.match(text, /同一文件（src\/a\.ts）的编辑已连续失败 3 次/);
   assert.match(text, /最近原因: hash-conflict-external/);
   assert.match(text, /停止编辑并向用户说明/);
 });
 
 test("repeated failure skip message names the stop reason for the remaining calls", () => {
-  assert.match(buildRepeatedFailureSkipMessage(), /同一工具已连续以相同原因失败 3 次/);
+  assert.match(buildRepeatedFailureSkipMessage(), /同一工具已连续以相同原因失败 5 次/);
   assert.match(buildRepeatedFailureSkipMessage(), /本轮自动重试已停止/);
 });
 
