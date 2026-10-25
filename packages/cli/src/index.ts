@@ -137,8 +137,10 @@ import {
 } from "./permission-rules.js";
 import {
   detectProjectCheckCommand,
+  diagnosticsMentionFile,
   formatVerificationNotice,
   runProjectCheck,
+  shouldPushVerificationNotice,
 } from "./post-edit-verify.js";
 import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
@@ -674,10 +676,12 @@ async function main() {
   // 诊断以系统消息注入会话，模型在下一次调用时可见并自纠。带冷却时间防编辑连发拖慢回合。
   let postEditVerifyCommand: string | undefined | null = null;
   let postEditVerifyLastRunAt = 0;
+  // 最近一次注入的验证结论：同一结论在窗口内不重复注入，避免系统消息把上下文刷满。
+  let lastPostEditNotice: { text: string; at: number } | undefined;
   // 最近一次验证结果（回合小结的“类型检查 ✓/✕”数据源；按时间戳只统计本回合触发的）。
   let lastPostEditCheck: { ok: boolean; at: number } | undefined;
   const POST_EDIT_VERIFY_COOLDOWN_MS = 10_000;
-  const maybeRunPostEditVerify = async (): Promise<string | undefined> => {
+  const maybeRunPostEditVerify = async (editedPath?: string): Promise<string | undefined> => {
     if (postEditVerifyCommand === null) {
       postEditVerifyCommand = detectProjectCheckCommand(process.cwd());
     }
@@ -686,8 +690,11 @@ async function main() {
     if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
     postEditVerifyLastRunAt = now;
     const result = await runProjectCheck(postEditVerifyCommand, process.cwd());
-    lastPostEditCheck = { ok: result.ok, at: Date.now() };
-    return formatVerificationNotice(result, postEditVerifyCommand);
+    // 小结里的「类型检查 ✕」只统计与本次编辑相关的诊断，避免被项目既有问题带偏。
+    const relevantFailure =
+      !result.ok && (!editedPath || diagnosticsMentionFile(result.output, editedPath));
+    lastPostEditCheck = { ok: !relevantFailure, at: Date.now() };
+    return formatVerificationNotice(result, postEditVerifyCommand, editedPath);
   };
   hookEngine.register("PostToolUse", async (ctx) => {
     const isApproved =
@@ -716,8 +723,13 @@ async function main() {
       ctx.toolOutput &&
       isApproved
     ) {
-      const notice = await maybeRunPostEditVerify();
-      if (notice) messages.push({ role: "system", content: notice });
+      const editedPath = typeof ctx.args?.path === "string" ? ctx.args.path : undefined;
+      const notice = await maybeRunPostEditVerify(editedPath);
+      const now = Date.now();
+      if (notice && shouldPushVerificationNotice(lastPostEditNotice, notice, now)) {
+        lastPostEditNotice = { text: notice, at: now };
+        messages.push({ role: "system", content: notice });
+      }
     }
   });
 

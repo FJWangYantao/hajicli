@@ -258,6 +258,21 @@ export function isConcurrentWriteFailure(toolName: string, output: string): bool
   return toolName === "edit" && output.includes(EDIT_CONCURRENT_MARKER);
 }
 
+/** edit 判定「目标内容已存在」的幂等结果：不是失败，但也不应反复重发。 */
+export function isNoopEditResult(toolName: string, output: string): boolean {
+  return toolName === "edit" && output.startsWith("[文件无需修改]");
+}
+
+/** 同一条编辑连续两次返回「无需修改」时，说明目标状态已达成，结束本回合的重复编辑。 */
+export function buildNoopEditStopNotice(target: string): string {
+  return `\n\n[系统提示] 同一条编辑已连续返回「无需修改」（${target || "目标文件"}），说明文件已经处于目标状态。本回合已停止重复编辑：请直接继续后续步骤或向用户汇报，不要再用不同措辞重发同一处修改。`;
+}
+
+/** 因「目标已存在」停止后，剩余调用的占位结果。 */
+export function buildNoopEditSkipMessage(): string {
+  return "[工具调用已跳过：同一编辑已确认目标内容存在，本回合已停止重复编辑]";
+}
+
 /** 并发写停止后，补在失败结果末尾的系统说明。 */
 export function buildConcurrentWriteNotice(target: string): string {
   return `\n\n[系统提示] 检测到 ${target || "该文件"} 在本次编辑前被其他进程/会话写入（并发写）。本回合已停止对该文件的自动编辑：请向用户说明，并确认是否还有另一个代理在跑；等写入方退出后重新 read 再改。`;

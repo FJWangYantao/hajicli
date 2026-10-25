@@ -354,7 +354,7 @@ export class EditFileTool implements BaseTool {
           const staleNote = stale
             ? `\n另: expectedHash 已过期（期望 ${expectedHash}，当前 ${currentHash}），当前文件仍满足本次修改目标。`
             : "";
-          return `[文件无需修改]\n路径: ${filePath}\ncurrentHash=${currentHash}\n说明: oldText 未命中，但 newText 的主体已经在文件里（可能由你或子代理的上一笔编辑写入）。本次没有写盘。${staleNote}`;
+          return `[文件无需修改]\n路径: ${filePath}\ncurrentHash=${currentHash}\n说明: oldText 未命中，但 newText 的主体已经在文件里（可能由你或子代理的上一笔编辑写入）。本次没有写盘；若只是想调整注释措辞，请先 read 该区域再改。${staleNote}`;
         }
 
         if (stale) {

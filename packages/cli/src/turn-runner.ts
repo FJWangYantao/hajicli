@@ -51,10 +51,13 @@ import { colors } from "./theme.js";
 import {
   buildConcurrentWriteNotice,
   buildConcurrentWriteSkipMessage,
+  buildNoopEditSkipMessage,
+  buildNoopEditStopNotice,
   buildRepeatedFailureNotice,
   buildRepeatedFailureSkipMessage,
   createToolCallBatches,
   isConcurrentWriteFailure,
+  isNoopEditResult,
   REPEATED_FAILURE_STOP_AT,
   RepeatedFailureTracker,
   raceWithAbort,
@@ -607,6 +610,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       let stoppedByRepeatedFailure = false;
       /** 触发停止的并发写入目标；用于给剩余调用和结束提示换成并发写的说法。 */
       let concurrentWriteTarget: string | undefined;
+      /** 因「同一条编辑连续返回无需修改」而停止时的目标。 */
+      let noopEditTarget: string | undefined;
+      const noopSignatures = new Map<string, number>();
 
       for (const batch of batches) {
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
@@ -617,7 +623,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               tool_call_id: tc.id,
               content: concurrentWriteTarget
                 ? buildConcurrentWriteSkipMessage(concurrentWriteTarget)
-                : buildRepeatedFailureSkipMessage(),
+                : noopEditTarget
+                  ? buildNoopEditSkipMessage()
+                  : buildRepeatedFailureSkipMessage(),
             });
           }
           continue;
@@ -758,6 +766,21 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             }
           } else {
             repeatedFailures.noteSuccess(toolName, args);
+            if (isNoopEditResult(toolName, toolOutput)) {
+              // 同一条编辑重发两次仍返回「无需修改」：目标状态已达成，别让它换措辞继续刷。
+              const signature = JSON.stringify([
+                String(args.path ?? ""),
+                String(args.oldText ?? ""),
+                String(args.newText ?? ""),
+              ]);
+              const count = (noopSignatures.get(signature) ?? 0) + 1;
+              noopSignatures.set(signature, count);
+              if (count >= 2) {
+                noopEditTarget = String(args.path ?? "");
+                stoppedByRepeatedFailure = true;
+                toolOutput += buildNoopEditStopNotice(noopEditTarget);
+              }
+            }
           }
           if (
             deps.getPermissionMode() === "plan" &&
@@ -796,7 +819,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           colors.warnLine(
             concurrentWriteTarget
               ? `检测到 ${concurrentWriteTarget} 正被其他进程/会话写入，已停止本回合自动编辑。请确认没有并行运行的代理后再试。`
-              : `同一工具调用已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，已停止本轮自动重试。请调整要求后再试。`,
+              : noopEditTarget
+                ? `同一编辑连续两次返回「无需修改」（${noopEditTarget}），目标已达成，已停止重复编辑。`
+                : `同一工具调用已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，已停止本轮自动重试。请调整要求后再试。`,
           ),
         );
         keepCalling = false;

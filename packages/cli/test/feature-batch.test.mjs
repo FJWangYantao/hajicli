@@ -8,7 +8,12 @@ import { getModelPricing, MODEL_REGISTRY, messageContentOrParts } from "@hajicli
 import { CostTracker, estimateRequestCostCny, formatCostCny } from "../dist/cost-tracker.js";
 import { expandFileMentions } from "../dist/file-mentions.js";
 import { loadImageAttachment, parseImageCommand } from "../dist/image-command.js";
-import { detectProjectCheckCommand, formatVerificationNotice } from "../dist/post-edit-verify.js";
+import {
+  detectProjectCheckCommand,
+  diagnosticsMentionFile,
+  formatVerificationNotice,
+  shouldPushVerificationNotice,
+} from "../dist/post-edit-verify.js";
 import { resolveUtilityModel } from "../dist/provider-models.js";
 import { loadUserModels, userModelsPath } from "../dist/user-models.js";
 
@@ -191,6 +196,41 @@ test("post-edit verify detects check commands and formats notices", () => {
       formatVerificationNotice({ ok: false, timedOut: true, output: "" }, "cmd"),
       /超过时限/,
     );
+    // 与本次编辑无关的既有诊断：不催模型修，也不把小结标成失败。
+    const unrelated = formatVerificationNotice(
+      { ok: false, timedOut: false, output: "packages/core/src/x.ts:461:9 lint × 非空断言" },
+      "npm run check",
+      "packages/cli/src/tui-sidebar.ts",
+    );
+    assert.match(unrelated, /没有提到本次编辑的文件/);
+    assert.match(unrelated, /项目既有问题/);
+    assert.match(unrelated, /不要为此修改其他文件/);
+    assert.equal(
+      diagnosticsMentionFile("packages/core/src/x.ts:1 lint", "packages/cli/src/tui-sidebar.ts"),
+      false,
+    );
+    assert.equal(
+      diagnosticsMentionFile(
+        "packages\\cli\\src\\tui-sidebar.ts:10:1 error",
+        "packages/cli/src/tui-sidebar.ts",
+      ),
+      true,
+    );
+    // 本次编辑自己的诊断仍然要求修复。
+    assert.match(
+      formatVerificationNotice(
+        { ok: false, timedOut: false, output: "packages/cli/src/tui-sidebar.ts:10:1 × err" },
+        "npm run check",
+        "packages/cli/src/tui-sidebar.ts",
+      ),
+      /优先修复/,
+    );
+    // 同一条验证结论在窗口内只注入一次。
+    const previous = { text: "same", at: 1_000 };
+    assert.equal(shouldPushVerificationNotice(previous, "same", 2_000), false);
+    assert.equal(shouldPushVerificationNotice(previous, "same", 70_000), true);
+    assert.equal(shouldPushVerificationNotice(previous, "other", 2_000), true);
+    assert.equal(shouldPushVerificationNotice(undefined, "same", 2_000), true);
   });
 });
 

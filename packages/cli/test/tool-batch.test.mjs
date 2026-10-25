@@ -6,12 +6,15 @@ import { performanceMonitor } from "@hajicli/core";
 import {
   buildConcurrentWriteNotice,
   buildConcurrentWriteSkipMessage,
+  buildNoopEditSkipMessage,
+  buildNoopEditStopNotice,
   buildRepeatedFailureNotice,
   buildRepeatedFailureSkipMessage,
   classifyEditFailure,
   createToolCallBatches,
   EDIT_CONCURRENT_MARKER,
   isConcurrentWriteFailure,
+  isNoopEditResult,
   MAX_PARALLEL_READ_ONLY_TOOLS,
   normalizeFailureReason,
   RepeatedFailureTracker,
@@ -224,6 +227,16 @@ test("concurrent-write failures are detected and stop further edits", () => {
   assert.match(buildConcurrentWriteSkipMessage("src/a.ts"), /正被其他进程\/会话写入/);
 });
 
+test("no-op edit results are recognized so repeat submissions can be stopped", () => {
+  assert.equal(isNoopEditResult("edit", "[文件无需修改]\n路径: a.ts"), true);
+  assert.equal(isNoopEditResult("edit", "[文件精准编辑成功]"), false);
+  assert.equal(isNoopEditResult("write", "[文件无需修改]"), false);
+  const notice = buildNoopEditStopNotice("a.ts");
+  assert.match(notice, /同一条编辑已连续返回「无需修改」/);
+  assert.match(notice, /文件已经处于目标状态/);
+  assert.match(buildNoopEditSkipMessage(), /目标内容存在/);
+});
+
 test("repeated failure notice only appears from the third identical failure", () => {
   assert.equal(buildRepeatedFailureNotice(1), "");
   assert.equal(buildRepeatedFailureNotice(2), "");
@@ -275,6 +288,8 @@ test("turn-runner keeps edit failures counted across reads and stops on concurre
   );
   assert.ok(source.includes("buildConcurrentWriteNotice(concurrentWriteTarget)"));
   assert.ok(source.includes("buildConcurrentWriteSkipMessage(concurrentWriteTarget)"));
+  assert.ok(source.includes("isNoopEditResult(toolName, toolOutput)"));
+  assert.ok(source.includes("buildNoopEditStopNotice(noopEditTarget)"));
 });
 
 test("raceWithAbort returns the tool result when it finishes first", async () => {
