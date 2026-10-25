@@ -45,6 +45,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - `native-terminal-engine.ts`：加载 Rust `.node` 模块（换行 / ANSI 文档排版），失败回退纯 TS；`/perf` 可看当前引擎。
 - `markdown-renderer.ts`：流式 Markdown 渲染 + 节流；`theme.ts`：深浅两套调色板 + 自定义色对比度兜底（WCAG AA）。
 - `activity-indicator.ts`：状态行（思考 / 生成 / 工具）与工具块视图（ToolRunView）。
+- `process-fold.ts`：对话区过程折叠的纯函数（工具类别归类、段统计、摘要行按宽度降级、段文本折叠/展开）。TerminalUI 采用两层存储：已封口片段 `sealedSegments`（普通内容 + 过程段）+ 尾部 `chatContent`，因此 `writeChat` / `updateChatFrom` 的偏移语义不变，只有封口那一刻平移 `streamStartOffset`。`concatAnsiLayouts` 让选区布局按段拼接，折叠起来的内容不会被复制出去。
 
 ### 回合执行（turn-runner.ts）
 

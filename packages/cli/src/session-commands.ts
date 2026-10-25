@@ -15,8 +15,10 @@ import {
 } from "@hajicli/core";
 import { formatToolCell, summarizeToolCall, summarizeToolResult } from "./cli-runtime.js";
 import { MarkdownStreamRenderer } from "./markdown-renderer.js";
+import { FoldStatsCollector } from "./process-fold.js";
 import { queueRewindRefill, REWIND_CONFIRM_DEFAULT } from "./rewind-flow.js";
 import {
+  type ChatSegmentPiece,
   type SlashCommand,
   TerminalInputCancelledError,
   type TerminalUI,
@@ -93,8 +95,40 @@ async function loadAndRenderSession(
   ctx.refreshAgentVerificationContext(loaded.messages);
   ctx.saveSession();
   ctx.updateStatusUI();
-  const historyOutput: string[] = [];
-  const appendHistoryLine = (value: string = "") => historyOutput.push(`${value}\n`);
+  const pieces: ChatSegmentPiece[] = [];
+  let plain = "";
+  let group = "";
+  let groupOpen = false;
+  let collector = new FoldStatsCollector();
+  const flushPlain = () => {
+    if (!plain) return;
+    pieces.push({ kind: "plain", raw: plain });
+    plain = "";
+  };
+  const openGroup = () => {
+    if (groupOpen) return;
+    flushPlain();
+    groupOpen = true;
+  };
+  const sealGroup = () => {
+    if (!groupOpen) return;
+    pieces.push({ kind: "fold", raw: group, stats: collector.snapshot() });
+    group = "";
+    groupOpen = false;
+    collector = new FoldStatsCollector();
+  };
+  // 没等到正文的过程段（回合结束 / 用户插话）：保持展开，直接并回普通内容。
+  const abandonGroup = () => {
+    if (!groupOpen) return;
+    plain += group;
+    group = "";
+    groupOpen = false;
+    collector = new FoldStatsCollector();
+  };
+  const appendHistoryLine = (value: string = "") => {
+    if (groupOpen) group += `${value}\n`;
+    else plain += `${value}\n`;
+  };
   appendHistoryLine(
     colors.okLine(`已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
   );
@@ -110,19 +144,34 @@ async function loadAndRenderSession(
     if (m.role === "system") continue;
 
     if (m.role === "user" && typeof m.content === "string") {
+      abandonGroup();
       appendHistoryLine();
       appendHistoryLine(colors.userMsg(sanitizeTerminalText(m.content)));
       appendHistoryLine();
     } else if (m.role === "assistant") {
-      if (m.reasoning_content) {
+      const hasToolCalls = Boolean(m.tool_calls && m.tool_calls.length > 0);
+      if (hasToolCalls && !m.content) {
+        // 纯工具迭代：先开段，思考行与工具块都属于这一段。
+        openGroup();
+        if (m.reasoning_content) {
+          appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
+          collector.addThinking();
+        }
+      } else if (m.reasoning_content) {
+        // 有正文的迭代：思考行属于上一段过程（已开段时），随后正文把它封口。
         appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
       }
       if (m.content) {
+        sealGroup();
         const mdRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
         const rendered = mdRenderer.render(m.content, true);
         appendHistoryLine(rendered);
       }
-      if (m.tool_calls && m.tool_calls.length > 0) {
+      if (hasToolCalls && m.content) {
+        // 同一条消息里既有正文又有工具调用：正文先写（封口前一段），工具块开新段。
+        openGroup();
+      }
+      if (hasToolCalls && m.tool_calls) {
         for (const tc of m.tool_calls) {
           let argsObj: Record<string, unknown> = {};
           try {
@@ -151,12 +200,15 @@ async function loadAndRenderSession(
           })) {
             appendHistoryLine(row);
           }
+          collector.addTool(tc.function.name, argsObj, outcome?.status ?? "failed");
         }
       }
       appendHistoryLine();
     }
   }
-  ui.replaceChat(historyOutput.join(""));
+  abandonGroup();
+  flushPlain();
+  ui.replaceChatSegments(pieces);
   return true;
 }
 

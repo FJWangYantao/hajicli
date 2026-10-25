@@ -61,7 +61,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   // /model 已提升到顶层；/effort 与 /model 的强度轴重复，只保留直连与补全，不进菜单。
   assert.deepEqual(
     menus.config.items.map((item) => item.value),
-    ["/permission", "/provider", "/theme", "/sidebar"],
+    ["/permission", "/provider", "/theme", "/sidebar", "/fold"],
   );
   assert.deepEqual(
     menus.agents.items.map((item) => item.value),
@@ -69,7 +69,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
   );
   assert.deepEqual(
     menus.diag.items.map((item) => item.value),
-    ["/perf", "/cost", "/diff", "/doctor", "/viewer", "/mcp"],
+    ["/perf", "/cost", "/diff", "/output", "/doctor", "/viewer", "/mcp"],
   );
   assert.deepEqual(
     menus.memory.items.map((item) => item.value),

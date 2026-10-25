@@ -358,7 +358,7 @@ export function buildTurnSummary(stats: TurnSummaryStats, width: number): string
       : "";
   const outputText =
     stats.outputTokens !== undefined ? `输出 ${formatAgentTokens(stats.outputTokens)} tokens` : "";
-  const toolText = stats.toolCalls > 0 ? `${stats.toolCalls} 次工具调用（Ctrl+O）` : "";
+  const toolText = stats.toolCalls > 0 ? `${stats.toolCalls} 次工具调用` : "";
 
   const segments = [base, changeText, typeCheckText, costText, outputText, toolText].filter(
     Boolean,

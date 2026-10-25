@@ -151,11 +151,11 @@ test("buildTurnSummary assembles one line and drops segments by width", () => {
   assert.match(wide, /类型检查 ✓/);
   assert.match(wide, /¥0\.012/);
   assert.match(wide, /输出 1\.2k tokens/);
-  assert.match(wide, /5 次工具调用（Ctrl\+O）/);
+  assert.match(wide, /5 次工具调用/);
 
   // 窄屏按「工具次数 → 费用 → 类型检查」依次舍弃，始终保持单行。
   const medium = buildTurnSummary(full, 64);
-  assert.doesNotMatch(medium, /Ctrl\+O/);
+  assert.doesNotMatch(medium, /次工具调用/);
   assert.match(medium, /完成 · 12\.3s/);
   const narrow = buildTurnSummary(full, 40);
   assert.match(narrow, /^完成 · 12\.3s/);

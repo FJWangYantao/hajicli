@@ -40,7 +40,12 @@ import {
   MarkdownStreamRenderer,
   shouldShowToolThinkingSummary,
 } from "./markdown-renderer.js";
-import { TerminalInputCancelledError, type TerminalUI } from "./terminal-input.js";
+import { FoldStatsCollector } from "./process-fold.js";
+import {
+  type FoldGroupHandle,
+  TerminalInputCancelledError,
+  type TerminalUI,
+} from "./terminal-input.js";
 import { buildTurnSummary } from "./terminal-panels.js";
 import { colors } from "./theme.js";
 import {
@@ -315,6 +320,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
 
   let keepCalling = true;
   let malformedToolRecoveryAttempts = 0;
+  // 过程折叠：一个回合可以有多个过程段，两段可见正文之间的工具调用/思考并成一段。
+  let foldGroup: FoldGroupHandle | undefined;
+  let foldStats = new FoldStatsCollector();
   // 回合小结：耗时、模型输出 tokens（以 Provider 统计为准）与工具调用次数。
   const turnStartedAt = Date.now();
   const costBeforeTurn = deps.getCostSnapshot?.();
@@ -363,9 +371,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     };
     const mdStreamRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
     const markdownRenderThrottle = new MarkdownRenderThrottle();
-    const streamStartOffset = ui.getChatLength();
+    // 本次迭代的正文起点；封口时按 sealFoldGroup 的返回值平移。
+    let streamStartOffset = ui.getChatLength();
     ui.markStableChatPrefix(streamStartOffset);
-
     const stream = provider.completeStream(messages, {
       model: selectedModel,
       reasoningEffort,
@@ -421,6 +429,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         textContent += chunk;
         responseTokens += estimateTextTokens(chunk);
         activityIndicator.progress(`已生成约 ${formatAgentTokens(responseTokens)} tokens`);
+        // 正文一开始就封口上一段过程：与 Claude Code 一致，模型写下一段话时上一段收起。
+        // 必须在第一次 updateChatFrom 之前，返回值同步平移正文起点。
+        if (foldGroup && textContent.trim()) {
+          streamStartOffset -= ui.sealFoldGroup(foldGroup, streamStartOffset, foldStats.snapshot());
+          foldGroup = undefined;
+          foldStats = new FoldStatsCollector();
+        }
         // Reparse at most once per frame; the final pass below always renders the complete answer.
         if (markdownRenderThrottle.shouldRender(Date.now(), textContent.length)) {
           const renderedMarkdown = mdStreamRenderer.render(textContent, false);
@@ -485,6 +500,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         validation: validateToolCall(toolCall),
       }))
       .find((item) => !item.validation.valid);
+    // 有效工具调用：开段（已有打开的段就继续并入），并把本轮推理记一次“思考”。
+    // 无效工具调用的拦截告警不开段，保持可见。
+    const hasValidToolCalls = Boolean(toolCalls && toolCalls.length > 0 && !invalidToolCall);
+    if (hasValidToolCalls) {
+      if (!foldGroup) foldGroup = ui.beginFoldGroup();
+      if (reasoningContent) foldStats.addThinking();
+    }
     if (shouldShowToolThinkingSummary(textContent, toolCalls?.length || 0)) {
       const thinkingSeconds = Math.max(1, Math.round((Date.now() - thinkingStartedAt) / 1000));
       const tokenSummary =
@@ -565,6 +587,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         args: Record<string, unknown>;
         duration: number;
         execution?: ToolExecutionResult;
+        /** 工具结果状态（过程折叠的失败/被拒计数口径）。 */
+        status?: "success" | "failed" | "rejected";
         failed?: boolean;
         unregistered?: boolean;
         skipped?: boolean;
@@ -620,6 +644,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               args,
               duration: execution.duration,
               execution,
+              status: summary.status,
               failed: summary.status === "failed",
             };
           } catch (error) {
@@ -651,6 +676,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         );
         for (const result of batchRun.results) {
           const { tc, toolName, args, execution } = result;
+          // 过程段统计：被中止跳过的不计入任何类别。
+          if (!result.skipped) {
+            foldStats.addTool(
+              toolName,
+              args,
+              result.unregistered ? "failed" : (result.status ?? "success"),
+            );
+          }
           if (result.skipped) {
             messages.push({
               role: "tool",

@@ -148,6 +148,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "开关右侧会话信息栏（上下文 / 费用 / 任务 / 子代理）",
         argHint: "[on|off]",
       },
+      {
+        command: "/fold",
+        description: "开关对话区过程折叠（工具调用 / 思考收成一行）",
+        argHint: "[on|off]",
+      },
     ],
   },
   {
@@ -278,6 +283,7 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
       },
       { command: "/cost", description: "本会话费用估算（按模型单价与 token 用量）" },
       { command: "/diff", description: "查看本会话累计改动（文件与 diff）" },
+      { command: "/output", description: "查看最后一批工具调用的完整输出" },
       { command: "/doctor", description: "一次性自检：Key 连通、引擎、ripgrep、MCP 等" },
       { command: "/viewer", description: "打开 Trace 观测中心" },
       { command: "/mcp", description: "查看 MCP server 与外部工具状态" },
@@ -627,7 +633,7 @@ export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: strin
   { keys: "↑ / ↓", description: "浏览输入历史" },
   { keys: "PgUp / PgDn", description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 回到底部" },
   { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
-  { keys: "Ctrl+O", description: "展开最后一批工具调用的完整输出" },
+  { keys: "Ctrl+O", description: "展开 / 收起最近一段过程（工具调用与思考）" },
   { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行）" },
   {
     keys: "鼠标拖选 + Ctrl+C",

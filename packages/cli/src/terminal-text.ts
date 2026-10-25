@@ -646,6 +646,36 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
   return layoutAnsiDocumentFallback(value, width);
 }
 
+/**
+ * 把若干段独立布局拼成一份整串布局。
+ *
+ * 前提（由对话区分段写入保证）：除最后一段外，每段文本都以 `\n` 结尾，且段尾不残留
+ * 未复位的 SGR。此时“各段独立换行再拼接 ≡ 整串换行”，与 stableWrapPrefix 的
+ * `rows.slice(0, -1)` 是同一个技巧：每段末尾那个“光标行”由下一段的首行接上。
+ */
+export function concatAnsiLayouts(layouts: readonly AnsiTextLayout[]): AnsiTextLayout {
+  const rows: AnsiLayoutRow[] = [];
+  let document = "";
+  for (let index = 0; index < layouts.length; index += 1) {
+    const layout = layouts[index];
+    // 空段不贡献任何行（layoutAnsiDocument("") 会给出一个空行，拼接时必须跳过）。
+    if (layout.document.length === 0) continue;
+    const isLast = index === layouts.length - 1;
+    const segmentRows =
+      !isLast && layout.document.endsWith("\n") ? layout.rows.slice(0, -1) : layout.rows;
+    for (const row of segmentRows) {
+      rows.push({
+        ansi: row.ansi,
+        plain: row.plain,
+        startOffset: row.startOffset + document.length,
+        endOffset: row.endOffset + document.length,
+      });
+    }
+    document += layout.document;
+  }
+  return { rows, document };
+}
+
 /** Returns scroll rows for a drag pointer outside the chat viewport. Positive scrolls upward. */
 export function getSelectionAutoScrollRows(
   row: number,

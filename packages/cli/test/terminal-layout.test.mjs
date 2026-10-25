@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   buildViewportScrollUpdate,
+  concatAnsiLayouts,
   getSelectionAutoScrollRows,
   layoutAnsiDocument,
   shouldRestartBackgroundInput,
@@ -84,6 +85,28 @@ test("stable-prefix wrapping is identical to wrapping the complete document", ()
   ];
 
   assert.deepEqual(incrementalRows, wrapAnsi(prefix + tail, width));
+});
+
+test("concatenated layouts match a single-pass layout", () => {
+  const pieces = [
+    "\x1b[31m第一段 wide 你🙂\x1b[0m\n",
+    "second piece\n",
+    "",
+    "tail without newline",
+  ];
+  const width = 6;
+  const whole = layoutAnsiDocument(pieces.join(""), width);
+  const merged = concatAnsiLayouts(pieces.map((piece) => layoutAnsiDocument(piece, width)));
+
+  assert.equal(merged.document, whole.document);
+  assert.deepEqual(
+    merged.rows.map((row) => [row.plain, row.startOffset, row.endOffset]),
+    whole.rows.map((row) => [row.plain, row.startOffset, row.endOffset]),
+  );
+  assert.deepEqual(
+    merged.rows.map((row) => row.ansi),
+    whole.rows.map((row) => row.ansi),
+  );
 });
 
 test("malformed escape sequences cannot stall the TypeScript wrapping fallback", () => {

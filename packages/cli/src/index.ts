@@ -890,6 +890,7 @@ async function main() {
   ui.start();
   markStartupStage("ui_started");
   ui.setSidebarEnabled(savedPreference?.sidebar !== false);
+  ui.setFoldEnabled(savedPreference?.foldProcess !== false);
   const initialCost = costTracker.getSummary();
   ui.setCostInfo(
     initialCost.totalCostCny,
@@ -1455,10 +1456,10 @@ async function main() {
   // 待处理并发消息队列
   const pendingInputs: string[] = [];
   const deferredInputDrafts: string[] = [];
-  // 最近一批工具的完整输出，供 Ctrl+O 展开查看（回合进行中不插入，避免打断流式输出）。
+  // 最近一批工具的完整输出，供 /output 查看（回合进行中不插入，避免打断流式输出）。
   let lastToolBatchOutputs: Array<{ toolName: string; summary: string; output: string }> = [];
-  ui.onExpandOutput(() => {
-    if (foregroundAbortSignal) return;
+  /** /output：把最近一批工具的完整输出写进对话区。 */
+  const printLastToolBatchOutputs = (): void => {
     if (lastToolBatchOutputs.length === 0) {
       ui.writeLine(colors.gray("  暂无可展开的工具输出。"));
       return;
@@ -1478,11 +1479,12 @@ async function main() {
       }
     }
     ui.writeLine();
-  });
+  };
   // 枢纽菜单选中的指令：下一轮主循环立即执行，优先于排队的草稿，且不单独回显。
   let hubForwardedCommand: string | undefined;
   // 最近一条指令回显在对话区中的位置，枢纽转发时原地合并为 “› /config › /model”。
-  let lastCommandEcho: { start: number; end: number; text: string } | undefined;
+  // epoch 用来兜底：对话区被整体替换 / 尾部截断后，旧偏移不再有意义。
+  let lastCommandEcho: { start: number; end: number; text: string; epoch: number } | undefined;
 
   const readSelectionSafely = async (
     options: Parameters<TerminalUI["readSelection"]>[0],
@@ -2067,13 +2069,20 @@ async function main() {
       if (trimmedInput.startsWith("/")) {
         // 指令不作为用户消息气泡显示，只留一行灰色回显作为结果的上下文。
         const previousEcho =
-          forwardedFromHub && lastCommandEcho?.end === ui.getChatLength()
+          forwardedFromHub &&
+          lastCommandEcho?.end === ui.getChatLength() &&
+          lastCommandEcho.epoch === ui.getChatEpoch()
             ? lastCommandEcho
             : undefined;
         const echoText = previousEcho ? `${previousEcho.text} › ${displayInput}` : displayInput;
         const echoStart = previousEcho ? previousEcho.start : ui.getChatLength();
         ui.updateChatFrom(echoStart, `\n${colors.gray(`› ${echoText}`)}\n`);
-        lastCommandEcho = { start: echoStart, end: ui.getChatLength(), text: echoText };
+        lastCommandEcho = {
+          start: echoStart,
+          end: ui.getChatLength(),
+          text: echoText,
+          epoch: ui.getChatEpoch(),
+        };
       } else {
         ui.writeLine();
         ui.writeLine(colors.userMsg(displayInput));
@@ -2438,7 +2447,7 @@ async function main() {
             selectedModel = newModel;
             reasoningEffort = selection.secondaryValue;
             await refreshSystemPromptPreservingContext();
-            // 持久化用户偏好到本地（保留 sidebar / autoEnvironment 等未在此修改的字段）。
+            // 持久化用户偏好到本地（保留 sidebar / foldProcess / autoEnvironment 等未在此修改的字段）。
             const currentPreference = loadPreference();
             savePreference(
               {
@@ -2595,6 +2604,41 @@ async function main() {
                 : "右侧会话信息栏已关闭。",
             ),
           );
+          continue;
+        }
+        if (command === "fold") {
+          const arg = parts[1]?.toLowerCase();
+          if (arg && arg !== "on" && arg !== "off") {
+            ui.writeLine(colors.failLine("用法：/fold [on|off]（无参切换当前状态）"));
+            continue;
+          }
+          const enabled = arg ? arg === "on" : !ui.isFoldEnabled();
+          ui.setFoldEnabled(enabled);
+          const currentPreference = loadPreference();
+          savePreference(
+            {
+              ...(currentPreference ?? {}),
+              model: currentPreference?.model || selectedModel,
+              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+              foldProcess: enabled,
+            },
+            showRuntimeWarning,
+          );
+          ui.writeLine(
+            colors.okLine(
+              enabled
+                ? "过程折叠已开启：工具调用与思考收成一行，点击摘要行或按 Ctrl+O 展开。"
+                : "过程折叠已关闭：过程按原始样式逐行显示。",
+            ),
+          );
+          continue;
+        }
+        if (command === "output") {
+          if (foregroundAbortSignal) {
+            ui.writeLine(colors.gray("  回合进行中，稍后再用 /output 查看完整输出。"));
+            continue;
+          }
+          printLastToolBatchOutputs();
           continue;
         }
         if (command === "theme") {

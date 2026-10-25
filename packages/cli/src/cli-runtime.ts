@@ -39,6 +39,8 @@ export interface Preferences {
   budget?: number;
   /** 右侧会话信息栏开关；缺省视为开启（true），宽度不足时自动隐藏。 */
   sidebar?: boolean;
+  /** 对话区过程折叠；缺省视为开启（true）。关闭后工具调用与思考逐行显示。 */
+  foldProcess?: boolean;
   /** Auto 模式的信任边界（自然语言，拼进安全分类器系统提示词）；缺省为工作目录及其 git remote。 */
   autoEnvironment?: string;
 }
@@ -537,7 +539,8 @@ export interface ToolCellOptions {
   outputTail?: readonly string[];
 }
 
-const TOOL_CELL_INDENT = "  ";
+/** 工具块左缩进；过程折叠的摘要行复用它，保证与工具块左对齐。 */
+export const TOOL_CELL_INDENT = "  ";
 
 /**
  * 渲染一个工具调用块（与对话正文统一的符号体系）：

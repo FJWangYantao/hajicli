@@ -9,6 +9,7 @@ import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
+import { type ChatSegmentView, type FoldGroupStats, renderSegmentText } from "./process-fold.js";
 import {
   type ActivityBadge,
   buildActivityRow,
@@ -29,6 +30,7 @@ import {
   buildScreenUpdate,
   buildViewportScrollUpdate,
   cellAtColumn,
+  concatAnsiLayouts,
   DEFAULT_CHAT_PADDING,
   fitText,
   getSelectionAutoScrollRows,
@@ -63,6 +65,7 @@ export type { TaskPanelItem } from "./terminal-panels.js";
 export {
   buildScreenUpdate,
   buildViewportScrollUpdate,
+  concatAnsiLayouts,
   getSelectionAutoScrollRows,
   layoutAnsiDocument,
   layoutAnsiDocumentFallback,
@@ -206,6 +209,68 @@ interface PendingMouseSelection {
   logicalRow: number;
 }
 
+/** 已封口的对话区片段：raw 不再变化，只随宽度/展开状态重算换行。 */
+interface ChatSegment {
+  id: number;
+  kind: "plain" | "fold";
+  raw: string;
+  stats?: FoldGroupStats;
+  expanded: boolean;
+  /** 缓存键 `${width}|${expanded}|${foldEnabled}`，命中则直接复用 rows / layout。 */
+  cacheKey?: string;
+  /** 去掉末尾光标行后的换行结果。 */
+  rows?: string[];
+  /** 选区用的独立布局（惰性计算，末尾光标行保留给 concatAnsiLayouts 处理）。 */
+  layout?: AnsiTextLayout;
+  /** 摘要行在段内的行号（= 首部空行数）。 */
+  headerRow?: number;
+}
+
+/** 过程段的开启句柄；epoch 变化（清屏 / 整体替换 / 尾部截断）后自动失效。 */
+export interface FoldGroupHandle {
+  epoch: number;
+  start: number;
+}
+
+/** /resume 重建历史时传入的分段。 */
+export interface ChatSegmentPiece {
+  kind: "plain" | "fold";
+  raw: string;
+  stats?: FoldGroupStats;
+}
+
+/** 段尾统一补换行：封口片段必须整行结束，拼接时才不会和下一段粘在一起。 */
+function ensureTrailingNewline(raw: string): string {
+  if (raw.length === 0) return raw;
+  return raw.endsWith("\n") ? raw : `${raw}\n`;
+}
+
+/**
+ * 段尾若残留未复位的 SGR，在最后一个换行前补一个 reset。
+ * 否则段尾的颜色会漏到下一段（各段独立换行再拼接就不再等价于整串换行）。
+ */
+function closeTrailingStyle(raw: string): string {
+  const pattern = /\x1b\[([0-9;]*)m/g;
+  let active = false;
+  let match = pattern.exec(raw);
+  while (match !== null) {
+    const params = match[1];
+    active = !(params === "" || params === "0");
+    match = pattern.exec(raw);
+  }
+  if (!active) return raw;
+  return raw.endsWith("\n") ? `${raw.slice(0, -1)}\x1b[0m\n` : `${raw}\x1b[0m`;
+}
+
+function segmentView(segment: ChatSegment): ChatSegmentView {
+  return {
+    kind: segment.kind,
+    raw: segment.raw,
+    stats: segment.stats,
+    expanded: segment.expanded,
+  };
+}
+
 export class TerminalInputCancelledError extends Error {
   constructor() {
     super("Terminal input cancelled");
@@ -281,6 +346,25 @@ export class TerminalUI {
   private readonly outputMuted: boolean;
   private started = false;
   private chatContent = "";
+  /**
+   * 两层存储：已封口的片段（普通内容 + 过程段）留在 sealedSegments，
+   * chatContent 只当“尾部”继续被 writeChat / updateChatFrom 改写。
+   * 这样所有持有尾部绝对偏移的调用方语义不变，只有封口那一刻需要平移偏移。
+   */
+  private sealedSegments: ChatSegment[] = [];
+  private nextSegmentId = 1;
+  /** 过程折叠开关（/fold 可关；关闭后对话区与改动前逐行一致）。 */
+  private foldEnabled = true;
+  /** 对话文档纪元：清屏 / 整体替换 / 尾部截断 / 封口时 +1，让旧偏移与旧句柄失效。 */
+  private chatEpoch = 0;
+  /** 已封口区版本号：段内容、展开状态或折叠开关变化时 +1（选区布局缓存用）。 */
+  private sealedVersion = 0;
+  /** 本帧摘要行的逻辑行号 → 段 id（render 时重建，点击命中用）。 */
+  private foldHeaderRows = new Map<number, number>();
+  /** 本帧已封口段的行区间（render 时重建，滚动锚定用）。 */
+  private sealedRowIndex: Array<{ id: number; start: number; count: number }> = [];
+  /** 下一帧要应用的滚动锚点（切换展开 / 封口时设置）。 */
+  private pendingScrollAnchor?: { segmentId: number; rowInSegment: number; screenOffset: number };
   private chatScrollOffset = 0;
   private maxChatScrollOffset = 0;
   private chatPageSize = 1;
@@ -332,10 +416,11 @@ export class TerminalUI {
   private selectionPointer?: { column: number; row: number };
   private selectionLayoutContent = "";
   private selectionLayoutWidth = 0;
+  /** 选区布局缓存对应的已封口区版本号。 */
+  private selectionLayoutSealedVersion = -1;
   private originalRawMode = false;
   private onShiftTabCallback?: () => void;
   private onEscCallback?: () => void;
-  private onExpandOutputCallback?: () => void;
   private queueText = "";
   private cachedContentWithStatus = "";
   private cachedWrappedWidth = 0;
@@ -539,9 +624,100 @@ export class TerminalUI {
     this.onEscCallback = callback;
   }
 
-  /** 注册 Ctrl+O（展开上一批工具的完整输出）回调。 */
-  onExpandOutput(callback?: () => void): void {
-    this.onExpandOutputCallback = callback;
+  /**
+   * 开段：保证尾部处于行首（不在行首则补 "\n"），返回段起点句柄。
+   * 非交互模式返回 undefined——折叠 API 在无头/管道下全部空操作。
+   */
+  beginFoldGroup(): FoldGroupHandle | undefined {
+    if (!this.interactive) return undefined;
+    if (this.chatContent && !this.chatContent.endsWith("\n")) this.writeChat("\n");
+    return { epoch: this.chatEpoch, start: this.chatContent.length };
+  }
+
+  /**
+   * 封口：尾部 [0, handle.start) 作为 plain 段、[handle.start, end) 作为过程段推入
+   * sealedSegments，尾部只保留 [end, …)。返回从尾部头部移走的字符数（= end），
+   * 调用方据此平移自己持有的偏移。句柄过期或区间为空时为空操作，返回 0。
+   */
+  sealFoldGroup(handle: FoldGroupHandle, endOffset: number, stats: FoldGroupStats): number {
+    if (!this.interactive || handle.epoch !== this.chatEpoch) return 0;
+    const end = Math.min(Math.max(0, endOffset), this.chatContent.length);
+    if (handle.start >= end) return 0;
+    const before = this.chatContent.slice(0, handle.start);
+    const group = this.chatContent.slice(handle.start, end);
+    if (before) this.pushSegment({ kind: "plain", raw: before });
+    this.pushSegment({ kind: "fold", raw: group, stats, expanded: false });
+    this.chatContent = this.chatContent.slice(end);
+    this.chatEpoch += 1;
+    this.setStableWrapPrefix("");
+    this.cachedContentWithStatus = "";
+    this.selectionLayout = undefined;
+    this.textSelection.clear();
+    // 用户正在往上翻时，中间行数变化不能把视口拽走。
+    this.captureScrollAnchor();
+    this.enforceSegmentBudget();
+    this.scheduleRender();
+    return end;
+  }
+
+  /** /resume 用：整体替换为预先分好段的历史（最后一段 plain 进入尾部）。 */
+  replaceChatSegments(pieces: readonly ChatSegmentPiece[]): void {
+    if (!this.interactive) {
+      this.replaceChat(pieces.map((piece) => piece.raw).join(""));
+      return;
+    }
+    const pending = pieces.map((piece) => ({ ...piece }));
+    const last = pending[pending.length - 1];
+    const tail = last?.kind === "plain" ? pending.pop() : undefined;
+    this.sealedSegments = [];
+    this.nextSegmentId = 1;
+    for (const piece of pending) {
+      this.pushSegment({
+        kind: piece.kind,
+        raw: piece.raw,
+        stats: piece.stats,
+        expanded: false,
+      });
+    }
+    this.chatContent = tail ? normalizeTerminalOutput(tail.raw) : "";
+    this.chatScrollOffset = 0;
+    this.textSelection.clear();
+    this.stopSelectionAutoScroll();
+    this.pendingMouseSelection = undefined;
+    this.selectionPointer = undefined;
+    this.selectionLayout = undefined;
+    this.selectionLayoutContent = "";
+    this.selectionLayoutWidth = 0;
+    this.selectionLayoutSealedVersion = -1;
+    this.cachedContentWithStatus = "";
+    this.cachedWrappedWidth = 0;
+    this.cachedWrappedChat = [];
+    this.foldHeaderRows.clear();
+    this.pendingScrollAnchor = undefined;
+    this.chatEpoch += 1;
+    this.sealedVersion += 1;
+    this.setStableWrapPrefix("");
+    this.enforceSegmentBudget();
+    this.scheduleRender();
+  }
+
+  setFoldEnabled(enabled: boolean): void {
+    if (this.foldEnabled === enabled) return;
+    this.foldEnabled = enabled;
+    this.sealedVersion += 1;
+    this.selectionLayout = undefined;
+    this.foldHeaderRows.clear();
+    this.captureScrollAnchor();
+    this.scheduleRender(true);
+  }
+
+  isFoldEnabled(): boolean {
+    return this.foldEnabled;
+  }
+
+  /** 单调递增：清屏 / 整体替换 / 尾部截断 / 封口时 +1（调用方据此判断旧偏移是否还有效）。 */
+  getChatEpoch(): number {
+    return this.chatEpoch;
   }
 
   setQueue(items: string[]): void {
@@ -782,8 +958,165 @@ export class TerminalUI {
     this.chatViewport = undefined;
     this.cachedContentWithStatus = "";
     this.cachedWrappedChat = [];
+    this.sealedSegments = [];
+    this.nextSegmentId = 1;
+    this.foldHeaderRows.clear();
+    this.sealedRowIndex = [];
+    this.pendingScrollAnchor = undefined;
+    this.selectionLayoutSealedVersion = -1;
+    this.chatEpoch += 1;
+    this.sealedVersion += 1;
     this.setStableWrapPrefix("");
     this.scheduleRender(true);
+  }
+
+  /**
+   * 推入一个已封口片段。段尾统一补换行并复位 SGR：
+   * 这样“各段独立换行再拼接 ≡ 整串换行”，与 stableWrapPrefix 的 rows.slice(0,-1) 同源。
+   */
+  private pushSegment(piece: {
+    kind: "plain" | "fold";
+    raw: string;
+    stats?: FoldGroupStats;
+    expanded?: boolean;
+  }): void {
+    // 与 writeChat 同一套归一化（制表符展开等），保证段与尾部宽度口径一致。
+    const raw = ensureTrailingNewline(normalizeTerminalOutput(piece.raw));
+    if (!raw) return;
+    this.sealedSegments.push({
+      id: this.nextSegmentId,
+      kind: piece.kind,
+      raw: closeTrailingStyle(raw),
+      stats: piece.stats,
+      expanded: piece.expanded ?? false,
+    });
+    this.nextSegmentId += 1;
+    this.sealedVersion += 1;
+    this.selectionLayout = undefined;
+  }
+
+  /** 段的换行结果（去掉末尾光标行）；宽度或展开状态变化时重算。 */
+  private getSegmentRows(segment: ChatSegment, width: number): string[] {
+    const cacheKey = `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}`;
+    if (segment.cacheKey === cacheKey && segment.rows) return segment.rows;
+    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
+    segment.headerRow = rendered.headerRow;
+    const rows = performanceMonitor.measureSync("terminal.wrap.segment", () =>
+      wrapAnsi(rendered.text, width),
+    );
+    // 去掉末尾的光标行：拼接时由下一段的首行接上。
+    segment.rows = rows.length > 0 ? rows.slice(0, -1) : rows;
+    segment.layout = undefined;
+    segment.cacheKey = cacheKey;
+    return segment.rows;
+  }
+
+  /** 段的独立布局（选区用）；末尾光标行保留，交给 concatAnsiLayouts 处理。 */
+  private getSegmentLayout(segment: ChatSegment, width: number): AnsiTextLayout {
+    if (segment.layout && segment.cacheKey === this.segmentCacheKey(segment, width)) {
+      return segment.layout;
+    }
+    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
+    segment.headerRow = rendered.headerRow;
+    const layout = layoutAnsiDocument(rendered.text, width);
+    segment.layout = layout;
+    segment.cacheKey = this.segmentCacheKey(segment, width);
+    segment.rows = layout.rows.slice(0, -1).map((row) => row.ansi);
+    return layout;
+  }
+
+  private segmentCacheKey(segment: ChatSegment, width: number): string {
+    return `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}`;
+  }
+
+  /** 已封口区的可见行；同时重建摘要行命中表与段行区间。 */
+  private getSealedRows(width: number): string[] {
+    this.foldHeaderRows.clear();
+    this.sealedRowIndex = [];
+    if (this.sealedSegments.length === 0) return [];
+    const rows: string[] = [];
+    for (const segment of this.sealedSegments) {
+      const segmentRows = this.getSegmentRows(segment, width);
+      if (segment.kind === "fold" && segment.headerRow !== undefined && this.foldEnabled) {
+        this.foldHeaderRows.set(rows.length + segment.headerRow, segment.id);
+      }
+      this.sealedRowIndex.push({ id: segment.id, start: rows.length, count: segmentRows.length });
+      // 用循环 push：展开后的段可能有成百上千行，push(...rows) 会爆参数栈。
+      for (const row of segmentRows) rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * 记录视口首行所在的段与段内行号，供下一帧恢复滚动位置。
+   * 贴底时不需要锚点：继续贴底就是正确行为。
+   */
+  private captureScrollAnchor(): void {
+    if (this.chatScrollOffset <= 0) {
+      this.pendingScrollAnchor = undefined;
+      return;
+    }
+    const viewport = this.chatViewport;
+    if (!viewport || this.sealedRowIndex.length === 0) return;
+    const target = viewport.visibleStart;
+    let picked = this.sealedRowIndex[0];
+    for (const entry of this.sealedRowIndex) {
+      if (entry.start <= target) picked = entry;
+    }
+    const rowInSegment = Math.min(picked.count - 1, Math.max(0, target - picked.start));
+    this.pendingScrollAnchor = { segmentId: picked.id, rowInSegment, screenOffset: 0 };
+  }
+
+  /** 已封口区 + 尾部超过 200k 时从头丢整段，丢到 160k 以下。 */
+  private enforceSegmentBudget(): void {
+    const total = (): number =>
+      this.sealedSegments.reduce((sum, segment) => sum + segment.raw.length, 0) +
+      this.chatContent.length;
+    if (total() <= 200_000) return;
+    while (this.sealedSegments.length > 0 && total() > 160_000) {
+      const dropped = this.sealedSegments.shift();
+      if (dropped && this.pendingScrollAnchor?.segmentId === dropped.id) {
+        this.pendingScrollAnchor = undefined;
+      }
+      this.sealedVersion += 1;
+      this.selectionLayout = undefined;
+    }
+  }
+
+  /** 切换某一段的展开状态；screenOffset 是被点摘要行在视口内的行位置。 */
+  private toggleFoldSegment(segmentId: number, screenOffset: number): void {
+    if (!this.foldEnabled) return;
+    const segment = this.sealedSegments.find((item) => item.id === segmentId);
+    if (segment?.kind !== "fold") return;
+    segment.expanded = !segment.expanded;
+    this.sealedVersion += 1;
+    this.pendingScrollAnchor = {
+      segmentId,
+      rowInSegment: segment.headerRow ?? 0,
+      screenOffset: Math.max(0, screenOffset),
+    };
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** Ctrl+O：切换最新一个已封口的过程段。 */
+  private toggleLatestFoldSegment(): void {
+    const segment = [...this.sealedSegments].reverse().find((item) => item.kind === "fold");
+    if (!segment || !this.foldEnabled) {
+      this.showTransientHint("暂无可展开的过程");
+      return;
+    }
+    const viewport = this.chatViewport;
+    const entry = this.sealedRowIndex.find((item) => item.id === segment.id);
+    let screenOffset = 0;
+    if (viewport && entry) {
+      const logical = entry.start + Math.min(segment.headerRow ?? 0, Math.max(0, entry.count - 1));
+      if (logical >= viewport.visibleStart && logical < viewport.visibleEnd) {
+        screenOffset = logical - viewport.visibleStart;
+      }
+    }
+    this.toggleFoldSegment(segment.id, screenOffset);
   }
 
   /**
@@ -836,13 +1169,15 @@ export class TerminalUI {
       return this.cachedWrappedChat;
     }
 
-    if (contentWithStatus === this.chatContent) {
+    if (contentWithStatus === this.chatContent && this.sealedSegments.length === 0) {
+      // 没有已封口段时，尾部就是全文：顺手把布局缓存给选区，省掉第一次拖选的全量扫描。
       const layout = performanceMonitor.measureSync("terminal.layout.full", () =>
         layoutAnsiDocument(contentWithStatus, width),
       );
       this.selectionLayout = layout;
       this.selectionLayoutContent = this.chatContent;
       this.selectionLayoutWidth = width;
+      this.selectionLayoutSealedVersion = this.sealedVersion;
       this.cachedWrappedChat = layout.rows.map((row) => row.ansi);
     } else {
       this.cachedWrappedChat = performanceMonitor.measureSync("terminal.wrap.full", () =>
@@ -900,6 +1235,7 @@ export class TerminalUI {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = "";
       this.setStableWrapPrefix("");
+      this.chatEpoch += 1;
     }
 
     this.scheduleRender();
@@ -961,6 +1297,14 @@ export class TerminalUI {
     this.cachedWrappedWidth = 0;
     this.cachedWrappedChat = [];
     // 整体替换多见于 /resume。首次布局直接建立可复用的文档索引，避免第一次拖选再扫描全文。
+    this.sealedSegments = [];
+    this.nextSegmentId = 1;
+    this.foldHeaderRows.clear();
+    this.sealedRowIndex = [];
+    this.pendingScrollAnchor = undefined;
+    this.selectionLayoutSealedVersion = -1;
+    this.chatEpoch += 1;
+    this.sealedVersion += 1;
     this.setStableWrapPrefix("");
     this.scheduleRender();
   }
@@ -985,6 +1329,7 @@ export class TerminalUI {
       this.chatContent = this.chatContent.slice(-160_000);
       this.cachedContentWithStatus = "";
       this.setStableWrapPrefix("");
+      this.chatEpoch += 1;
     }
 
     this.scheduleRender();
@@ -1114,13 +1459,18 @@ export class TerminalUI {
     if (
       !this.selectionLayout ||
       this.selectionLayoutContent !== this.chatContent ||
-      this.selectionLayoutWidth !== width
+      this.selectionLayoutWidth !== width ||
+      this.selectionLayoutSealedVersion !== this.sealedVersion
     ) {
-      this.selectionLayout = performanceMonitor.measureSync("terminal.layout.selection", () =>
-        layoutAnsiDocument(this.chatContent, width),
-      );
+      this.selectionLayout = performanceMonitor.measureSync("terminal.layout.selection", () => {
+        // 已封口段只贡献可见文本（折叠段就是摘要行），所以复制不会带出收起的内容。
+        const layouts = this.sealedSegments.map((segment) => this.getSegmentLayout(segment, width));
+        layouts.push(layoutAnsiDocument(this.chatContent, width));
+        return layouts.length === 1 ? layouts[0] : concatAnsiLayouts(layouts);
+      });
       this.selectionLayoutContent = this.chatContent;
       this.selectionLayoutWidth = width;
+      this.selectionLayoutSealedVersion = this.sealedVersion;
     }
     return this.selectionLayout;
   }
@@ -1365,9 +1715,18 @@ export class TerminalUI {
     }
 
     if (event.action === "up" && isLeftButton && this.pendingMouseSelection) {
+      const pending = this.pendingMouseSelection;
       this.pendingMouseSelection = undefined;
       this.selectionPointer = undefined;
       this.selectionLayout = undefined;
+      // 单击 = 按下与松开在同一屏幕行：命中摘要行则切换该段，其余情况与今天一致。
+      if (pending.row === event.row) {
+        const segmentId = this.foldHeaderRows.get(pending.logicalRow);
+        if (segmentId !== undefined) {
+          const screenOffset = pending.row - (this.chatViewport?.screenTop ?? 0);
+          this.toggleFoldSegment(segmentId, screenOffset);
+        }
+      }
       return;
     }
 
@@ -1401,7 +1760,7 @@ export class TerminalUI {
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
     if (this.toggleTaskPanel(value, key)) return;
     if (isRealCtrlO(value, key) && !this.activeSelection) {
-      this.onExpandOutputCallback?.();
+      this.toggleLatestFoldSegment();
       return;
     }
 
@@ -2042,12 +2401,27 @@ export class TerminalUI {
     const contentChanged =
       contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
     const previousWrappedCount = this.cachedWrappedChat.length;
-    const wrappedChat = this.getWrappedChat(contentWithStatus, chatWidth);
-    const wrappedRowDelta = wrappedChat.length - previousWrappedCount;
-    if (contentChanged && this.chatScrollOffset > 0 && wrappedRowDelta !== 0) {
-      this.chatScrollOffset = Math.max(0, this.chatScrollOffset + wrappedRowDelta);
-    }
+    const tailRows = this.getWrappedChat(contentWithStatus, chatWidth);
+    // 只有尾部会在底部增长；已封口区的行数变化一律交给滚动锚点处理。
+    const tailRowDelta = tailRows.length - previousWrappedCount;
+    const sealedRows = this.getSealedRows(chatWidth);
+    const wrappedChat = sealedRows.length > 0 ? sealedRows.concat(tailRows) : tailRows;
     const chatViewportHeight = chatHeight;
+    if (this.pendingScrollAnchor) {
+      const anchor = this.pendingScrollAnchor;
+      this.pendingScrollAnchor = undefined;
+      const entry = this.sealedRowIndex.find((item) => item.id === anchor.segmentId);
+      if (entry) {
+        const logical = entry.start + Math.min(anchor.rowInSegment, Math.max(0, entry.count - 1));
+        const desiredVisibleStart = Math.max(0, logical - anchor.screenOffset);
+        this.chatScrollOffset = Math.max(
+          0,
+          wrappedChat.length - chatViewportHeight - desiredVisibleStart,
+        );
+      }
+    } else if (contentChanged && this.chatScrollOffset > 0 && tailRowDelta !== 0) {
+      this.chatScrollOffset = Math.max(0, this.chatScrollOffset + tailRowDelta);
+    }
     this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
     this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
 
