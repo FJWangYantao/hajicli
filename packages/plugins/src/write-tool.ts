@@ -52,7 +52,10 @@ export class WriteFileTool implements BaseTool {
         properties: {
           path: { type: "string", description: "要创建或覆写的文件路径。" },
           content: { type: "string", description: "完整文件内容。" },
-          expectedHash: { type: "string", description: "可选，read 返回的16位内容 hash。" },
+          expectedHash: {
+            type: "string",
+            description: "可选，最近一次 read/edit/write 返回的16位内容 hash。",
+          },
         },
         required: ["path", "content"],
       },

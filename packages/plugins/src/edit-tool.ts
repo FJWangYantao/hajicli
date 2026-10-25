@@ -202,7 +202,8 @@ export class EditFileTool implements BaseTool {
           newText: { type: "string", description: "替换后的文本。" },
           expectedHash: {
             type: "string",
-            description: "可选，read 返回的16位内容 hash。文件已变化时拒绝编辑。",
+            description:
+              "可选，最近一次 read/edit/write 返回的16位内容 hash（连续编辑用上一次的 newHash）。文件已变化时拒绝编辑。",
           },
         },
         required: ["path", "oldText", "newText"],

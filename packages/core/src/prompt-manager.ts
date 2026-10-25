@@ -110,17 +110,17 @@ export class ToolsPromptPart implements SystemPromptPart {
     }
     if (activeTools.includes("read")) {
       rules.push(
-        "- read：读取已定位的文件。大文件使用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新。",
+        "- read：读取已定位的文件。大文件使用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新；此后 edit/write 成功会返回新 hash，后续调用一律以最近一次 read/edit/write 返回的 hash 为准。",
       );
     }
     if (activeTools.includes("edit")) {
       rules.push(
-        "- edit：对已有文件做局部、唯一匹配的原子修改。oldText 必须包含足够上下文；读取过文件时传入 expectedHash，冲突后重新读取，不得绕过。修改后检查差异。",
+        "- edit：对已有文件做局部、唯一匹配的原子修改。oldText 必须包含足够上下文；读取过文件时传入最近一次 read/edit/write 返回的 hash 作为 expectedHash（连续 edit 时用上一次的 newHash），冲突后重新读取，不得绕过。修改后检查差异。",
       );
     }
     if (activeTools.includes("write")) {
       rules.push(
-        "- write：仅用于创建新文件或确有必要的完整覆写。覆写已读取文件时传入 expectedHash；局部修改必须使用 edit。",
+        "- write：仅用于创建新文件或确有必要的完整覆写。覆写已读取文件时传入最近一次 read/edit/write 返回的 hash 作为 expectedHash；局部修改必须使用 edit，已用 edit 改过的文件继续用 edit，不要再整体覆写。hash 冲突说明文件被外部修改（编辑器、格式化等 bash 命令、子代理），必须先 read 确认当前内容再决定，不得带着旧 expectedHash 原样重发。",
       );
     }
     if (activeTools.includes("websearch")) {
