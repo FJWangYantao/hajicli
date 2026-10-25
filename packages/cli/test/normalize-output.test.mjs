@@ -8,7 +8,7 @@ setActiveColorLevel("mono");
 
 test("tabs are expanded to a fixed width so measured and rendered columns agree", () => {
   const expanded = normalizeTerminalOutput("a\tb");
-  assert.equal(expanded, "a" + " ".repeat(TAB_WIDTH) + "b");
+  assert.equal(expanded, `a${" ".repeat(TAB_WIDTH)}b`);
   assert.equal(terminalWidth(expanded), 2 + TAB_WIDTH);
 
   // 多行代码片段里的每个 tab 都按同一宽度展开。

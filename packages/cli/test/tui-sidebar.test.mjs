@@ -18,11 +18,6 @@ function stripAnsi(value) {
 
 function sidebarState(overrides = {}) {
   return {
-    sessionTitle: "重构渲染层",
-    modelName: "deepseek-v4-flash",
-    providerName: "DeepSeek",
-    reasoningEffort: "medium",
-    permissionMode: "default",
     usedTokens: 250,
     maxTokens: 1000,
     costCny: 0.01,
@@ -55,17 +50,15 @@ test("sidebar only resolves on wide terminals and can be disabled", () => {
   assert.equal(resolveSidebarWidth(120, 10, true), 0, "short terminals hide the sidebar");
 });
 
-test("sidebar rows show session, context, cost, task and agent info", () => {
+test("sidebar rows show context, cost, task and agent info", () => {
   const rows = buildSidebarRows(sidebarState(), 30, 30, 5000);
   const text = rows.map(stripAnsi).join("\n");
-  assert.match(text, /会话/);
-  assert.match(text, /重构渲染层/);
-  assert.match(text, /DeepSeek · deepseek-v4-flash/);
   assert.match(text, /上下文/);
   assert.match(text, /25%/);
   assert.match(text, /250 \/ 1\.0k tokens/);
   assert.match(text, /费用/);
-  assert.match(text, /¥0\.0100 · 3 次请求/);
+  assert.match(text, /¥0\.0100/);
+  assert.match(text, /请求 +3 次/);
   assert.match(text, /任务 · 渲染/);
   assert.match(text, /代理 1 运行中/);
 });
@@ -98,7 +91,7 @@ test("hovering the context ring reveals exact token counts", () => {
 test("sidebar rows are clipped to the height budget", () => {
   const rows = buildSidebarRows(sidebarState(), 30, 5, 5000);
   assert.equal(rows.length, 5);
-  assert.match(stripAnsi(rows[0]), /会话/);
+  assert.match(stripAnsi(rows[0]), /上下文/);
 });
 
 test("composed row keeps the exact terminal width", () => {
@@ -116,29 +109,21 @@ test("cost section explains the bill with an input/output token split", () => {
   )
     .map(stripAnsi)
     .join("\n");
-  assert.match(text, /↑1\.2k ↓340/);
+  assert.match(text, /输入 +↑1\.2k/);
+  assert.match(text, /输出 +↓340/);
 });
 
-test("sidebar reports the last turn duration, compaction count and git summary", () => {
+test("sidebar reports the last turn duration and compaction count", () => {
   const text = buildSidebarRows(
-    sidebarState({ lastTurnMs: 12_400, compactionCount: 2, gitBranch: "master", gitDirty: 3 }),
+    sidebarState({ lastTurnMs: 12_400, compactionCount: 2 }),
     30,
     30,
     5000,
   )
     .map(stripAnsi)
     .join("\n");
-  assert.match(text, /上一轮 12\.4s/);
+  assert.match(text, /上一轮 +12\.4s/);
   assert.match(text, /⟳ 已压缩 ×2/);
-  assert.match(text, /⑂ master · 3 项改动/);
-});
-
-test("a clean worktree shows the branch without a change count", () => {
-  const text = buildSidebarRows(sidebarState({ gitBranch: "main", gitDirty: 0 }), 30, 30, 5000)
-    .map(stripAnsi)
-    .join("\n");
-  assert.match(text, /⑂ main/);
-  assert.doesNotMatch(text, /项改动/);
 });
 
 test("the in-flight activity rides at the top of the sidebar", () => {
@@ -239,7 +224,7 @@ test("render frame composes the sidebar beside the chat and hides it when disabl
     ui.setCostInfo(0.02, 2, false);
     const rows = renderPlain(ui);
     assert.ok(
-      rows.some((row) => row.includes("│ 会话")),
+      rows.some((row) => row.includes("│ 上下文")),
       "sidebar appears on the right",
     );
     assert.ok(
@@ -249,7 +234,7 @@ test("render frame composes the sidebar beside the chat and hides it when disabl
 
     ui.setSidebarEnabled(false);
     const without = renderPlain(ui);
-    assert.ok(!without.some((row) => row.includes("│ 会话")), "sidebar can be turned off");
+    assert.ok(!without.some((row) => row.includes("│ 上下文")), "sidebar can be turned off");
   } finally {
     cleanupTerminalUI(ui);
   }
@@ -295,12 +280,11 @@ test("terminal ui setters feed the sidebar stat lines", () => {
     ui.setLastTurnDuration(12_400);
     ui.noteCompaction();
     ui.noteCompaction();
-    ui.setGitStatus("master", 3);
     const text = renderPlain(ui).join("\n");
-    assert.match(text, /↑1\.2k ↓340/);
-    assert.match(text, /上一轮 12\.4s/);
+    assert.match(text, /输入 +↑1\.2k/);
+    assert.match(text, /输出 +↓340/);
+    assert.match(text, /上一轮 +12\.4s/);
     assert.match(text, /⟳ 已压缩 ×2/);
-    assert.match(text, /⑂ master · 3 项改动/);
   } finally {
     cleanupTerminalUI(ui);
   }

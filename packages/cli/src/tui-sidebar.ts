@@ -1,26 +1,20 @@
 /**
- * 右侧信息栏的纯构建函数：会话概要、上下文圆环、费用、任务与子代理。
+ * 右侧信息栏的纯构建函数：上下文主指标、费用表、任务与子代理。
  *
  * 与 terminal-panels.ts 同一模式：只读入标量状态并输出 ANSI 行，
  * 不做 I/O 与定时器，方便用固定宽度做单元测试。
+ *
+ * 分工约定：会话标题、provider/model、推理档、权限档与 git 分支已经由顶部
+ * header 和底部状态行负责，侧栏不再重复，只保留它们讲不了的“量”：上下文占用、
+ * 费用构成、耗时，以及进行中的任务与子代理。
  */
 import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
-import {
-  buildActivityRow,
-  buildTaskPanelRows,
-  formatPermissionModeLabel,
-  type TaskPanelState,
-} from "./terminal-panels.js";
-import { fitText, SEQ, terminalWidth, truncateAnsiText } from "./terminal-text.js";
+import { buildActivityRow, buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
+import { SEQ, terminalWidth, truncateAnsiText, truncateText } from "./terminal-text.js";
 
 /** 右侧信息栏显示所需状态（TerminalUI 持有，渲染时快照传入）。 */
 export interface SidebarState {
-  sessionTitle: string;
-  modelName: string;
-  providerName: string;
-  reasoningEffort: string;
-  permissionMode: string;
   usedTokens: number;
   maxTokens: number;
   /** 会话累计费用（元）；无定价请求时仍是已定价部分的合计。 */
@@ -34,10 +28,6 @@ export interface SidebarState {
   lastTurnMs?: number;
   /** 本会话上下文压缩次数；>0 时在上下文区显示“已压缩”徽标。 */
   compactionCount?: number;
-  /** git 分支名；undefined 表示不在仓库内或读取失败。 */
-  gitBranch?: string;
-  /** 未提交改动条数；undefined 表示尚未取到（异步读取或非仓库）。 */
-  gitDirty?: number;
   /** 当前活动帧；侧栏出现时由底部状态行搬到这里，避免重复。 */
   activity?: ActivityFrame;
   taskPlan?: TaskPanelState;
@@ -65,6 +55,8 @@ export const SIDEBAR_MIN_ROWS = 18;
 export const SIDEBAR_GAP_WIDTH = 3;
 /** 侧栏出现时必须给对话区留下的最小宽度。 */
 export const SIDEBAR_MIN_CHAT_WIDTH = 48;
+/** 侧栏右侧留白：文字不贴到终端最后一列（左侧的 1 列已由分隔带提供）。 */
+const SIDEBAR_RIGHT_MARGIN = 1;
 
 /**
  * 计算右侧栏内容宽度；返回 0 表示不显示。
@@ -79,17 +71,20 @@ export function resolveSidebarWidth(columns: number, rows: number, enabled: bool
   return target;
 }
 
-function formatCostText(state: SidebarState): string {
-  if (state.costCny === undefined) return "暂无已计费调用";
-  const amount = state.costCny < 1 ? state.costCny.toFixed(4) : state.costCny.toFixed(2);
-  const requests = state.costRequests ?? 0;
-  const suffix = requests > 0 ? ` · ${requests} 次请求` : "";
-  const unpriced = state.hasUnpricedCost ? " · 含未定价" : "";
-  return `¥${amount}${suffix}${unpriced}`;
+/** 金额：小额保留 4 位小数（否则全是 ¥0.00），大额收成 2 位。 */
+function formatCostAmount(costCny: number): string {
+  return `¥${costCny < 1 ? costCny.toFixed(4) : costCny.toFixed(2)}`;
 }
 
 function formatExactTokens(value: number): string {
   return Math.max(0, Math.round(value)).toLocaleString("en-US");
+}
+
+/** 上下文用量：百万级换成 M，避免出现 "1000k tokens" 这种读不出量级的写法。 */
+function formatTokenBudget(value: number): string {
+  const safe = Math.max(0, Math.round(value));
+  if (safe >= 1_000_000) return `${(safe / 1_000_000).toFixed(safe < 10_000_000 ? 1 : 0)}M`;
+  return formatAgentTokens(safe);
 }
 
 /** 上一轮耗时：秒级保留一位小数，超过一分钟换成 m/s，避免 "83.4s" 这种难读的数。 */
@@ -122,6 +117,9 @@ const BRAILLE_DOTS: ReadonlyArray<readonly [number, number, number]> = [
  * 用盲文点阵画一个细圆环：一个字符格是 2×4 个点，分辨率比方块字符高得多，
  * 曲线边缘不会出现锯齿状的实心方块。环按比例从正上方顺时针上色，
  * 中心叠加百分比；未用部分保持淡色，所以进度只靠颜色区分。
+ *
+ * 调用方需保证 width ≈ 2 × height：点阵是 2×4，只有宽高比 2:1 时才在屏幕上
+ * 呈正圆，否则会画成扁椭圆。
  */
 function buildContextRing(ratio: number, width: number, height: number): string[] {
   const dotsW = Math.max(1, width * 2);
@@ -140,7 +138,7 @@ function buildContextRing(ratio: number, width: number, height: number): string[
         const nx = dotsW <= 1 ? 0 : (column * 2 + dx - centerX) / (dotsW / 2);
         const ny = dotsH <= 1 ? 0 : (row * 4 + dy - centerY) / (dotsH / 2);
         const distance = Math.hypot(nx, ny);
-        if (distance < 0.72 || distance > 1.0) continue;
+        if (distance < 0.7 || distance > 1.0) continue;
         mask |= bit;
         ringDots += 1;
         // 从正上方开始顺时针折算进度：0 在顶端，0.25 在右侧，0.5 在底部。
@@ -178,8 +176,8 @@ function buildContextRing(ratio: number, width: number, height: number): string[
 }
 
 /**
- * 构建右侧栏各行：活动 → 会话（含 git 与上一轮耗时）→ 上下文 → 费用 → 任务 → 子代理，
- * 按高度裁剪。hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）。
+ * 构建右侧栏各行：活动 → 上下文（主指标块）→ 费用表 → 任务 → 子代理，按高度裁剪。
+ * hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）。
  */
 export function buildSidebarFrame(
   state: SidebarState,
@@ -190,52 +188,41 @@ export function buildSidebarFrame(
 ): SidebarFrame {
   if (width <= 0 || maxRows <= 0) return { rows: [] };
   const w = Math.max(1, Math.floor(width));
+  /** 文字可用宽度：右侧留 1 列，避免贴边。 */
+  const contentW = Math.max(1, w - SIDEBAR_RIGHT_MARGIN);
   const rows: string[] = [];
   const push = (row: string): void => {
     if (rows.length < maxRows) rows.push(row);
   };
-  const section = (label: string): void => push(`${SEQ.boldAccent}${label}${SEQ.reset}`);
   const blank = (): void => {
     if (rows.length > 0 && rows.length < maxRows) push("");
+  };
+  /** 章节标题自带前置空行：三段的呼吸节奏一致，不再靠调用点手动补。 */
+  const section = (label: string): void => {
+    blank();
+    push(`${SEQ.boldAccent}${label}${SEQ.reset}`);
+  };
+  /** 在内容宽度内水平居中（ANSI 行按可见宽度计算）。 */
+  const centered = (text: string): string => {
+    const pad = Math.max(0, Math.floor((contentW - terminalWidth(text)) / 2));
+    return pad === 0 ? text : `${" ".repeat(pad)}${text}`;
+  };
+  /** 双列表格的一行：标签靠左淡色，数值靠右对齐。 */
+  const tableRow = (label: string, value: string, valueColor = SEQ.reset): void => {
+    const labelW = terminalWidth(label);
+    const budget = Math.max(1, contentW - labelW - 1);
+    const fitted = truncateText(value, budget);
+    const gap = Math.max(1, contentW - labelW - terminalWidth(fitted));
+    push(`${SEQ.muted}${label}${SEQ.reset}${" ".repeat(gap)}${valueColor}${fitted}${SEQ.reset}`);
   };
 
   // 活动行放在最上方：侧栏出现时底部状态行让位给常规状态，当前在跑什么就在这里。
   if (state.activity) {
-    const activityRow = buildActivityRow(state.activity, w);
-    if (activityRow) {
-      push(activityRow);
-      blank();
-    }
+    const activityRow = buildActivityRow(state.activity, contentW);
+    if (activityRow) push(activityRow);
   }
 
-  section("会话");
-  if (state.sessionTitle) push(`${SEQ.muted}${fitText(state.sessionTitle, w)}${SEQ.reset}`);
-  const modelText = [state.providerName, state.modelName].filter(Boolean).join(" · ");
-  if (modelText) push(`${SEQ.muted}${fitText(modelText, w)}${SEQ.reset}`);
-  if (state.reasoningEffort || state.permissionMode) {
-    const modeLabel = state.permissionMode ? formatPermissionModeLabel(state.permissionMode) : "";
-    const modeColor =
-      state.permissionMode === "bypass-permissions"
-        ? SEQ.boldRed
-        : state.permissionMode === "default"
-          ? SEQ.muted
-          : SEQ.accent;
-    const effort = state.reasoningEffort
-      ? `${SEQ.muted}${fitText(state.reasoningEffort, Math.max(1, w - 6))}${SEQ.reset} `
-      : "";
-    const mode = modeLabel ? `${modeColor}[${modeLabel}]${SEQ.reset}` : "";
-    push(truncateAnsiText(`${effort}${mode}`.trim(), w));
-  }
-  if (state.gitBranch) {
-    const dirtyText =
-      state.gitDirty !== undefined && state.gitDirty > 0 ? ` · ${state.gitDirty} 项改动` : "";
-    push(`${SEQ.muted}${fitText(`⑂ ${state.gitBranch}${dirtyText}`, w)}${SEQ.reset}`);
-  }
-  if (state.lastTurnMs !== undefined && state.lastTurnMs > 0) {
-    push(`${SEQ.muted}${fitText(`上一轮 ${formatTurnDuration(state.lastTurnMs)}`, w)}${SEQ.reset}`);
-  }
-
-  blank();
+  // ── 上下文：整栏唯一的大图形，百分比压中心、用量紧贴其下居中，形成一条中线 ──
   const used = Math.max(0, state.usedTokens);
   const max = Math.max(1, state.maxTokens);
   const ratio = Math.min(1, Math.max(0, used / max));
@@ -245,15 +232,16 @@ export function buildSidebarFrame(
   // 空间够时画圆环；太挤则退回单行进度条，避免把费用/任务全部挤掉。
   let ring: SidebarRingGeometry | undefined;
   const remainingForContext = maxRows - rows.length;
-  const ringHeight = remainingForContext >= 14 ? 5 : remainingForContext >= 8 ? 3 : 0;
+  const ringHeight = remainingForContext >= 16 ? 7 : remainingForContext >= 10 ? 5 : 0;
   if (ringHeight > 0) {
-    const ringWidth = ringHeight === 5 ? 11 : 9;
-    const left = Math.floor((w - ringWidth) / 2);
+    // 宽 = 2 × 高：点阵 2×4，只有这个比例在终端里才是正圆。
+    const ringWidth = Math.min(ringHeight * 2, Math.max(4, contentW));
+    const left = Math.max(0, Math.floor((contentW - ringWidth) / 2));
     const ringRows = buildContextRing(ratio, ringWidth, ringHeight);
     ring = { top: rows.length, height: ringHeight, left, width: ringWidth };
-    for (const line of ringRows) push(line);
+    for (const line of ringRows) push(left === 0 ? line : `${" ".repeat(left)}${line}`);
   } else {
-    const barCapacity = Math.max(4, Math.min(14, w - terminalWidth(percent) - 2));
+    const barCapacity = Math.max(4, Math.min(14, contentW - terminalWidth(percent) - 2));
     const filled = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
     const empty = Math.max(0, barCapacity - filled);
     const ratioColor = ratio >= 0.85 ? SEQ.boldRed : ratio >= 0.6 ? SEQ.yellow : SEQ.softAccent;
@@ -264,42 +252,54 @@ export function buildSidebarFrame(
 
   if (hoverContext) {
     push(
-      `${SEQ.muted}${fitText(`已用 ${formatExactTokens(used)} / ${formatExactTokens(max)}`, w)}${SEQ.reset}`,
+      centered(
+        `${SEQ.muted}已用 ${formatExactTokens(used)} / ${formatExactTokens(max)}${SEQ.reset}`,
+      ),
     );
     push(
-      `${SEQ.muted}${fitText(
-        `剩余 ${formatExactTokens(Math.max(0, max - used))} · ${percent}`,
-        w,
-      )}${SEQ.reset}`,
+      centered(
+        `${SEQ.muted}剩余 ${formatExactTokens(Math.max(0, max - used))} · ${percent}${SEQ.reset}`,
+      ),
     );
   } else {
-    push(`${SEQ.muted}${formatAgentTokens(used)} / ${formatAgentTokens(max)} tokens${SEQ.reset}`);
+    push(
+      centered(
+        `${SEQ.muted}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
+      ),
+    );
   }
 
   // 压缩徽标：圆环会因压缩突然掉下来，标注一次就能消掉“上下文怎么没了”的困惑。
   if (state.compactionCount !== undefined && state.compactionCount > 0) {
-    push(`${SEQ.accent}${fitText(`⟳ 已压缩 ×${state.compactionCount}`, w)}${SEQ.reset}`);
+    push(centered(`${SEQ.accent}⟳ 已压缩 ×${state.compactionCount}${SEQ.reset}`));
   }
 
-  blank();
+  // ── 费用：标签左、数值右对齐的双列小表，耗时并进同一张表 ──
   section("费用");
-  push(`${SEQ.muted}${fitText(formatCostText(state), w)}${SEQ.reset}`);
+  if (state.costCny === undefined) {
+    push(`${SEQ.muted}${truncateText("暂无已计费调用", contentW)}${SEQ.reset}`);
+  } else {
+    tableRow(
+      "花费",
+      `${formatCostAmount(state.costCny)}${state.hasUnpricedCost ? " · 含未定价" : ""}`,
+    );
+    if (state.costRequests !== undefined && state.costRequests > 0) {
+      tableRow("请求", `${state.costRequests} 次`);
+    }
+  }
   const promptTokens = Math.max(0, state.promptTokens ?? 0);
   const completionTokens = Math.max(0, state.completionTokens ?? 0);
-  if (promptTokens > 0 || completionTokens > 0) {
-    push(
-      `${SEQ.muted}${fitText(
-        `↑${formatAgentTokens(promptTokens)} ↓${formatAgentTokens(completionTokens)}`,
-        w,
-      )}${SEQ.reset}`,
-    );
+  if (promptTokens > 0) tableRow("输入", `↑${formatAgentTokens(promptTokens)}`);
+  if (completionTokens > 0) tableRow("输出", `↓${formatAgentTokens(completionTokens)}`);
+  if (state.lastTurnMs !== undefined && state.lastTurnMs > 0) {
+    tableRow("上一轮", formatTurnDuration(state.lastTurnMs));
   }
 
   if (state.taskPlan && state.taskPlan.items.length > 0) {
     blank();
     const remaining = maxRows - rows.length;
     if (remaining >= 2) {
-      const taskRows = buildTaskPanelRows(state.taskPlan, w, Math.min(remaining, 8), now);
+      const taskRows = buildTaskPanelRows(state.taskPlan, contentW, Math.min(remaining, 8), now);
       rows.push(...taskRows.slice(0, remaining));
     }
   }
@@ -308,7 +308,7 @@ export function buildSidebarFrame(
     blank();
     const remaining = maxRows - rows.length;
     if (remaining >= 2) {
-      const agentRows = buildAgentPanelRows(state.agents, w, Math.min(remaining, 6), now);
+      const agentRows = buildAgentPanelRows(state.agents, contentW, Math.min(remaining, 6), now);
       rows.push(...agentRows.slice(0, remaining));
     }
   }

@@ -307,9 +307,6 @@ export class TerminalUI {
   private lastTurnMs?: number;
   /** 本会话上下文压缩次数（自动 + 手动）；用于解释圆环为何突然掉下来。 */
   private compactionCount = 0;
-  /** git 分支与未提交改动数：分支同步读 HEAD，改动数异步取，失败就留空。 */
-  private gitBranch = "";
-  private gitDirty?: number;
   /** 鼠标是否悬停在上下文圆环上；命中区域每帧随布局更新。 */
   private sidebarRingHovered = false;
   private sidebarRingHit?: {
@@ -472,16 +469,6 @@ export class TerminalUI {
   /** 记一次上下文压缩（自动或手动）；侧栏据此显示“已压缩”徽标。 */
   noteCompaction(): void {
     this.compactionCount += 1;
-    this.scheduleRender();
-  }
-
-  /** 更新侧栏的 git 信息；branch 为空或 dirty 未取到都只影响显示，不影响渲染。 */
-  setGitStatus(branch: string | undefined, dirty: number | undefined): void {
-    const nextBranch = branch ? sanitizeTerminalText(branch) : "";
-    const nextDirty = dirty === undefined ? undefined : Math.max(0, dirty);
-    if (this.gitBranch === nextBranch && this.gitDirty === nextDirty) return;
-    this.gitBranch = nextBranch;
-    this.gitDirty = nextDirty;
     this.scheduleRender();
   }
 
@@ -1827,11 +1814,6 @@ export class TerminalUI {
 
   private buildSidebarState(): SidebarState {
     return {
-      sessionTitle: this.sessionTitle,
-      modelName: this.modelName,
-      providerName: this.providerName,
-      reasoningEffort: this.reasoningEffort,
-      permissionMode: this.permissionMode,
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
       costCny: this.costCny,
@@ -1841,8 +1823,6 @@ export class TerminalUI {
       completionTokens: this.costCompletionTokens,
       lastTurnMs: this.lastTurnMs,
       compactionCount: this.compactionCount,
-      gitBranch: this.gitBranch || undefined,
-      gitDirty: this.gitDirty,
       activity: this.activityFrame,
       taskPlan: this.taskPanelTitle
         ? {

@@ -108,7 +108,6 @@ import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
-import { readGitDirtyCount } from "./git-status.js";
 import { parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
@@ -908,17 +907,6 @@ async function main() {
   // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
   const gitHeadPath = findGitHeadPath(process.cwd());
   ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
-  // 侧栏 git 摘要：分支同步读 .git/HEAD（一次文件读取），未提交条数异步子进程取；
-  // 只在侧栏可见时刷新，失败静默——绝不同步调 git 卡住渲染。
-  const refreshGitStatus = async (): Promise<void> => {
-    if (!ui.isSidebarEnabled()) return;
-    const dirty = await readGitDirtyCount(process.cwd());
-    ui.setGitStatus(readGitBranch(gitHeadPath), dirty);
-  };
-  if (!headlessRequest) {
-    void refreshGitStatus();
-    setInterval(() => void refreshGitStatus(), 15_000).unref();
-  }
   // Logo 下方的启动信息行：provider · model · effort + 权限档 + 工作区，与上次会话提示。
   // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
   const formatRelativeTime = (iso: string): string => {
@@ -1965,7 +1953,6 @@ async function main() {
       }
       // 侧栏“上一轮 12.4s”：耗时本来就由 turn-runner 回调，顺手落到侧栏。
       ui.setLastTurnDuration(durationMs);
-      void refreshGitStatus();
       maybeWarnContextUsage();
       maybeWarnBudget();
     },
@@ -2591,8 +2578,6 @@ async function main() {
           }
           const enabled = arg ? arg === "on" : !ui.isSidebarEnabled();
           ui.setSidebarEnabled(enabled);
-          // 侧栏刚打开时立刻取一次 git 摘要，不用等下一个轮询周期。
-          if (enabled) void refreshGitStatus();
           const currentPreference = loadPreference();
           savePreference(
             {
