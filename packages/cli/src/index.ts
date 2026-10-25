@@ -117,6 +117,7 @@ import {
   summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
+import { buildContextBreakdown } from "./context-breakdown.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { CostTracker, formatCostCny } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
@@ -1622,7 +1623,14 @@ async function main() {
     ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
-    ui.setContextUsage(tokens, getSelectedContextWindowTokens());
+    ui.setContextUsage(
+      tokens,
+      getSelectedContextWindowTokens(),
+      buildContextBreakdown(
+        messages,
+        activeTools().map((tool) => tool.definition),
+      ),
+    );
   };
   updateStatusUI();
 

@@ -10,6 +10,12 @@
  * 属于对话区，不搬进侧栏。
  */
 import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
+import {
+  CONTEXT_CATEGORIES,
+  CONTEXT_CATEGORY_LABELS,
+  type ContextBreakdown,
+  type ContextCategory,
+} from "./context-breakdown.js";
 import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
 import { SEQ, terminalWidth, truncateAnsiText, truncateText } from "./terminal-text.js";
 
@@ -17,6 +23,8 @@ import { SEQ, terminalWidth, truncateAnsiText, truncateText } from "./terminal-t
 export interface SidebarState {
   usedTokens: number;
   maxTokens: number;
+  /** 上下文按类别的估算占用（系统/工具/记忆/文件/结果/对话）；缺省时只画圆环与总量。 */
+  breakdown?: ContextBreakdown;
   /** 会话累计费用（元）；无定价请求时仍是已定价部分的合计。 */
   costCny?: number;
   costRequests?: number;
@@ -142,8 +150,16 @@ const BRAILLE_DOTS: ReadonlyArray<readonly [number, number, number]> = [
  *
  * 调用方需保证 width ≈ 2 × height：点阵是 2×4，只有宽高比 2:1 时才在屏幕上
  * 呈正圆，否则会画成扁椭圆。
+ *
+ * emphasis 为 true 时把已用弧线加粗高亮：鼠标悬停圆环会弹出明细卡片，
+ * 环本身必须给出「卡片说的是我」的反馈。
  */
-function buildContextRing(ratio: number, width: number, height: number): string[] {
+function buildContextRing(
+  ratio: number,
+  width: number,
+  height: number,
+  emphasis = false,
+): string[] {
   const dotsW = Math.max(1, width * 2);
   const dotsH = Math.max(1, height * 4);
   const centerX = (dotsW - 1) / 2;
@@ -191,10 +207,107 @@ function buildContextRing(ratio: number, width: number, height: number): string[
         continue;
       }
       const glyph = String.fromCodePoint(0x2800 | mask);
-      line += filled ? `${SEQ.accent}${glyph}${SEQ.reset}` : `${SEQ.faint}${glyph}${SEQ.reset}`;
+      if (!filled) {
+        line += `${SEQ.faint}${glyph}${SEQ.reset}`;
+        continue;
+      }
+      // 悬停时整圈提亮：这是「下面会弹出明细卡片」的唯一视觉提示。
+      line += `${emphasis ? SEQ.boldAccent : SEQ.accent}${glyph}${SEQ.reset}`;
     }
     return line;
   });
+}
+
+/** 分类颜色：悬停卡片里标签与迷你条共用同一映射，两处颜色必须能对上号。 */
+function categoryColor(category: ContextCategory): string {
+  switch (category) {
+    case "system":
+      return SEQ.cyan;
+    case "tools":
+      return SEQ.blue;
+    case "memory":
+      return SEQ.yellow;
+    case "file":
+      return SEQ.green;
+    case "toolResult":
+      return SEQ.magenta;
+    default:
+      return SEQ.accent;
+  }
+}
+
+/** 悬停卡片的宽度区间：太窄放不下数值，太宽会盖掉大半个对话区。 */
+const CARD_MIN_COLUMNS = 20;
+const CARD_MAX_COLUMNS = 30;
+
+/** 按可见宽度补空格（内容超宽时截断），卡片每一行都靠它对齐右边框。 */
+function padToWidth(text: string, width: number): string {
+  const visible = terminalWidth(text);
+  if (visible >= width) return truncateText(text, width);
+  return `${text}${" ".repeat(width - visible)}`;
+}
+
+/**
+ * 圆环悬停时弹出的明细卡片。
+ *
+ * 侧栏只有 24~34 列，六类明细塞不进去；卡片因此做成浮层：由渲染层覆盖到
+ * 对话区右侧的空白上，鼠标移开即消失，既不占侧栏行数，也不会把费用区顶走。
+ * 这里只产出纯字符串，位置与覆盖交给调用方的屏幕合成阶段。
+ */
+export function buildContextCard(
+  breakdown: ContextBreakdown,
+  usedTokens: number,
+  maxTokens: number,
+  availableColumns = CARD_MAX_COLUMNS,
+): string[] {
+  const used = Math.max(0, usedTokens);
+  const max = Math.max(1, maxTokens);
+  const ratio = Math.min(1, Math.max(0, used / max));
+  const entries = CONTEXT_CATEGORIES.map((category, index) => ({
+    category,
+    index,
+    tokens: Math.max(0, breakdown[category]),
+  }))
+    .filter((entry) => entry.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens || a.index - b.index);
+
+  const outer = Math.max(CARD_MIN_COLUMNS, Math.min(CARD_MAX_COLUMNS, availableColumns));
+  const inner = outer - 4;
+  const labelWidth = 4;
+  const valueWidth = 7;
+  const barWidth = Math.max(4, inner - labelWidth - valueWidth - 2);
+  const lineWidth = Math.min(inner, labelWidth + 1 + barWidth + 1 + valueWidth);
+  const border = (left: string, right: string): string =>
+    `${SEQ.faint}${left}${"─".repeat(outer - 2)}${right}${SEQ.reset}`;
+
+  const titlePrefix = `${SEQ.faint}╭${SEQ.reset} ${SEQ.boldAccent}上下文构成${SEQ.reset} `;
+  // 标题行也要正好 outer 宽：前缀已经含左边框，右角的那一列必须扣掉。
+  const titleFill = Math.max(0, outer - 1 - terminalWidth(titlePrefix));
+  const rows: string[] = [`${titlePrefix}${SEQ.faint}${"─".repeat(titleFill)}╮${SEQ.reset}`];
+
+  const largest = entries[0]?.tokens ?? 1;
+  for (const entry of entries) {
+    const filled = Math.max(1, Math.round((entry.tokens / largest) * barWidth));
+    const bar = `${"█".repeat(Math.min(barWidth, filled))}${" ".repeat(Math.max(0, barWidth - filled))}`;
+    const value = formatTokenBudget(entry.tokens).padStart(valueWidth);
+    const color = categoryColor(entry.category);
+    rows.push(
+      `${SEQ.faint}│${SEQ.reset} ${color}${CONTEXT_CATEGORY_LABELS[entry.category]}${SEQ.reset} ${color}${bar}${SEQ.reset} ${SEQ.muted}${value}${SEQ.reset} ${SEQ.faint}│${SEQ.reset}`,
+    );
+  }
+
+  rows.push(border("├", "┤"));
+  const footers = [
+    `已用 ${formatExactTokens(used)} / ${formatExactTokens(max)}`,
+    `剩余 ${formatExactTokens(Math.max(0, max - used))} · ${Math.round(ratio * 100)}%`,
+  ];
+  for (const footer of footers) {
+    rows.push(
+      `${SEQ.faint}│${SEQ.reset} ${SEQ.muted}${padToWidth(footer, lineWidth)}${SEQ.reset} ${SEQ.faint}│${SEQ.reset}`,
+    );
+  }
+  rows.push(border("╰", "╯"));
+  return rows;
 }
 
 /**
@@ -258,7 +371,7 @@ export function buildSidebarFrame(
     // 宽 = 2 × 高：点阵 2×4，只有这个比例在终端里才是正圆。
     const ringWidth = Math.min(ringHeight * 2, Math.max(4, contentW));
     const left = Math.max(0, Math.floor((contentW - ringWidth) / 2));
-    const ringRows = buildContextRing(ratio, ringWidth, ringHeight);
+    const ringRows = buildContextRing(ratio, ringWidth, ringHeight, hoverContext);
     ring = { top: rows.length, height: ringHeight, left, width: ringWidth };
     for (const line of ringRows) push(left === 0 ? line : `${" ".repeat(left)}${line}`);
   } else {
@@ -271,24 +384,13 @@ export function buildSidebarFrame(
     );
   }
 
-  if (hoverContext) {
-    push(
-      centered(
-        `${SEQ.muted}已用 ${formatExactTokens(used)} / ${formatExactTokens(max)}${SEQ.reset}`,
-      ),
-    );
-    push(
-      centered(
-        `${SEQ.muted}剩余 ${formatExactTokens(Math.max(0, max - used))} · ${percent}${SEQ.reset}`,
-      ),
-    );
-  } else {
-    push(
-      centered(
-        `${SEQ.muted}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
-      ),
-    );
-  }
+  // 分类明细不占侧栏行数：鼠标悬停圆环时由浮层卡片展示（buildContextCard），
+  // 侧栏这里永远只保留一条总用量，悬停也只会加粗圆环里的百分比。
+  push(
+    centered(
+      `${SEQ.muted}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
+    ),
+  );
 
   // 压缩徽标：圆环会因压缩突然掉下来，标注一次就能消掉“上下文怎么没了”的困惑。
   if (state.compactionCount !== undefined && state.compactionCount > 0) {

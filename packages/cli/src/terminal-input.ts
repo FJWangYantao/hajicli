@@ -8,6 +8,7 @@ import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
+import type { ContextBreakdown } from "./context-breakdown.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   buildInputSelectionGeometry,
@@ -57,6 +58,7 @@ import { type TextCell, TextSelectionModel } from "./text-selection.js";
 import { colors, fillUserMsgRowEol, themeEnter } from "./theme.js";
 import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
 import {
+  buildContextCard,
   buildSidebarFrame,
   composeSidebarRow,
   resolveSidebarWidth,
@@ -408,6 +410,10 @@ export class TerminalUI {
   private currentPath = "";
   private usedTokens = 0;
   private maxTokens = 1000000;
+  /** 上下文分项估算（圆环悬停卡片用）；拿不到时不弹卡片。 */
+  private contextBreakdown?: ContextBreakdown;
+  /** 侧栏显示时对话区最右列（1-based）；0 表示侧栏隐藏，鼠标可整行选字。 */
+  private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
   private sidebarEnabled = true;
   private costCny?: number;
@@ -577,9 +583,10 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
-  setContextUsage(usedTokens: number, maxTokens = 1000000): void {
+  setContextUsage(usedTokens: number, maxTokens = 1000000, breakdown?: ContextBreakdown): void {
     this.usedTokens = Math.max(0, usedTokens);
     this.maxTokens = Math.max(1, maxTokens);
+    this.contextBreakdown = breakdown;
     this.scheduleRender();
   }
 
@@ -1634,13 +1641,29 @@ export class TerminalUI {
     const layout = this.getSelectionLayout();
     const layoutRow = layout.rows[logicalRow];
     if (!layoutRow) return undefined;
+    // 侧栏与分隔带不是对话内容：拖到侧栏上时把选区钉在对话区最右列，
+    // 否则 cellAtColumn 会把端点钳到行尾，看起来像"侧栏也能被选中"。
+    const safeColumn = this.clampToChatArea(column);
     // chat 区有响应式左内边距：把 1-based 物理列还原成内容列。
     // cellAtColumn 内部会再做 column-1，故这里直接减 padding。
     return cellAtColumn(
       layoutRow,
-      column - (this.chatViewport?.padding ?? DEFAULT_CHAT_PADDING),
+      safeColumn - (this.chatViewport?.padding ?? DEFAULT_CHAT_PADDING),
       clampToText,
     );
+  }
+
+  /** 侧栏显示时把鼠标列限制在对话区内；侧栏隐藏时原样返回。 */
+  private clampToChatArea(column: number): number {
+    const edge = this.chatAreaRightEdgeColumn;
+    if (edge <= 0) return column;
+    return Math.min(column, edge);
+  }
+
+  /** 鼠标列是否落在侧栏（含分隔带）上——这块区域不参与文本选区。 */
+  private isPointerInSidebar(column: number): boolean {
+    const edge = this.chatAreaRightEdgeColumn;
+    return edge > 0 && column > edge;
   }
 
   private getLogicalChatRow(row: number): number | undefined {
@@ -1913,6 +1936,15 @@ export class TerminalUI {
       if (this.isPointInCostSection(event.column, event.row)) {
         this.pendingMouseSelection = undefined;
         this.pendingCostClickRow = event.row;
+        return;
+      }
+      // 侧栏与分隔带不是对话内容：在这里按下不开选区，否则拖选会把侧栏文字带进复制结果。
+      if (this.isPointerInSidebar(event.column)) {
+        this.pendingMouseSelection = undefined;
+        this.pendingInputSelection = undefined;
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        this.scheduleRender();
         return;
       }
       this.stopSelectionAutoScroll();
@@ -2559,6 +2591,7 @@ export class TerminalUI {
     return {
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
+      ...(this.contextBreakdown ? { breakdown: this.contextBreakdown } : {}),
       costCny: this.costCny,
       costRequests: this.costRequests,
       hasUnpricedCost: this.costHasUnpriced,
@@ -2651,6 +2684,8 @@ export class TerminalUI {
       1,
       width - (sidebarVisible ? sidebarWidth + SIDEBAR_GAP_WIDTH : 0),
     );
+    // 记下对话区的右边界：鼠标落在这之后的一律算侧栏，不参与文本选区。
+    this.chatAreaRightEdgeColumn = sidebarVisible ? leftAreaWidth : 0;
     const persistentHeader = this.sessionTitle
       ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, width - 7))}${SEQ.reset}`
       : this.options.compactHeader;
@@ -2929,11 +2964,32 @@ export class TerminalUI {
       this.pendingPricingClickRow = undefined;
     }
     this.setMouseMotionEnabled(sidebarVisible);
+    // 圆环悬停卡片：浮层贴在对话区右侧，不占侧栏行数、不改变对话滚动布局，
+    // 鼠标移开就消失——比在侧栏里内联展开更不打扰（费用表不会被顶走）。
+    const contextCard =
+      sidebarVisible && this.sidebarRingHovered && this.contextBreakdown && sidebarFrame.ring
+        ? buildContextCard(this.contextBreakdown, this.usedTokens, this.maxTokens, leftAreaWidth)
+        : undefined;
+    const cardTop = contextCard
+      ? Math.max(0, Math.min(chatHeight - contextCard.length, (sidebarFrame.ring?.top ?? 0) - 1))
+      : 0;
+    const paintContextCard = (row: string, index: number): string => {
+      const cardRow = contextCard?.[index - cardTop];
+      if (cardRow === undefined) return row;
+      const cardWidth = Math.min(leftAreaWidth, terminalWidth(cardRow));
+      const left = Math.max(1, leftAreaWidth - cardWidth + 1);
+      const head = truncateAnsiText(row, left - 1);
+      const pad = " ".repeat(Math.max(0, left - 1 - terminalWidth(head)));
+      const tail = " ".repeat(Math.max(0, leftAreaWidth - (left - 1) - cardWidth));
+      return `${head}${pad}${truncateAnsiText(cardRow, cardWidth)}${tail}`;
+    };
     const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill("")].map(
-      (row, index) =>
-        sidebarVisible
-          ? composeSidebarRow(row, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
-          : row,
+      (row, index) => {
+        const painted = paintContextCard(row, index);
+        return sidebarVisible
+          ? composeSidebarRow(painted, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
+          : painted;
+      },
     );
     const screenRows = emergencyMinimal
       ? [...chatRows, ...inputBlock].slice(0, height)
@@ -2950,6 +3006,7 @@ export class TerminalUI {
     const canScrollViewport =
       chatHeight > 0 &&
       !fullRefresh &&
+      !contextCard &&
       chatRegionStart === this.renderedChatRegionStart &&
       chatHeight === this.renderedChatRegionHeight;
     const screenUpdate = canScrollViewport
