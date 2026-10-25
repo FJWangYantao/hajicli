@@ -169,7 +169,7 @@ export class RepeatedFailureTracker {
 /** 追加到工具结果末尾、提示模型换方案的系统说明；未达阈值时返回空串。 */
 export function buildRepeatedFailureNotice(count: number): string {
   if (count < REPEATED_FAILURE_NOTICE_AT) return "";
-  return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。若失败来自 edit 的 oldText 未命中，请先 read 重新读取目标区域，再用完整整行重试。`;
+  return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。若失败来自 edit 的 oldText 未命中，请先 read 重新读取目标区域，再用完整整行重试；若失败来自 write/edit 的 hash 冲突（文件已变化），必须先 read 拿到当前内容与新 hash，不要带着旧 expectedHash 重新生成整份内容。`;
 }
 
 /** 达到停止阈值后，同一条消息里剩余的工具调用不再执行，只留一条工具结果维持消息拓扑。 */

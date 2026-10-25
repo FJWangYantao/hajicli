@@ -1,6 +1,11 @@
 import * as fs from "node:fs/promises";
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
-import { contentHash, FileConflictError, writeUtf8Atomically } from "./file-content.js";
+import {
+  contentHash,
+  FileConflictError,
+  fileVersions,
+  writeUtf8Atomically,
+} from "./file-content.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
 function parseExpectedHash(value: unknown): string | undefined {
@@ -269,6 +274,7 @@ export class EditFileTool implements BaseTool {
           content.slice(match.index + match.oldText.length);
         const newHash = contentHash(newContent);
         await writeUtf8Atomically(resolvedPath, newContent, context?.abortSignal, currentHash);
+        fileVersions.advance(context?.agentId, resolvedPath, currentHash, newHash);
         const retryNote = retriedForStaleHash
           ? "\n说明: expectedHash 已过期，已重新读取并按最新内容应用。"
           : "";

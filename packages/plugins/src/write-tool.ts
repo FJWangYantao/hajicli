@@ -1,7 +1,12 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
-import { contentHash, FileConflictError, writeUtf8Atomically } from "./file-content.js";
+import {
+  contentHash,
+  FileConflictError,
+  fileVersions,
+  writeUtf8Atomically,
+} from "./file-content.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
 function parseExpectedHash(value: unknown): string | undefined {
@@ -10,6 +15,27 @@ function parseExpectedHash(value: unknown): string | undefined {
     throw new Error("expectedHash 必须是 read 返回的16位十六进制 hash。");
   }
   return value.toLowerCase();
+}
+
+/**
+ * hash 冲突的报错：首行保持「文件已变化：期望/当前 hash」稳定格式（重复失败按首行归并），
+ * 后面明确告诉模型变化来自哪里、下一步该做什么，避免带着同一个旧 hash 原样重发整份内容。
+ */
+function formatConflict(error: FileConflictError): string {
+  return [
+    `写入失败: ${error.message}。`,
+    "该文件在你最近一次 read/edit/write 之后被外部修改（编辑器、bash 命令如格式化/biome --write、子代理或其他进程），覆写会丢掉这些修改。",
+    "不要用同一个 expectedHash 原样重发：先 read 获取当前内容与 hash 并确认这些修改；局部改动改用 edit，确需整体覆写再带新的 expectedHash 调用 write。",
+  ].join("\n");
+}
+
+async function readCurrentHash(filePath: string): Promise<string | undefined> {
+  try {
+    return contentHash(await fs.readFile(filePath));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 export class WriteFileTool implements BaseTool {
@@ -52,10 +78,29 @@ export class WriteFileTool implements BaseTool {
       const resolvedPath = await resolveWorkspacePath(filePath, { mustExist: false });
       await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
       if (context?.abortSignal?.aborted) return "[文件写入已中止]";
-      await writeUtf8Atomically(resolvedPath, args.content, context?.abortSignal, expectedHash);
+      const agentId = context?.agentId;
+      // expectedHash 过期但磁盘仍是本代理自己 edit/write 出来的链尾版本：期间没有外部修改，
+      // 以当前 hash 作为 CAS 基准放行；写入时 writeUtf8Atomically 仍会拒绝并发改动。
+      let casHash = expectedHash;
+      let ownChainNote = "";
+      if (expectedHash !== undefined) {
+        const currentHash = await readCurrentHash(resolvedPath);
+        if (currentHash !== expectedHash) {
+          if (
+            currentHash === undefined ||
+            !fileVersions.isOwnChain(agentId, resolvedPath, expectedHash, currentHash)
+          ) {
+            throw new FileConflictError(expectedHash, currentHash);
+          }
+          casHash = currentHash;
+          ownChainNote = `\n说明: expectedHash 已过期，但期间只有你本轮自己的 edit/write（当前 hash=${currentHash}），已按本次完整内容覆写。`;
+        }
+      }
+      await writeUtf8Atomically(resolvedPath, args.content, context?.abortSignal, casHash);
       const hash = contentHash(args.content);
+      fileVersions.advance(agentId, resolvedPath, casHash, hash);
       const stats = await fs.stat(resolvedPath);
-      return `[文件写入成功]\n路径: ${filePath}\n大小: ${stats.size} 字节\nhash=${hash}`;
+      return `[文件写入成功]\n路径: ${filePath}\n大小: ${stats.size} 字节\nhash=${hash}${ownChainNote}`;
     } catch (error) {
       if (
         context?.abortSignal?.aborted ||
@@ -64,7 +109,7 @@ export class WriteFileTool implements BaseTool {
         return "[文件写入已中止]";
       }
       if (error instanceof FileConflictError) {
-        return `写入失败: ${error.message}。请重新读取后再写入。`;
+        return formatConflict(error);
       }
       return `写入文件失败: ${formatWorkspaceError(error, filePath)}`;
     }

@@ -167,15 +167,17 @@ test("edit and write reject stale hashes and replace files atomically", async ()
     assert.match(edited, /文件精准编辑成功/);
     assert.equal(await fs.readFile(target, "utf8"), "edited\n");
 
+    const editedHash = edited.match(/newHash=([a-f0-9]{16})/)?.[1];
+    await fs.writeFile(target, "edited externally\n");
     const staleWrite = await writer.execute({
       path: "target.txt",
       content: "wrong\n",
-      expectedHash: currentHash,
+      expectedHash: editedHash,
     });
     assert.match(staleWrite, /文件已变化/);
-    assert.equal(await fs.readFile(target, "utf8"), "edited\n");
+    assert.equal(await fs.readFile(target, "utf8"), "edited externally\n");
 
-    const editedHash = edited.match(/newHash=([a-f0-9]{16})/)?.[1];
+    await fs.writeFile(target, "edited\n");
     const written = await writer.execute({
       path: "target.txt",
       content: "final\n",
@@ -187,6 +189,146 @@ test("edit and write reject stale hashes and replace files atomically", async ()
       (name) => name.includes(".haji-") && name.endsWith(".tmp"),
     );
     assert.deepEqual(tempFiles, []);
+  });
+});
+
+function hashOf(output, key = "hash") {
+  const hash = output.match(new RegExp(`${key}=([a-f0-9]{16})`))?.[1];
+  assert.ok(hash, output);
+  return hash;
+}
+
+test("write accepts a stale hash when only its own edits happened in between", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "chain.txt");
+    await fs.writeFile(target, "one\ntwo\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const writer = new WriteFileTool();
+    const readHash = hashOf(await reader.execute({ path: "chain.txt" }));
+
+    const edited = await editor.execute({
+      path: "chain.txt",
+      oldText: "one",
+      newText: "uno",
+      expectedHash: readHash,
+    });
+    assert.match(edited, /文件精准编辑成功/);
+
+    // 模型沿用最初 read 的 hash 整体覆写：期间只有自己的 edit，不应冲突。
+    const written = await writer.execute({
+      path: "chain.txt",
+      content: "rewritten\n",
+      expectedHash: readHash,
+    });
+    assert.match(written, /文件写入成功/);
+    assert.match(written, /expectedHash 已过期，但期间只有你本轮自己的 edit\/write/);
+    assert.equal(await fs.readFile(target, "utf8"), "rewritten\n");
+
+    // 连续的 write 同样在链上：再用最初的 hash 覆写仍可放行。
+    const again = await writer.execute({
+      path: "chain.txt",
+      content: "final\n",
+      expectedHash: readHash,
+    });
+    assert.match(again, /文件写入成功/);
+    assert.equal(await fs.readFile(target, "utf8"), "final\n");
+  });
+});
+
+test("write still rejects a stale hash after an external change and explains next steps", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "external.txt");
+    await fs.writeFile(target, "one\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const writer = new WriteFileTool();
+    const readHash = hashOf(await reader.execute({ path: "external.txt" }));
+    await editor.execute({ path: "external.txt", oldText: "one", newText: "uno" });
+
+    // 模拟 bash 里跑了格式化：不在版本链上。
+    await fs.writeFile(target, "uno // formatted\n");
+    const rejected = await writer.execute({
+      path: "external.txt",
+      content: "wrong\n",
+      expectedHash: readHash,
+    });
+    assert.match(
+      rejected.split("\n")[0],
+      /^写入失败: 文件已变化：期望 hash=[a-f0-9]{16}，当前 hash=[a-f0-9]{16}。$/,
+    );
+    assert.match(rejected, /外部修改/);
+    assert.match(rejected, /先 read 获取当前内容与 hash/);
+    assert.equal(await fs.readFile(target, "utf8"), "uno // formatted\n");
+
+    // 重新 read 后版本链从当前版本重新开始，更早的 hash 依旧不能放行，新 hash 可以。
+    const currentHash = hashOf(await reader.execute({ path: "external.txt" }));
+    const stillRejected = await writer.execute({
+      path: "external.txt",
+      content: "wrong\n",
+      expectedHash: readHash,
+    });
+    assert.match(stillRejected, /文件已变化/);
+    const written = await writer.execute({
+      path: "external.txt",
+      content: "final\n",
+      expectedHash: currentHash,
+    });
+    assert.match(written, /文件写入成功/);
+    assert.doesNotMatch(written, /expectedHash 已过期/);
+  });
+});
+
+test("write treats an edit that merged external changes as breaking the chain", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "merged.txt");
+    await fs.writeFile(target, "keep\nchange\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const writer = new WriteFileTool();
+    const readHash = hashOf(await reader.execute({ path: "merged.txt" }));
+
+    await fs.writeFile(target, "keep externally\nchange\n");
+    const edited = await editor.execute({
+      path: "merged.txt",
+      oldText: "change",
+      newText: "changed",
+      expectedHash: readHash,
+    });
+    assert.match(edited, /expectedHash 已过期/);
+
+    // edit 自动合入了模型没看过的外部修改，基于旧 hash 的整体覆写会把它冲掉。
+    const rejected = await writer.execute({
+      path: "merged.txt",
+      content: "wrong\n",
+      expectedHash: readHash,
+    });
+    assert.match(rejected, /文件已变化/);
+    assert.equal(await fs.readFile(target, "utf8"), "keep externally\nchanged\n");
+  });
+});
+
+test("write does not accept another agent's edits as part of its own chain", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "shared.txt");
+    await fs.writeFile(target, "one\n");
+    const reader = new ReadFileTool();
+    const editor = new EditFileTool();
+    const writer = new WriteFileTool();
+    const readHash = hashOf(await reader.execute({ path: "shared.txt" }));
+    const subEdit = await editor.execute(
+      { path: "shared.txt", oldText: "one", newText: "sub" },
+      { agentId: "sub-1" },
+    );
+    assert.match(subEdit, /文件精准编辑成功/);
+
+    const rejected = await writer.execute({
+      path: "shared.txt",
+      content: "main\n",
+      expectedHash: readHash,
+    });
+    assert.match(rejected, /文件已变化/);
+    assert.equal(await fs.readFile(target, "utf8"), "sub\n");
   });
 });
 

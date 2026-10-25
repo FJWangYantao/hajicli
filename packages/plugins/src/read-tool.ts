@@ -8,7 +8,7 @@ import type {
   ToolOutput,
 } from "@hajicli/core";
 import { takeWholeRecords, truncateSingleLine } from "./bounded-output.js";
-import { contentHash } from "./file-content.js";
+import { contentHash, fileVersions } from "./file-content.js";
 import { parseIntegerOption } from "./search-filter.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
@@ -127,6 +127,8 @@ async function renderFile(
   const resolvedPath = await resolveWorkspacePath(request.path);
   const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
   throwIfAborted(context);
+  // 读到的版本若不是版本链尾，说明期间有外部修改，write 不能再凭更早的 hash 放行。
+  fileVersions.observe(context?.agentId, resolvedPath, contentHash(buffer));
   const imageMimeType = IMAGE_MIME_BY_EXTENSION[path.extname(resolvedPath).toLowerCase()];
   if (imageMimeType) {
     return renderImage(request, buffer, imageMimeType);
