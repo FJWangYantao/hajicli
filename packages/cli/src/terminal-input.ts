@@ -85,6 +85,8 @@ export {
 const PROTOCOL_FLUSH_MS = 80;
 /** 单独 Esc 的确认窗口：只等可能紧跟的 Alt 组合键，等太久会让中止明显迟滞。 */
 const LONE_ESCAPE_FLUSH_MS = 16;
+/** 对话区尾部活动行占用的行数：与正文之间的空行 + 活动行本身。 */
+const CHAT_ACTIVITY_ROWS = 2;
 
 function enableWindowsVirtualTerminalInput(): boolean {
   if (process.platform !== "win32") {
@@ -2583,10 +2585,11 @@ export class TerminalUI {
     };
   }
 
-  private buildActivityRow(width: number): string {
-    // 活动行右侧徽标：权限档 + ctx 用量（长任务期间随时可见是否仍在全放行）。
+  private buildActivityRow(width: number, withBadge = true): string {
+    // 活动行右侧徽标：权限档 + ctx 用量。只在活动行顶替状态栏时需要；
+    // 放在对话区尾部时状态栏仍在，徽标就重复了。
     const badge: ActivityBadge | undefined =
-      this.activityFrame && this.permissionMode
+      withBadge && this.activityFrame && this.permissionMode
         ? {
             modeLabel: formatPermissionModeLabel(this.permissionMode),
             ctxRatio: this.usedTokens / Math.max(1, this.maxTokens),
@@ -2687,12 +2690,13 @@ export class TerminalUI {
 
     const minimal = layout.mode === "minimal";
     const emergencyMinimal = minimal && height < 8;
-    // 活动状态不再单独占用输入框上方一行，而是与状态栏共用底部这一行：
-    // 有活动时顶替状态栏显示，空闲时才显示常规状态，因此聊天区高度不会随动画变化。
-    // 临时提示（Ctrl+C 确认等）、复制角标优先级介于两者之间：没有活动时占位、超时自动消失。
-    // 活动行始终留在底栏，不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
+    // 活动行放在对话区尾部（空一行跟在最新内容之后，内容满屏时固定在对话区底部），
+    // 底栏的状态栏因此常驻。minimal 档对话区放不下，仍退回旧行为：活动行顶替状态栏。
+    // 临时提示（Ctrl+C 确认等）、复制角标与状态栏轮换：有提示时占位、超时自动消失。
+    // 活动行不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
+    let activityInChat = Boolean(this.activityFrame) && !minimal;
     const activityRow =
-      this.buildActivityRow(width) ||
+      (activityInChat ? "" : this.buildActivityRow(width)) ||
       (this.copiedNotice && topRows.length === 0
         ? truncateAnsiText(`${SEQ.bold}${SEQ.green}${this.copiedNotice}${SEQ.reset}`, width)
         : "") ||
@@ -2783,6 +2787,11 @@ export class TerminalUI {
     const chatHeight = emergencyMinimal
       ? Math.max(0, height - inputBlock.length)
       : Math.max(1, height - topRows.length - 1 - inputBlock.length);
+    // 对话区至少要留一行正文给活动行（空行 + 活动行）让位；多行输入把它挤小时退回底栏。
+    if (activityInChat && chatHeight < CHAT_ACTIVITY_ROWS + 1) {
+      activityInChat = false;
+      inputBlock[inputBlock.length - 1] = this.buildActivityRow(width);
+    }
     // 输入框正文的屏幕行区间（供鼠标拖选命中）与选区高亮。
     // 顺序：先按未着色的行算出几何，再把高亮写回 inputBlock 的对应位置。
     if (inputLayout) {
@@ -2812,7 +2821,11 @@ export class TerminalUI {
     const tailRowDelta = tailRows.length - previousWrappedCount;
     const sealedRows = this.getSealedRows(chatWidth);
     const wrappedChat = sealedRows.length > 0 ? sealedRows.concat(tailRows) : tailRows;
-    const chatViewportHeight = chatHeight;
+    // 活动行不进 chatContent：动画帧不会让折行缓存失效，也不会被选区复制出去。
+    const activityRows = activityInChat
+      ? ["", `${" ".repeat(chatPadding)}${this.buildActivityRow(chatWidth, false)}`]
+      : [];
+    const chatViewportHeight = chatHeight - (activityInChat ? CHAT_ACTIVITY_ROWS : 0);
     if (this.pendingScrollAnchor) {
       const anchor = this.pendingScrollAnchor;
       this.pendingScrollAnchor = undefined;
@@ -2929,7 +2942,8 @@ export class TerminalUI {
       this.pendingPricingClickRow = undefined;
     }
     this.setMouseMotionEnabled(sidebarVisible);
-    const chatRows = [...visibleChat, ...new Array(chatHeight - visibleChat.length).fill("")].map(
+    const chatColumn = [...visibleChat, ...activityRows];
+    const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")].map(
       (row, index) =>
         sidebarVisible
           ? composeSidebarRow(row, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)

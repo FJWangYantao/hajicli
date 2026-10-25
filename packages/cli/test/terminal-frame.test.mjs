@@ -482,7 +482,7 @@ test("the live tool tail renders below committed chat without entering the trans
   });
 });
 
-test("activity row drops the pulse meter; Esc hint yields to the mode badge", () => {
+test("activity row sits at the chat tail; the status bar stays on the bottom line", () => {
   const activity = (ui, startedAt = Date.now()) => {
     ui.activityFrame = {
       phase: "tool",
@@ -493,25 +493,54 @@ test("activity row drops the pulse meter; Esc hint yields to the mode badge", ()
       startedAt,
     };
   };
-  // 阶段开始后的前 3 秒：宽屏右侧显示“Esc 中止”。
-  // 关掉右侧栏以单独验证底部活动行（侧栏显示时活动行会搬进侧栏）。
+  // 阶段开始后的前 3 秒：宽屏右侧显示“Esc 中止”。关掉右侧栏，只看对话区本身。
   const wide = renderFrame(120, 30, (ui) => {
     ui.setSidebarEnabled(false);
+    ui.chatContent = "CHAT_SENTINEL";
     activity(ui, Date.now() - 1000);
-  }).plainRows.join("\n");
-  assert.match(wide, /⠋ 运行 bash {2}3s +Esc 中止/);
-  assert.doesNotMatch(wide, /[▰▱]/);
-  // 3 秒后：Esc 提示让位给 [权限] ctx 徽标（长任务期间保持可见）。
+  }).plainRows;
+  assert.match(wide.join("\n"), /⠋ 运行 bash {2}3s +Esc 中止/);
+  assert.doesNotMatch(wide.join("\n"), /[▰▱]/);
+  const chatRow = wide.findIndex((row) => row.includes("CHAT_SENTINEL"));
+  const activityRow = wide.findIndex((row) => row.includes("运行 bash"));
+  const inputRow = wide.findIndex((row) => row.includes("INPUT"));
+  assert.equal(activityRow, chatRow + 2, "activity follows the latest chat line after a blank row");
+  assert.ok(activityRow < inputRow, "activity lives in the chat area above the input");
+  assert.match(wide.at(-1), /\[默认\].*ctx/, "status bar keeps the bottom line during activity");
+  // 3 秒后 Esc 提示消失；状态栏常驻底栏，活动行不再重复 [权限] ctx 徽标。
   const settled = renderFrame(120, 30, (ui) => {
     ui.setSidebarEnabled(false);
     activity(ui, Date.now() - 5000);
-  }).plainRows.join("\n");
-  assert.match(settled, /⠋ 运行 bash {2}3s +\[\S+\] ctx \d+%/);
-  assert.doesNotMatch(settled, /Esc 中止/);
+  }).plainRows;
+  const settledActivity = settled.find((row) => row.includes("运行 bash")) ?? "";
+  assert.match(settledActivity, /⠋ 运行 bash {2}3s\s*$/);
+  assert.doesNotMatch(settled.join("\n"), /Esc 中止/);
+  assert.match(settled.at(-1), /\[默认\].*ctx/);
   // 窄屏不显示 Esc 提示，任务信息本身保留。
   const narrow = renderFrame(80, 24, (ui) => activity(ui, Date.now() - 1000)).plainRows.join("\n");
   assert.match(narrow, /⠋ 运行 bash {2}3s/);
   assert.doesNotMatch(narrow, /Esc 中止/);
+});
+
+test("minimal layout falls back to the activity row on the bottom line", () => {
+  // 高度不足 10 行进入 minimal 档：对话区放不下尾部活动行，仍由它顶替状态栏。
+  const frame = renderFrame(60, 9, (ui) => {
+    ui.chatContent = "CHAT_SENTINEL";
+    ui.activityFrame = {
+      phase: "thinking",
+      tone: "active",
+      icon: "✦",
+      label: "思考中",
+      elapsed: "2s",
+    };
+  });
+  const hits = frame.plainRows.filter((row) => row.includes("思考中"));
+  assert.equal(hits.length, 1, "activity is rendered exactly once");
+  assert.equal(
+    frame.plainRows.findLastIndex((row) => row.includes("思考中")),
+    8,
+  );
+  assert.doesNotMatch(frame.plainRows.join("\n"), /\[默认\]/);
 });
 
 function permissionSelection(overrides = {}) {
