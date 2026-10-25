@@ -179,6 +179,46 @@ test("tool run view hides calls until they start and streams an output tail", ()
   assert.match(renders.at(-1), /^ {2}✓ bash {2}make all +6\.0s\n {4}└ 5 行输出 · step 5\n$/);
 });
 
+test("tool run view shows the auto-judge state and a short-lived verdict in place", () => {
+  const harness = createToolRunView();
+  const { view, renders } = harness;
+  view.register("c1", "bash", "make all");
+  assert.equal(renders.length, 0, "a call waiting for permission is not shown");
+
+  view.judge("c1");
+  assert.match(renders.at(-1), /^ {2}◈ bash {2}make all +判定中 0s\n$/);
+  assert.ok(harness.ticking, "the judging state animates like a running tool");
+
+  harness.advance(1_000);
+  assert.match(renders.at(-1), /判定中 1s/);
+
+  view.judged("c1", "AI 放行 · 1234ms");
+  assert.match(renders.at(-1), /判定中 1s +AI 放行 · 1234ms/);
+
+  view.start("c1");
+  assert.match(renders.at(-1), /bash {2}make all +0s +AI 放行 · 1234ms\n$/);
+
+  harness.advance(4_000);
+  assert.doesNotMatch(renders.at(-1), /AI 放行/, "the verdict expires instead of piling up");
+
+  view.finish("c1", { status: "success", text: "ok" }, 4_100);
+  const committed = view.commit();
+  assert.doesNotMatch(committed, /AI 放行|判定中/, "the transcript keeps the plain result cell");
+  assert.match(committed, /^ {2}✓ bash {2}make all +4\.1s/);
+});
+
+test("a denied call keeps its verdict on the rejecting cell", () => {
+  const harness = createToolRunView();
+  const { view, renders } = harness;
+  view.register("c1", "bash", "rm -rf /");
+  view.judge("c1");
+  view.judged("c1", "AI 拦截 · 2100ms");
+  view.finish("c1", { status: "rejected", text: "安全策略拦截：越权删除" }, 0);
+  assert.match(renders.at(-1), /⊘ bash {2}rm -rf \/ +AI 拦截 · 2100ms/);
+  assert.match(renders.at(-1), /└ 安全策略拦截：越权删除/);
+  assert.doesNotMatch(view.commit(), /AI 拦截/, "the transcript drops the verdict note");
+});
+
 test("tool run view commits finished cells in call order and clears the live area", () => {
   const { view, renders } = createToolRunView();
   view.register("a", "read", "a.ts");

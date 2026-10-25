@@ -216,6 +216,8 @@ interface ToolRunEntry {
   preview?: string[];
   outputTail: string[];
   partialLine: string;
+  /** 自动模式判定结论及其过期时间：只挂在实时区域，不进对话正文。 */
+  verdict?: { text: string; until: number };
 }
 
 interface ToolRunViewOptions {
@@ -270,10 +272,31 @@ export class ToolRunView {
 
   start(id: string): void {
     const entry = this.find(id);
-    if (entry?.status !== "pending") return;
+    if (entry?.status !== "pending" && entry?.status !== "judging") return;
     entry.status = "running";
     entry.startedAt = this.now();
     this.ensureTimer();
+    this.flush();
+  }
+
+  /**
+   * 自动模式开始判定：先把这个工具格显示出来（符号 ◈、耗时显示“判定中”），
+   * 让判定过程落在对话区的活动行里，而不是底栏状态行。
+   */
+  judge(id: string): void {
+    const entry = this.find(id);
+    if (entry?.status !== "pending") return;
+    entry.status = "judging";
+    entry.startedAt = this.now();
+    this.ensureTimer();
+    this.flush();
+  }
+
+  /** 判定结论：挂在工具格右侧几秒后自然消失，随动画帧刷新。 */
+  judged(id: string, verdict: string, ttlMs = 3_000): void {
+    const entry = this.find(id);
+    if (!entry) return;
+    entry.verdict = { text: verdict, until: this.now() + ttlMs };
     this.flush();
   }
 
@@ -301,7 +324,9 @@ export class ToolRunView {
     entry.resultText = result.text;
     entry.preview = result.preview;
     entry.durationMs = durationMs;
-    if (!this.entries.some((item) => item.status === "running")) this.clearTimer();
+    if (!this.entries.some((item) => item.status === "running" || item.status === "judging")) {
+      this.clearTimer();
+    }
     this.flush();
   }
 
@@ -313,8 +338,11 @@ export class ToolRunView {
   commit(): string {
     const width = this.getWidth();
     const text = this.entries
-      .filter((entry) => entry.status !== "pending" && entry.status !== "running")
-      .flatMap((entry) => this.formatEntry(entry, width))
+      .filter(
+        (entry) =>
+          entry.status !== "pending" && entry.status !== "running" && entry.status !== "judging",
+      )
+      .flatMap((entry) => this.formatEntry(entry, width, false))
       .map((row) => `${row}\n`)
       .join("");
     this.reset();
@@ -331,8 +359,9 @@ export class ToolRunView {
     return this.entries.find((entry) => entry.id === id);
   }
 
-  private formatEntry(entry: ToolRunEntry, width: number): string[] {
+  private formatEntry(entry: ToolRunEntry, width: number, live = true): string[] {
     if (entry.status === "pending") return [];
+    const judging = entry.status === "judging";
     const running = entry.status === "running";
     const outputTail = running
       ? [...entry.outputTail, cleanOutputLine(entry.partialLine)]
@@ -346,11 +375,15 @@ export class ToolRunView {
       sourceLabel: entry.sourceLabel,
       width,
       spinner: TOOL_SPINNER[this.tick % TOOL_SPINNER.length],
-      timing: running
-        ? formatActivityDuration(this.now() - entry.startedAt)
-        : entry.durationMs !== undefined && entry.status !== "rejected"
-          ? formatToolDuration(entry.durationMs)
-          : undefined,
+      timing: judging
+        ? `判定中 ${formatActivityDuration(this.now() - entry.startedAt)}`
+        : running
+          ? formatActivityDuration(this.now() - entry.startedAt)
+          : entry.durationMs !== undefined && entry.status !== "rejected"
+            ? formatToolDuration(entry.durationMs)
+            : undefined,
+      verdict:
+        live && entry.verdict && this.now() < entry.verdict.until ? entry.verdict.text : undefined,
       resultText: entry.resultText,
       preview: entry.preview,
       outputTail,

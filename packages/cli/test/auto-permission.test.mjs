@@ -37,6 +37,7 @@ test("auto mode calls the injected judge and only sends user messages plus the a
     toolName: "bash",
     args: { command: "npm test" },
     userIntent: "run the tests",
+    toolCallId: "call_1",
   });
 
   assert.equal(result.action, "allow");
@@ -54,6 +55,7 @@ test("auto mode calls the injected judge and only sends user messages plus the a
   );
   assert.equal(events[1].source, "classifier");
   assert.equal(events[1].allowed, true);
+  assert.equal(events[1].toolCallId, "call_1", "判定事件带回调用 id，UI 才能定位工具格");
 });
 
 test("auto mode denies when the classifier denies, with its reason preserved", async () => {

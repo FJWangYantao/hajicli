@@ -117,6 +117,56 @@ test("shared executor does not start a tool if abort fires during pre-hook", asy
   }
 });
 
+test("shared executor stops reporting once aborted even if the tool finishes later", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-executor-late-abort-"));
+  let releaseTool;
+  let postHookCalls = 0;
+  let executedCalls = 0;
+  const hookEngine = new HookEngine();
+  hookEngine.register("PostToolUse", () => {
+    postHookCalls += 1;
+  });
+  const tool = {
+    name: "read",
+    definition: definition("read"),
+    async execute() {
+      await new Promise((resolve) => {
+        releaseTool = resolve;
+      });
+      return "late result";
+    },
+  };
+  const executor = new SharedToolExecutor({
+    cwd,
+    tools: new Map([["read", tool]]),
+    hookEngine,
+    permissionEngine: new PermissionEngine(),
+    snapshotEngine: new SnapshotEngine(cwd),
+    taskStore: new TaskStore(path.join(cwd, ".haji", "tasks")),
+    onToolExecuted: () => {
+      executedCalls += 1;
+    },
+  });
+  const controller = new AbortController();
+
+  try {
+    const pending = executor.execute("read", {}, { abortSignal: controller.signal });
+    for (let tick = 0; tick < 100 && !releaseTool; tick += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    controller.abort();
+    releaseTool();
+    const result = await pending;
+    // 工具确实跑完了，但中止后的回合不应再收到 PostToolUse 或执行证据。
+    assert.equal(result.output, "late result");
+    assert.equal(result.blocked, false);
+    assert.equal(postHookCalls, 0);
+    assert.equal(executedCalls, 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("shared executor appends mutation warnings instead of silently discarding them", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-mutation-warning-"));
   const tool = {

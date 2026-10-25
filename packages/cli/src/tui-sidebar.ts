@@ -6,11 +6,11 @@
  *
  * 分工约定：会话标题、provider/model、推理档、权限档与 git 分支已经由顶部
  * header 和底部状态行负责，侧栏不再重复，只保留它们讲不了的“量”：上下文占用、
- * 费用构成、耗时，以及进行中的任务与子代理。
+ * 费用构成、耗时，以及进行中的任务与子代理。进行中的活动（思考/运行工具）
+ * 属于对话区，不搬进侧栏。
  */
-import type { ActivityFrame } from "./activity-indicator.js";
 import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
-import { buildActivityRow, buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
+import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
 import { SEQ, terminalWidth, truncateAnsiText, truncateText } from "./terminal-text.js";
 
 /** 右侧信息栏显示所需状态（TerminalUI 持有，渲染时快照传入）。 */
@@ -28,8 +28,6 @@ export interface SidebarState {
   lastTurnMs?: number;
   /** 本会话上下文压缩次数；>0 时在上下文区显示“已压缩”徽标。 */
   compactionCount?: number;
-  /** 当前活动帧；侧栏出现时由底部状态行搬到这里，避免重复。 */
-  activity?: ActivityFrame;
   taskPlan?: TaskPanelState;
   agents?: readonly AgentPanelItem[];
 }
@@ -176,7 +174,7 @@ function buildContextRing(ratio: number, width: number, height: number): string[
 }
 
 /**
- * 构建右侧栏各行：活动 → 上下文（主指标块）→ 费用表 → 任务 → 子代理，按高度裁剪。
+ * 构建右侧栏各行：上下文（主指标块）→ 费用表 → 任务 → 子代理，按高度裁剪。
  * hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）。
  */
 export function buildSidebarFrame(
@@ -216,12 +214,8 @@ export function buildSidebarFrame(
     push(`${SEQ.muted}${label}${SEQ.reset}${" ".repeat(gap)}${valueColor}${fitted}${SEQ.reset}`);
   };
 
-  // 活动行放在最上方：侧栏出现时底部状态行让位给常规状态，当前在跑什么就在这里。
-  if (state.activity) {
-    const activityRow = buildActivityRow(state.activity, contentW);
-    if (activityRow) push(activityRow);
-  }
-
+  // 侧栏只放“量”与进度（上下文、费用、任务、子代理）：
+  // 进行中的活动行留在对话区一侧，避免同一件事在屏幕上出现两次。
   // ── 上下文：整栏唯一的大图形，百分比压中心、用量紧贴其下居中，形成一条中线 ──
   const used = Math.max(0, state.usedTokens);
   const max = Math.max(1, state.maxTokens);

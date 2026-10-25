@@ -99,10 +99,12 @@ function cleanupTerminalUI(ui) {
   if (ui.protocolFlushTimer) clearTimeout(ui.protocolFlushTimer);
   if (ui.agentPanelTimer) clearInterval(ui.agentPanelTimer);
   if (ui.selectionAutoScrollTimer) clearInterval(ui.selectionAutoScrollTimer);
+  if (ui.copiedNoticeTimer) clearTimeout(ui.copiedNoticeTimer);
   ui.streamRenderTimer = null;
   ui.protocolFlushTimer = null;
   ui.agentPanelTimer = null;
   ui.selectionAutoScrollTimer = null;
+  ui.copiedNoticeTimer = null;
   ui.started = false;
   ui.interactive = false;
 }
@@ -666,4 +668,57 @@ test("粘贴的图片以 [文件名] chip 显示在文字输入行上方", () =>
   const cursorMatch = /\x1b\[(\d+);(\d+)H/.exec(frame.ui.renderedCursorState);
   assert.ok(cursorMatch, "cursor position is rendered");
   assert.equal(Number(cursorMatch[1]), inputIndex + 1, "光标仍在文字输入行");
+});
+
+test("复制角标贴在顶行右端，不占用底栏", () => {
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.chatContent = "CHAT LINE";
+    ui.copiedNotice = "Copied";
+  });
+
+  // 顶行是标题行（HAJI），角标贴在右端且整行宽度恰好等于安全宽度。
+  assert.ok(frame.plainRows[0].endsWith("Copied"), "Copied 出现在右上角");
+  assert.equal(frame.plainRows[0].length, 79);
+  assert.ok(!frame.plainRows.some((row) => row.includes("ctx") && row.includes("Copied")));
+});
+
+test("头部隐藏时复制角标退回底栏提示", () => {
+  const frame = renderFrame(20, 8, (ui) => {
+    ui.copiedNotice = "Copied";
+  });
+
+  assert.ok(
+    frame.plainRows.some((row) => row.includes("Copied")),
+    "矮终端仍能看到提示",
+  );
+  assert.ok(!frame.plainRows[0].includes("Copied"), "不覆盖对话首行");
+});
+
+test("鼠标拖选松开即自动复制，并保留高亮", async () => {
+  await withFakeStdout(80, 24, async () => {
+    const ui = createTerminalUI();
+    try {
+      ui.chatContent = "HELLO WORLD";
+      ui.renderFrame();
+      const viewport = ui.chatViewport;
+      const row = viewport.screenTop;
+      const column = viewport.padding + 1;
+      let copied = "";
+      ui.clipboardWriter.write = async (text) => {
+        copied = text;
+        return true;
+      };
+
+      ui.handleMouseEvent({ type: "mouse", action: "down", button: 0, column, row });
+      ui.handleMouseEvent({ type: "mouse", action: "move", button: 32, column: column + 4, row });
+      ui.handleMouseEvent({ type: "mouse", action: "up", button: 0, column: column + 4, row });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(copied, "HELLO");
+      assert.equal(ui.copiedNotice, "Copied");
+      assert.equal(ui.textSelection.active, true, "高亮保留，便于继续调整选区");
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
 });

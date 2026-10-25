@@ -74,6 +74,11 @@ export {
   wrapAnsiWithStateFallback,
 } from "./terminal-text.js";
 
+/** 拆分转义序列（鼠标/粘贴）等待后续字节的上限，宽松一些以兼容慢速链路。 */
+const PROTOCOL_FLUSH_MS = 80;
+/** 单独 Esc 的确认窗口：只等可能紧跟的 Alt 组合键，等太久会让中止明显迟滞。 */
+const LONE_ESCAPE_FLUSH_MS = 16;
+
 function enableWindowsVirtualTerminalInput(): boolean {
   if (process.platform !== "win32") {
     return true;
@@ -451,6 +456,9 @@ export class TerminalUI {
   /** 底栏临时提示（Ctrl+C 确认、清空草稿等），超时自动清除。 */
   private transientHintText = "";
   private transientHintTimer: NodeJS.Timeout | null = null;
+  /** 复制成功的右上角角标（自动复制 / Ctrl+C 共用），超时自动消失。 */
+  private copiedNotice = "";
+  private copiedNoticeTimer: NodeJS.Timeout | null = null;
   /** @ 文件补全：当前输入的 @ 词（含 @），空串表示不在补全状态。 */
   private fileMentionQuery = "";
   private fileMentionCandidates: string[] = [];
@@ -758,6 +766,27 @@ export class TerminalUI {
   }
 
   /**
+   * 复制成功的即时反馈：右上角闪一下 “Copied”，不占用底栏。
+   * 头部隐藏（minimal / 矮终端）时没有可覆盖的顶行，退回底栏临时提示。
+   */
+  private flashCopied(durationMs = 1_200): void {
+    if (!this.started) return;
+    if (!this.interactive) {
+      stderr.write("Copied\n");
+      return;
+    }
+    this.copiedNotice = "Copied";
+    if (this.copiedNoticeTimer) clearTimeout(this.copiedNoticeTimer);
+    this.copiedNoticeTimer = setTimeout(() => {
+      this.copiedNoticeTimer = null;
+      this.copiedNotice = "";
+      this.scheduleRender();
+    }, durationMs);
+    this.copiedNoticeTimer.unref?.();
+    this.scheduleRender(true);
+  }
+
+  /**
    * 完成 / 待授权提醒。bell 写 BEL；desktop 写 OSC 9（iTerm2 / Windows Terminal）
    * 与 OSC 777（部分 Linux 终端），不支持的终端静默忽略。非交互模式不提醒。
    */
@@ -864,9 +893,10 @@ export class TerminalUI {
 
     this.originalRawMode = Boolean(stdin.isRaw);
     // 单独的 Esc 默认要等 500ms 才判定（期间的下一个键会被并成 Alt+键，Esc 后紧跟回车
-    // 会变成“确认”）。终端转义序列总是整块到达，50ms 足以区分。
+    // 会变成“确认”）。分包歧义已由协议解析器先处理，这里不再二次等待：
+    // 完整转义序列仍整块到达，单独的 Esc 可以立刻上报。
     readline.emitKeypressEvents(this.keyInput, {
-      escapeCodeTimeout: 50,
+      escapeCodeTimeout: 0,
     } as unknown as readline.Interface);
     stdin.setRawMode(true);
     enableWindowsVirtualTerminalInput();
@@ -928,6 +958,11 @@ export class TerminalUI {
       this.transientHintTimer = null;
     }
     this.transientHintText = "";
+    if (this.copiedNoticeTimer) {
+      clearTimeout(this.copiedNoticeTimer);
+      this.copiedNoticeTimer = null;
+    }
+    this.copiedNotice = "";
     this.fileMentionQuery = "";
     this.fileMentionCandidates = [];
     this.pendingWheelRows = 0;
@@ -1554,19 +1589,38 @@ export class TerminalUI {
     return this.textSelection.selectedText(this.getSelectionLayout().document);
   }
 
-  private copyChatSelection(): boolean {
+  /**
+   * 复制当前选区。默认复制后清除选区（Ctrl+C 的旧行为）；鼠标松开时的
+   * 自动复制保留高亮，方便继续调整选区。
+   */
+  private copyChatSelection(clearSelection = true): boolean {
     const text = this.getSelectedChatText();
     if (!text) {
       return false;
     }
 
     void this.clipboardWriter.write(text).then((success) => {
-      if (!success || this.getSelectedChatText() !== text) return;
-      this.textSelection.clear();
-      this.selectionLayout = undefined;
+      if (!success) return;
+      this.flashCopied();
+      // 选区在复制期间被改动时不要清掉新的选区。
+      if (clearSelection && this.getSelectedChatText() === text) {
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+      }
       this.scheduleRender(true);
     });
     return true;
+  }
+
+  /** 把复制角标贴到首行右端（顶部标题行）。宽度不够时不贴。 */
+  private overlayCopiedNotice(rows: string[], width: number): void {
+    if (!this.copiedNotice || rows.length === 0) return;
+    const badge = `${SEQ.bold}${SEQ.green}${this.copiedNotice}${SEQ.reset}`;
+    const badgeWidth = terminalWidth(badge);
+    if (badgeWidth + 1 >= width) return;
+    const base = truncateAnsiText(rows[0] ?? "", width - badgeWidth - 1);
+    const padding = " ".repeat(Math.max(1, width - terminalWidth(base) - badgeWidth));
+    rows[0] = `${base}${padding}${badge}`;
   }
 
   private dispatchProtocolEvent(event: TerminalProtocolEvent): void {
@@ -1735,6 +1789,8 @@ export class TerminalUI {
       this.stopSelectionAutoScroll();
       this.selectionPointer = undefined;
       this.textSelection.finish(cell);
+      // 松开鼠标即自动复制，不必再按 Ctrl+C；高亮保留，方便继续调整选区。
+      this.copyChatSelection(false);
       this.scheduleRender();
     }
   }
@@ -1749,12 +1805,17 @@ export class TerminalUI {
       this.dispatchProtocolEvent(event);
     }
 
+    // 只有单独 Esc 走短窗口：它要么是真正的中止键，要么是 Alt+键的首字节。
+    // 鼠标/粘贴等长序列仍用 80ms，避免慢速链路上的分包被误判成键盘输入。
+    const flushDelay = this.protocolParser.isLoneEscapePending()
+      ? LONE_ESCAPE_FLUSH_MS
+      : PROTOCOL_FLUSH_MS;
     this.protocolFlushTimer = setTimeout(() => {
       this.protocolFlushTimer = null;
       for (const event of this.protocolParser.flushPending()) {
         this.dispatchProtocolEvent(event);
       }
-    }, 80);
+    }, flushDelay);
   };
 
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
@@ -2182,7 +2243,6 @@ export class TerminalUI {
       completionTokens: this.costCompletionTokens,
       lastTurnMs: this.lastTurnMs,
       compactionCount: this.compactionCount,
-      activity: this.activityFrame,
       taskPlan: this.taskPanelTitle
         ? {
             title: this.taskPanelTitle,
@@ -2300,10 +2360,13 @@ export class TerminalUI {
     const emergencyMinimal = minimal && height < 8;
     // 活动状态不再单独占用输入框上方一行，而是与状态栏共用底部这一行：
     // 有活动时顶替状态栏显示，空闲时才显示常规状态，因此聊天区高度不会随动画变化。
-    // 临时提示（Ctrl+C 确认等）优先级介于两者之间：没有活动时占位、超时自动消失。
-    // 侧栏出现时活动行搬进侧栏顶部（与任务/子代理面板同一策略），底部恢复常规状态行。
+    // 临时提示（Ctrl+C 确认等）、复制角标优先级介于两者之间：没有活动时占位、超时自动消失。
+    // 活动行始终留在底栏，不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
     const activityRow =
-      (sidebarVisible ? "" : this.buildActivityRow(width)) ||
+      this.buildActivityRow(width) ||
+      (this.copiedNotice && topRows.length === 0
+        ? truncateAnsiText(`${SEQ.bold}${SEQ.green}${this.copiedNotice}${SEQ.reset}`, width)
+        : "") ||
       (this.transientHintText ? truncateAnsiText(this.transientHintText, width) : "") ||
       (this.status ? truncateAnsiText(this.status, width) : "");
     const statusBar =
@@ -2500,6 +2563,8 @@ export class TerminalUI {
       ? [...chatRows, ...inputBlock].slice(0, height)
       : [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
     while (screenRows.length < height) screenRows.push("");
+    // 复制角标贴在顶行右端（标题行）；头部隐藏时改走底栏提示。
+    if (topRows.length > 0) this.overlayCopiedNotice(screenRows, width);
     const fullRefresh =
       width !== this.renderedScreenWidth ||
       height !== this.renderedScreenHeight ||

@@ -73,6 +73,11 @@ export class TerminalProtocolParser {
     return this.parseAvailable();
   }
 
+  /** 缓冲区里是否只有一个待确认的 Esc：调用方据此选择更短的等待窗口。 */
+  isLoneEscapePending(): boolean {
+    return this.buffer === "\x1b";
+  }
+
   flushPending(): TerminalProtocolEvent[] {
     if (!this.buffer) {
       return [];

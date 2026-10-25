@@ -126,12 +126,14 @@ test("sidebar reports the last turn duration and compaction count", () => {
   assert.match(text, /⟳ 已压缩 ×2/);
 });
 
-test("the in-flight activity rides at the top of the sidebar", () => {
+test("the sidebar stays status-only when something is in flight", () => {
   const frame = { phase: "tool", tone: "active", icon: "⠋", label: "bash", elapsed: "3s" };
   const rows = buildSidebarRows(sidebarState({ activity: frame }), 30, 30, 5000).map(stripAnsi);
-  assert.match(rows[0], /bash/);
-  assert.match(rows[0], /3s/);
-  assert.match(rows[1] ?? "", /^$/);
+  assert.ok(!rows.some((row) => row.includes("bash")), "侧栏不显示进行中的活动");
+  assert.ok(
+    rows.some((row) => row.includes("上下文")),
+    "上下文等状态信息照常显示",
+  );
 });
 
 test("formatTurnDuration keeps short turns at one decimal and long ones in m/s", () => {
@@ -290,7 +292,7 @@ test("terminal ui setters feed the sidebar stat lines", () => {
   }
 });
 
-test("activity rides in the sidebar instead of the bottom status row", () => {
+test("activity stays in the bottom row while the sidebar keeps status only", () => {
   const ui = createTerminalUI();
   try {
     ui.activityFrame = {
@@ -304,7 +306,11 @@ test("activity rides in the sidebar instead of the bottom status row", () => {
     const rows = renderPlain(ui);
     const hits = rows.filter((row) => row.includes("bash"));
     assert.equal(hits.length, 1, "activity is rendered exactly once");
-    assert.ok(hits[0].includes("│"), "activity sits on the sidebar side");
+    assert.ok(!hits[0].includes("│"), "activity must not move into the sidebar");
+    assert.ok(
+      rows.some((row) => row.includes("│ 上下文")),
+      "the sidebar still shows status information",
+    );
   } finally {
     cleanupTerminalUI(ui);
   }

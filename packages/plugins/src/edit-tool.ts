@@ -47,6 +47,73 @@ interface OldTextMissAnalysis {
   detail: string;
 }
 
+/** 把文件中的若干行渲染成带行号的诊断片段，避免失败信息本身撑爆上下文。 */
+function renderMissSnippet(
+  fileLines: readonly string[],
+  hitLineIndex: number,
+  anchorOffset: number,
+  oldLineCount: number,
+): string {
+  const start = Math.max(0, hitLineIndex - anchorOffset - 1);
+  const end = Math.min(fileLines.length, start + Math.min(oldLineCount + 2, HINT_MAX_LINES));
+  return fileLines
+    .slice(start, end)
+    .map((line, offset) => {
+      const text =
+        line.length > HINT_MAX_LINE_LENGTH ? `${line.slice(0, HINT_MAX_LINE_LENGTH - 1)}…` : line;
+      return `${start + offset + 1} | ${text}`;
+    })
+    .join("\n");
+}
+
+interface AnchorFallback {
+  lineIndex: number;
+  category: string;
+  hint: string;
+}
+
+/**
+ * 整行锚点没命中时继续细分：行内空白不同、只写了半行、多带前缀各有各的修法。
+ * 不细分的话三种情况都会含糊地报成「锚点行不存在」，模型只能盲猜着重试。
+ */
+function findAnchorFallback(
+  fileLines: readonly string[],
+  anchorText: string,
+): AnchorFallback | undefined {
+  const squash = (value: string) => value.replace(/\s+/g, "");
+  const squashedAnchor = squash(anchorText);
+  if (squashedAnchor) {
+    const lineIndex = fileLines.findIndex((line) => squash(line) === squashedAnchor);
+    if (lineIndex !== -1) {
+      return {
+        lineIndex,
+        category: "行内空白不一致",
+        hint: "字符相同，但行内空格或 Tab 与文件不一致。",
+      };
+    }
+  }
+  const fragmentIndex = fileLines.findIndex((line) => line.includes(anchorText));
+  if (fragmentIndex !== -1) {
+    return {
+      lineIndex: fragmentIndex,
+      category: "片段不是整行",
+      hint: "oldText 的最长一行只是文件某行的一部分，整行比对必然落空。请补成上面对应的整行，或改用不带换行的唯一片段。",
+    };
+  }
+  const prefixIndex = fileLines.findIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed.length >= 8 && anchorText.includes(trimmed);
+  });
+  if (prefixIndex !== -1) {
+    return {
+      lineIndex: prefixIndex,
+      category: "多出前缀或多余字符",
+      hint: "oldText 的最长一行比文件原文多了前缀或字符。请删掉行号、grep 的「路径:行:」或 diff 的 +/- 标记，只保留原文。",
+    };
+  }
+  return undefined;
+}
+
 /**
  * oldText 未命中时给出可据以修正的线索：常见的复制错误，或文件中最接近位置的实际内容（带行号）。
  * 同时给出稳定的错误类别，避免「行号前缀错误」和「缩进不一致」被当成同一种失败反复累计。
@@ -79,27 +146,27 @@ function analyzeOldTextMiss(content: string, oldText: string): OldTextMissAnalys
       if (line.trim() === anchorText) hits.push(index);
     });
   }
-  if (hits.length === 0) {
+  if (hits.length > 0) {
+    const where = hits.length > 1 ? `（该行共出现 ${hits.length} 处，以下为第 1 处）` : "";
     return {
-      category: "锚点行不存在",
-      detail: `oldText 中最具特征的一行在文件里不存在（${anchorText.slice(0, 80) || "空白"}）。文件可能已被之前的编辑改动，请先用 read 重新读取相关区域，不要凭记忆重试。`,
+      category: "缩进或空白不一致",
+      detail: `文件中最接近的位置${where}实际内容如下，请对照缩进、空白和字符逐字修正 oldText（不要带行号前缀）：\n${renderMissSnippet(fileLines, hits[0], anchorOffset, oldLines.length)}`,
     };
   }
 
-  const start = Math.max(0, hits[0] - anchorOffset - 1);
-  const end = Math.min(fileLines.length, start + Math.min(oldLines.length + 2, HINT_MAX_LINES));
-  const snippet = fileLines
-    .slice(start, end)
-    .map((line, offset) => {
-      const text =
-        line.length > HINT_MAX_LINE_LENGTH ? `${line.slice(0, HINT_MAX_LINE_LENGTH - 1)}…` : line;
-      return `${start + offset + 1} | ${text}`;
-    })
-    .join("\n");
-  const where = hits.length > 1 ? `（该行共出现 ${hits.length} 处，以下为第 1 处）` : "";
+  if (anchorText) {
+    const fallback = findAnchorFallback(fileLines, anchorText);
+    if (fallback) {
+      return {
+        category: fallback.category,
+        detail: `${fallback.hint}最接近的位置实际内容如下，请按整行原文重写 oldText：\n${renderMissSnippet(fileLines, fallback.lineIndex, anchorOffset, oldLines.length)}`,
+      };
+    }
+  }
+
   return {
-    category: "缩进或空白不一致",
-    detail: `文件中最接近的位置${where}实际内容如下，请对照缩进、空白和字符逐字修正 oldText（不要带行号前缀）：\n${snippet}`,
+    category: "锚点行不存在",
+    detail: `oldText 中最具特征的一行在文件里不存在（${anchorText.slice(0, 80) || "空白"}）。文件可能已被改动，或 oldText 来自其他文件、凭记忆写成。请先用 read 重新读取相关区域，不要凭记忆重试。`,
   };
 }
 

@@ -64,3 +64,18 @@ test("flushes a standalone escape as keyboard input", () => {
   assert.deepEqual(parser.push("\x1b"), []);
   assert.deepEqual(parser.flushPending(), [{ type: "keyboard", data: "\x1b" }]);
 });
+
+test("marks only a bare escape as pending so the UI can flush it quickly", () => {
+  const lone = new TerminalProtocolParser();
+  assert.deepEqual(lone.push("\x1b"), []);
+  assert.equal(lone.isLoneEscapePending(), true);
+
+  const altKey = new TerminalProtocolParser();
+  assert.deepEqual(altKey.push("\x1b"), []);
+  assert.deepEqual(altKey.push("x"), [{ type: "keyboard", data: "\x1bx" }]);
+  assert.equal(altKey.isLoneEscapePending(), false);
+
+  const mousePrefix = new TerminalProtocolParser();
+  assert.deepEqual(mousePrefix.push("\x1b["), []);
+  assert.equal(mousePrefix.isLoneEscapePending(), false);
+});

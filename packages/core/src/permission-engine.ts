@@ -85,6 +85,8 @@ export interface PermissionEvaluateOptions {
   /** 本会话用户说过的话（从早到晚）；缺省退回 `userIntent` 单条。 */
   userMessages?: readonly string[];
   riskThreshold?: RiskLevel;
+  /** 发起本次调用的工具调用 id；透传进判定事件供 UI 定位工具格。 */
+  toolCallId?: string;
   /** 用户中止当前回合时透传，用于取消分类器调用。 */
   abortSignal?: AbortSignal;
 }
@@ -93,6 +95,8 @@ export interface PermissionEvaluateOptions {
 export interface AutoJudgeEvent {
   phase: "start" | "done";
   toolName: string;
+  /** 触发判定的工具调用 id；UI 用它把判定状态挂到对应工具格上。 */
+  toolCallId?: string;
   /** 判定来源：模型分类器、确定性硬熔断、未注入分类器时的规则回退。 */
   source: "classifier" | "hard-block" | "fallback" | "error";
   allowed?: boolean;
@@ -419,13 +423,16 @@ export class PermissionEngine {
   ): Promise<PermissionCheckResult> {
     const startedAt = Date.now();
     const cwd = this.autoConfig.cwd ?? process.cwd();
+    // 判定事件一并带上工具调用 id：UI 据此把「判定中 / 结论」挂到对话区对应的工具格上。
+    const emit = (event: Omit<AutoJudgeEvent, "toolName" | "toolCallId">): void => {
+      this.emitAutoJudge({ ...event, toolName, toolCallId: options.toolCallId });
+    };
 
     // 确定性硬熔断优先于模型：分类器再准也不把「一句命令毁掉机器」交给它判。
     const hardBlockReason = hardBlock(toolName, args, cwd);
     if (hardBlockReason) {
-      this.emitAutoJudge({
+      emit({
         phase: "done",
-        toolName,
         source: "hard-block",
         allowed: false,
         reason: hardBlockReason,
@@ -436,16 +443,15 @@ export class PermissionEngine {
 
     const judge = this.autoConfig.judge;
     if (!judge) {
-      this.emitAutoJudge({ phase: "start", toolName, source: "fallback" });
+      emit({ phase: "start", source: "fallback" });
       const assessment = await this.classifier.assess({
         toolName,
         args,
         userIntent: options.userIntent,
         riskThreshold: options.riskThreshold,
       });
-      this.emitAutoJudge({
+      emit({
         phase: "done",
-        toolName,
         source: "fallback",
         allowed: assessment.isSafe,
         reason: assessment.reason,
@@ -460,7 +466,7 @@ export class PermissionEngine {
           };
     }
 
-    this.emitAutoJudge({ phase: "start", toolName, source: "classifier" });
+    emit({ phase: "start", source: "classifier" });
     const configMessages = this.autoConfig.userMessages?.();
     const userMessages =
       configMessages && configMessages.length > 0
@@ -487,9 +493,8 @@ export class PermissionEngine {
       const decision = parseDecision(reply);
       if (!decision) {
         const reason = "分类器返回无法解析的判定，已按拒绝处理。请改用更安全的做法或询问用户。";
-        this.emitAutoJudge({
+        emit({
           phase: "done",
-          toolName,
           source: "error",
           allowed: false,
           reason,
@@ -497,9 +502,8 @@ export class PermissionEngine {
         });
         return { action: "deny", riskLevel: "high", reason };
       }
-      this.emitAutoJudge({
+      emit({
         phase: "done",
-        toolName,
         source: "classifier",
         allowed: decision.allow,
         reason: decision.reason,
@@ -516,9 +520,8 @@ export class PermissionEngine {
           : `分类器调用失败，已按拒绝处理：${
               error instanceof Error ? error.message : String(error)
             }`;
-      this.emitAutoJudge({
+      emit({
         phase: "done",
-        toolName,
         source: "error",
         allowed: false,
         reason: aborted,

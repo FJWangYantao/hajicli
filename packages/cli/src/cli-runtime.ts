@@ -278,10 +278,10 @@ export function buildPermissionCardItems(grant: PermissionGrant | undefined): Pe
   ];
 }
 
-export type ToolCellStatus = "running" | "success" | "failed" | "rejected";
+export type ToolCellStatus = "judging" | "running" | "success" | "failed" | "rejected";
 
 export interface ToolResultSummary {
-  status: Exclude<ToolCellStatus, "running">;
+  status: Exclude<ToolCellStatus, "running" | "judging">;
   text: string;
   /** 结果说明下面的几行输出预览（已清洗，未按宽度截断）；没有可看的就不给。 */
   preview?: string[];
@@ -531,6 +531,8 @@ export interface ToolCellOptions {
   timing?: string;
   /** 子代理等来源标签，显示在工具名之前。 */
   sourceLabel?: string;
+  /** 自动模式判定结论（AI 放行 / AI 拦截 · 1.2s）：只用于实时区域，不进对话正文。 */
+  verdict?: string;
   /** 完成后的结果说明，显示在第二行。 */
   resultText?: string;
   /** 结果说明下面的输出预览（最多 TOOL_PREVIEW_LINES 行）。 */
@@ -553,21 +555,25 @@ export const TOOL_CELL_INDENT = "  ";
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
   const mark =
-    options.status === "running"
-      ? colors.accent(options.spinner || "●")
-      : options.status === "success"
-        ? colors.boldGreen("✓")
-        : options.status === "rejected"
-          ? colors.boldYellow("⊘")
-          : colors.boldRed("✕");
+    options.status === "judging"
+      ? colors.accent("◈")
+      : options.status === "running"
+        ? colors.accent(options.spinner || "●")
+        : options.status === "success"
+          ? colors.boldGreen("✓")
+          : options.status === "rejected"
+            ? colors.boldYellow("⊘")
+            : colors.boldRed("✕");
   const source = options.sourceLabel ? `${options.sourceLabel} ` : "";
   const timing = options.timing || "";
+  const verdict = options.verdict || "";
   const fixedWidth =
     terminalWidth(TOOL_CELL_INDENT) +
     2 +
     terminalWidth(source) +
     terminalWidth(options.toolName) +
-    (timing ? terminalWidth(timing) + 2 : 0);
+    (timing ? terminalWidth(timing) + 2 : 0) +
+    (verdict ? terminalWidth(verdict) + 2 : 0);
   const summaryWidth = Math.max(0, width - fixedWidth - 2);
   const summary = fitText(options.summary, summaryWidth);
   // 耗时紧跟在参数后面，不贴右边：工具块写进对话时宽度就定了，
@@ -580,6 +586,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     options.toolName,
     summary ? `  ${summary}` : "",
     timing ? `  ${colors.faint(timing)}` : "",
+    verdict ? `  ${colors.faint(verdict)}` : "",
   ].join("");
   const rows = [header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);

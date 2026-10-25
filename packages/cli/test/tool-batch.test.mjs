@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import { performanceMonitor } from "@hajicli/core";
 import {
   buildRepeatedFailureNotice,
+  buildRepeatedFailureSkipMessage,
   createToolCallBatches,
   MAX_PARALLEL_READ_ONLY_TOOLS,
   normalizeFailureReason,
   RepeatedFailureTracker,
+  raceWithAbort,
   runToolCallBatch,
 } from "../dist/tool-batch.js";
 
@@ -183,4 +186,57 @@ test("failure reason keeps distinct edit-miss categories separate", () => {
 test("repeated failure notice only appears from the second identical failure", () => {
   assert.equal(buildRepeatedFailureNotice(1), "");
   assert.match(buildRepeatedFailureNotice(2), /相同原因失败 2 次.*不要再发起同样的调用/);
+  assert.match(buildRepeatedFailureNotice(2), /先 read 重新读取/);
+});
+
+test("repeated failure skip message names the stop reason for the remaining calls", () => {
+  assert.match(buildRepeatedFailureSkipMessage(), /同一工具已连续以相同原因失败 3 次/);
+  assert.match(buildRepeatedFailureSkipMessage(), /本轮自动重试已停止/);
+});
+
+test("turn-runner skips the remaining tool calls once the repeated-failure limit is hit", () => {
+  const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /if \(stoppedByRepeatedFailure\) \{\s*\n\s*for \(const tc of batch\.calls\)/,
+    "停止后跳过同一条消息里剩余的批次",
+  );
+  assert.ok(source.includes("buildRepeatedFailureSkipMessage()"), "为跳过的调用补上工具结果");
+});
+
+test("raceWithAbort returns the tool result when it finishes first", async () => {
+  const controller = new AbortController();
+  assert.equal(await raceWithAbort(Promise.resolve("ok"), controller.signal), "ok");
+});
+
+test("raceWithAbort stops waiting as soon as the signal aborts", async () => {
+  const controller = new AbortController();
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const raced = raceWithAbort(pending, controller.signal);
+  controller.abort();
+  assert.equal(await raced, undefined);
+  // 后台仍可完成；迟到的结果不能再影响调用方。
+  release("late");
+});
+
+test("raceWithAbort short-circuits an already aborted signal", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(await raceWithAbort(new Promise(() => {}), controller.signal), undefined);
+});
+
+test("raceWithAbort absorbs a late rejection after abort", async () => {
+  const controller = new AbortController();
+  let rejectLate;
+  const pending = new Promise((_, reject) => {
+    rejectLate = reject;
+  });
+  const raced = raceWithAbort(pending, controller.signal);
+  controller.abort();
+  assert.equal(await raced, undefined);
+  rejectLate(new Error("late failure"));
+  await new Promise((resolve) => setImmediate(resolve));
 });

@@ -50,9 +50,11 @@ import { buildTurnSummary } from "./terminal-panels.js";
 import { colors } from "./theme.js";
 import {
   buildRepeatedFailureNotice,
+  buildRepeatedFailureSkipMessage,
   createToolCallBatches,
   REPEATED_FAILURE_STOP_AT,
   RepeatedFailureTracker,
+  raceWithAbort,
   runToolCallBatch,
 } from "./tool-batch.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
@@ -277,19 +279,20 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   deps.setForegroundAbortSignal(requestAbortController.signal);
   ui.onEsc(() => {
     if (isTurnAborted) return;
+    isTurnAborted = true;
+    // 先切断网络与工具，再做界面收尾：中止信号早一个事件循环生效，观感更快。
+    requestAbortController.abort();
     if (!requestStarted && canReclaimPrompt) {
       reclaimPrompt();
       return;
     }
     if (!requestStarted) commitPromptForRequest();
-    isTurnAborted = true;
     stopActiveTurnVisuals();
     const interruptedDraft = ui.cancelInput();
     if (interruptedDraft?.trim()) {
       deferredInputDrafts.unshift(interruptedDraft);
     }
     activityIndicator.start("stopping", "正在终止", "等待当前操作响应中止信号");
-    requestAbortController.abort();
   });
   deps.startBackgroundInput();
 
@@ -601,6 +604,17 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       let stoppedByRepeatedFailure = false;
 
       for (const batch of batches) {
+        // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
+        if (stoppedByRepeatedFailure) {
+          for (const tc of batch.calls) {
+            messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: buildRepeatedFailureSkipMessage(),
+            });
+          }
+          continue;
+        }
         // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
         for (const tc of batch.calls) {
           const registeredArgs = (validateToolCall(tc).arguments || {}) as Record<string, unknown>;
@@ -623,7 +637,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           const parsedToolCall = validateToolCall(tc);
           const args = (parsedToolCall.arguments || {}) as Record<string, unknown>;
           try {
-            const execution = await toolExecutor.execute(toolName, args, {
+            // 工具自行收尾可能拖住整个回合：中止先到就立即标记跳过，
+            // 后台仍会跑完 snapshot 收尾与清理，但不再向本回合回报。
+            const executionPromise = toolExecutor.execute(toolName, args, {
               toolCallId: tc.id,
               abortSignal: requestAbortController.signal,
               depth: 0,
@@ -634,8 +650,15 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               suppressStatus: batch.parallel,
               batchIndex,
               batchSize: batch.calls.length,
-              onProgress: (progress) => toolRunView.output(tc.id, progress.chunk),
+              onProgress: (progress) => {
+                if (requestAbortController.signal.aborted) return;
+                toolRunView.output(tc.id, progress.chunk);
+              },
             });
+            const execution = await raceWithAbort(executionPromise, requestAbortController.signal);
+            if (!execution) {
+              return { tc, toolName, args, duration: 0, skipped: true };
+            }
             const summary = summarizeToolResult(toolName, execution.output, execution, args);
             toolRunView.finish(tc.id, summary, execution.duration);
             return {

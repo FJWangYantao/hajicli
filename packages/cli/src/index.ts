@@ -556,6 +556,7 @@ async function main() {
       args: ctx.args || {},
       userIntent: ctx.userIntent || "",
       riskThreshold: ctx.riskThreshold as RiskLevel,
+      toolCallId: ctx.toolCallId,
       abortSignal: ctx.abortSignal,
     });
 
@@ -941,6 +942,7 @@ async function main() {
   ui.setPermissionMode(permissionMode);
   // Auto 模式：把主/杂活模型接成安全分类器。判定失败、超时、回复无法解析一律拒绝，
   // 与 auto-classifier 的 fail-closed 语义一致；用户中止回合时沿 abortSignal 取消请求。
+  // 判定状态挂在对话区该工具格上（◈ 判定中 → 结论），不占用底栏状态行，也不写对话正文。
   permissionEngine.configureAuto({
     judge: async ({ system, user, signal }) => {
       const utility = getUtilityRuntime();
@@ -963,10 +965,12 @@ async function main() {
     userMessages: () => messages.filter((message) => message.role === "user").map((m) => m.content),
     onJudge: (event) => {
       if (!ui.isInteractive()) return;
+      const toolCallId = event.toolCallId;
       if (event.phase === "start") {
-        ui.showTransientHint(`自动判定中 · ${event.toolName}`, 60_000);
+        if (toolCallId) toolRunView.judge(toolCallId);
         return;
       }
+      const duration = event.durationMs !== undefined ? ` · ${event.durationMs}ms` : "";
       const verdict =
         event.source === "hard-block"
           ? "硬熔断"
@@ -979,8 +983,7 @@ async function main() {
               : event.allowed
                 ? "AI 放行"
                 : "AI 拦截";
-      const duration = event.durationMs !== undefined ? ` · ${event.durationMs}ms` : "";
-      ui.showTransientHint(`${verdict} · ${event.toolName}${duration}`, 3_000);
+      if (toolCallId) toolRunView.judged(toolCallId, `${verdict}${duration}`);
     },
   });
   let planReadyForReview = false;

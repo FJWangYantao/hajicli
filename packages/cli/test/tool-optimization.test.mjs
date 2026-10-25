@@ -274,6 +274,55 @@ test("edit miss messages start with a stable error category", async () => {
   });
 });
 
+test("edit miss separates a partial line, extra prefixes and inner whitespace", async () => {
+  await withWorkspace(async (workspace) => {
+    const target = path.join(workspace, "partial.ts");
+    await fs.writeFile(
+      target,
+      "function run() {\n  const value = computeDebugValue();\n  return value;\n}\n",
+    );
+    const editor = new EditFileTool();
+
+    // 最长的一行只写了半行：整行比对落空，但文件里确实有这一行
+    const fragment = await editor.execute({
+      path: "partial.ts",
+      oldText: "  const value = computeDebugValue()\n  return value;",
+      newText: "x",
+    });
+    assert.match(fragment.split("\n")[0], /找不到指定的 oldText 原文（片段不是整行）/);
+    assert.match(fragment, /2 \| +const value = computeDebugValue\(\);/);
+
+    // grep / diff 风格的前缀
+    const prefixed = await editor.execute({
+      path: "partial.ts",
+      oldText: "partial.ts:2:   const value = computeDebugValue();",
+      newText: "x",
+    });
+    assert.match(prefixed.split("\n")[0], /找不到指定的 oldText 原文（多出前缀或多余字符）/);
+
+    // 只差行内空白
+    const spacing = await editor.execute({
+      path: "partial.ts",
+      oldText: "  const  value = computeDebugValue();",
+      newText: "x",
+    });
+    assert.match(spacing.split("\n")[0], /找不到指定的 oldText 原文（行内空白不一致）/);
+
+    // 文件里真的没有这一行，仍报锚点行不存在
+    const missing = await editor.execute({
+      path: "partial.ts",
+      oldText: "const gone = 1;",
+      newText: "x",
+    });
+    assert.match(missing.split("\n")[0], /找不到指定的 oldText 原文（锚点行不存在）/);
+
+    assert.equal(
+      await fs.readFile(target, "utf8"),
+      "function run() {\n  const value = computeDebugValue();\n  return value;\n}\n",
+    );
+  });
+});
+
 test("edit hash stays consistent for non-UTF-8 files read as raw bytes", async () => {
   await withWorkspace(async (workspace) => {
     // 0xE9 后跟换行是非法的 UTF-8 序列，字符串往返会变成 U+FFFD，只有按原始字节 hash 才能与 read 一致

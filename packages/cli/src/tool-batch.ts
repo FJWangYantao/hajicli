@@ -62,6 +62,45 @@ export function createToolCallBatches<T extends NamedToolCall>(
   return batches;
 }
 
+/**
+ * 让一次工具执行与中止信号竞速：中止先到就返回 undefined，调用方无需等待
+ * 工具自行收尾。原 Promise 仍保留处理器，后台完成或失败都不会变成未处理拒绝。
+ */
+export function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T | undefined> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.resolve(undefined);
+  }
+  return new Promise<T | undefined>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve(undefined);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Executes a prepared batch and returns ordered results plus measured parallel savings. */
 export async function runToolCallBatch<T, R extends TimedToolResult>(
   batch: ToolCallBatch<T>,
@@ -130,5 +169,10 @@ export class RepeatedFailureTracker {
 /** 追加到工具结果末尾、提示模型换方案的系统说明；未达阈值时返回空串。 */
 export function buildRepeatedFailureNotice(count: number): string {
   if (count < REPEATED_FAILURE_NOTICE_AT) return "";
-  return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。`;
+  return `\n\n[系统提示] 该工具已在本轮以相同原因失败 ${count} 次，重试不会改变结果。不要再发起同样的调用：换用其他方案，或停止调用工具，向用户说明失败原因与可选做法。若失败来自 edit 的 oldText 未命中，请先 read 重新读取目标区域，再用完整整行重试。`;
+}
+
+/** 达到停止阈值后，同一条消息里剩余的工具调用不再执行，只留一条工具结果维持消息拓扑。 */
+export function buildRepeatedFailureSkipMessage(): string {
+  return `[工具调用已跳过：同一工具已连续以相同原因失败 ${REPEATED_FAILURE_STOP_AT} 次，本轮自动重试已停止]`;
 }

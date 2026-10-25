@@ -142,6 +142,7 @@ export class SharedToolExecutor {
     let mutationWarning: string | undefined;
     let lastProgressAt = 0;
     const emitProgress = (progress: ToolProgressEvent): void => {
+      if (context.abortSignal?.aborted) return;
       context.onProgress?.(progress);
       const now = Date.now();
       if (now - lastProgressAt < 80) return;
@@ -177,28 +178,34 @@ export class SharedToolExecutor {
         );
         mutationWarning = mutationResult?.warning;
       }
-      if (!context.agentId && !context.suppressStatus) this.options.setStatus?.();
+      if (!context.agentId && !context.suppressStatus && !context.abortSignal?.aborted)
+        this.options.setStatus?.();
     }
     if (mutationWarning) output = `${output}\n${mutationWarning}`;
+    // 中止后工具可能仍在后台收尾：只保留快照收尾，不再回报计划变更、
+    // PostToolUse 或执行证据，避免污染已经结束的回合和下一次回合的统计。
+    const aborted = Boolean(context.abortSignal?.aborted);
 
-    if (toolName.toLowerCase().startsWith("task") && !output.startsWith("错误:")) {
+    if (!aborted && toolName.toLowerCase().startsWith("task") && !output.startsWith("错误:")) {
       this.options.onTaskPlanChanged?.(finishingTask);
     }
     const failed = isFailedToolOutput(output);
     if (!context.agentId && !failed && !isOrchestrationTool && context.toolCallId) {
       output = `${output}\n[verification_evidence_id: ${context.toolCallId}]`;
     }
-    await performanceMonitor.measure("tool.post_hook", () =>
-      this.post(toolName, args, output, context),
-    );
-    this.options.onToolExecuted?.({
-      toolName,
-      toolCallId: context.toolCallId,
-      context,
-      output,
-      blocked: failed,
-      finishedAt: Date.now(),
-    });
+    if (!aborted) {
+      await performanceMonitor.measure("tool.post_hook", () =>
+        this.post(toolName, args, output, context),
+      );
+      this.options.onToolExecuted?.({
+        toolName,
+        toolCallId: context.toolCallId,
+        context,
+        output,
+        blocked: failed,
+        finishedAt: Date.now(),
+      });
+    }
     return {
       output,
       ...(images?.length ? { images } : {}),
