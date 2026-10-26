@@ -380,10 +380,15 @@ export class ToolRunView {
           .filter(Boolean)
           .slice(-TOOL_OUTPUT_TAIL_LINES)
       : undefined;
+    // 执行中不展开参数（实时区域同时在滚输出尾部，两段同样的 │ 行会打架），头行
+    // 退回压平的命令摘要：长命令执行期间整块才不至于只剩工具名与耗时。
+    // 完成后的提交格把命令按原样分行写进正文，展开行接管展示，摘要让位避免重复。
+    const argLines = running ? undefined : entry.argLines;
+    const summary = argLines ? "" : entry.summary;
     return formatToolCell({
       status: entry.status,
       toolName: entry.toolName,
-      summary: entry.summary,
+      summary,
       sourceLabel: entry.sourceLabel,
       width,
       timing: judging
@@ -398,9 +403,7 @@ export class ToolRunView {
       resultText: entry.resultText,
       stats: entry.stats,
       preview: entry.preview,
-      // 执行中不展开参数：实时区域同时在滚输出尾部，两段同样的 │ 行会打架；
-      // 完成后的提交格才把命令按原样分行写进正文。
-      argLines: running ? undefined : entry.argLines,
+      argLines,
       // 命令类结果按 shell 预算放宽到 10 行；edit/write 的 diff 预算放宽到 14 行，
       // 否则整个 hunk 会被截成三行，看不到改动位置。
       maxPreviewLines:

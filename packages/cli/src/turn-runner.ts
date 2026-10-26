@@ -748,9 +748,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             toolName: tc.function.name,
             args: registeredArgs,
           }).title;
-          // 多行 / 超宽命令按原样分行展开；展开时头行不再重复那份被截断的摘要。
+          // 多行 / 超宽命令按原样分行展开。头行摘要照常登记：执行中展开行不显示，
+          // 头行靠它报出在跑的命令；结束后展开行接管，摘要自动让位，不会重复。
           const argLines = formatToolArgLines(registeredArgs, title, ui.getContentWidth());
-          toolRunView.register(tc.id, tc.function.name, argLines ? "" : title, undefined, argLines);
+          toolRunView.register(tc.id, tc.function.name, title, undefined, argLines);
         }
         const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
           if (isTurnAborted) {

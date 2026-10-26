@@ -183,22 +183,31 @@ test("tool run view hides calls until they start and streams an output tail", ()
   assert.match(renders.at(-1), /^ {2}✓ bash {2}make all +6\.0s\n {4}└ 5 行输出 · step 5\n$/);
 });
 
-test("tool run view expands multi-line arguments only in the committed block", () => {
+test("tool run view keeps the collapsed command in the header while executing", () => {
   const harness = createToolRunView();
   const { view, renders } = harness;
-  view.register("c1", "bash", "", undefined, ["for f in *.ts; do", "  echo $f", "done"]);
+  view.register("c1", "bash", "for f in *.ts; do echo $f; done", undefined, [
+    "for f in *.ts; do",
+    "  echo $f",
+    "done",
+  ]);
   view.start("c1");
+  // 执行中不展开参数行，但头行必须能看到在跑的命令，不能只剩工具名与耗时
+  assert.match(renders.at(-1), /^ {2}● bash {2}for f in \*\.ts; do echo \$f; done +0s\n$/);
   assert.equal(
-    renders.at(-1).includes("for f in"),
+    renders.at(-1).includes("│"),
     false,
     "executing keeps the live block to the output tail",
   );
 
   view.finish("c1", { status: "success", text: "退出码 0" }, 1_200);
+  // 结束后展开行接管展示，头行摘要让位，同一段命令不出现两遍
+  assert.doesNotMatch(renders.at(-1), /✓ bash {2}for f in/);
   assert.match(renders.at(-1), /│ for f in \*\.ts; do/);
   const committed = view.commit();
   assert.match(committed, /│ for f in \*\.ts; do\n {4}│ {3}echo \$f\n {4}│ done/);
   assert.match(committed, /└ 退出码 0/);
+  assert.match(committed, /^ {2}✓ bash {2}/, "提交格头行不再重复命令摘要");
 });
 
 test("tool run view shows the auto-judge state and a short-lived verdict in place", () => {
