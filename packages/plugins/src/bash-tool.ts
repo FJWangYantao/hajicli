@@ -29,6 +29,9 @@ const CMD_SHELL: ShellSpec = { kind: "cmd", file: "cmd.exe", args: ["/d", "/s", 
 /**
  * 找 Git Bash。Windows 自带的 `System32\bash.exe` 是 WSL，路径与文件系统语义都不同，
  * 不能拿来当本地 shell；这里只从 PATH 里带 "git" 的目录和常见 Git 安装位置推导。
+ *
+ * 路径一律按 Windows 语义解析（分隔符 `;`、`\`）：这段逻辑只服务 win32，
+ * 在非 Windows 上运行测试或预览时也必须推出同样的候选路径。
  */
 function findGitBash(
   env: NodeJS.ProcessEnv,
@@ -39,21 +42,23 @@ function findGitBash(
 
   const candidates: string[] = [];
   const pathValue = env.PATH ?? env.Path ?? "";
-  for (const entry of pathValue.split(path.delimiter)) {
-    if (!entry || !/git/i.test(entry)) continue;
-    const root = path.resolve(entry, "..");
+  for (const entry of pathValue.split(";")) {
+    if (!entry.trim() || !/git/i.test(entry)) continue;
+    const root = path.win32.resolve(entry.trim(), "..");
     candidates.push(
-      path.join(root, "bin", "bash.exe"),
-      path.join(root, "usr", "bin", "bash.exe"),
-      path.join(root, "..", "bin", "bash.exe"),
-      path.join(root, "..", "usr", "bin", "bash.exe"),
+      path.win32.join(root, "bin", "bash.exe"),
+      path.win32.join(root, "usr", "bin", "bash.exe"),
+      path.win32.join(root, "..", "bin", "bash.exe"),
+      path.win32.join(root, "..", "usr", "bin", "bash.exe"),
     );
   }
   const programDirs = [env.ProgramFiles, env["ProgramFiles(x86)"]].filter(
     (value): value is string => Boolean(value),
   );
-  if (env.LOCALAPPDATA) programDirs.push(path.join(env.LOCALAPPDATA, "Programs"));
-  for (const dir of programDirs) candidates.push(path.join(dir, "Git", "bin", "bash.exe"));
+  if (env.LOCALAPPDATA) programDirs.push(path.win32.join(env.LOCALAPPDATA, "Programs"));
+  for (const dir of programDirs) {
+    candidates.push(path.win32.join(dir, "Git", "bin", "bash.exe"));
+  }
 
   return candidates.find((candidate) => fileExists(candidate));
 }
@@ -454,6 +459,8 @@ export class BashTool implements BaseTool {
   private readonly launchers = new Map<ShellKind, typeof exec>();
   private readonly fileExecutor: typeof execFile;
   private readonly processKiller: (pid: number, signal: NodeJS.Signals) => boolean;
+  /** 中止时的进程树清理按平台分派；可注入，便于在任意平台上验证 win32 分支。 */
+  private readonly platform: NodeJS.Platform;
 
   /** 可注入执行器，便于验证 Windows 进程清理失败的兜底路径。 */
   constructor(
@@ -462,10 +469,12 @@ export class BashTool implements BaseTool {
     processKiller: (pid: number, signal: NodeJS.Signals) => boolean = (pid, signal) =>
       process.kill(pid, signal),
     environment: ShellEnvironment = DEFAULT_ENVIRONMENT,
+    platform: NodeJS.Platform = process.platform,
   ) {
     this.environment = environment;
     this.fileExecutor = fileExecutor;
     this.processKiller = processKiller;
+    this.platform = platform;
     for (const spec of [environment.preferred, ...environment.alternatives]) {
       this.launchers.set(
         spec.kind,
@@ -621,7 +630,7 @@ export class BashTool implements BaseTool {
         finish(terminationLabel());
         if (!runningChild || runningChild.exitCode !== null) return;
 
-        if (runningChild.pid && process.platform === "win32") {
+        if (runningChild.pid && this.platform === "win32") {
           const rootPid = runningChild.pid;
           const processTreeType = [
             "using System;",

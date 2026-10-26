@@ -282,10 +282,18 @@ test("bash aborts instantly and still cleans up the process tree in the backgrou
     pendingPowerShellCallbacks.push(callback);
     return {};
   };
-  const tool = new BashTool(commandExecutor, fileExecutor, (pid, signal) => {
-    killedPids.push([pid, signal]);
-    return true;
-  });
+  // 进程树清理只在 win32 走 taskkill + PowerShell 兜底链：显式指定平台，
+  // 这样在 POSIX 上跑测试也能覆盖这段逻辑。
+  const tool = new BashTool(
+    commandExecutor,
+    fileExecutor,
+    (pid, signal) => {
+      killedPids.push([pid, signal]);
+      return true;
+    },
+    undefined,
+    "win32",
+  );
 
   const pending = tool.execute(
     { command: "long-running-command" },

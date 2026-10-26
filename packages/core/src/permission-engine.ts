@@ -231,9 +231,17 @@ const GIT_BRANCH_LIST_FLAGS = new Set(["-a", "-r", "-l", "-v", "-vv", "--list", 
 /** 会输出文件内容的命令：其路径参数还需解析符号链接，确认仍在工作区内。 */
 const CONTENT_READING_SHELL_COMMANDS = new Set(["cat", "head", "tail", "type", "get-content"]);
 
+/** Windows 绝对路径（盘符或 UNC）：即便当前进程跑在 POSIX 上也要按 win32 语义解析。 */
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[a-z]:[\\/]/i.test(value) || /^\\\\[^\\]/.test(value);
+}
+
 /**
  * 路径（解析符号链接后）是否位于任一工作区根内。目标不存在时按最近的已存在上级目录判断，
  * 防止经由指向工作区外的符号链接目录访问其下的文件。
+ *
+ * Windows 盘符/UNC 路径用 win32 语义解析：在 POSIX 上运行时 `C:\secret` 是「不存在的工作区
+ * 外路径」（返回 false），而不是相对文件名（否则会被误判为工作区内的普通文件而免审批）。
  */
 function isInsideAnyWorkspace(
   target: string,
@@ -241,10 +249,11 @@ function isInsideAnyWorkspace(
   extraRoots: readonly string[] = [],
 ): boolean {
   try {
+    const impl = isWindowsAbsolutePath(target) ? path.win32 : path;
     const roots = [cwd, ...extraRoots].map((root) => fs.realpathSync(root));
-    let existing = path.resolve(cwd, target);
+    let existing = impl.resolve(cwd, target);
     while (!fs.existsSync(existing)) {
-      const parent = path.dirname(existing);
+      const parent = impl.dirname(existing);
       if (parent === existing) return false;
       existing = parent;
     }
