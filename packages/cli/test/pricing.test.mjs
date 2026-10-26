@@ -702,6 +702,100 @@ test("CostTracker 按记录时刻分档，并统计谷时请求数", () => {
   assert.match(tracker.formatCostReport().join(String.fromCharCode(10)), /谷时 1 次/);
 });
 
+test("CostTracker 按轮次汇总，且不同指标改变排序视角", () => {
+  const tracker = new CostTracker();
+  // 第 1 轮：单次请求。
+  tracker.beginTurn();
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  // 第 2 轮：同一回合里两次请求（工具循环）。
+  tracker.beginTurn();
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 2_000_000, completion_tokens: 1_000_000, total_tokens: 3_000_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 500_000, completion_tokens: 0, total_tokens: 500_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+
+  const turns = tracker.getTurnSummaries();
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].turn, 1);
+  assert.equal(turns[0].requests, 1);
+  assert.equal(turns[1].turn, 2);
+  assert.equal(turns[1].requests, 2);
+  assert.equal(turns[1].promptTokens, 2_500_000);
+
+  // 第 2 轮更贵、请求更多：两种口径都应把它排在第一。
+  const costReport = tracker.formatTurnReport("cost").join(String.fromCharCode(10));
+  assert.ok(
+    costReport.indexOf("第 2 轮") < costReport.indexOf("第 1 轮"),
+    "按花费排序时更贵的轮次在前",
+  );
+  const reqReport = tracker.formatTurnReport("requests").join(String.fromCharCode(10));
+  assert.ok(
+    reqReport.indexOf("第 2 轮") < reqReport.indexOf("第 1 轮"),
+    "按请求次数排序时请求多的轮次在前",
+  );
+});
+
+test("空回合不占据轮次编号", () => {
+  const tracker = new CostTracker();
+  tracker.beginTurn(); // 声明开轮但一个请求都没发出。
+  tracker.beginTurn();
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 1_000, completion_tokens: 0, total_tokens: 1_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  const turns = tracker.getTurnSummaries();
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].turn, 1, "跳过的空回合不占号，首次真正记账仍是第 1 轮");
+});
+
+test("轮次随会话记录持久化，恢复后续接在原编号之后", () => {
+  const tracker = new CostTracker();
+  tracker.beginTurn();
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 1_000, completion_tokens: 0, total_tokens: 1_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  tracker.beginTurn();
+  tracker.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 1_000, completion_tokens: 0, total_tokens: 1_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  const records = tracker.getRecords();
+  assert.equal(records[0].turn, 1);
+  assert.equal(records[1].turn, 2);
+
+  const restored = new CostTracker();
+  restored.loadRecords(records);
+  restored.beginTurn();
+  restored.record(
+    "deepseek-v4-flash",
+    { prompt_tokens: 1_000, completion_tokens: 0, total_tokens: 1_000 },
+    "主线回合",
+    BEIJING_14,
+  );
+  const turns = restored.getTurnSummaries();
+  assert.equal(turns[turns.length - 1].turn, 3, "续接的新轮次接在历史最大轮次之后");
+});
+
 test("覆盖表可带谷时配置，非法时段/不更便宜的谷时价被拒", () => {
   withTempPricing(() => {
     const saved = savePricingOverride("cn:peak-model", {

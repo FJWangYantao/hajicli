@@ -11,6 +11,8 @@ export interface CostUsage {
 export interface CostRecord {
   model: string;
   purpose: string;
+  /** 所属轮次（从 1 开始，会话内自增）；0 表示归属未知（老会话文件或缺省）。 */
+  turn?: number;
   /** 调用发生时刻（ms）：峰谷价按它判定，事后补单价也能算对。 */
   at: number;
   promptTokens: number;
@@ -50,9 +52,36 @@ export interface CostSummary {
 /** 定价解析器：内置注册表 + 本地覆盖表（由 CLI 注入，便于测试与热更新）。 */
 export type PricingResolver = (model: string) => ModelPricing | undefined;
 
+/** 单轮对话的用量/花费汇总（点击侧栏指标行时按轮次展开用）。 */
+export interface TurnCostSummary {
+  /** 轮次编号（1 起）；0 表示历史会话里没有轮次信息的旧记录。 */
+  turn: number;
+  /** 该轮最早一次调用的时刻（ms）。 */
+  at: number;
+  requests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  completionTokens: number;
+  /** 已定价请求的合计（元）；含未定价请求时同时置 hasUnpriced。 */
+  costCny: number;
+  hasUnpriced: boolean;
+  /** 该轮出现过的模型（去重）。 */
+  models: string[];
+}
+
+/** 按轮次明细时“先看谁”的排序口径，对应侧栏里可以点的那几行指标。 */
+export type TurnMetric = "cost" | "requests" | "input" | "output" | "cached";
+
 /** 金额展示：小数额保留 4 位小数，避免四舍五入成 0.0000。 */
 export function formatCostCny(value: number): string {
   return `¥${value < 1 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
+/** 轮次时间戳 → HH:MM:SS（本地时区），用于按轮次明细里定位是哪一轮。 */
+function formatClock(atMs: number): string {
+  const date = new Date(Number.isFinite(atMs) ? atMs : Date.now());
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 /** 实际生效的单价档位：调用落在谷时窗口内就用谷时价，否则用峰时价。 */
@@ -119,6 +148,10 @@ export function estimateRequestCostCny(
  */
 export class CostTracker {
   private readonly records: CostRecord[] = [];
+  /** 当前对话轮次（1 起）；0 表示尚未开轮或历史无轮次信息。 */
+  private currentTurn = 0;
+  /** 已声明开新轮、但还没产生过记账：真正记账时再递增，避免空轮留下编号空洞。 */
+  private turnPending = false;
 
   /**
    * 金额按调用时刻的单价解析结果即时计算（不落盘），
@@ -126,12 +159,29 @@ export class CostTracker {
    */
   constructor(private readonly resolvePricing: PricingResolver = getModelPricing) {}
 
+  /**
+   * 开始新的一轮对话：此后 record 的调用都归到这一轮。
+   *
+   * 轮次是“用户每发一条消息”的边界（一个回合可能多次请求模型），
+   * 由主循环在进入回合前调用一次。这里只做“待开轮”标记，真正记账时才递增编号，
+   * 于是中途一个请求都没发出的空回合不会留下编号空洞。
+   */
+  beginTurn(): void {
+    this.turnPending = true;
+  }
+
   record(model: string, usage: CostUsage, purpose = "主线回合", at: number = Date.now()): void {
     if (!Number.isFinite(usage.total_tokens) || usage.total_tokens <= 0) return;
+    // 本轮第一次真正记账：现在才把编号落定（见 beginTurn 说明）。
+    if (this.turnPending) {
+      this.currentTurn += 1;
+      this.turnPending = false;
+    }
     const promptTokens = Math.max(0, usage.prompt_tokens);
     this.records.push({
       model,
       purpose,
+      ...(this.currentTurn > 0 ? { turn: this.currentTurn } : {}),
       at: Number.isFinite(at) ? at : Date.now(),
       promptTokens,
       // provider 上报的命中数可能大于 prompt_tokens（先减后加口径不同），夹逼一次。
@@ -151,12 +201,16 @@ export class CostTracker {
    */
   loadRecords(records: readonly CostRecord[] | undefined): void {
     this.records.length = 0;
+    let maxTurn = 0;
     for (const record of records ?? []) {
       if (!record || typeof record.model !== "string" || record.model.length === 0) continue;
       const promptTokens = Math.max(0, Math.round(Number(record.promptTokens) || 0));
+      const turn = Math.max(0, Math.round(Number(record.turn) || 0));
+      if (turn > maxTurn) maxTurn = turn;
       this.records.push({
         model: record.model,
         purpose: typeof record.purpose === "string" ? record.purpose : "主线回合",
+        ...(turn > 0 ? { turn } : {}),
         at: Number.isFinite(record.at) ? record.at : Date.now(),
         promptTokens,
         cachedPromptTokens: Math.min(
@@ -166,6 +220,8 @@ export class CostTracker {
         completionTokens: Math.max(0, Math.round(Number(record.completionTokens) || 0)),
       });
     }
+    // 续接历史会话：新记账要接在已恢复的轮次之后，而不是从 1 重新数。
+    this.currentTurn = maxTurn;
   }
 
   getSummary(): CostSummary {
@@ -258,6 +314,115 @@ export class CostTracker {
     }
     lines.push(
       "  金额按单价估算（缓存命中按缓存价、谷时按谷时价计；provider 未上报命中数时按全价），仅供参考。",
+    );
+    return lines;
+  }
+
+  /** 按对话轮次汇总用量与花费（侧栏各指标行点击后用）。 */
+  getTurnSummaries(): TurnCostSummary[] {
+    const byTurn = new Map<number, TurnCostSummary>();
+    for (const recordItem of this.records) {
+      const turn = recordItem.turn && recordItem.turn > 0 ? recordItem.turn : 0;
+      const current = byTurn.get(turn) ?? {
+        turn,
+        at: recordItem.at,
+        requests: 0,
+        promptTokens: 0,
+        cachedPromptTokens: 0,
+        completionTokens: 0,
+        costCny: 0,
+        hasUnpriced: false,
+        models: [],
+      };
+      if (recordItem.at < current.at) current.at = recordItem.at;
+      current.requests += 1;
+      current.promptTokens += recordItem.promptTokens;
+      current.cachedPromptTokens += recordItem.cachedPromptTokens;
+      current.completionTokens += recordItem.completionTokens;
+      if (!current.models.includes(recordItem.model)) current.models.push(recordItem.model);
+      const cost = estimateRequestCostCny(
+        recordItem.model,
+        {
+          prompt_tokens: recordItem.promptTokens,
+          completion_tokens: recordItem.completionTokens,
+          total_tokens: recordItem.promptTokens + recordItem.completionTokens,
+          prompt_cache_hit_tokens: recordItem.cachedPromptTokens,
+        },
+        this.resolvePricing,
+        recordItem.at,
+      );
+      if (cost !== null) current.costCny += cost;
+      else current.hasUnpriced = true;
+      byTurn.set(turn, current);
+    }
+    return [...byTurn.values()].sort((left, right) => left.turn - right.turn);
+  }
+
+  /**
+   * 按轮次明细（中文、无 ANSI）。metric 决定排序口径与标题，
+   * 让侧栏里点「花费 / 请求 / 输入 / 输出 / 缓存」得到各自关注的视角。
+   */
+  formatTurnReport(metric: TurnMetric = "cost"): string[] {
+    const turns = this.getTurnSummaries();
+    if (turns.length === 0) {
+      return ["本会话暂无已计费的模型调用。"];
+    }
+    const metricLabel: Record<TurnMetric, string> = {
+      cost: "花费",
+      requests: "请求次数",
+      input: "输入 tokens",
+      output: "输出 tokens",
+      cached: "缓存命中",
+    };
+    const metricValue = (turn: TurnCostSummary): number => {
+      switch (metric) {
+        case "requests":
+          return turn.requests;
+        case "input":
+          return turn.promptTokens;
+        case "output":
+          return turn.completionTokens;
+        case "cached":
+          return turn.cachedPromptTokens;
+        default:
+          return turn.costCny;
+      }
+    };
+    const sorted = [...turns].sort(
+      (left, right) => metricValue(right) - metricValue(left) || left.turn - right.turn,
+    );
+    const total = turns.reduce(
+      (sum, turn) => ({
+        requests: sum.requests + turn.requests,
+        promptTokens: sum.promptTokens + turn.promptTokens,
+        cachedPromptTokens: sum.cachedPromptTokens + turn.cachedPromptTokens,
+        completionTokens: sum.completionTokens + turn.completionTokens,
+        costCny: sum.costCny + turn.costCny,
+      }),
+      {
+        requests: 0,
+        promptTokens: 0,
+        cachedPromptTokens: 0,
+        completionTokens: 0,
+        costCny: 0,
+      },
+    );
+    const lines = [`按轮次明细 · 按${metricLabel[metric]}排序 · 共 ${turns.length} 轮`];
+    for (const turn of sorted) {
+      const label = turn.turn > 0 ? `第 ${turn.turn} 轮` : "未分轮";
+      const cost = turn.hasUnpriced
+        ? `${formatCostCny(turn.costCny)}+未定价`
+        : formatCostCny(turn.costCny);
+      const cacheNote =
+        turn.cachedPromptTokens > 0
+          ? ` · 缓存 ${turn.cachedPromptTokens.toLocaleString("en-US")}`
+          : "";
+      lines.push(
+        `  ${label}  ${formatClock(turn.at)}  花费 ${cost} · ${turn.requests} 次 · 输入 ${turn.promptTokens.toLocaleString("en-US")} / 输出 ${turn.completionTokens.toLocaleString("en-US")}${cacheNote}`,
+      );
+    }
+    lines.push(
+      `  合计  ${formatCostCny(total.costCny)} · ${total.requests} 次 · 输入 ${total.promptTokens.toLocaleString("en-US")} / 输出 ${total.completionTokens.toLocaleString("en-US")}`,
     );
     return lines;
   }

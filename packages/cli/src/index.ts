@@ -120,7 +120,7 @@ import {
 } from "./cli-runtime.js";
 import { buildContextBreakdown, buildContextItemGroups } from "./context-breakdown.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
-import { CostTracker, formatCostCny } from "./cost-tracker.js";
+import { CostTracker, formatCostCny, type TurnMetric } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
@@ -996,6 +996,8 @@ async function main() {
   let openPricingConfigRef: () => void = () => {};
   let openPricingAgentDetailsRef: () => void = () => {};
   let openCostDetailsRef: () => void = () => {};
+  /** 侧栏各指标行点击 → 按轮次展开（metric 决定排序视角）。 */
+  let openTurnReportRef: (metric: TurnMetric) => void = () => {};
 
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
@@ -1012,6 +1014,9 @@ async function main() {
       if (id === "cost.summary") openCostDetailsRef();
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
+      else if (id.startsWith("cost.turn.")) {
+        openTurnReportRef(id.slice("cost.turn.".length) as TurnMetric);
+      }
     },
   });
   const activityIndicator = new ActivityIndicator({
@@ -2349,6 +2354,10 @@ async function main() {
   openCostDetailsRef = () => {
     void runCostCommand(["cost"]);
   };
+  // 侧栏各指标行（花费/请求/输入/输出/缓存）：点哪一行，就按哪一种口径把每一轮摊开。
+  openTurnReportRef = (metric) => {
+    immediateWriteChat(costTracker.formatTurnReport(metric).join("\n"));
+  };
 
   const printSessionHelp = (): void => {
     // 从 COMMAND_SURFACE 生成指令表：枢纽加粗，成员子指令灰显缩进。
@@ -3142,6 +3151,9 @@ async function main() {
       costTracker.record(model, usage, purpose);
       publishCostInfo();
       syncSessionUsage();
+    },
+    beginTurn: () => {
+      costTracker.beginTurn();
     },
     getTitleUtility: getUtilityRuntime,
     getPermissionMode: () => permissionMode,

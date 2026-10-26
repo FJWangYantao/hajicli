@@ -581,16 +581,21 @@ test("nested regions win both the hover and the click", () => {
     clickSidebarRegion(ui, "cost.config");
     assert.deepEqual(handled, ["cost.config"], "点配置单价行只触发它自己的动作");
 
-    // 外层费用块照旧可点：标题下一行就是「花费」。
+    // 「花费」行现在有更深一层的命中区：点它打开“按轮次花费明细”，而不是整块汇总。
     renderPlain(ui);
     clickSidebarRegion(ui, "cost.summary", 1);
-    assert.deepEqual(handled, ["cost.config", "cost.summary"]);
+    assert.deepEqual(handled, ["cost.config", "cost.turn.cost"], "点花费行打开按轮次花费明细");
+
+    // 点费用块标题（不落在任何指标行上）仍回到整块费用汇总。
+    renderPlain(ui);
+    clickSidebarRegion(ui, "cost.summary", 0);
+    assert.deepEqual(handled, ["cost.config", "cost.turn.cost", "cost.summary"]);
 
     // 上下文区域由 TerminalUI 自己处理，不经过 onSidebarAction。
     renderPlain(ui);
     clickSidebarRegion(ui, "context.usage");
     assert.equal(ui.isContextInspectorOpen(), true, "点用量行打开上下文详情页");
-    assert.deepEqual(handled, ["cost.config", "cost.summary"]);
+    assert.deepEqual(handled, ["cost.config", "cost.turn.cost", "cost.summary"]);
   } finally {
     cleanupTerminalUI(ui);
   }

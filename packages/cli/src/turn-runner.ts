@@ -88,6 +88,8 @@ export interface TurnDeps {
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
     purpose?: string,
   ) => void;
+  /** 每轮开始时通知费用记账开新轮（轮次编号用于侧栏按轮次展开）。 */
+  beginTurn?: () => void;
   /** 会话标题生成用的杂活模型运行时；缺省退回主模型。 */
   getTitleUtility?: () => { provider: ObservableModelProvider; model: string } | undefined;
   getPermissionMode(): PermissionMode;
@@ -333,6 +335,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     return;
   }
 
+  // 费用记账开新轮：轮次编号用于侧栏按轮次展开（空轮不记账则不会占号）。
+  deps.beginTurn?.();
+
   let keepCalling = true;
   let malformedToolRecoveryAttempts = 0;
   // 过程折叠：一个回合可以有多个过程段，两段可见正文之间的工具调用/思考并成一段。
@@ -340,6 +345,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let foldStats = new FoldStatsCollector();
   // 回合小结：耗时、模型输出 tokens（以 Provider 统计为准）与工具调用次数。
   const turnStartedAt = Date.now();
+  // 示意费用记账开新的一轮（一个回合可能多次请求模型，全部归到同一轮）。
+  deps.beginTurn?.();
   const costBeforeTurn = deps.getCostSnapshot?.();
   let turnOutputTokens: number | undefined;
   let turnToolCalls = 0;

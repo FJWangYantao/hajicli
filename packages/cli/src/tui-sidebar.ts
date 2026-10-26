@@ -79,7 +79,13 @@ export type SidebarRegionId =
   | "context.usage"
   | "cost.summary"
   | "cost.config"
-  | "cost.pricingAgent";
+  | "cost.pricingAgent"
+  // 费用表里每一行指标：点哪一行，就按哪一种口径把每一轮摊开（见 onSidebarAction）。
+  | "cost.turn.cost"
+  | "cost.turn.requests"
+  | "cost.turn.input"
+  | "cost.turn.output"
+  | "cost.turn.cached";
 
 /** 悬停表现：终端里只换颜色，绝不改变文本宽度与行数（否则命中区会从鼠标下滑走）。 */
 export type SidebarHoverStyle =
@@ -472,34 +478,44 @@ export function buildSidebarFrame(
   const costSectionTop = rows.length;
   section("费用");
   const costHitTop = Math.max(costSectionTop, rows.length - 1);
-  // 悬停整块时数值列整体提亮：只换颜色不改宽度，表格不会因为悬停而抖一下。
-  const costValueColor = isHovered("cost.summary") ? SEQ.accent : SEQ.reset;
-  const costRow = (label: string, value: string): void => tableRow(label, value, costValueColor);
+  // 悬停：整块（cost.summary）或该行自身高亮时，数值列提亮；只换颜色不改宽度。
+  const costRowColor = (id?: SidebarRegionId): string =>
+    isHovered("cost.summary") || (id !== undefined && isHovered(id)) ? SEQ.accent : SEQ.reset;
+  // 可点击的指标行：登记自己的命中区（depth 2，高于整块费用），
+  // 点哪一行就按哪种口径把每一轮摊开（见 onSidebarAction / formatTurnReport）。
+  const costRow = (id: SidebarRegionId | undefined, label: string, value: string): void => {
+    const top = rows.length;
+    tableRow(label, value, costRowColor(id));
+    if (id !== undefined) register(id, top, 1, "text", { depth: 2 });
+  };
   if (state.costCny === undefined) {
     push(`${SEQ.muted}${truncateText("暂无已计费调用", contentW)}${SEQ.reset}`);
   } else {
     costRow(
+      "cost.turn.cost",
       "花费",
       `${formatCostAmount(state.costCny)}${state.hasUnpricedCost ? " · 含未定价" : ""}`,
     );
     if (state.costRequests !== undefined && state.costRequests > 0) {
-      costRow("请求", `${state.costRequests} 次`);
+      costRow("cost.turn.requests", "请求", `${state.costRequests} 次`);
     }
   }
   const promptTokens = Math.max(0, state.promptTokens ?? 0);
   const completionTokens = Math.max(0, state.completionTokens ?? 0);
   const cachedPromptTokens = Math.max(0, state.cachedPromptTokens ?? 0);
-  if (promptTokens > 0) costRow("输入", `↑${formatAgentTokens(promptTokens)}`);
+  if (promptTokens > 0) costRow("cost.turn.input", "输入", `↑${formatAgentTokens(promptTokens)}`);
   if (cachedPromptTokens > 0) {
     const hitRatio = Math.round((cachedPromptTokens / Math.max(1, promptTokens)) * 100);
-    costRow("含缓存", `⛁${formatAgentTokens(cachedPromptTokens)} ${hitRatio}%`);
+    costRow("cost.turn.cached", "含缓存", `⛁${formatAgentTokens(cachedPromptTokens)} ${hitRatio}%`);
   }
   if ((state.offPeakRequests ?? 0) > 0) {
-    costRow("谷时", `☾${state.offPeakRequests} 次`);
+    costRow(undefined, "谷时", `☾${state.offPeakRequests} 次`);
   }
-  if (completionTokens > 0) costRow("输出", `↓${formatAgentTokens(completionTokens)}`);
+  if (completionTokens > 0) {
+    costRow("cost.turn.output", "输出", `↓${formatAgentTokens(completionTokens)}`);
+  }
   if (state.lastTurnMs !== undefined && state.lastTurnMs > 0) {
-    costRow("上一轮", formatTurnDuration(state.lastTurnMs));
+    costRow(undefined, "上一轮", formatTurnDuration(state.lastTurnMs));
   }
   // 未定价：明确给出可点击的入口，否则用户只会看到「¥0.0000」不知道能修。
   // 它比费用区块更深一层：点在入口上直接配单价，点区块其他地方才是看明细。
