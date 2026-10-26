@@ -180,21 +180,27 @@ test("侧栏费用区块可命中，并在未定价时显示配置入口与 agen
     30,
   );
   const lines = frame.rows.map(stripAnsi);
-  assert.ok(frame.cost, "费用区块应给出命中区域");
+  const regions = new Map(frame.regions.map((region) => [region.id, region]));
+  const summary = regions.get("cost.summary");
+  assert.ok(summary, "费用区块应给出命中区域");
   const sectionTop = lines.findIndex((line) => line.includes("费用"));
   assert.ok(sectionTop >= 0);
-  assert.equal(frame.cost.top, sectionTop);
-  assert.ok(frame.cost.height >= 2);
+  assert.equal(summary.hit.top, sectionTop);
+  assert.ok(summary.hit.height >= 2);
+  // 未定价时「配置单价」与 agent 状态行各自再套一层更深的命中区。
+  assert.ok(regions.has("cost.config"), "配置单价行应有独立命中区");
+  assert.ok(regions.has("cost.pricingAgent"), "agent 状态行应有独立命中区");
   assert.ok(lines.some((line) => line.includes("配置单价")));
   assert.ok(lines.some((line) => line.includes("由 agent 查询定价")));
 
-  // 已全部定价时不再出现配置入口，但命中区仍然存在（可主动改价）。
+  // 已全部定价时不再出现配置入口，但费用区块仍然可点（可主动改价）。
   const priced = buildSidebarFrame(
     { usedTokens: 1_000, maxTokens: 100_000, costCny: 1.2, costRequests: 1 },
     30,
     30,
   );
-  assert.ok(priced.cost);
+  assert.ok(priced.regions.some((region) => region.id === "cost.summary"));
+  assert.ok(!priced.regions.some((region) => region.id === "cost.config"));
   assert.ok(!priced.rows.map(stripAnsi).some((line) => line.includes("配置单价")));
 });
 
@@ -477,14 +483,20 @@ test("侧栏定价 agent 状态行给出独立命中区（可点开过程详情�
     30,
     30,
   );
-  assert.ok(frame.pricingAgent, "状态行应给出命中区");
-  assert.equal(frame.pricingAgent.height, 1);
-  const line = stripAnsi(frame.rows[frame.pricingAgent.top]);
+  const regions = new Map(frame.regions.map((region) => [region.id, region]));
+  const summary = regions.get("cost.summary");
+  assert.ok(summary, "费用区块应给出命中区域");
+  assert.equal(regions.get("cost.pricingAgent").hit.height, 1);
+  const line = stripAnsi(frame.rows[regions.get("cost.pricingAgent").hit.top]);
   assert.match(line, /定价查询失败/);
-  // 命中区落在费用区块内部，点击时优先于「配置单价」整块。
-  assert.ok(frame.cost);
-  assert.ok(frame.pricingAgent.top >= frame.cost.top);
-  assert.ok(frame.pricingAgent.top < frame.cost.top + frame.cost.height);
+  // 状态行落在费用区块内部，且比整块更深一层：点击时优先于外层费用区。
+  assert.ok(regions.has("cost.summary"));
+  assert.ok(regions.get("cost.pricingAgent").hit.top >= summary.hit.top);
+  assert.ok(regions.get("cost.pricingAgent").hit.top < summary.hit.top + summary.hit.height);
+  assert.ok(
+    regions.get("cost.pricingAgent").depth > regions.get("cost.summary").depth,
+    "深层区域必须排在后面，命中时才能从后往前先找到它",
+  );
 });
 
 test("缓存命中的输入 token 按缓存价计费，未上报命中数时按全价", () => {

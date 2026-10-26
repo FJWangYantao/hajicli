@@ -68,14 +68,51 @@ export interface SidebarHitArea {
 /** 上下文圆环的命中区域（沿用同一套几何描述）。 */
 export type SidebarRingGeometry = SidebarHitArea;
 
+/**
+ * 侧栏里可交互区域的稳定标识。
+ *
+ * 悬停高亮与点击动作都按它查表，所以不能用行号（行号每帧都在变）；
+ * 新增可点区域时先在这里登记，再由 buildSidebarFrame 产出几何。
+ */
+export type SidebarRegionId =
+  | "context.ring"
+  | "context.usage"
+  | "cost.summary"
+  | "cost.config"
+  | "cost.pricingAgent";
+
+/** 悬停表现：终端里只换颜色，绝不改变文本宽度与行数（否则命中区会从鼠标下滑走）。 */
+export type SidebarHoverStyle =
+  /** 不参与悬停（占位用，保留给以后的纯展示区域）。 */
+  | "none"
+  /** 整行文字由灰转常态色：适合数值行。 */
+  | "text"
+  /** 标题加粗并露出 ▸ 前缀：适合区块标题与入口行。 */
+  | "label"
+  /** 图形本身高亮（圆环）：悬停时环上弧线加粗。 */
+  | "ring";
+
+/** 一块可交互区域：纯几何 + 展示语义，动作由渲染层按 id 分发。 */
+export interface SidebarRegion {
+  id: SidebarRegionId;
+  hit: SidebarHitArea;
+  hover: SidebarHoverStyle;
+  /**
+   * 嵌套层级，命中时深的优先。
+   * 费用区把「定价 agent 行」「配置单价行」套在整块费用之上，就靠它区分。
+   */
+  depth: number;
+}
+
 export interface SidebarFrame {
   rows: string[];
-  /** 上下文圆环的命中区域；侧栏高度不足以画环时为 undefined。 */
+  /**
+   * 上下文圆环的几何；侧栏高度不足以画环时为 undefined。
+   * 悬停卡片的定位也用它，所以这里保留几何本身而不只是命中区。
+   */
   ring?: SidebarRingGeometry;
-  /** 费用区块的命中区域（标题到最后一行的整段）；点击进入单价配置。 */
-  cost?: SidebarHitArea;
-  /** 费用区里那行定价 agent 状态；点击打开查询过程详情。 */
-  pricingAgent?: SidebarHitArea;
+  /** 本帧全部可交互区域，按 depth 升序排列（命中时从后往前找）。 */
+  regions: SidebarRegion[];
 }
 
 /** 低于该宽度或高度时右侧栏让位给对话区。 */
@@ -312,23 +349,49 @@ export function buildContextCard(
 
 /**
  * 构建右侧栏各行：上下文（主指标块）→ 费用表 → 任务 → 子代理，按高度裁剪。
- * hoverContext 为 true 时用精确 tokens 与剩余量替换紧凑用量行（鼠标悬停圆环）；
- * hoverCost 为 true 时高亮费用区的配置入口（鼠标悬停费用块）。
+ *
+ * hoverId 是鼠标当前压住的那块区域（没有就是 undefined）。所有悬停表现都按
+ * "只换颜色、不改宽度、不插行"实现——插行会把鼠标下的目标整体推开。
  */
 export function buildSidebarFrame(
   state: SidebarState,
   width: number,
   maxRows: number,
   now = Date.now(),
-  hoverContext = false,
-  hoverCost = false,
-  hoverPricingAgent = false,
+  hoverId?: string,
 ): SidebarFrame {
-  if (width <= 0 || maxRows <= 0) return { rows: [] };
+  if (width <= 0 || maxRows <= 0) return { rows: [], regions: [] };
   const w = Math.max(1, Math.floor(width));
   /** 文字可用宽度：右侧留 1 列，避免贴边。 */
   const contentW = Math.max(1, w - SIDEBAR_RIGHT_MARGIN);
   const rows: string[] = [];
+  // 交互区域：先登记再统一按 depth 排序，命中时从深到浅找。
+  // 行号在这里同步记账（push 时就知道落在第几行），不要事后扫字符串反推。
+  const regions: SidebarRegion[] = [];
+  const register = (
+    id: SidebarRegionId,
+    top: number,
+    height: number,
+    hover: SidebarHoverStyle,
+    options: { depth?: number; left?: number; width?: number; hasCard?: boolean } = {},
+  ): void => {
+    if (height <= 0 || top < 0 || top >= maxRows) return;
+    // 行数被 maxRows 裁掉时，命中也必须同步裁——否则鼠标能点到看不见的行。
+    const clipped = Math.min(height, maxRows - top);
+    regions.push({
+      id,
+      hit: {
+        top,
+        height: clipped,
+        left: options.left ?? 0,
+        width: options.width ?? contentW,
+      },
+      hover,
+      depth: options.depth ?? 0,
+      ...(options.hasCard ? { hasCard: true } : {}),
+    });
+  };
+  const isHovered = (id: SidebarRegionId): boolean => hoverId === id;
   const push = (row: string): void => {
     if (rows.length < maxRows) rows.push(row);
   };
@@ -371,8 +434,9 @@ export function buildSidebarFrame(
     // 宽 = 2 × 高：点阵 2×4，只有这个比例在终端里才是正圆。
     const ringWidth = Math.min(ringHeight * 2, Math.max(4, contentW));
     const left = Math.max(0, Math.floor((contentW - ringWidth) / 2));
-    const ringRows = buildContextRing(ratio, ringWidth, ringHeight, hoverContext);
+    const ringRows = buildContextRing(ratio, ringWidth, ringHeight, isHovered("context.ring"));
     ring = { top: rows.length, height: ringHeight, left, width: ringWidth };
+    register("context.ring", rows.length, ringHeight, "ring", { hasCard: true });
     for (const line of ringRows) push(left === 0 ? line : `${" ".repeat(left)}${line}`);
   } else {
     const barCapacity = Math.max(4, Math.min(14, contentW - terminalWidth(percent) - 2));
@@ -386,11 +450,16 @@ export function buildSidebarFrame(
 
   // 分类明细不占侧栏行数：鼠标悬停圆环时由浮层卡片展示（buildContextCard），
   // 侧栏这里永远只保留一条总用量，悬停也只会加粗圆环里的百分比。
+  // 用量行和圆环做同一件事（开上下文详情页）：圆环有 5~7 行高，宽屏下靠它定位
+  // 很别扭，一条贴边的文字行才是更好点的靶子。
+  const usageTop = rows.length;
+  const usageColor = isHovered("context.usage") ? SEQ.reset : SEQ.muted;
   push(
     centered(
-      `${SEQ.muted}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
+      `${usageColor}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
     ),
   );
+  register("context.usage", usageTop, 1, "text");
 
   // 压缩徽标：圆环会因压缩突然掉下来，标注一次就能消掉“上下文怎么没了”的困惑。
   if (state.compactionCount !== undefined && state.compactionCount > 0) {
@@ -398,43 +467,48 @@ export function buildSidebarFrame(
   }
 
   // ── 费用：标签左、数值右对齐的双列小表，耗时并进同一张表 ──
-  // 整段是可点击区域：未定价时点进去补单价，因此命中范围从章节标题算到最后一行。
+  // 整段可点（点开费用明细），内嵌两个更深的目标：配置单价入口、定价 agent 状态行。
   // 先占位再回填标题行的下标：section() 会先插一个空行做呼吸，命中区不该从空行算起。
   const costSectionTop = rows.length;
   section("费用");
   const costHitTop = Math.max(costSectionTop, rows.length - 1);
+  // 悬停整块时数值列整体提亮：只换颜色不改宽度，表格不会因为悬停而抖一下。
+  const costValueColor = isHovered("cost.summary") ? SEQ.accent : SEQ.reset;
+  const costRow = (label: string, value: string): void => tableRow(label, value, costValueColor);
   if (state.costCny === undefined) {
     push(`${SEQ.muted}${truncateText("暂无已计费调用", contentW)}${SEQ.reset}`);
   } else {
-    tableRow(
+    costRow(
       "花费",
       `${formatCostAmount(state.costCny)}${state.hasUnpricedCost ? " · 含未定价" : ""}`,
     );
     if (state.costRequests !== undefined && state.costRequests > 0) {
-      tableRow("请求", `${state.costRequests} 次`);
+      costRow("请求", `${state.costRequests} 次`);
     }
   }
   const promptTokens = Math.max(0, state.promptTokens ?? 0);
   const completionTokens = Math.max(0, state.completionTokens ?? 0);
   const cachedPromptTokens = Math.max(0, state.cachedPromptTokens ?? 0);
-  if (promptTokens > 0) tableRow("输入", `↑${formatAgentTokens(promptTokens)}`);
+  if (promptTokens > 0) costRow("输入", `↑${formatAgentTokens(promptTokens)}`);
   if (cachedPromptTokens > 0) {
     const hitRatio = Math.round((cachedPromptTokens / Math.max(1, promptTokens)) * 100);
-    tableRow("含缓存", `⛁${formatAgentTokens(cachedPromptTokens)} ${hitRatio}%`);
+    costRow("含缓存", `⛁${formatAgentTokens(cachedPromptTokens)} ${hitRatio}%`);
   }
   if ((state.offPeakRequests ?? 0) > 0) {
-    tableRow("谷时", `☾${state.offPeakRequests} 次`);
+    costRow("谷时", `☾${state.offPeakRequests} 次`);
   }
-  if (completionTokens > 0) tableRow("输出", `↓${formatAgentTokens(completionTokens)}`);
+  if (completionTokens > 0) costRow("输出", `↓${formatAgentTokens(completionTokens)}`);
   if (state.lastTurnMs !== undefined && state.lastTurnMs > 0) {
-    tableRow("上一轮", formatTurnDuration(state.lastTurnMs));
+    costRow("上一轮", formatTurnDuration(state.lastTurnMs));
   }
   // 未定价：明确给出可点击的入口，否则用户只会看到「¥0.0000」不知道能修。
+  // 它比费用区块更深一层：点在入口上直接配单价，点区块其他地方才是看明细。
   if (state.hasUnpricedCost || (state.unpricedModels?.length ?? 0) > 0) {
-    const hintColor = hoverCost ? SEQ.boldAccent : SEQ.accent;
+    const configRow = rows.length;
+    const hintColor = isHovered("cost.config") ? SEQ.boldAccent : SEQ.accent;
     push(`${hintColor}${truncateText("▸ 配置单价", contentW)}${SEQ.reset}`);
+    register("cost.config", configRow, 1, "label", { depth: 2 });
   }
-  let pricingAgentRow: number | undefined;
   if (state.pricingAgent) {
     const note =
       state.pricingAgent.status === "running"
@@ -448,20 +522,15 @@ export function buildSidebarFrame(
         : state.pricingAgent.status === "done"
           ? SEQ.muted
           : SEQ.accent;
-    pricingAgentRow = rows.length;
-    const label = hoverPricingAgent ? `${SEQ.boldAccent}${note}` : `${color}${note}`;
+    const agentRow = rows.length;
+    const label = isHovered("cost.pricingAgent") ? `${SEQ.boldAccent}${note}` : `${color}${note}`;
     push(`${label}${SEQ.reset}`);
+    // 最深的一层：这一行在费用区块内部，命中时必须优先于整块。
+    register("cost.pricingAgent", agentRow, 1, "text", { depth: 3 });
   }
-  // 命中区覆盖整个费用区块（标题行到最后一行）；高度被裁到 0 时视为不可点。
-  const cost: SidebarHitArea | undefined =
-    rows.length > costHitTop
-      ? {
-          top: costHitTop,
-          height: rows.length - costHitTop,
-          left: 0,
-          width: contentW,
-        }
-      : undefined;
+  // 整块费用是一个命中区：从章节标题（不含前面的呼吸空行）到最后一行。
+  // 高度被裁到 0 时 register 会直接跳过，调用方也就拿不到这块区域。
+  register("cost.summary", costHitTop, rows.length - costHitTop, "text", { depth: 1 });
 
   if (state.taskPlan && state.taskPlan.items.length > 0) {
     blank();
@@ -481,16 +550,13 @@ export function buildSidebarFrame(
     }
   }
 
-  // 定价 agent 那行单独给出命中区：它落在费用区块内部，点击优先级更高。
-  const pricingAgent: SidebarHitArea | undefined =
-    pricingAgentRow !== undefined && pricingAgentRow < rows.length
-      ? { top: pricingAgentRow, height: 1, left: 0, width: contentW }
-      : undefined;
+  // 按 depth 升序返回：命中时从后往前找，深层（定价 agent 行、配置单价行）
+  // 自然压过外层费用区块。
+  regions.sort((a, b) => a.depth - b.depth);
   return {
     rows: rows.slice(0, maxRows),
     ring,
-    ...(cost ? { cost } : {}),
-    ...(pricingAgent ? { pricingAgent } : {}),
+    regions,
   };
 }
 
@@ -500,12 +566,9 @@ export function buildSidebarRows(
   width: number,
   maxRows: number,
   now = Date.now(),
-  hoverContext = false,
-  hoverCost = false,
-  hoverPricingAgent = false,
+  hoverId?: string,
 ): string[] {
-  return buildSidebarFrame(state, width, maxRows, now, hoverContext, hoverCost, hoverPricingAgent)
-    .rows;
+  return buildSidebarFrame(state, width, maxRows, now, hoverId).rows;
 }
 
 /**

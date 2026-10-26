@@ -140,10 +140,8 @@ export interface TerminalUIOptions {
   forceNonInteractive?: boolean;
   /** 无头 JSON 输出模式：非交互下正文也不写 stdout，由调用方统一输出 JSON。 */
   muteNonInteractiveOutput?: boolean;
-  /** 点击侧栏「费用」区块：打开单价配置（未定价模型补价）。 */
-  onCostSectionClick?: () => void;
-  /** 点击费用区里那行定价 agent 状态：打开查询过程详情。 */
-  onPricingAgentClick?: () => void;
+  /** 点击侧栏里某个可交互区域：id 见 tui-sidebar.ts 的 SidebarRegionId，映射由调用方负责。 */
+  onSidebarAction?: (id: string) => void;
 }
 
 export interface ReadInputOptions {
@@ -484,37 +482,23 @@ export class TerminalUI {
   private lastTurnMs?: number;
   /** 本会话上下文压缩次数（自动 + 手动）；用于解释圆环为何突然掉下来。 */
   private compactionCount = 0;
-  /** 鼠标是否悬停在上下文圆环上；命中区域每帧随布局更新。 */
-  private sidebarRingHovered = false;
-  private sidebarRingHit?: {
-    columnStart: number;
-    columnEnd: number;
-    rowStart: number;
-    rowEnd: number;
-  };
-  /** 圆环按下时的屏幕行：松开仍在同一行才算一次点击，否则当成拖选。 */
-  private pendingRingClickRow?: number;
+  /**
+   * 侧栏命中区：区域 id → 本帧的屏幕坐标（每帧渲染时重建）。
+   *
+   * Map 的插入顺序就是 depth 升序，命中时从后往前找，深层（定价 agent 行、
+   * 配置单价行）自然压过外层费用区块。用一张表代替每个区域一组
+   * hovered/hit/pending 字段，新增可点区域不必再改这里。
+   */
+  private sidebarHits = new Map<
+    string,
+    { columnStart: number; columnEnd: number; rowStart: number; rowEnd: number }
+  >();
+  /** 当前鼠标压住的侧栏区域 id；只影响变色与浮层卡片，不改变行数。 */
+  private sidebarHoverId?: string;
+  /** 按下时记下的区域 id 与屏幕行：松开仍同 id、同一行才算一次点击。 */
+  private pendingSidebarClick?: { id: string; row: number };
   /** 详情页内的按下行：松开同一行才处理点击（选中条目 / 点返回）。 */
   private pendingInspectorClickRow?: number;
-  /** 鼠标是否悬停在侧栏费用区块（可点击补单价）；命中区域每帧随布局更新。 */
-  private sidebarCostHovered = false;
-  private sidebarCostHit?: {
-    columnStart: number;
-    columnEnd: number;
-    rowStart: number;
-    rowEnd: number;
-  };
-  /** 费用区块按下时的屏幕行：松开仍在同一行才算一次点击。 */
-  private pendingCostClickRow?: number;
-  /** 定价 agent 状态行的悬停/命中/按下状态（它在费用区块内部，点击优先级更高）。 */
-  private sidebarPricingHovered = false;
-  private sidebarPricingHit?: {
-    columnStart: number;
-    columnEnd: number;
-    rowStart: number;
-    rowEnd: number;
-  };
-  private pendingPricingClickRow?: number;
   /** 悬停需要 any-event 鼠标跟踪（1003），仅在侧栏可见时开启。 */
   private mouseMotionEnabled = false;
   private taskPanelTitle = "";
@@ -686,7 +670,7 @@ export class TerminalUI {
     this.textSelection.clear();
     this.selectionLayout = undefined;
     this.pendingMouseSelection = undefined;
-    this.pendingRingClickRow = undefined;
+    this.pendingSidebarClick = undefined;
     this.pendingInspectorClickRow = undefined;
     this.scheduleRender(true);
     return true;
@@ -2177,8 +2161,7 @@ export class TerminalUI {
         this.stopSelectionAutoScroll();
         this.selectionPointer = undefined;
         this.pendingMouseSelection = undefined;
-        this.pendingCostClickRow = undefined;
-        this.pendingPricingClickRow = undefined;
+        this.pendingSidebarClick = undefined;
         this.textSelection.clear();
         this.selectionLayout = undefined;
         // 单击不产生选区：只有真的拖动才从锚点开始选，避免一点就复制一个字符。
@@ -2191,29 +2174,16 @@ export class TerminalUI {
       if (this.contextInspector) {
         this.pendingMouseSelection = undefined;
         this.pendingInputSelection = undefined;
-        this.pendingCostClickRow = undefined;
-        this.pendingPricingClickRow = undefined;
-        this.pendingRingClickRow = undefined;
+        this.pendingSidebarClick = undefined;
         this.pendingInspectorClickRow = event.row;
         return;
       }
-      // 定价 agent 状态行优先于费用区块：先记下按下的屏幕行，松开仍同一行才算点击。
-      if (this.isPointInPricingAgentRow(event.column, event.row)) {
+      // 侧栏可交互区域：按下只记 id 与屏幕行，松开落在同一行、同一区域才算一次点击，
+      // 拖动经过时不会误触。深层区域（配置单价行、定价 agent 行）由命中顺序保证优先。
+      const sidebarRegionId = this.sidebarRegionAt(event.column, event.row);
+      if (sidebarRegionId) {
         this.pendingMouseSelection = undefined;
-        this.pendingPricingClickRow = event.row;
-        return;
-      }
-      // 侧栏费用区块：只记下屏幕行，松开仍在同一行才算一次点击（拖动时不误触）。
-      if (this.isPointInCostSection(event.column, event.row)) {
-        this.pendingMouseSelection = undefined;
-        this.pendingCostClickRow = event.row;
-        return;
-      }
-      // 上下文圆环：点一下进入详情页。与费用区同规则——按下与松开同一行才算点击。
-      if (this.isPointInContextRing(event.column, event.row)) {
-        this.pendingMouseSelection = undefined;
-        this.pendingCostClickRow = undefined;
-        this.pendingRingClickRow = event.row;
+        this.pendingSidebarClick = { id: sidebarRegionId, row: event.row };
         return;
       }
       // 侧栏与分隔带不是对话内容：在这里按下不开选区，否则拖选会把侧栏文字带进复制结果。
@@ -2227,7 +2197,7 @@ export class TerminalUI {
       }
       this.stopSelectionAutoScroll();
       this.selectionPointer = undefined;
-      this.pendingCostClickRow = undefined;
+      this.pendingSidebarClick = undefined;
       this.inputSelection.clear();
       this.pendingInputSelection = undefined;
       const logicalRow = this.getLogicalChatRow(event.row);
@@ -2322,51 +2292,16 @@ export class TerminalUI {
       return;
     }
 
-    // 上下圆环：点一下进详情页；按下与松开同一行、且仍落在圆环上才算点击。
-    if (event.action === "up" && isLeftButton && this.pendingRingClickRow !== undefined) {
-      const pressedRow = this.pendingRingClickRow;
-      this.pendingRingClickRow = undefined;
-      if (pressedRow === event.row && this.isPointInContextRing(event.column, event.row)) {
-        this.openContextInspector();
-      }
-      return;
-    }
-
-    if (event.action === "up" && isLeftButton && this.pendingInspectorClickRow !== undefined) {
-      const pressedRow = this.pendingInspectorClickRow;
-      this.pendingInspectorClickRow = undefined;
-      // 同一行松开才算点击：拖动（跨行）当成本次误触，直接丢弃。
-      if (pressedRow === event.row) {
-        this.handleInspectorClick(event.column, event.row);
-      }
-      return;
-    }
-
-    if (event.action === "up" && isLeftButton && this.pendingPricingClickRow !== undefined) {
-      const pressedRow = this.pendingPricingClickRow;
-      this.pendingPricingClickRow = undefined;
-      if (pressedRow === event.row && this.isPointInPricingAgentRow(event.column, event.row)) {
-        this.options.onPricingAgentClick?.();
-      }
-      return;
-    }
-
-    // 侧栏费用区块：按下与松开落在同一屏幕行、且仍在区块内，才算一次有意的点击。
-    if (event.action === "up" && isLeftButton && this.pendingCostClickRow !== undefined) {
-      const pressedRow = this.pendingCostClickRow;
-      this.pendingCostClickRow = undefined;
-      if (pressedRow === event.row && this.isPointInCostSection(event.column, event.row)) {
-        this.options.onCostSectionClick?.();
-      }
-      return;
-    }
-
-    // 上下文圆环：按下与松开同一行、且仍在圆环内，才进详情页。
-    if (event.action === "up" && isLeftButton && this.pendingRingClickRow !== undefined) {
-      const pressedRow = this.pendingRingClickRow;
-      this.pendingRingClickRow = undefined;
-      if (pressedRow === event.row && this.isPointInContextRing(event.column, event.row)) {
-        this.openContextInspector();
+    // 侧栏可交互区域：按下与松开落在同一屏幕行、且仍命中同一块区域，才算一次点击。
+    // 命中 id 相同这一点很关键——从「配置单价」行拖到「花费」行松开，不该跳出费用明细。
+    if (event.action === "up" && isLeftButton && this.pendingSidebarClick !== undefined) {
+      const pending = this.pendingSidebarClick;
+      this.pendingSidebarClick = undefined;
+      if (
+        pending.row === event.row &&
+        this.sidebarRegionAt(event.column, event.row) === pending.id
+      ) {
+        this.dispatchSidebarAction(pending.id);
       }
       return;
     }
@@ -2398,40 +2333,39 @@ export class TerminalUI {
     }
   }
 
-  /** 鼠标位置是否落在费用区里那行定价 agent 状态上。 */
-  private isPointInPricingAgentRow(column: number, row: number): boolean {
-    const hit = this.sidebarPricingHit;
-    return Boolean(
-      hit &&
+  /**
+   * 解析鼠标位置命中的侧栏区域 id；不在任何区域上时返回 undefined。
+   *
+   * 命中区按 depth 升序登记（见 buildSidebarFrame 末尾的排序），所以从后往前找
+   * 就等价于"深层优先"：定价 agent 行 > 配置单价行 > 整块费用。
+   */
+  private sidebarRegionAt(column: number, row: number): string | undefined {
+    let found: string | undefined;
+    for (const [id, hit] of this.sidebarHits) {
+      if (
         column >= hit.columnStart &&
         column <= hit.columnEnd &&
         row >= hit.rowStart &&
-        row <= hit.rowEnd,
-    );
+        row <= hit.rowEnd
+      ) {
+        found = id;
+      }
+    }
+    return found;
   }
 
-  /** 鼠标位置是否落在侧栏费用区块的命中范围内。 */
-  private isPointInCostSection(column: number, row: number): boolean {
-    const hit = this.sidebarCostHit;
-    return Boolean(
-      hit &&
-        column >= hit.columnStart &&
-        column <= hit.columnEnd &&
-        row >= hit.rowStart &&
-        row <= hit.rowEnd,
-    );
-  }
-
-  /** 鼠标位置是否落在上下文圆环的命中范围内（点击进入详情页）。 */
-  private isPointInContextRing(column: number, row: number): boolean {
-    const hit = this.sidebarRingHit;
-    return Boolean(
-      hit &&
-        column >= hit.columnStart &&
-        column <= hit.columnEnd &&
-        row >= hit.rowStart &&
-        row <= hit.rowEnd,
-    );
+  /**
+   * 分发一次侧栏点击。
+   *
+   * 上下文详情页由 TerminalUI 自己拥有，就地处理；其余交给调用方按 id 查表，
+   * 这样新增可点区域时只需要在 tui-sidebar.ts 登记 + 在调用方补一条映射。
+   */
+  private dispatchSidebarAction(id: string): void {
+    if (id === "context.ring" || id === "context.usage") {
+      this.openContextInspector();
+      return;
+    }
+    this.options.onSidebarAction?.(id);
   }
 
   private readonly handleMouseData = (data: Buffer | string) => {
@@ -2882,34 +2816,14 @@ export class TerminalUI {
     stdout.write(enabled ? "\x1b[?1003h" : "\x1b[?1003l");
   }
 
-  /** 鼠标移动时只关心是否进入/离开圆环命中区域，避免每次移动都重绘。 */
+  /**
+   * 鼠标移动时只关心悬停区域有没有变，避免每次移动都重绘。
+   * 悬停 id 变了才渲染：终端里 any-event 跟踪的报文密度很高，逐帧重绘会明显掉速。
+   */
   private updateSidebarHover(column: number, row: number): void {
-    const within = (hit?: {
-      columnStart: number;
-      columnEnd: number;
-      rowStart: number;
-      rowEnd: number;
-    }): boolean =>
-      Boolean(
-        hit &&
-          column >= hit.columnStart &&
-          column <= hit.columnEnd &&
-          row >= hit.rowStart &&
-          row <= hit.rowEnd,
-      );
-    const ringHovered = within(this.sidebarRingHit);
-    const costHovered = within(this.sidebarCostHit);
-    const pricingHovered = within(this.sidebarPricingHit);
-    if (
-      ringHovered === this.sidebarRingHovered &&
-      costHovered === this.sidebarCostHovered &&
-      pricingHovered === this.sidebarPricingHovered
-    ) {
-      return;
-    }
-    this.sidebarRingHovered = ringHovered;
-    this.sidebarCostHovered = costHovered;
-    this.sidebarPricingHovered = pricingHovered;
+    const next = this.sidebarRegionAt(column, row);
+    if (next === this.sidebarHoverId) return;
+    this.sidebarHoverId = next;
     this.scheduleRender(true);
   }
 
@@ -3252,62 +3166,43 @@ export class TerminalUI {
           sidebarWidth,
           chatHeight,
           Date.now(),
-          this.sidebarRingHovered,
-          this.sidebarCostHovered,
-          this.sidebarPricingHovered,
+          this.sidebarHoverId,
         )
-      : { rows: [] as string[], ring: undefined };
+      : { rows: [] as string[], ring: undefined, regions: [] };
     const sidebarRows = sidebarFrame.rows;
-    // 记录圆环在屏幕上的 1-based 命中区域，供鼠标移动时判断悬停。
-    if (sidebarVisible && sidebarFrame.ring) {
-      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.ring.left;
-      this.sidebarRingHit = {
-        columnStart,
-        columnEnd: columnStart + sidebarFrame.ring.width - 1,
-        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.ring.top + 1,
-        rowEnd: 0,
-      };
-      this.sidebarRingHit.rowEnd = this.sidebarRingHit.rowStart + sidebarFrame.ring.height - 1;
-    } else {
-      this.sidebarRingHit = undefined;
-      this.sidebarRingHovered = false;
+    // 把侧栏局部坐标换算成屏幕 1-based 坐标，重建本帧的命中表。
+    // 一次遍历覆盖所有区域：新增可点区域只需在 buildSidebarFrame 里登记，
+    // 这里不用再跟着加一组字段、一个分支。
+    this.sidebarHits.clear();
+    if (sidebarVisible) {
+      const columnBase = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1;
+      const rowBase = (emergencyMinimal ? 0 : topRows.length + 1) + 1;
+      for (const region of sidebarFrame.regions) {
+        const columnStart = columnBase + region.hit.left;
+        const rowStart = rowBase + region.hit.top;
+        this.sidebarHits.set(region.id, {
+          columnStart,
+          columnEnd: columnStart + region.hit.width - 1,
+          rowStart,
+          rowEnd: rowStart + region.hit.height - 1,
+        });
+      }
     }
-    // 费用区块同理：整段可点，点进去配单价（未定价时尤其需要入口）。
-    if (sidebarVisible && sidebarFrame.cost) {
-      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.cost.left;
-      this.sidebarCostHit = {
-        columnStart,
-        columnEnd: columnStart + sidebarFrame.cost.width - 1,
-        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.cost.top + 1,
-        rowEnd: 0,
-      };
-      this.sidebarCostHit.rowEnd = this.sidebarCostHit.rowStart + sidebarFrame.cost.height - 1;
-    } else {
-      this.sidebarCostHit = undefined;
-      this.sidebarCostHovered = false;
-      this.pendingCostClickRow = undefined;
+    // 命中的区域这一帧可能已经消失（比如费用表被挤掉）：悬停 id 一并作废。
+    if (this.sidebarHoverId !== undefined && !this.sidebarHits.has(this.sidebarHoverId)) {
+      this.sidebarHoverId = undefined;
     }
-    // 定价 agent 那一行的命中区（落在费用区块内部，点击时优先命中）。
-    if (sidebarVisible && sidebarFrame.pricingAgent) {
-      const columnStart = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1 + sidebarFrame.pricingAgent.left;
-      this.sidebarPricingHit = {
-        columnStart,
-        columnEnd: columnStart + sidebarFrame.pricingAgent.width - 1,
-        rowStart: (emergencyMinimal ? 0 : topRows.length + 1) + sidebarFrame.pricingAgent.top + 1,
-        rowEnd: 0,
-      };
-      this.sidebarPricingHit.rowEnd =
-        this.sidebarPricingHit.rowStart + sidebarFrame.pricingAgent.height - 1;
-    } else {
-      this.sidebarPricingHit = undefined;
-      this.sidebarPricingHovered = false;
-      this.pendingPricingClickRow = undefined;
+    if (this.pendingSidebarClick && !this.sidebarHits.has(this.pendingSidebarClick.id)) {
+      this.pendingSidebarClick = undefined;
     }
     this.setMouseMotionEnabled(sidebarVisible);
     // 圆环悬停卡片：浮层贴在对话区右侧，不占侧栏行数、不改变对话滚动布局，
     // 鼠标移开就消失——比在侧栏里内联展开更不打扰（费用表不会被顶走）。
     const contextCard =
-      sidebarVisible && this.sidebarRingHovered && this.contextBreakdown && sidebarFrame.ring
+      sidebarVisible &&
+      this.sidebarHoverId === "context.ring" &&
+      this.contextBreakdown &&
+      sidebarFrame.ring
         ? buildContextCard(this.contextBreakdown, this.usedTokens, this.maxTokens, leftAreaWidth)
         : undefined;
     const cardTop = contextCard

@@ -280,9 +280,9 @@ test("mouse movement over the ring toggles the hover card", () => {
       conversation: 40,
     });
     renderPlain(ui);
-    const hit = ui.sidebarRingHit;
+    const hit = ui.sidebarHits.get("context.ring");
     assert.ok(hit, "ring hit box is recorded");
-    assert.equal(ui.sidebarRingHovered, false);
+    assert.equal(ui.sidebarHoverId, undefined);
     assert.ok(!renderPlain(ui).some((row) => row.includes("上下文构成")), "the card starts hidden");
 
     ui.handleMouseEvent({
@@ -292,7 +292,7 @@ test("mouse movement over the ring toggles the hover card", () => {
       column: hit.columnStart + 1,
       row: hit.rowStart + 1,
     });
-    assert.equal(ui.sidebarRingHovered, true);
+    assert.equal(ui.sidebarHoverId, "context.ring");
     const hovered = renderPlain(ui).join("\n");
     assert.match(hovered, /上下文构成/);
     assert.match(hovered, /已用 250 \/ 1,000/);
@@ -304,7 +304,7 @@ test("mouse movement over the ring toggles the hover card", () => {
       column: 1,
       row: 1,
     });
-    assert.equal(ui.sidebarRingHovered, false);
+    assert.equal(ui.sidebarHoverId, undefined);
     assert.doesNotMatch(renderPlain(ui).join("\n"), /上下文构成/);
   } finally {
     cleanupTerminalUI(ui);
@@ -398,7 +398,7 @@ test("the hover card is what summarises the breakdown, not the sidebar", () => {
   assert.match(text, /剩余 702,000 · 30%/);
   // 侧栏（含 hover 时）都不再重复这些明细。
   assert.doesNotMatch(
-    buildSidebarRows(breakdownState(), 30, 30, 5000, true).map(stripAnsi).join("\n"),
+    buildSidebarRows(breakdownState(), 30, 30, 5000, "context.ring").map(stripAnsi).join("\n"),
     /164k/,
   );
 });
@@ -409,7 +409,7 @@ test("tight terminals keep the cost table because the card is an overlay", () =>
     rows.some((row) => row.includes("花费")),
     "the cost table stays visible with the breakdown present",
   );
-  const hovered = buildSidebarRows(breakdownState(), 30, 18, 5000, true).map(stripAnsi);
+  const hovered = buildSidebarRows(breakdownState(), 30, 18, 5000, "context.ring").map(stripAnsi);
   assert.ok(
     hovered.some((row) => row.includes("花费")),
     "hovering the ring does not steal sidebar rows",
@@ -426,7 +426,7 @@ test("hovering the ring paints the card over the chat area", () => {
       "the card only shows up while hovering",
     );
 
-    const hit = ui.sidebarRingHit;
+    const hit = ui.sidebarHits.get("context.ring");
     assert.ok(hit, "ring hit box is recorded");
     ui.handleMouseEvent({
       type: "mouse",
@@ -457,7 +457,7 @@ test("dragging over the sidebar never starts a text selection", () => {
   try {
     const rows = renderPlain(ui);
     assert.ok(rows.length > 0);
-    const hit = ui.sidebarRingHit;
+    const hit = ui.sidebarHits.get("context.ring");
     assert.ok(hit, "sidebar hit box is recorded");
 
     ui.handleMouseEvent({
@@ -490,6 +490,107 @@ test("dragging over the sidebar never starts a text selection", () => {
       row: chatRow + 1,
     });
     assert.equal(ui.textSelection.active, true, "对话区仍可拖选");
+  } finally {
+    cleanupTerminalUI(ui);
+  }
+});
+
+/** 在某个已登记的侧栏区域上做一次完整的按下 + 松开。 */
+function clickSidebarRegion(ui, id, rowOffset = 0) {
+  const hit = ui.sidebarHits.get(id);
+  assert.ok(hit, `${id} 应该有命中区`);
+  const column = hit.columnStart + 1;
+  const row = hit.rowStart + rowOffset;
+  ui.handleMouseEvent({ type: "mouse", action: "down", button: 0, column, row });
+  ui.handleMouseEvent({ type: "mouse", action: "up", button: 0, column, row });
+}
+
+test("interactive regions carry geometry and a nesting depth", () => {
+  const frame = buildSidebarFrame(
+    sidebarState({
+      hasUnpricedCost: true,
+      unpricedModels: ["glm-5.2"],
+      pricingAgent: { status: "running", model: "glm-5.2" },
+    }),
+    30,
+    30,
+    5000,
+  );
+  const byId = new Map(frame.regions.map((region) => [region.id, region]));
+  for (const id of [
+    "context.ring",
+    "context.usage",
+    "cost.summary",
+    "cost.config",
+    "cost.pricingAgent",
+  ]) {
+    assert.ok(byId.has(id), `${id} 应该登记命中区`);
+  }
+  // depth 升序：命中时从后往前找，深层才压得过包着它的外层。
+  const depths = frame.regions.map((region) => region.depth);
+  assert.deepEqual(
+    depths,
+    [...depths].sort((a, b) => a - b),
+  );
+  assert.ok(byId.get("cost.config").depth > byId.get("cost.summary").depth);
+  assert.ok(byId.get("cost.pricingAgent").depth > byId.get("cost.summary").depth);
+  // 命中区不能超出真正渲染出来的行，否则鼠标能点到看不见的位置。
+  for (const region of frame.regions) {
+    assert.ok(region.hit.top + region.hit.height <= frame.rows.length, `${region.id} 越界`);
+  }
+});
+
+test("hovering a region only recolours rows, never reflows them", () => {
+  const state = sidebarState({ hasUnpricedCost: true, unpricedModels: ["glm-5.2"] });
+  const plain = buildSidebarRows(state, 30, 30, 5000).map(stripAnsi);
+  for (const hoverId of ["context.ring", "context.usage", "cost.summary", "cost.config"]) {
+    const hovered = buildSidebarRows(state, 30, 30, 5000, hoverId).map(stripAnsi);
+    assert.deepEqual(hovered, plain, `${hoverId} 悬停不该改变文字或行数`);
+  }
+});
+
+test("nested regions win both the hover and the click", () => {
+  const handled = [];
+  const ui = createTerminalUI();
+  try {
+    ui.options.onSidebarAction = (id) => handled.push(id);
+    ui.setContextItemsProvider(() => [
+      {
+        category: "conversation",
+        label: "对话",
+        tokens: 120,
+        items: [{ label: "user: hi", tokens: 120, detail: "hi" }],
+      },
+    ]);
+    ui.setCostInfo(0.02, 2, true, 1200, 340, ["glm-5.2"]);
+    ui.setPricingAgentState({ status: "running", model: "glm-5.2" });
+    renderPlain(ui);
+
+    // 悬停在「配置单价」行上：拿到的是它自己，而不是外层费用块。
+    const config = ui.sidebarHits.get("cost.config");
+    assert.ok(config, "配置单价行有命中区");
+    ui.handleMouseEvent({
+      type: "mouse",
+      action: "move",
+      button: 35,
+      column: config.columnStart,
+      row: config.rowStart,
+    });
+    assert.equal(ui.sidebarHoverId, "cost.config");
+
+    clickSidebarRegion(ui, "cost.config");
+    assert.deepEqual(handled, ["cost.config"], "点配置单价行只触发它自己的动作");
+
+    // 外层费用块照旧可点：标题下一行就是「花费」。
+    renderPlain(ui);
+    clickSidebarRegion(ui, "cost.summary", 1);
+    assert.deepEqual(handled, ["cost.config", "cost.summary"]);
+
+    // 上下文区域由 TerminalUI 自己处理，不经过 onSidebarAction。
+    renderPlain(ui);
+    clickSidebarRegion(ui, "context.usage");
+    assert.equal(ui.isContextInspectorOpen(), true, "点用量行打开上下文详情页");
+    assert.deepEqual(handled, ["cost.config", "cost.summary"]);
   } finally {
     cleanupTerminalUI(ui);
   }

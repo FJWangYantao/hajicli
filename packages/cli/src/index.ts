@@ -992,9 +992,10 @@ async function main() {
   sessionManager.saveCurrentSession(messages);
   markStartupStage("session_saved");
 
-  // 侧栏「费用」区块的点击入口：定价流程定义在下方，这里先留一个可赋值的中转。
+  // 侧栏可点区域的点击入口：定价/费用流程定义在下方，这里先留可赋值的中转。
   let openPricingConfigRef: () => void = () => {};
   let openPricingAgentDetailsRef: () => void = () => {};
+  let openCostDetailsRef: () => void = () => {};
 
   const ui = new TerminalUI({
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
@@ -1006,8 +1007,12 @@ async function main() {
     renderBorder: (width) => colors.gray("─".repeat(width)),
     forceNonInteractive: Boolean(headlessRequest),
     muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
-    onCostSectionClick: () => openPricingConfigRef(),
-    onPricingAgentClick: () => openPricingAgentDetailsRef(),
+    // 侧栏区域 id → 动作。上下文详情页由 TerminalUI 自己打开，不会走到这里。
+    onSidebarAction: (id) => {
+      if (id === "cost.summary") openCostDetailsRef();
+      else if (id === "cost.config") openPricingConfigRef();
+      else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
+    },
   });
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
@@ -2335,10 +2340,14 @@ async function main() {
     if (costTracker.getSummary().hasUnpriced) {
       immediateWriteLine(
         colors.gray(
-          "  补单价：点击侧栏「费用」，或 /cost config（也可 /cost price <模型> <输入单价> <输出单价>）。",
+          "  补单价：点侧栏「配置单价」，或 /cost config（也可 /cost price <模型> <输入单价> <输出单价>）。",
         ),
       );
     }
+  };
+  // 侧栏费用区块的「看明细」入口：直接复用 /cost 的报告输出，不另做一页。
+  openCostDetailsRef = () => {
+    void runCostCommand(["cost"]);
   };
 
   const printSessionHelp = (): void => {
