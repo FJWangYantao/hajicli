@@ -3553,6 +3553,11 @@ async function main() {
               `  ↳ 已附加图片：${pastedImages.map((image) => image.displayName).join("、")}`,
             ),
           );
+          // 贴的图直接内联进对话区：kitty 协议终端显示真实像素，其他终端显示说明行。
+          for (const image of pastedImages) {
+            const shown = ui.appendInlineImage(image.path);
+            if (!shown.ok) ui.writeLine(colors.red(`  ! ${shown.error}`));
+          }
         }
       }
 
@@ -4005,6 +4010,9 @@ async function main() {
           ui.writeLine(
             colors.gray(`  ↳ 已附加图片：${parsedImage.imagePath}（${attachment.mimeType}）`),
           );
+          // 图片同时内联显示给用户：模型看到多模态附件，用户在终端里直接看到图。
+          const shown = ui.appendInlineImage(parsedImage.imagePath);
+          if (!shown.ok) ui.writeLine(colors.red(`  ! ${shown.error}`));
           await runAgentTurn(turnDeps, {
             forwardedPrompt: parsedImage.prompt,
             commandInput: trimmedInput,

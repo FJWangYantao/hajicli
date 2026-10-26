@@ -831,6 +831,21 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               output: result.execution?.output ?? "",
             })),
         );
+        // 本批产出图片（read 读图）：内联贴进对话区给用户看。图片是独立封口段，
+        // 先封口当前过程段再贴图、随后重开新段接住后续工具；当前轮流式正文已完结，
+        // 旧 streamStartOffset 不会再被使用，无需平移。
+        const batchImagePaths = batchRun.results.flatMap((result) =>
+          (result.execution?.images ?? []).map((image) => image.path),
+        );
+        if (batchImagePaths.length > 0 && foldGroup) {
+          ui.sealFoldGroup(foldGroup, ui.getChatLength(), foldStats.snapshot());
+          foldGroup = ui.beginFoldGroup();
+          foldStats = new FoldStatsCollector();
+          for (const imagePath of batchImagePaths) {
+            const shown = ui.appendInlineImage(imagePath);
+            if (!shown.ok) ui.writeLine(colors.red(`  ! ${shown.error}`));
+          }
+        }
         for (const result of batchRun.results) {
           const { tc, toolName, args, execution } = result;
           // 过程段统计：被中止跳过的不计入任何类别。

@@ -114,7 +114,7 @@ function renderImage(request: ReadRequest, buffer: Buffer, mimeType: string): To
       header,
       `类型=${mimeType}；大小=${buffer.length}字节；hash=${contentHash(buffer)}`,
       "(图片内容已随本条结果一并发送，可直接查看，无需再次读取)",
-      "（想让人眼在终端里看到它：/view <路径>）",
+      "（终端支持时此图会内联显示在工具结果下方；否则可用 /view <路径> 整屏查看）",
     ].join("\n"),
     images: [{ mimeType, base64: buffer.toString("base64"), path: request.path }],
   };

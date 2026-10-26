@@ -23,7 +23,21 @@ import {
   inputRowHighlightSpan,
 } from "./input-selection.js";
 import { type ChatSegmentView, type FoldGroupStats, renderSegmentText } from "./process-fold.js";
-import { encodeDeleteImages, type ImageProtocol } from "./terminal-image.js";
+import {
+  buildInlineImage,
+  clipInlinePlacement,
+  diffInlinePlacements,
+  encodeDeleteImages,
+  encodeKittyImageDispose,
+  encodeKittyPlacement,
+  encodeKittyPlacementDelete,
+  encodeKittyUpload,
+  fitImageCells,
+  type ImageProtocol,
+  INLINE_IMAGE_MAX_ROWS,
+  type InlineImageDescription,
+  type InlinePlacementSpec,
+} from "./terminal-image.js";
 import {
   type ActivityBadge,
   buildActivityRow,
@@ -70,6 +84,7 @@ import {
   composeSidebarRow,
   resolveSidebarWidth,
   SIDEBAR_GAP_WIDTH,
+  type SidebarGoalState,
   type SidebarPricingAgentState,
   type SidebarState,
 } from "./tui-sidebar.js";
@@ -251,12 +266,26 @@ interface PendingMouseSelection {
 }
 
 /** 已封口的对话区片段：raw 不再变化，只随宽度/展开状态重算换行。 */
+/**
+ * 内联图段：kind === "image" 时有效。placementId 固定为 1
+ * （每张图只维护一个 placement，移动靠同 (image id, placement id) 重放替换）。
+ */
+const INLINE_PLACEMENT_ID = 1;
+/**
+ * 滚动微调节流间隔：滚过图片时每行都会产生新的行位/裁剪，逐帧重放 a=p 会让
+ * 终端反复重缩放位图（快速滚动时明显卡顿）。限频后滚动期间终端自行让图跟随
+ * 文本滚动，收尾帧把最终位置精确对齐；上传 / 删除 / 首次放置不受节流影响。
+ */
+const INLINE_IMAGE_SCROLL_NUDGE_MS = 80;
+
 interface ChatSegment {
   id: number;
-  kind: "plain" | "fold";
+  kind: "plain" | "fold" | "image";
   raw: string;
   stats?: FoldGroupStats;
   expanded: boolean;
+  /** kind === "image" 时的内联图状态（placement 生命周期挂在段上）。 */
+  image?: InlineImageSegmentState;
   /** 缓存键 `${width}|${expanded}|${foldEnabled}`，命中则直接复用 rows / layout。 */
   cacheKey?: string;
   /** 去掉末尾光标行后的换行结果。 */
@@ -265,6 +294,21 @@ interface ChatSegment {
   layout?: AnsiTextLayout;
   /** 摘要行在段内的行号（= 首部空行数）。 */
   headerRow?: number;
+}
+
+/**
+ * 内联图段的运行态：数据只上传一次，placement 随帧同步。
+ * uploaded/placed 挂在段上而不是全局表——段被丢弃（预算回收 / 清屏）时一起消失。
+ */
+interface InlineImageSegmentState {
+  desc: InlineImageDescription;
+  /** kitty image id（终端侧数据键）；placementId 固定 1，每图一个 placement。 */
+  kittyId: number;
+  uploaded: boolean;
+  /** 当前已在屏幕上的 placement（1 基屏幕坐标）；undefined = 未放置。 */
+  placed?: InlinePlacementSpec;
+  /** 当前宽度下的折算结果（缓存，宽度变化时由 cacheKey 失效重算）。 */
+  fitted?: { cols: number; rows: number };
 }
 
 /** 过程段的开启句柄；epoch 变化（清屏 / 整体替换 / 尾部截断）后自动失效。 */
@@ -305,7 +349,8 @@ function closeTrailingStyle(raw: string): string {
 
 function segmentView(segment: ChatSegment): ChatSegmentView {
   return {
-    kind: segment.kind,
+    // 图片段不走文本折行路径（renderSegmentRows 已提前分支），这里按 plain 兜底。
+    kind: segment.kind === "image" ? "plain" : segment.kind,
     raw: segment.raw,
     stats: segment.stats,
     expanded: segment.expanded,
@@ -418,6 +463,16 @@ export class TerminalUI {
    */
   private sealedSegments: ChatSegment[] = [];
   private nextSegmentId = 1;
+  /**
+   * 内联图的 kitty image id 分配器。从 2 起：1 留给 /view 的整屏贴图
+   * （其关闭时 a=d,d=A 会释放所有图数据，两者本就不该共存）。
+   */
+  private nextKittyImageId = 2;
+  /** 上次对已放置的内联图发出 a=p 的时刻（滚动微调节流用）。 */
+  private inlineImageLastPlaceAt = 0;
+  /** 有被节流抑制的滚动微调还没落地：帧渲染的提前返回要给它让路。 */
+  private inlineImageNudgePending = false;
+  private inlineImageSettleTimer: ReturnType<typeof setTimeout> | null = null;
   /** 过程折叠开关（/fold 可关；关闭后对话区与改动前逐行一致）。 */
   private foldEnabled = true;
   /** 对话文档纪元：清屏 / 整体替换 / 尾部截断 / 封口时 +1，让旧偏移与旧句柄失效。 */
@@ -489,6 +544,8 @@ export class TerminalUI {
   private costUnpricedModels: string[] = [];
   /** 后台定价 agent 的状态行；undefined 表示没有在跑也没有结果。 */
   private pricingAgentState?: SidebarPricingAgentState;
+  /** 会话目标（/goal 设定）；undefined 表示未设定，侧栏不渲染目标区块。 */
+  private sidebarGoal?: SidebarGoalState;
   /** 上一轮回合耗时（ms）；undefined 表示本会话还没跑完一轮。 */
   private lastTurnMs?: number;
   /** 本会话上下文压缩次数（自动 + 手动）；用于解释圆环为何突然掉下来。 */
@@ -843,6 +900,21 @@ export class TerminalUI {
     this.scheduleRender();
   }
 
+  /** 会话目标（侧栏目标区块）；传 undefined 清掉，/clear 与 /resume 后同步刷新。 */
+  setGoal(goal: SidebarGoalState | undefined): void {
+    const next = goal
+      ? {
+          text: sanitizeTerminalText(goal.text)
+            .replace(/\s*\n\s*/g, " ")
+            .trim(),
+          status: goal.status,
+        }
+      : undefined;
+    if (next?.text === this.sidebarGoal?.text && next?.status === this.sidebarGoal?.status) return;
+    this.sidebarGoal = next;
+    this.scheduleRender();
+  }
+
   /** 记录上一轮回合耗时（回合结束时由 turn-runner 回调；0 表示忽略）。 */
   setLastTurnDuration(durationMs: number): void {
     if (!Number.isFinite(durationMs) || durationMs <= 0) return;
@@ -995,6 +1067,43 @@ export class TerminalUI {
     return end;
   }
 
+  /**
+   * 把一张图片作为独立段内联进聊天流：先封口当前尾部正文，再追加图片段。
+   * kitty 协议下真实像素由帧尾同步层贴在占位行区域；其他协议降级为说明行。
+   * 必须在「没有未写完的流式正文」时调用（回合内接线方负责先封口再重新开段）。
+   */
+  appendInlineImage(filePath: string): { ok: true } | { ok: false; error: string } {
+    if (!this.interactive) return { ok: false, error: "内联贴图需要交互式终端" };
+    const built = buildInlineImage(filePath);
+    if (!built.ok) return built;
+    if (this.chatContent) {
+      this.pushSegment({ kind: "plain", raw: this.chatContent });
+      this.chatContent = "";
+      // 尾部清零后，调用方持有的旧偏移不再有效——与 sealFoldGroup 同一口径。
+      this.chatEpoch += 1;
+    }
+    this.sealedSegments.push({
+      id: this.nextSegmentId,
+      kind: "image",
+      raw: sanitizeTerminalText(built.image.caption),
+      expanded: false,
+      image: {
+        desc: built.image,
+        kittyId: this.nextKittyImageId,
+        uploaded: false,
+      },
+    });
+    this.nextSegmentId += 1;
+    this.nextKittyImageId += 1;
+    this.sealedVersion += 1;
+    this.selectionLayout = undefined;
+    this.cachedContentWithStatus = "";
+    this.setStableWrapPrefix("");
+    this.enforceSegmentBudget();
+    this.scheduleRender();
+    return { ok: true };
+  }
+
   /** /resume 用：整体替换为预先分好段的历史（最后一段 plain 进入尾部）。 */
   replaceChatSegments(pieces: readonly ChatSegmentPiece[]): void {
     if (!this.interactive) {
@@ -1004,6 +1113,7 @@ export class TerminalUI {
     const pending = pieces.map((piece) => ({ ...piece }));
     const last = pending[pending.length - 1];
     const tail = last?.kind === "plain" ? pending.pop() : undefined;
+    this.disposeInlineImages(this.sealedSegments);
     this.sealedSegments = [];
     this.nextSegmentId = 1;
     for (const piece of pending) {
@@ -1355,6 +1465,7 @@ export class TerminalUI {
     this.chatViewport = undefined;
     this.cachedContentWithStatus = "";
     this.cachedWrappedChat = [];
+    this.disposeInlineImages(this.sealedSegments);
     this.sealedSegments = [];
     this.nextSegmentId = 1;
     this.foldHeaderRows.clear();
@@ -1396,22 +1507,80 @@ export class TerminalUI {
   private getSegmentRows(segment: ChatSegment, width: number): string[] {
     const cacheKey = `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}`;
     if (segment.cacheKey === cacheKey && segment.rows) return segment.rows;
-    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
-    segment.headerRow = rendered.headerRow;
-    const rows = performanceMonitor.measureSync("terminal.wrap.segment", () =>
-      wrapAnsi(rendered.text, width),
-    );
-    // 去掉末尾的光标行：拼接时由下一段的首行接上。
+    const rows = this.renderSegmentRows(segment, width);
     segment.rows = rows.length > 0 ? rows.slice(0, -1) : rows;
     segment.layout = undefined;
     segment.cacheKey = cacheKey;
     return segment.rows;
   }
 
+  /** 图片段：占位空行 + 说明行；尺寸折算结果缓存进段，帧尾同步层直接取用。 */
+  private renderImageSegmentRows(segment: ChatSegment, width: number): string[] {
+    const state = segment.image;
+    if (!state) return [];
+    const caption = sanitizeTerminalText(
+      state.desc.protocol === "kitty" && state.desc.png
+        ? state.desc.caption
+        : `${state.desc.caption}（此终端不支持内联贴图，/view 可整屏查看）`,
+    );
+    const captionRow = `${SEQ.muted}${caption}${SEQ.reset}`;
+    if (state.desc.protocol !== "kitty" || !state.desc.png) {
+      // 末尾的空串对齐 wrapAnsi 的「光标行」，由 getSegmentRows 统一切掉。
+      return [captionRow, ""];
+    }
+    const fitted = fitImageCells(
+      state.desc.widthPx,
+      state.desc.heightPx,
+      width,
+      INLINE_IMAGE_MAX_ROWS,
+    );
+    state.fitted = fitted;
+    // 占位行必须是空串：图片像素由同步层贴上去，行内任何字符都会叠在图上。
+    return [...new Array<string>(fitted.rows).fill(""), captionRow, ""];
+  }
+
+  private renderSegmentRows(segment: ChatSegment, width: number): string[] {
+    if (segment.kind === "image") return this.renderImageSegmentRows(segment, width);
+    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
+    segment.headerRow = rendered.headerRow;
+    return performanceMonitor.measureSync("terminal.wrap.segment", () =>
+      wrapAnsi(rendered.text, width),
+    );
+  }
+
   /** 段的独立布局（选区用）；末尾光标行保留，交给 concatAnsiLayouts 处理。 */
   private getSegmentLayout(segment: ChatSegment, width: number): AnsiTextLayout {
     if (segment.layout && segment.cacheKey === this.segmentCacheKey(segment, width)) {
       return segment.layout;
+    }
+    if (segment.kind === "image") {
+      // 图片段没有可选正文：占位行在选区里就是空行，说明行的纯文本用于复制。
+      const rows = this.renderImageSegmentRows(segment, width);
+      const plainRows = rows.slice(0, -1);
+      const captionPlain = sanitizeTerminalText(segment.image?.desc.caption ?? "");
+      const layout: AnsiTextLayout = {
+        document: captionPlain,
+        rows: plainRows.map((ansi, index) => {
+          const isCaption = index === plainRows.length - 1 && ansi !== "";
+          const offset = isCaption ? captionPlain.length : 0;
+          return {
+            ansi,
+            plain: isCaption ? captionPlain : "",
+            startOffset: isCaption ? 0 : offset,
+            endOffset: offset,
+          };
+        }),
+      };
+      layout.rows.push({
+        ansi: "",
+        plain: "",
+        startOffset: captionPlain.length,
+        endOffset: captionPlain.length,
+      });
+      segment.layout = layout;
+      segment.cacheKey = this.segmentCacheKey(segment, width);
+      segment.rows = layout.rows.slice(0, -1).map((row) => row.ansi);
+      return layout;
     }
     const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
     segment.headerRow = rendered.headerRow;
@@ -1475,6 +1644,7 @@ export class TerminalUI {
       if (dropped && this.pendingScrollAnchor?.segmentId === dropped.id) {
         this.pendingScrollAnchor = undefined;
       }
+      if (dropped?.image) this.disposeInlineImages([dropped]);
       this.sealedVersion += 1;
       this.selectionLayout = undefined;
     }
@@ -1695,6 +1865,7 @@ export class TerminalUI {
     this.cachedWrappedWidth = 0;
     this.cachedWrappedChat = [];
     // 整体替换多见于 /resume。首次布局直接建立可复用的文档索引，避免第一次拖选再扫描全文。
+    this.disposeInlineImages(this.sealedSegments);
     this.sealedSegments = [];
     this.nextSegmentId = 1;
     this.foldHeaderRows.clear();
@@ -2856,6 +3027,7 @@ export class TerminalUI {
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
       ...(this.contextBreakdown ? { breakdown: this.contextBreakdown } : {}),
+      ...(this.sidebarGoal ? { goal: this.sidebarGoal } : {}),
       costCny: this.costCny,
       costRequests: this.costRequests,
       hasUnpricedCost: this.costHasUnpriced,
@@ -2970,6 +3142,133 @@ export class TerminalUI {
     this.renderedScreenRows = [];
     this.renderedScreenWidth = 0;
     this.renderedScreenHeight = 0;
+    // 屏幕整体失效伴随清屏或 /view 的 d=A：placement 与数据都可能没了，按未上传重置。
+    this.resetInlineImageScreen();
+  }
+
+  /** 屏幕重置后：所有内联图回到「未放置、未上传」，下一次渲染强制重传重贴。 */
+  private resetInlineImageScreen(): void {
+    for (const segment of this.sealedSegments) {
+      if (!segment.image) continue;
+      segment.image.placed = undefined;
+      segment.image.uploaded = false;
+    }
+  }
+
+  /**
+   * 内联图 placement 同步层：帧渲染末尾把每张可见内联图的 kitty placement 对齐到
+   * 「本帧应有的屏幕位置」。位置未变 → 零输出；移动/改尺寸 → 同 (image id,
+   * placement id) 重放，协议保证原地替换、无闪烁；部分可见 → 用源矩形（x/y/w/h）
+   * 只贴可见的那段，滚动时图片随文本渐进出入视口；完全滚出 → 只删 placement
+   * 保留数据，滚回来时一条 a=p 即恢复。
+   */
+  private syncInlineImages(frame: {
+    visibleStart: number;
+    visibleEnd: number;
+    chatRegionStart: number;
+    chatPadding: number;
+    suppressed: boolean;
+  }): string {
+    if (this.sealedSegments.length === 0) return "";
+    let output = "";
+    let throttled = false;
+    const now = Date.now();
+    for (const segment of this.sealedSegments) {
+      const state = segment.image;
+      if (state?.desc.protocol !== "kitty" || !state?.desc.png) continue;
+      const imageRows = state.fitted?.rows ?? 0;
+      let desired: InlinePlacementSpec | undefined;
+      if (!frame.suppressed && imageRows > 0 && state.fitted) {
+        const entry = this.sealedRowIndex.find((item) => item.id === segment.id);
+        if (entry) {
+          const clipped = clipInlinePlacement(
+            {
+              start: entry.start,
+              rows: imageRows,
+              widthPx: state.desc.widthPx,
+              heightPx: state.desc.heightPx,
+            },
+            frame,
+          );
+          if (clipped) {
+            // 裁掉顶部若干行后，首个可见行就是图片矩形的新顶行。
+            desired = {
+              row:
+                frame.chatRegionStart +
+                1 +
+                (entry.start + clipped.clippedRows - frame.visibleStart),
+              col: frame.chatPadding + 1,
+              cols: state.fitted.cols,
+              rows: clipped.visibleRows,
+              src: clipped.src,
+            };
+          }
+        }
+      }
+      const verdict = diffInlinePlacements(state.placed, desired, state.uploaded);
+      if (verdict.action === "none") continue;
+      if (verdict.action === "delete") {
+        output += encodeKittyPlacementDelete({
+          id: state.kittyId,
+          placementId: INLINE_PLACEMENT_ID,
+          tmux: state.desc.tmux,
+        });
+        state.placed = undefined;
+        continue;
+      }
+      if (verdict.plan.upload) {
+        output += encodeKittyUpload(state.desc.png, { id: state.kittyId, tmux: state.desc.tmux });
+        state.uploaded = true;
+      }
+      // 已在屏上的图滚动引发的行移/裁剪微调：节流限频。抑制时不更新状态，
+      // 收尾定时器保证滚动停下后必有一帧把 placement 对齐到精确位置。
+      if (
+        !verdict.plan.upload &&
+        state.placed !== undefined &&
+        now - this.inlineImageLastPlaceAt < INLINE_IMAGE_SCROLL_NUDGE_MS
+      ) {
+        throttled = true;
+        this.scheduleInlineImageSettle(
+          INLINE_IMAGE_SCROLL_NUDGE_MS - (now - this.inlineImageLastPlaceAt),
+        );
+        continue;
+      }
+      // a=p 放在光标处：先定位到图片矩形顶行左列再放置；帧尾的 cursorState 会再定位光标。
+      output += `\x1b[${verdict.plan.place.row};${verdict.plan.place.col}H`;
+      output += encodeKittyPlacement({
+        id: state.kittyId,
+        placementId: INLINE_PLACEMENT_ID,
+        cols: verdict.plan.place.cols,
+        rows: verdict.plan.place.rows,
+        src: verdict.plan.place.src,
+        tmux: state.desc.tmux,
+      });
+      state.placed = verdict.plan.place;
+      this.inlineImageLastPlaceAt = now;
+    }
+    this.inlineImageNudgePending = throttled;
+    return output;
+  }
+
+  /** 滚动停下后补一帧，把被节流的图片微调落到精确位置。 */
+  private scheduleInlineImageSettle(delayMs: number): void {
+    if (this.inlineImageSettleTimer) return;
+    this.inlineImageSettleTimer = setTimeout(
+      () => {
+        this.inlineImageSettleTimer = null;
+        this.scheduleRender(true);
+      },
+      Math.max(0, delayMs),
+    );
+  }
+
+  /** 段列表即将整体丢弃：释放其中内联图占用的终端图形配额。 */
+  private disposeInlineImages(segments: readonly ChatSegment[]): void {
+    for (const segment of segments) {
+      const state = segment.image;
+      if (state?.desc.protocol !== "kitty" || !state?.desc.png) continue;
+      stdout.write(encodeKittyImageDispose(state.kittyId, state.desc.tmux));
+    }
   }
 
   private renderFrame(): void {
@@ -3401,7 +3700,14 @@ export class TerminalUI {
       cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }
 
-    if (!fullRefresh && !screenUpdate && cursorState === this.renderedCursorState) {
+    // 有被节流的图片滚动微调没落地时不能提前返回：那一帧的 syncInlineImages 输出
+    // 就是本帧唯一要做的事（文本与光标都没变）。
+    if (
+      !fullRefresh &&
+      !screenUpdate &&
+      cursorState === this.renderedCursorState &&
+      !this.inlineImageNudgePending
+    ) {
       this.renderedChatVisibleStart = visibleStart;
       this.renderedChatRegionStart = chatRegionStart;
       this.renderedChatRegionHeight = chatHeight;
@@ -3413,6 +3719,17 @@ export class TerminalUI {
     let frame = "\x1b[?2026h\x1b[?25l";
     if (fullRefresh) frame += `${themeEnter()}\x1b[2J`;
     frame += screenUpdate;
+    // 2J 按协议清掉屏幕上的图（部分实现连同数据）：重置后全部按未上传处理，强制重传。
+    if (fullRefresh) this.resetInlineImageScreen();
+    // 内联图同步层：文本层画完后，把可见图的 kitty placement 对齐到本帧屏幕位置。
+    // 无图或位置未变时零输出，不增加常规帧的负担。
+    frame += this.syncInlineImages({
+      visibleStart,
+      visibleEnd,
+      chatRegionStart,
+      chatPadding,
+      suppressed: Boolean(inspectorFrame),
+    });
     frame += cursorState;
     frame += "\x1b[?2026l";
     const accepted = stdout.write(frame);
