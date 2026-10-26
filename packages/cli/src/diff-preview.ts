@@ -12,8 +12,8 @@ import { colors } from "./theme.js";
 
 /** 与 opencode 一致：unified patch 默认前后各 4 行上下文。 */
 export const DEFAULT_PATCH_CONTEXT = 4;
-/** 双列行号的单列宽度（右对齐）。 */
-const LINE_NUMBER_WIDTH = 4;
+/** 行号列的最小宽度；实际宽度按本次 patch 的最大行号动态取（对齐 opencode 的 minDigits）。 */
+const LINE_NUMBER_MIN_WIDTH = 3;
 
 export interface DiffStats {
   added: number;
@@ -174,13 +174,10 @@ function highlightIntraLine(
   };
 }
 
-/** 行号列宽（右对齐）；行数超出时收缩为省略号，避免挤占正文。 */
-function lineNumberLabel(line: number | undefined, columnWidth = LINE_NUMBER_WIDTH): string {
+/** 行号列宽（右对齐）；列宽由本次 patch 的最大行号决定。 */
+function lineNumberLabel(line: number | undefined, columnWidth: number): string {
   if (line === undefined) return " ".repeat(columnWidth);
-  const text = String(line);
-  return text.length > columnWidth
-    ? `${" ".repeat(Math.max(0, columnWidth - 1))}…`
-    : text.padStart(columnWidth);
+  return String(line).padStart(columnWidth);
 }
 
 /** 一行的固定布局：` 旧行号 新行号 标记 内容`。 */
@@ -189,13 +186,19 @@ function layoutRow(
   newLine: number | undefined,
   mark: string,
   text: string,
+  gutter: number,
 ): string {
-  return ` ${lineNumberLabel(oldLine)} ${lineNumberLabel(newLine)} ${mark} ${text}`;
+  return ` ${lineNumberLabel(oldLine, gutter)} ${lineNumberLabel(newLine, gutter)} ${mark} ${text}`;
 }
 
 /** 把解析后的 patch 行渲染成带 hunk 头、双列行号与行内高亮的展示行。 */
 function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
   const { rows, stats } = parseUnifiedPatch(patch);
+  // 与 opencode 一致：单 hunk 不画 `@@` 头（行号已经说明位置），多 hunk 才用头分隔。
+  const hunkCount = rows.filter((row) => row.type === "hunk").length;
+  // 行号列宽按本次 patch 的最大行号取，小文件不浪费列宽、大文件也不会被截成省略号。
+  const maxLine = rows.reduce((max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0), 0);
+  const gutter = Math.max(LINE_NUMBER_MIN_WIDTH, String(Math.max(1, maxLine)).length);
   // 配对相邻的删除块与新增块，按位置做行内高亮（与 patch 的输出顺序一致）。
   const delPair = new Map<number, number>();
   const addPair = new Map<number, number>();
@@ -223,7 +226,7 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (row.type === "hunk") {
-      rendered.push({ row: colors.cyan(row.text), kind: "head" });
+      if (hunkCount > 1) rendered.push({ row: colors.cyan(row.text), kind: "head" });
       continue;
     }
     if (row.type === "note") {
@@ -232,7 +235,7 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
     }
     if (row.type === "same") {
       rendered.push({
-        row: layoutRow(row.oldLine, row.newLine, " ", colors.muted(row.text)),
+        row: layoutRow(row.oldLine, row.newLine, " ", colors.muted(row.text), gutter),
         kind: "context",
       });
       continue;
@@ -243,7 +246,7 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
       const pair = pairIndex === undefined ? undefined : rows[pairIndex];
       const highlighted = highlightIntraLine(row.text, pair?.text);
       rendered.push({
-        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("−"), highlighted.del),
+        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("−"), highlighted.del, gutter),
         kind: "change",
       });
       continue;
@@ -253,7 +256,7 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
     const pair = pairIndex === undefined ? undefined : rows[pairIndex];
     const highlighted = highlightIntraLine(pair?.text, row.text);
     rendered.push({
-      row: layoutRow(row.oldLine, row.newLine, colors.boldGreen("+"), highlighted.add),
+      row: layoutRow(row.oldLine, row.newLine, colors.boldGreen("+"), highlighted.add, gutter),
       kind: "change",
     });
   }
@@ -338,6 +341,24 @@ export function buildWriteDiff(
 ): DiffBody {
   const before = original === undefined ? "" : original;
   return renderPatch(buildUnifiedPatch(before, content), width, maxLines);
+}
+
+/**
+ * 全文预览（write 完成后）：单列行号 + 原样内容，与 opencode 的 write 块一致。
+ * 写盘后拿不到旧内容，所以不再假装成 diff，直接展示写入结果。
+ */
+export function buildContentPreview(content: string, width: number, maxLines = 14): DiffBody {
+  const lines = normalizeDiffLines(content);
+  const gutter = Math.max(LINE_NUMBER_MIN_WIDTH, String(Math.max(1, lines.length)).length);
+  const rendered = lines.map(
+    (line, index) => `${colors.muted(String(index + 1).padStart(gutter))} ${line}`,
+  );
+  const limit = Math.max(0, maxLines);
+  const visible = rendered.slice(0, limit);
+  const out = visible.map((line) => truncateAnsiText(line, Math.max(1, width)));
+  const hiddenLines = rendered.length - visible.length;
+  if (hiddenLines > 0) out.push(colors.gray(`… 还有 ${hiddenLines} 行`));
+  return { lines: out, stats: { added: 0, removed: 0 }, hiddenLines, startLine: 1 };
 }
 
 /** diff 头部行：`路径  +a −r`（新增/删除行数来自 stats）。 */

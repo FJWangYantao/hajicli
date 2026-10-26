@@ -138,6 +138,16 @@ test("draft cell streams the instruction body instead of waiting for full args",
   );
 });
 
+test("draft cell shows a from-zero elapsed timer when provided", () => {
+  const draft = { name: "bash", argumentsText: '{"command": "npm test"}' };
+  // 没有耗时入参时头行不带时间，保持原样。
+  assert.equal(formatToolCallDraftCell(draft, 80)[0].includes("0ms"), false);
+  // 从 0 开始：入参为 0 时头行显示 0ms。
+  assert.equal(formatToolCallDraftCell(draft, 80, undefined, 0)[0].includes("0ms"), true);
+  // 超过一秒走秒级格式。
+  assert.equal(formatToolCallDraftCell(draft, 80, undefined, 1500)[0].includes("1.5s"), true);
+});
+
 test("draft cell strips the JSON envelope and falls back to the raw slice", () => {
   // 认得出结构：只留值（`{"path": "...}}"` → 路径本身）。
   const read = formatToolCallDraftCell({ name: "read", argumentsText: '{"path": "src/a"}' }, 60);

@@ -6,8 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildPermissionPreview,
+  DIFF_PREVIEW_LINES,
   summarizeToolResult,
-  TOOL_PREVIEW_LINES,
 } from "../dist/cli-runtime.js";
 import {
   buildEditDiff,
@@ -175,12 +175,15 @@ test("completed edit block reuses the pre-edit content (same patch as the permis
     // 传了 cwd：从磁盘内容把 newText 换回 oldText 重建原文，渲染出与授权卡片同一份 patch。
     const summary = summarizeToolResult("edit", output, { blocked: false }, args, cwd);
     assert.equal(summary.status, "success");
-    assert.match(summary.text, /\+1 −1/);
+    // 改动行数并进头行（`+a −r`），不再占单独的 `└` 结果行。
+    assert.deepEqual(summary.stats, { added: 1, removed: 1 });
+    assert.equal(summary.text, "");
     assert.deepEqual(
       summary.preview,
-      buildEditDiff(SAMPLE, oldText, newText, 240, TOOL_PREVIEW_LINES).lines,
+      buildEditDiff(SAMPLE, oldText, newText, 240, DIFF_PREVIEW_LINES).lines,
     );
-    assert.ok(summary.preview.some((line) => plain(line).includes("@@")));
+    // 单 hunk 不画 `@@` 头，位置由行号说明。
+    assert.ok(!summary.preview.some((line) => plain(line).includes("@@")));
     assert.ok(summary.preview.some((line) => plain(line).includes("− const b = load(path);")));
     assert.ok(
       summary.preview.some((line) => plain(line).includes("+ const b = await load(path);")),
@@ -210,9 +213,8 @@ test("truncated previews keep the changed rows instead of the leading context", 
   const body = buildEditDiff(original, "line 6", "line six", 80, 3);
   const lines = body.lines.map(plain);
   assert.ok(body.hiddenLines > 0);
-  // 3 行窗口：hunk 头 + 删除 + 新增，上下文让位。
-  assert.match(lines[0], /^@@ /);
-  assert.ok(lines[1].includes("− line 6"));
-  assert.ok(lines[2].includes("+ line six"));
+  // 3 行窗口：单 hunk 不画头，直接是删除 + 新增 + 下一行上下文。
+  assert.ok(lines[0].includes("− line 6"));
+  assert.ok(lines[1].includes("+ line six"));
   assert.ok(lines.some((line) => line.includes("还有")));
 });

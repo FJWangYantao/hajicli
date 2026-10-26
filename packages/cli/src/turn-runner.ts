@@ -63,7 +63,12 @@ import {
   raceWithAbort,
   runToolCallBatch,
 } from "./tool-batch.js";
-import { buildToolDisplay, formatToolArgLines, formatToolCallDraftCell } from "./tool-display.js";
+import {
+  buildToolDisplay,
+  formatToolArgLines,
+  formatToolCallDraftCell,
+  type ToolCallDraft,
+} from "./tool-display.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
 export interface TurnDeps {
@@ -409,7 +414,26 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     };
     // 参数生成中的工具块占用同一个实时区域；工具开始执行前必须让位给 ToolRunView。
     let toolCallDraftShown = false;
+    // 草稿块从出现那一刻起就开始计时（0 起），让「拼指令 / 等执行」有个时间参照。
+    let toolCallDraftStartedAt = 0;
+    let toolCallDraftLast: ToolCallDraft | undefined;
+    let toolCallDraftTicker: ReturnType<typeof setInterval> | undefined;
+    const renderToolCallDraft = () => {
+      if (!toolCallDraftLast) return;
+      const elapsed = toolCallDraftStartedAt ? Date.now() - toolCallDraftStartedAt : 0;
+      ui.setLiveTail(
+        `${formatToolCallDraftCell(toolCallDraftLast, ui.getContentWidth(), undefined, elapsed).join("\n")}\n`,
+      );
+    };
+    const stopToolCallDraftTicker = () => {
+      if (!toolCallDraftTicker) return;
+      clearInterval(toolCallDraftTicker);
+      toolCallDraftTicker = undefined;
+    };
     const clearToolCallDraft = () => {
+      stopToolCallDraftTicker();
+      toolCallDraftLast = undefined;
+      toolCallDraftStartedAt = 0;
       if (!toolCallDraftShown) return;
       toolCallDraftShown = false;
       ui.setLiveTail("");
@@ -443,7 +467,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         if (isTurnAborted) return;
         // 指令本身边生成边写进实时区域：工具开始执行时由 ToolRunView 原地接管，
         // 视觉上「拼装参数 → 执行」是连续的，而不是等参数齐了一次性出整块。
-        ui.setLiveTail(`${formatToolCallDraftCell(delta, ui.getContentWidth()).join("\n")}\n`);
+        toolCallDraftLast = delta;
+        if (!toolCallDraftStartedAt) {
+          toolCallDraftStartedAt = Date.now();
+          // 分片停顿时也让耗时继续走：每 250ms 刷新一次实时区域。
+          toolCallDraftTicker = setInterval(renderToolCallDraft, 250);
+          toolCallDraftTicker.unref?.();
+        }
+        renderToolCallDraft();
         toolCallDraftShown = true;
         if (!toolCallDraftActive) {
           toolCallDraftActive = true;
@@ -686,6 +717,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       /** 因「同一条编辑连续返回无需修改」而停止时的目标。 */
       let noopEditTarget: string | undefined;
       const noopSignatures = new Map<string, number>();
+
+      // 马上要跑工具了：ToolRunView 会用同一个实时区域接管草稿块，停掉草稿计时器，
+      // 否则每 250ms 的刷新会把工具格覆盖掉；草稿块本身留着，由首个工具格原地盖上。
+      stopToolCallDraftTicker();
 
       for (const batch of batches) {
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。

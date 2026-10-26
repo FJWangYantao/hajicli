@@ -24,6 +24,12 @@ test("immediate 指令：回合进行中直接执行", () => {
     "/cost",
     "/cost agent",
     "/help",
+    "/sidebar",
+    "/sidebar off",
+    "/fold",
+    "/fold on",
+    "/think",
+    "/think off",
   ]) {
     assert.equal(classifyCommandTiming(input), "immediate", `${input} 应可立即执行`);
   }
@@ -44,7 +50,6 @@ test("改动会话状态或发起新回合的指令必须排队", () => {
     "/workspace add D:/other",
     "/cost config",
     "/cost price glm-5.2 1 2",
-    "/sidebar",
     "/output",
     "/diff",
     "hello",
@@ -77,11 +82,24 @@ test("补全目录带出 immediate 标记（UI 与分发共用同一份元数据
   assert.equal(byCommand.get("/cost config")?.immediate, false);
   assert.equal(byCommand.get("/compact")?.immediate, false);
   assert.equal(byCommand.get("/agents new")?.immediate, false);
+  // 纯展示开关：回合中改的是渲染 / 偏好，不碰对话历史。
+  assert.equal(byCommand.get("/sidebar")?.immediate, true);
+  assert.equal(byCommand.get("/fold")?.immediate, true);
+  assert.equal(byCommand.get("/think")?.immediate, true);
 });
 
 test("listImmediateCommands 覆盖声明过的顶层与成员指令", () => {
   const commands = listImmediateCommands();
-  for (const expected of ["/help", "/model", "/effort", "/theme", "/cost"]) {
+  for (const expected of [
+    "/help",
+    "/model",
+    "/effort",
+    "/theme",
+    "/cost",
+    "/sidebar",
+    "/fold",
+    "/think",
+  ]) {
     assert.ok(commands.includes(expected), `${expected} 应出现在立即指令清单里`);
   }
 });

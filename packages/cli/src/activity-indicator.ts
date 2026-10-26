@@ -1,4 +1,5 @@
 import {
+  DIFF_PREVIEW_LINES,
   formatToolCell,
   formatToolDuration,
   type ToolCellStatus,
@@ -216,6 +217,7 @@ interface ToolRunEntry {
   durationMs?: number;
   resultText?: string;
   preview?: string[];
+  stats?: { added: number; removed: number };
   outputTail: string[];
   partialLine: string;
   /** 自动模式判定结论及其过期时间：只挂在实时区域，不进对话正文。 */
@@ -332,6 +334,7 @@ export class ToolRunView {
     entry.status = result.status;
     entry.resultText = result.text;
     entry.preview = result.preview;
+    entry.stats = result.stats;
     entry.durationMs = durationMs;
     if (!this.entries.some((item) => item.status === "running" || item.status === "judging")) {
       this.clearTimer();
@@ -393,12 +396,19 @@ export class ToolRunView {
       verdict:
         live && entry.verdict && this.now() < entry.verdict.until ? entry.verdict.text : undefined,
       resultText: entry.resultText,
+      stats: entry.stats,
       preview: entry.preview,
       // 执行中不展开参数：实时区域同时在滚输出尾部，两段同样的 │ 行会打架；
       // 完成后的提交格才把命令按原样分行写进正文。
       argLines: running ? undefined : entry.argLines,
-      // 命令类结果按 shell 预算放宽到 10 行：报错常常不止三行。
-      maxPreviewLines: entry.toolName === "bash" ? SHELL_PREVIEW_LINES : undefined,
+      // 命令类结果按 shell 预算放宽到 10 行；edit/write 的 diff 预算放宽到 14 行，
+      // 否则整个 hunk 会被截成三行，看不到改动位置。
+      maxPreviewLines:
+        entry.toolName === "bash"
+          ? SHELL_PREVIEW_LINES
+          : entry.toolName === "edit" || entry.toolName === "write"
+            ? DIFF_PREVIEW_LINES
+            : undefined,
       outputTail,
     });
   }

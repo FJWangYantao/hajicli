@@ -12,6 +12,7 @@
  */
 import {
   formatToolCell,
+  formatToolDuration,
   summarizeToolCall,
   type ToolCellStatus,
   type ToolResultSummary,
@@ -317,6 +318,7 @@ export function formatToolCallDraftCell(
   draft: ToolCallDraft,
   width = 100,
   maxLines = DRAFT_MAX_LINES,
+  elapsedMs?: number,
 ): string[] {
   const toolName = draft.name?.trim() || "工具调用";
   const chars = draft.argumentsText.length;
@@ -327,6 +329,8 @@ export function formatToolCallDraftCell(
     // 标题只报进度（`12 字`），具体指令由下面几行原文体现——否则两处重复同一段文字。
     summary: chars > 0 ? `${chars} 字` : "",
     width,
+    // 从这一块出现那一刻起计的耗时（0 开始），给「正在拼指令 / 等待执行」一个时间参照。
+    timing: elapsedMs !== undefined ? formatToolDuration(elapsedMs) : undefined,
     // 走参数展开行而不是输出尾部：这是「正在拼的指令」，与结果（输出尾部）不同色。
     argLines: lines,
   });

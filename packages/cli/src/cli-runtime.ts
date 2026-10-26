@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { contentHash } from "@hajicli/plugins";
-import { buildEditDiff, buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
+import {
+  buildContentPreview,
+  buildEditDiff,
+  buildWriteDiff,
+  formatDiffHeader,
+} from "./diff-preview.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { colors } from "./theme.js";
@@ -311,10 +316,21 @@ export interface ToolResultSummary {
   text: string;
   /** 结果说明下面的几行输出预览（已清洗，未按宽度截断）；没有可看的就不给。 */
   preview?: string[];
+  /**
+   * 改动行数（edit 等）：有值时把 `+a −r` 并进工具头行，并省略单独的 `└` 结果行，
+   * 与 opencode 的文件头口径一致。
+   */
+  stats?: { added: number; removed: number };
 }
 
 /** 工具块结果说明下方最多预览几行输出（加上说明行一共四行）。 */
 export const TOOL_PREVIEW_LINES = 3;
+
+/**
+ * edit / write 的 diff 预览预算：这类结果本身就是「改了哪儿」，
+ * 三行会把 hunk 截断，放宽到与授权卡片一致的 14 行。
+ */
+export const DIFF_PREVIEW_LINES = 14;
 
 const VERIFICATION_EVIDENCE_RE = /\n\[verification_evidence_id: [^\]]*\]\s*$/;
 const BASH_HEADER_RE = /^\[命令执行结果 - 退出码 ([^；\]]+)；耗时 \d+ms\]/;
@@ -567,10 +583,14 @@ export function summarizeToolResult(
   }
   const writtenBytes = body.match(/^大小: (\d+) 字节$/m);
   if (body.startsWith("[文件写入成功]") && writtenBytes) {
-    const lines = typeof args.content === "string" ? countTextLines(args.content) : 0;
+    const content = typeof args.content === "string" ? args.content : "";
+    const lines = countTextLines(content);
+    // 与 opencode 的 write 块一致：完成后展示写入后的内容（带行号），而不只是字节数。
+    const preview = buildContentPreview(content, 240, DIFF_PREVIEW_LINES).lines;
     return {
       status: "success",
       text: `已写入 ${formatBytes(Number(writtenBytes[1]))}${lines > 0 ? ` · ${lines} 行` : ""}`,
+      ...(preview.length > 0 ? { preview } : {}),
     };
   }
   if (body.startsWith("[文件无需修改]")) {
@@ -583,10 +603,12 @@ export function summarizeToolResult(
     // 与授权卡片共用同一份 patch：先还原「改动前」全文，行号与上下文才和授权阶段一致。
     // 回放历史（不传 cwd）或还原不出来时退回 oldText/newText 片段对比。
     const original = cwd === undefined ? undefined : preEditContentForEdit(args, body, cwd);
-    const diff = buildEditDiff(original ?? "", args.oldText, args.newText, 240, TOOL_PREVIEW_LINES);
+    const diff = buildEditDiff(original ?? "", args.oldText, args.newText, 240, DIFF_PREVIEW_LINES);
     return {
       status: "success",
-      text: `已替换 1 处 · +${diff.stats.added} −${diff.stats.removed} 行`,
+      // 改动行数并进头行（`+a −r`），不再单独占一行 `└`，与 opencode 的文件头一致。
+      text: "",
+      stats: diff.stats,
       ...(diff.lines.length > 0 ? { preview: diff.lines } : {}),
     };
   }
@@ -656,6 +678,8 @@ export interface ToolCellOptions {
   verdict?: string;
   /** 完成后的结果说明，显示在第二行。 */
   resultText?: string;
+  /** 改动行数：有值时并进头行（`+a −r`）并省略单独的 `└` 结果行。 */
+  stats?: { added: number; removed: number };
   /** 结果说明下面的输出预览（最多 TOOL_PREVIEW_LINES 行）。 */
   preview?: readonly string[];
   /** 运行中滚动显示的最后几行输出。 */
@@ -696,11 +720,16 @@ export function formatToolCell(options: ToolCellOptions): string[] {
   const source = options.sourceLabel ? `${options.sourceLabel} ` : "";
   const timing = options.timing || "";
   const verdict = options.verdict || "";
+  const statsPlain = options.stats ? `+${options.stats.added} −${options.stats.removed}` : "";
+  const stats = options.stats
+    ? `${colors.green(`+${options.stats.added}`)} ${colors.red(`−${options.stats.removed}`)}`
+    : "";
   const fixedWidth =
     terminalWidth(TOOL_CELL_INDENT) +
     2 +
     terminalWidth(source) +
     terminalWidth(options.toolName) +
+    (statsPlain ? terminalWidth(statsPlain) + 2 : 0) +
     (timing ? terminalWidth(timing) + 2 : 0) +
     (verdict ? terminalWidth(verdict) + 2 : 0);
   const summaryWidth = Math.max(0, width - fixedWidth - 2);
@@ -714,6 +743,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     source ? colors.faint(source) : "",
     colors.cyan(options.toolName),
     summary ? `  ${colors.cyan(summary)}` : "",
+    stats ? `  ${stats}` : "",
     timing ? `  ${colors.faint(timing)}` : "",
     verdict ? `  ${colors.faint(verdict)}` : "",
   ].join("");
@@ -730,16 +760,20 @@ export function formatToolCell(options: ToolCellOptions): string[] {
         `${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.muted(fitText(line, bodyWidth))}`,
       );
     }
-  } else if (options.resultText) {
-    // 成败只靠前面的 ✓ / ✕ / ⊘ 着色；失败的说明用正文色，比成功的灰字醒目一档。
-    const text = fitText(options.resultText, bodyWidth);
-    const styled = options.status === "failed" ? text : colors.muted(text);
-    rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("└")} ${styled}`);
+  } else {
+    // 有 stats 时头行已经报了 `+a −r`，不再单独占一行 `└ 已替换…`（对齐 opencode）。
+    if (options.resultText && !options.stats) {
+      // 成败只靠前面的 ✓ / ✕ / ⊘ 着色；失败的说明用正文色，比成功的灰字醒目一档。
+      const text = fitText(options.resultText, bodyWidth);
+      const styled = options.status === "failed" ? text : colors.muted(text);
+      rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("└")} ${styled}`);
+    }
     // 预览和结果说明的文字对齐（└ 加一个空格占两格）。
     const previewWidth = Math.max(1, bodyWidth - 2);
     const previewBudget = Math.max(1, options.maxPreviewLines ?? TOOL_PREVIEW_LINES);
+    // 预览行自带 diff 配色（红/绿/青），不要再套一层灰，否则只会污染未着色部分。
     for (const line of (options.preview || []).slice(0, previewBudget)) {
-      rows.push(`${TOOL_CELL_INDENT}    ${colors.muted(fitText(line, previewWidth))}`);
+      rows.push(`${TOOL_CELL_INDENT}    ${fitText(line, previewWidth)}`);
     }
   }
   return rows;

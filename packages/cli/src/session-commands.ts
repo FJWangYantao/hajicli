@@ -14,7 +14,12 @@ import {
   type SnapshotEngine,
   type TaskStore,
 } from "@hajicli/core";
-import { formatReasoningBlock, formatToolCell, summarizeToolResult } from "./cli-runtime.js";
+import {
+  DIFF_PREVIEW_LINES,
+  formatReasoningBlock,
+  formatToolCell,
+  summarizeToolResult,
+} from "./cli-runtime.js";
 import { MarkdownStreamRenderer } from "./markdown-renderer.js";
 import { FoldStatsCollector } from "./process-fold.js";
 import { queueRewindRefill, REWIND_CONFIRM_DEFAULT } from "./rewind-flow.js";
@@ -217,7 +222,12 @@ async function loadAndRenderSession(
             summary: buildToolDisplay({ toolName: tc.function.name, args: argsObj }).title,
             width: ui.getContentWidth(),
             resultText: outcome?.text ?? "无执行结果",
+            stats: outcome?.stats,
             preview: outcome?.preview,
+            maxPreviewLines:
+              tc.function.name === "edit" || tc.function.name === "write"
+                ? DIFF_PREVIEW_LINES
+                : undefined,
           })) {
             appendHistoryLine(row);
           }

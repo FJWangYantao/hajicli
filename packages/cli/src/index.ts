@@ -2200,6 +2200,96 @@ async function main() {
     ui.writeChat(text);
   };
 
+  /** 解析 on/off 参数；无参返回 undefined（表示切换），非法参数返回 null。 */
+  const parseOnOff = (raw: string | undefined): boolean | undefined | null => {
+    if (!raw) return undefined;
+    const value = raw.toLowerCase();
+    if (value === "on") return true;
+    if (value === "off") return false;
+    return null;
+  };
+
+  // 以下三个开关只改本地展示 / 偏好，不读改 messages 与会话快照，因此可以走立即通道。
+  // 主循环与 runImmediateCommand 共用同一份实现，避免两条路径行为漂移。
+  const runSidebarCommand = (words: readonly string[]): void => {
+    const arg = parseOnOff(words[1]);
+    if (arg === null) {
+      immediateWriteLine(colors.failLine("用法：/sidebar [on|off]（无参切换当前状态）"));
+      return;
+    }
+    const enabled = arg ?? !ui.isSidebarEnabled();
+    ui.setSidebarEnabled(enabled);
+    const currentPreference = loadPreference();
+    savePreference(
+      {
+        ...(currentPreference ?? {}),
+        model: currentPreference?.model || selectedModel,
+        reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+        sidebar: enabled,
+      },
+      showRuntimeWarning,
+    );
+    immediateWriteLine(
+      colors.okLine(
+        enabled ? "右侧会话信息栏已开启（终端宽度不足时会自动隐藏）。" : "右侧会话信息栏已关闭。",
+      ),
+    );
+  };
+
+  const runFoldCommand = (words: readonly string[]): void => {
+    const arg = parseOnOff(words[1]);
+    if (arg === null) {
+      immediateWriteLine(colors.failLine("用法：/fold [on|off]（无参切换当前状态）"));
+      return;
+    }
+    const enabled = arg ?? !ui.isFoldEnabled();
+    ui.setFoldEnabled(enabled);
+    const currentPreference = loadPreference();
+    savePreference(
+      {
+        ...(currentPreference ?? {}),
+        model: currentPreference?.model || selectedModel,
+        reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+        foldProcess: enabled,
+      },
+      showRuntimeWarning,
+    );
+    immediateWriteLine(
+      colors.okLine(
+        enabled
+          ? "过程折叠已开启：工具调用与思考收成一行，点击摘要行或按 Ctrl+O 展开。"
+          : "过程折叠已关闭：过程按原始样式逐行显示。",
+      ),
+    );
+  };
+
+  const runThinkCommand = (words: readonly string[]): void => {
+    const arg = parseOnOff(words[1]);
+    if (arg === null) {
+      immediateWriteLine(colors.failLine("用法：/think [on|off]（无参切换当前状态）"));
+      return;
+    }
+    const enabled = arg ?? !showThinking;
+    showThinking = enabled;
+    const currentPreference = loadPreference();
+    savePreference(
+      {
+        ...(currentPreference ?? {}),
+        model: currentPreference?.model || selectedModel,
+        reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+        showThinking: enabled,
+      },
+      showRuntimeWarning,
+    );
+    immediateWriteLine(
+      colors.okLine(
+        enabled
+          ? "思维链已展开：完整推理常驻对话区，下一次请求生效。"
+          : "思维链已折叠：只在对话区底部滚动预览最后几行。",
+      ),
+    );
+  };
+
   /** 安全点收尾：落地推迟的 system prompt 重建与寄存的输出。 */
   const flushImmediateEffects = async (): Promise<void> => {
     if (pendingPromptRefresh) {
@@ -2395,7 +2485,11 @@ async function main() {
       else if (command === "theme") await runThemeCommand(words);
       else if (command === "cost") await runCostCommand(words);
       else if (command === "help") printSessionHelp();
-      else return false;
+      else if (command === "sidebar") runSidebarCommand(words);
+      else if (command === "fold") runFoldCommand(words);
+      else if (command === "think") runThinkCommand(words);
+      // 元数据声明了 immediate 却没有处理器：属于内部不一致，宁可报错也不要悄悄回退到排队。
+      else throw new Error(`/${command} 标记为立即执行，但缺少对应的处理器`);
       return true;
     } catch (error) {
       // 立即通道不能把异常抛回输入回调：那会变成未处理的 rejection，回合还在跑。
@@ -3791,83 +3885,15 @@ async function main() {
           continue;
         }
         if (command === "sidebar") {
-          const arg = parts[1]?.toLowerCase();
-          if (arg && arg !== "on" && arg !== "off") {
-            ui.writeLine(colors.failLine("用法：/sidebar [on|off]（无参切换当前状态）"));
-            continue;
-          }
-          const enabled = arg ? arg === "on" : !ui.isSidebarEnabled();
-          ui.setSidebarEnabled(enabled);
-          const currentPreference = loadPreference();
-          savePreference(
-            {
-              ...(currentPreference ?? {}),
-              model: currentPreference?.model || selectedModel,
-              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
-              sidebar: enabled,
-            },
-            showRuntimeWarning,
-          );
-          ui.writeLine(
-            colors.okLine(
-              enabled
-                ? "右侧会话信息栏已开启（终端宽度不足时会自动隐藏）。"
-                : "右侧会话信息栏已关闭。",
-            ),
-          );
+          runSidebarCommand(parts);
           continue;
         }
         if (command === "fold") {
-          const arg = parts[1]?.toLowerCase();
-          if (arg && arg !== "on" && arg !== "off") {
-            ui.writeLine(colors.failLine("用法：/fold [on|off]（无参切换当前状态）"));
-            continue;
-          }
-          const enabled = arg ? arg === "on" : !ui.isFoldEnabled();
-          ui.setFoldEnabled(enabled);
-          const currentPreference = loadPreference();
-          savePreference(
-            {
-              ...(currentPreference ?? {}),
-              model: currentPreference?.model || selectedModel,
-              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
-              foldProcess: enabled,
-            },
-            showRuntimeWarning,
-          );
-          ui.writeLine(
-            colors.okLine(
-              enabled
-                ? "过程折叠已开启：工具调用与思考收成一行，点击摘要行或按 Ctrl+O 展开。"
-                : "过程折叠已关闭：过程按原始样式逐行显示。",
-            ),
-          );
+          runFoldCommand(parts);
           continue;
         }
         if (command === "think") {
-          const arg = parts[1]?.toLowerCase();
-          if (arg && arg !== "on" && arg !== "off") {
-            ui.writeLine(colors.failLine("用法：/think [on|off]（无参切换当前状态）"));
-            continue;
-          }
-          showThinking = arg ? arg === "on" : !showThinking;
-          const currentPreference = loadPreference();
-          savePreference(
-            {
-              ...(currentPreference ?? {}),
-              model: currentPreference?.model || selectedModel,
-              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
-              showThinking,
-            },
-            showRuntimeWarning,
-          );
-          ui.writeLine(
-            colors.okLine(
-              showThinking
-                ? "思维链已展开：完整推理常驻对话区，下一回合生效。"
-                : "思维链已折叠：只在对话区底部滚动预览最后几行。",
-            ),
-          );
+          runThinkCommand(parts);
           continue;
         }
         if (command === "output") {

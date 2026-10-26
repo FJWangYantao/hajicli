@@ -377,11 +377,11 @@ test("permission preview shows the command and diff-style file changes", () => {
     { path: "definitely-missing-file.txt", content: "hello\nworld\n" },
     os.tmpdir(),
   );
-  // 新建文件：头部为 路径 + +2 −0 + 新建标记，正文是 hunk 头 + 带双列行号的全绿行。
+  // 新建文件：头部为 路径 + +2 −0 + 新建标记，正文是带双列行号的全绿行（单 hunk 不画 `@@` 头）。
   assert.match(write[0], /definitely-missing-file\.txt {2}\+2 −0 {2}新建文件/);
-  assert.match(write[1], /^@@ -0,0 \+1,2 @@$/);
-  assert.match(write[2], /^\s*1 \+ hello$/);
-  assert.match(write[3], /^\s*2 \+ world$/);
+  assert.match(write[1], /^\s*1 \+ hello$/);
+  assert.match(write[2], /^\s*2 \+ world$/);
+  assert.ok(write.every((row) => !row.includes("@@")));
 
   const edit = buildPermissionPreview("edit", { path: "a.ts", oldText: "x", newText: "y" }, "/");
   // 文件不存在时定位不到原文：退化为无行号的整块对比，但仍是 diff 形态。
@@ -475,7 +475,9 @@ test("edit summary counts real diff lines while write summary counts argument li
     { blocked: false },
     { oldText: "a\nb", newText: "a\nb\nc\n" },
   );
-  assert.equal(edit.text, "已替换 1 处 · +1 −0 行");
+  // 改动行数并进头行（`+a −r`），不再占单独的 `└` 结果行。
+  assert.deepEqual(edit.stats, { added: 1, removed: 0 });
+  assert.equal(edit.text, "");
   assert.equal(
     summarizeToolResult("edit", "[文件精准编辑成功]", { blocked: false }).text,
     "已替换 1 处",
