@@ -31,8 +31,8 @@ import { formatAgentTokens } from "./agent-commands.js";
 import {
   describeModelError,
   formatReasoningPreview,
+  ReasoningBlockWriter,
   summarizeModelErrorShort,
-  summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
 import {
@@ -63,6 +63,7 @@ import {
   raceWithAbort,
   runToolCallBatch,
 } from "./tool-batch.js";
+import { buildToolDisplay, formatToolCallDraft } from "./tool-display.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
 export interface TurnDeps {
@@ -82,6 +83,8 @@ export interface TurnDeps {
   getProvider(): ObservableModelProvider;
   getSelectedModel(): string;
   getReasoningEffort(): ReasoningEffort;
+  /** 思维链是否常驻对话区（/think，缺省展开）；缺省实现视为展开。 */
+  isThinkingVisible?(): boolean;
   /** 回调形式避免 turn-runner 依赖 cost-tracker 具体类型；缺省不记账。 */
   recordCost?: (
     model: string,
@@ -377,11 +380,22 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     let reasoningTokens = 0;
     let responseTokens = 0;
 
+    // 上一段过程在新一轮请求前收口：本轮推理要写在它下面，否则会被随后的折叠一起吞掉。
+    if (foldGroup) {
+      ui.sealFoldGroup(foldGroup, ui.getChatLength(), foldStats.snapshot());
+      foldGroup = undefined;
+      foldStats = new FoldStatsCollector();
+    }
     // TTFT、推理与流式回复共用一条可观测活动状态。
     let isThinking = true;
     let isResponding = false;
+    // 工具调用参数是边生成边下发的：第一次收到分片就把活动行切到「生成工具调用」。
+    let toolCallDraftActive = false;
     activityIndicator.start("thinking", "思考中", "模型尚未响应");
-    // 思考过程预览：在对话区底部滚动显示最新几行推理，回复开始或回合结束时清除。
+    // 思维链默认不折叠：推理正文按灰色块实时写进对话区并保留（/think off 可关）。
+    // 关闭时退回旧行为——只在对话区底部滚动预览最后几行，回复开始后清除。
+    const thinkingVisible = deps.isThinkingVisible?.() !== false;
+    const reasoningBlock = new ReasoningBlockWriter(ui, thinkingVisible);
     let reasoningPreviewShown = false;
     let reasoningPreviewAt = 0;
     const clearReasoningPreview = () => {
@@ -392,13 +406,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     stopActiveTurnVisuals = () => {
       isThinking = false;
       clearReasoningPreview();
+      // 收尾：没有正文的回合（纯工具迭代、中止）也要把已有推理留在对话区。
+      reasoningBlock.seal(reasoningContent);
       activityIndicator.stop();
     };
     const mdStreamRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
     const markdownRenderThrottle = new MarkdownRenderThrottle();
-    // 本次迭代的正文起点；封口时按 sealFoldGroup 的返回值平移。
+    // 本次迭代的正文起点；推理块落盘后才确定，封口时按 sealFoldGroup 的返回值平移。
     let streamStartOffset = ui.getChatLength();
-    ui.markStableChatPrefix(streamStartOffset);
     const stream = provider.completeStream(messages, {
       model: selectedModel,
       reasoningEffort,
@@ -410,6 +425,17 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         if (isTurnAborted) return;
         currentToolCalls = tcs;
       },
+      onToolCallDelta: (delta) => {
+        if (isTurnAborted) return;
+        const draft = formatToolCallDraft(delta);
+        if (!toolCallDraftActive) {
+          toolCallDraftActive = true;
+          // 参数还在生成时也要有可见反馈：活动行显示正在组装的调用与其参数前缀。
+          activityIndicator.transition("tool", "生成工具调用", draft);
+        } else {
+          activityIndicator.progress(draft);
+        }
+      },
       onReasoning: (content: string) => {
         if (isTurnAborted) return;
         reasoningContent += content;
@@ -418,8 +444,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         const now = Date.now();
         if (!isResponding && now - reasoningPreviewAt >= 50) {
           reasoningPreviewAt = now;
-          ui.setLiveTail(formatReasoningPreview(reasoningContent, ui.getContentWidth()));
-          reasoningPreviewShown = true;
+          if (thinkingVisible) {
+            // 默认：推理直接写进对话区并保留，正文随后写在它下面。
+            reasoningBlock.append(reasoningContent);
+          } else {
+            ui.setLiveTail(formatReasoningPreview(reasoningContent, ui.getContentWidth()));
+            reasoningPreviewShown = true;
+          }
         }
       },
       onUsage: (usage) => {
@@ -448,6 +479,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           isThinking = false;
           isResponding = true;
           clearReasoningPreview();
+          // 推理块先收尾，正文起点才能确定：正文必须写在推理块下面。
+          reasoningBlock.seal(reasoningContent);
+          streamStartOffset = ui.getChatLength();
+          ui.markStableChatPrefix(streamStartOffset);
           activityIndicator.transition("responding", "生成回复", "正在接收模型输出");
         }
 
@@ -530,7 +565,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     const hasValidToolCalls = Boolean(toolCalls && toolCalls.length > 0 && !invalidToolCall);
     if (hasValidToolCalls) {
       if (!foldGroup) foldGroup = ui.beginFoldGroup();
-      if (reasoningContent) foldStats.addThinking();
+      // 推理已经常驻显示时不再在摘要里重复“思考 N 次”；关闭显示时才靠计数交代。
+      if (reasoningContent && !thinkingVisible) foldStats.addThinking();
     }
     if (shouldShowToolThinkingSummary(textContent, toolCalls?.length || 0)) {
       const thinkingSeconds = Math.max(1, Math.round((Date.now() - thinkingStartedAt) / 1000));
@@ -652,7 +688,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           toolRunView.register(
             tc.id,
             tc.function.name,
-            summarizeToolCall(tc.function.name, registeredArgs),
+            buildToolDisplay({ toolName: tc.function.name, args: registeredArgs }).title,
           );
         }
         const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
@@ -730,7 +766,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             .filter((result) => result.execution)
             .map((result) => ({
               toolName: result.toolName,
-              summary: summarizeToolCall(result.toolName, result.args),
+              summary: buildToolDisplay({ toolName: result.toolName, args: result.args }).title,
               output: result.execution?.output ?? "",
             })),
         );

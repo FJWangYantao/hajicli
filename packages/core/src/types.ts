@@ -11,6 +11,22 @@ export interface ToolCall {
 }
 
 /**
+ * 工具调用参数的流式增量：模型一边生成参数一边下发，用于把「正在生成调用」
+ * 的过程显示出来。argumentsText 是该调用目前累积到的完整参数文本，
+ * 尚未生成完时通常不是合法 JSON。
+ */
+export interface ToolCallDelta {
+  /** 同一条消息内的工具调用序号，从 0 开始。 */
+  index: number;
+  /** 调用 id（provider 可能分片下发，未到时为空）。 */
+  id?: string;
+  /** 累积到的工具名；首个分片之前可能为空。 */
+  name?: string;
+  /** 累积到的参数文本。 */
+  argumentsText: string;
+}
+
+/**
  * 表示大模型工具定义的接口。
  */
 export interface ToolDefinition {
@@ -116,6 +132,11 @@ export interface CompletionOptions {
   /** Provider 即将发起首次网络请求时触发，用于区分可撤回的本地草稿与已发送消息。 */
   onRequestStart?: () => void;
   onToolCall?: (toolCalls: ToolCall[]) => void;
+  /**
+   * 接收工具调用参数的流式增量（每个分片一次）。用于在参数生成过程中给出
+   * 可见反馈；完整调用仍以 onToolCall 为准。
+   */
+  onToolCallDelta?: (delta: ToolCallDelta) => void;
   /**
    * 接收大模型流式或非流式输出中的思考过程（如推理内容）。
    */

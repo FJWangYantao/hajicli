@@ -9,6 +9,7 @@ import {
   describeModelError,
   findGitHeadPath,
   formatExpandedToolOutput,
+  formatReasoningBlock,
   formatReasoningPreview,
   formatToolArgs,
   formatToolCell,
@@ -228,7 +229,14 @@ test("tool results preview a few lines: bash tail, error context, first search h
     { blocked: false },
   );
   assert.equal(testRun.text, "94 行输出");
-  assert.deepEqual(testRun.preview, ["# pass 91", "# fail 0", "  # duration_ms 140.45"]);
+  // 命令输出保尾：10 行预算，前面省掉的 84 行用一行标记交代。
+  assert.deepEqual(testRun.preview, [
+    "… 前 84 行未显示",
+    ...Array.from({ length: 7 }, (_, i) => `ok ${i + 85}`),
+    "# pass 91",
+    "# fail 0",
+    "  # duration_ms 140.45",
+  ]);
 
   const build = summarizeToolResult(
     "bash",
@@ -237,10 +245,12 @@ test("tool results preview a few lines: bash tail, error context, first search h
   );
   assert.equal(build.status, "failed");
   assert.equal(build.text, "退出码 2 · 5 行输出");
+  // 失败时从首个报错行往下看，预算内不再额外折叠。
   assert.deepEqual(build.preview, [
     "src/a.ts(3,1): error TS2304: Cannot find name 'x'.",
     "  3 x;",
     "    ~",
+    "log written to /tmp/x.log",
   ]);
 
   const grep = summarizeToolResult(
@@ -271,12 +281,24 @@ test("tool results preview a few lines: bash tail, error context, first search h
     resultText: testRun.text,
     preview: [...testRun.preview, "never shown"],
   });
+  // 通用预算默认 3 行：多出来的预览行一律不显示。
   assert.deepEqual(rows.slice(1), [
     "    └ 94 行输出",
-    "      # pass 91",
-    "      # fail 0",
-    "        # duration_ms 140.45",
+    "      … 前 84 行未显示",
+    "      ok 85",
+    "      ok 86",
   ]);
+  // 命令类工具块按 shell 预算放宽到 10 行。
+  const shellRows = formatToolCell({
+    status: "success",
+    toolName: "bash",
+    summary: "node --test",
+    width: 40,
+    resultText: testRun.text,
+    preview: testRun.preview,
+    maxPreviewLines: 10,
+  });
+  assert.equal(shellRows.length, 1 + 1 + Math.min(10, testRun.preview.length));
   const narrow = formatToolCell({
     status: "success",
     toolName: "global",
@@ -378,6 +400,27 @@ test("model errors are classified with a specific next step", () => {
     assert.match(described.hint, hint, error.message);
     assert.equal(described.detail, error.message);
   }
+});
+
+test("reasoning block keeps the whole thinking text and stays inside the width", () => {
+  const reasoning = `先确认需求。\n\n再读代码：${"读取配置并确认默认值。".repeat(12)}`;
+  const block = formatReasoningBlock(reasoning, 40);
+  const rows = block.split("\n").filter(Boolean);
+  // 整段推理都在（不是最后几行），每行带 ┊ 竖线且不超宽。
+  const content = rows.map((row) => row.replace(/^ {2}┊ ?/, "")).join("");
+  assert.ok(content.startsWith("先确认需求。"), content);
+  assert.ok(content.endsWith("读取配置并确认默认值。"), content);
+  for (const row of rows) {
+    assert.match(row, /^ {2}┊ /, row);
+    assert.ok(terminalWidth(row) <= 40, row);
+  }
+  assert.doesNotMatch(block, /\x1b/, "no stray escape codes in no-color mode");
+  // 末尾补换行：后续正文从新行开始。
+  assert.ok(block.endsWith("\n"));
+  // 连续空行收成一个空行，首尾空行不占位。
+  const spaced = formatReasoningBlock("第一段\n\n\n\n第二段", 40);
+  assert.equal(spaced.split("\n").filter((line) => line === "").length, 2);
+  assert.equal(formatReasoningBlock("  \n ", 40), "");
 });
 
 test("reasoning preview shows the last wrapped rows within the width", () => {

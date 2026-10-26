@@ -14,7 +14,7 @@ import {
   type SnapshotEngine,
   type TaskStore,
 } from "@hajicli/core";
-import { formatToolCell, summarizeToolCall, summarizeToolResult } from "./cli-runtime.js";
+import { formatReasoningBlock, formatToolCell, summarizeToolResult } from "./cli-runtime.js";
 import { MarkdownStreamRenderer } from "./markdown-renderer.js";
 import { FoldStatsCollector } from "./process-fold.js";
 import { queueRewindRefill, REWIND_CONFIRM_DEFAULT } from "./rewind-flow.js";
@@ -26,6 +26,7 @@ import {
 } from "./terminal-input.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { colors } from "./theme.js";
+import { buildToolDisplay } from "./tool-display.js";
 
 /** 与 index.ts 的 USER_REJECTED_TOOL_OUTPUT 保持同值：用户拒绝执行时回给模型的输出。 */
 const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
@@ -52,6 +53,8 @@ export interface SessionCommandContext {
   syncTaskPlanUI(): void;
   refreshSystemPrompt(): Promise<void>;
   refreshAgentVerificationContext(messages: ChatMessage[]): boolean;
+  /** 思维链是否常驻对话区（/think，缺省展开）。 */
+  isThinkingVisible?(): boolean;
   saveSession(): void;
   updateStatusUI(): void;
   /**
@@ -87,6 +90,7 @@ async function loadAndRenderSession(
   sessionId: string,
 ): Promise<boolean> {
   const { ui, sessionManager, taskStore, snapshotEngine, agentManager, skillRegistry } = ctx;
+  const thinkingVisible = ctx.isThinkingVisible?.() !== false;
   const loaded = sessionManager.loadSession(sessionId);
   if (!loaded || loaded.messages.length === 0) {
     ui.writeLine(colors.warnLine("选中的会话为空或加载失败。"));
@@ -160,7 +164,11 @@ async function loadAndRenderSession(
       appendHistoryLine();
     } else if (m.role === "assistant") {
       const hasToolCalls = Boolean(m.tool_calls && m.tool_calls.length > 0);
-      if (hasToolCalls && !m.content) {
+      if (m.reasoning_content && thinkingVisible) {
+        // 思维链默认不折叠：整段推理写进正文，且不属于过程段（折叠时也不收起）。
+        sealGroup();
+        plain += formatReasoningBlock(m.reasoning_content, ui.getContentWidth());
+      } else if (hasToolCalls && !m.content) {
         // 纯工具迭代：先开段，思考行与工具块都属于这一段。
         openGroup();
         if (m.reasoning_content) {
@@ -170,6 +178,9 @@ async function loadAndRenderSession(
       } else if (m.reasoning_content) {
         // 有正文的迭代：思考行属于上一段过程（已开段时），随后正文把它封口。
         appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
+      }
+      if (hasToolCalls && !m.content) {
+        openGroup();
       }
       if (m.content) {
         sealGroup();
@@ -203,7 +214,7 @@ async function loadAndRenderSession(
           for (const row of formatToolCell({
             status: outcome?.status ?? "failed",
             toolName: tc.function.name,
-            summary: summarizeToolCall(tc.function.name, argsObj),
+            summary: buildToolDisplay({ toolName: tc.function.name, args: argsObj }).title,
             width: ui.getContentWidth(),
             resultText: outcome?.text ?? "无执行结果",
             preview: outcome?.preview,

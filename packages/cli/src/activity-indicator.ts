@@ -5,6 +5,7 @@ import {
   type ToolResultSummary,
 } from "./cli-runtime.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
+import { SHELL_PREVIEW_LINES } from "./tool-output.js";
 
 export type ActivityPhase =
   | "thinking"
@@ -384,6 +385,8 @@ export class ToolRunView {
         live && entry.verdict && this.now() < entry.verdict.until ? entry.verdict.text : undefined,
       resultText: entry.resultText,
       preview: entry.preview,
+      // 命令类结果按 shell 预算放宽到 10 行：报错常常不止三行。
+      maxPreviewLines: entry.toolName === "bash" ? SHELL_PREVIEW_LINES : undefined,
       outputTail,
     });
   }

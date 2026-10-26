@@ -91,6 +91,22 @@ test("buildFoldHeader renders the full summary line", () => {
   );
 });
 
+test("an exploration-only segment collapses into a single summary line", () => {
+  const collector = new FoldStatsCollector();
+  collector.addTool("read", { path: "a.ts" }, "success");
+  collector.addTool("read", { path: "a.ts" }, "success");
+  collector.addTool("grep", { query: "x" }, "success");
+  collector.addTool("global", { pattern: "**/*.ts" }, "success");
+  collector.addTool("webfetch", { url: "https://example.com" }, "success");
+  // 未注册/未知工具落到 other；失败次数单独统计，不改变类别计数。
+  collector.addTool("custom_tool", {}, "failed");
+
+  assert.equal(
+    stripAnsi(buildFoldHeader(collector.snapshot(), 120)),
+    "  ● 读取 1 个文件，搜索 2 次，联网 1 次，其他工具 1 次 · 1 次失败",
+  );
+});
+
 test("buildFoldHeader omits the thinking field for non-reasoning models", () => {
   const header = stripAnsi(buildFoldHeader(stats({ counts: { read: 1 }, calls: 1 }), 120));
   assert.equal(header, "  ● 读取 1 个文件");

@@ -462,3 +462,63 @@ Error [12:5] Type 'string' is not assignable to type 'number'
 | `packages/tui/test/cli/tui/grouping-tree.test.ts` | 增量合并、切分、接缝合并 |
 | `packages/tui/test/cli/tui/tool-display.test.ts` | 工具名归一化、元数据/内容读取 |
 | `packages/tui/test/cli/tui/inline-tool-wrap-snapshot.test.tsx` | 单行工具在窄宽度下的折行快照 |
+
+---
+
+## 附二：hajicli 落地状态（2026-10-26）
+
+第 11 节的四步已全部落地，对照关系如下。
+
+| 步骤 | hajicli 实现 | 说明 |
+| --- | --- | --- |
+| Step 1 一行摘要层 | `packages/cli/src/tool-display.ts` | `ToolDisplay { kind, toolName, title, detail, status, expandable }`；`buildToolDisplay()` 统一产出 `title`，`turn-runner`（实时登记 + 批输出）、`index.ts`（子代理回放）、`session-commands.ts`（`/resume` 回放）四处共用；未知工具兜底 `name [k=v, k=v]`，参数只取标量。测试：`test/tool-display.test.mjs` |
+| Step 2 shell 做对 | `packages/cli/src/tool-output.ts` + `cli-runtime.ts` | `collapseShellOutput` 保尾、10 行 / 800 列双预算、`… 前 N 行未显示`；`collapseToolOutput` 保头供展开视图复用；`formatToolCell` 新增 `maxPreviewLines`，bash 用 10 行预算（其它工具仍 3 行）；shell 命令前缀由工具块标题行承担（多行命令折成 `首行 …(+N 行)`）。测试：`test/tool-output.test.mjs`、`test/cli-runtime.test.mjs` |
+| Step 3 折叠组 | `packages/cli/src/process-fold.ts`（既有） | 采用「一段一摘要」：`FoldStatsCollector` 按类别计数（read/edit 按路径去重）、思考次数、失败与被拒单列；`buildFoldHeader` 按宽度逐级降级（合并类别 → `N 次工具调用` → 丢思考 → 截断）。测试：`test/process-fold.test.mjs`、`test/process-fold-ui.test.mjs` |
+| Step 4 状态收口 | `cli-runtime.ts` / `activity-indicator.ts`（既有 + 本次） | 判定/等待态 `◈` 改 warning 黄；失败同一行 `✕` 红 + 结果说明默认收起（Ctrl+O 展开，`… 另有 N 行未显示（完整记录见 /viewer）`）；被拒 `⊘` 黄；运行态与完成态共用同一行，符号位固定 2 列 |
+
+与 opencode 的**有意偏差**（hajicli 现有取舍，非遗漏）：
+
+1. 折叠组只有一种「activity」形态，不分 `exploration` / `reasoning` 子组；思考以「思考 N 次」计入摘要，不单列组头。
+2. 被权限阻塞/被拒的调用**计入摘要**并显示「N 次被拒」，而不是渲染到组外保持可见——摘要行本身就是可见的，且用量少。
+3. 权限被拒用 `⊘` + 黄色 + 说明文字，不做删除线（ANSI 删除线在部分终端不可靠）。
+4. 服务端截断（bash 的 `[中间省略 N 个字符]`、read/grep 的行数上限）不额外落盘 `outputPath`；完整记录走 `/viewer` 与展开视图。
+5. 没有 `low`/`medium` 两档 verbosity，折叠行数预算固定（`process-fold` 的摘要 + 10 行 shell 预览）。
+
+---
+
+## 附三：思维链默认展开 + 工具参数流式（2026-10-26）
+
+两项后续变更，都为了一个目标：模型「还没出结果」的那段时间也要看得见。
+
+### 1. 思维链默认不折叠
+
+| 位置 | 之前 | 现在 |
+| --- | --- | --- |
+| 流式过程中 | 对话区底部 3 行滚动预览（`formatReasoningPreview`），回复一开始就清掉 | 整段推理（`formatReasoningBlock`：灰色 + `┊` 竖线、按宽度折行）实时写进对话区并保留；回复写在它下面 |
+| 回合结束后 | 只剩 `思考 Ns · tokens` | 推理正文留在对话区，`思考 Ns · tokens` 作为收尾行 |
+| 过程折叠段 | 摘要行固定带「思考 N 次」 | 推理已可见，不再重复计数；`/think off` 时才靠计数交代 |
+| `/resume` 回放 | 只显示 `深度思考 (N 字)` | 直接回放整段推理正文（在过程段之外，不受折叠影响） |
+
+开关：`/think [on|off]`，持久化到 `preferences.json` 的 `showThinking`（缺省 `true`）。
+关闭时退回旧行为（底部预览 + 摘要里的「思考 N 次」）。
+管道/无头模式没有重绘能力，只在思考结束时整体写一次，避免重复回放增量。
+
+一个必要的顺序修正：新回合请求模型之前先收口上一段过程段（`sealFoldGroup`）。
+否则下一轮推理会写进仍然打开的过程段区间，正文一出现就跟着被折叠吞掉。
+收口后推理块锚点才确定，正文起点也才等于推理块之后的对话区长度。
+
+### 2. 工具调用参数流式
+
+`ToolCall` 之前只在参数生成完毕、provider 一次性回调 `onToolCall` 时才可见，
+参数生成期间界面没有任何反馈。
+
+- core：`CompletionOptions.onToolCallDelta?: (delta: ToolCallDelta) => void`，
+  `ToolCallDelta { index, id?, name?, argumentsText }` —— `argumentsText` 是**累积**文本，
+  生成到一半时不是合法 JSON。
+- plugins：`openai-stream` 每次合并 `tool_calls` 分片后逐条回调，三条 provider
+  （deepseek / volcengine / openai-compatible）共用这一条路径。
+- cli：`formatToolCallDraft`（`tool-display.ts`）优先 `JSON.parse` 复用 `buildToolDisplay` 的标题，
+  解析失败则按 `path / command / pattern / query / url / glob / prompt / name` 宽松匹配出
+  「值的前缀」，拼成 `read packages/cli/src/ind · 24 字`；参数越生成越长，这一行本身就是进度。
+- turn-runner：首个分片把活动行切到 `tool` 相位（`⠋ 生成工具调用 1s read … · 24 字`），
+  之后每个分片刷新 detail。完整调用仍以 `onToolCall` 为准，执行阶段的工具块不变。

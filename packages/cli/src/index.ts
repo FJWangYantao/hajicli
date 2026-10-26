@@ -222,6 +222,7 @@ import {
   THEME_PRESET_NAMES,
   type ThemePresetName,
 } from "./theme.js";
+import { buildToolDisplay } from "./tool-display.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
 import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
@@ -570,6 +571,8 @@ async function main() {
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   let permissionRules = loadAllPermissionRules();
+  // 思维链展开开关（/think 可切；缺省展开，即完整推理常驻对话区）。
+  let showThinking = savedPreference?.showThinking !== false;
   let permissionMode: PermissionMode = isPermissionMode(savedPreference?.permissionMode)
     ? savedPreference?.permissionMode
     : DEFAULT_PERMISSION_MODE;
@@ -1354,7 +1357,7 @@ async function main() {
       for (const row of formatToolCell({
         status: outcome.status,
         toolName: toolCall.function.name,
-        summary: summarizeToolCall(toolCall.function.name, args),
+        summary: buildToolDisplay({ toolName: toolCall.function.name, args }).title,
         sourceLabel: `[${context.agentId}]`,
         width: ui.getContentWidth(),
         timing: outcome.status === "rejected" ? undefined : formatToolDuration(result.duration),
@@ -2540,6 +2543,7 @@ async function main() {
     syncTaskPlanUI,
     refreshSystemPrompt: refreshSystemPromptPreservingContext,
     refreshAgentVerificationContext,
+    isThinkingVisible: () => showThinking,
     saveSession: () => sessionManager.saveCurrentSession(messages),
     updateStatusUI,
     // 会话用量跟随会话走：/resume 还原历史会话自己的记账，/clear 归零。
@@ -3147,6 +3151,7 @@ async function main() {
     getProvider: () => provider,
     getSelectedModel: () => selectedModel,
     getReasoningEffort: () => reasoningEffort,
+    isThinkingVisible: () => showThinking,
     recordCost: (model, usage, purpose) => {
       costTracker.record(model, usage, purpose);
       publishCostInfo();
@@ -3835,6 +3840,32 @@ async function main() {
               enabled
                 ? "过程折叠已开启：工具调用与思考收成一行，点击摘要行或按 Ctrl+O 展开。"
                 : "过程折叠已关闭：过程按原始样式逐行显示。",
+            ),
+          );
+          continue;
+        }
+        if (command === "think") {
+          const arg = parts[1]?.toLowerCase();
+          if (arg && arg !== "on" && arg !== "off") {
+            ui.writeLine(colors.failLine("用法：/think [on|off]（无参切换当前状态）"));
+            continue;
+          }
+          showThinking = arg ? arg === "on" : !showThinking;
+          const currentPreference = loadPreference();
+          savePreference(
+            {
+              ...(currentPreference ?? {}),
+              model: currentPreference?.model || selectedModel,
+              reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+              showThinking,
+            },
+            showRuntimeWarning,
+          );
+          ui.writeLine(
+            colors.okLine(
+              showThinking
+                ? "思维链已展开：完整推理常驻对话区，下一回合生效。"
+                : "思维链已折叠：只在对话区底部滚动预览最后几行。",
             ),
           );
           continue;

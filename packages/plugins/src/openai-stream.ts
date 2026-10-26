@@ -100,6 +100,28 @@ function mergeToolCallDeltas(
 }
 
 /**
+ * 把刚合并进来的分片转成 ToolCallDelta 回调：参数是一边生成一边下发的，
+ * 这里把该调用当前累积到的名字与参数文本交出去，界面据此显示生成进度。
+ */
+function emitToolCallDeltas(
+  toolCalls: Array<ToolCall | undefined>,
+  deltas: StreamToolCallDelta[] | undefined,
+  completion: CompletionOptions,
+): void {
+  if (!deltas || deltas.length === 0 || !completion.onToolCallDelta) return;
+  for (const delta of deltas) {
+    const index = delta.index ?? 0;
+    const current = toolCalls[index];
+    completion.onToolCallDelta({
+      index,
+      id: current?.id || undefined,
+      name: current?.function.name || undefined,
+      argumentsText: current?.function.arguments ?? "",
+    });
+  }
+}
+
+/**
  * Parses the OpenAI-compatible SSE envelope shared by DeepSeek and Volcengine.
  * Malformed individual events are ignored because providers may split or inject
  * non-JSON keepalive frames; request-level and stream-level failures still throw.
@@ -131,6 +153,7 @@ export async function* parseOpenAICompatibleStream(
       const choice = data.choices?.[0];
       if (choice?.finish_reason) finishReason = String(choice.finish_reason);
       mergeToolCallDeltas(toolCalls, choice?.delta?.tool_calls);
+      emitToolCallDeltas(toolCalls, choice?.delta?.tool_calls, completion);
 
       const reasoning = choice?.delta?.reasoning_content || "";
       if (reasoning) completion.onReasoning?.(reasoning);

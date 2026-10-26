@@ -7,6 +7,13 @@ import { buildEditDiff, buildWriteDiff, formatDiffHeader } from "./diff-preview.
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { colors } from "./theme.js";
+import {
+  collapseShellOutput,
+  collapseToolOutput,
+  formatOmittedLines,
+  SHELL_PREVIEW_LINES,
+  SHELL_PREVIEW_MAX_CHARS,
+} from "./tool-output.js";
 
 /** 用户级偏好（跨项目默认值）：~/.haji/preferences.json。 */
 function userPreferencesPath(): string {
@@ -42,6 +49,8 @@ export interface Preferences {
   sidebar?: boolean;
   /** 对话区过程折叠；缺省视为开启（true）。关闭后工具调用与思考逐行显示。 */
   foldProcess?: boolean;
+  /** 思维链展开；缺省视为开启（true），即完整推理常驻对话区。关闭后只在底部滚动预览。 */
+  showThinking?: boolean;
   /** Auto 模式的信任边界（自然语言，拼进安全分类器系统提示词）；缺省为工作目录及其 git remote。 */
   autoEnvironment?: string;
   /**
@@ -365,12 +374,22 @@ function summarizeBashOutput(output: string): ToolResultSummary | undefined {
   if (bodyLines.length === 1) {
     return { status, text: `${prefix}1 行输出 · ${oneLine(bodyLines[0])}` };
   }
-  // 结果和汇总多在末尾（测试统计、dir 的可用空间）；失败时从首个报错行往下看。
-  const start = errorIndex >= 0 ? errorIndex : Math.max(0, bodyLines.length - TOOL_PREVIEW_LINES);
+  const budget = { maxLines: SHELL_PREVIEW_LINES, maxChars: SHELL_PREVIEW_MAX_CHARS };
+  // 失败时从首个报错行往下看（保头），成功的命令看尾部（保尾）：
+  // 报错通常紧跟在出错的那一步之后，而测试统计、汇总永远在最后几行。
+  if (errorIndex >= 0) {
+    const collapsed = collapseToolOutput(bodyLines.slice(errorIndex).join("\n"), budget);
+    return {
+      status,
+      text: `${prefix}${bodyLines.length} 行输出`,
+      preview: [...collapsed.lines, formatOmittedLines(collapsed.omitted, "end")].filter(Boolean),
+    };
+  }
+  const collapsed = collapseShellOutput(bodyLines.join("\n"), budget);
   return {
     status,
     text: `${prefix}${bodyLines.length} 行输出`,
-    preview: bodyLines.slice(start, start + TOOL_PREVIEW_LINES).map(previewLine),
+    preview: [formatOmittedLines(collapsed.omitted, "start"), ...collapsed.lines].filter(Boolean),
   };
 }
 
@@ -595,15 +614,21 @@ export function formatExpandedToolOutput(
     .replace(/\r\n/g, "\n")
     .replace(/\t/g, "  ")
     .replace(/\n+$/, "");
-  const lines = body ? body.split("\n") : ["（无输出）"];
-  const shown = lines.slice(0, Math.max(1, maxLines));
+  const lineBudget = Math.max(1, maxLines);
+  // 与结果预览共用一套预算：保头、按显示宽度裁剪，省略的行数用同一种说法标注。
+  const collapsed = body
+    ? collapseToolOutput(body, {
+        maxLines: lineBudget,
+        maxChars: lineBudget * Math.max(20, width - 6),
+      })
+    : { lines: ["（无输出）"], omitted: 0 };
   const rows = [
     `${TOOL_CELL_INDENT}${colors.bold(toolName)}  ${fitText(summary, Math.max(1, width - terminalWidth(toolName) - 6))}`,
-    ...shown.map((line) => `${TOOL_CELL_INDENT}${colors.gray(`│ ${line}`)}`),
+    ...collapsed.lines.map((line) => `${TOOL_CELL_INDENT}${colors.gray(`│ ${line}`)}`),
   ];
-  if (lines.length > shown.length) {
+  if (collapsed.omitted > 0) {
     rows.push(
-      `${TOOL_CELL_INDENT}${colors.gray(`… 另有 ${lines.length - shown.length} 行未显示（完整记录见 /viewer）`)}`,
+      `${TOOL_CELL_INDENT}${colors.gray(`${formatOmittedLines(collapsed.omitted, "end")}（完整记录见 /viewer）`)}`,
     );
   }
   return rows;
@@ -635,6 +660,8 @@ export interface ToolCellOptions {
   preview?: readonly string[];
   /** 运行中滚动显示的最后几行输出。 */
   outputTail?: readonly string[];
+  /** 预览最多几行；命令类结果按 shell 预算放宽，默认沿用通用预算。 */
+  maxPreviewLines?: number;
 }
 
 /** 工具块左缩进；过程折叠的摘要行复用它，保证与工具块左对齐。 */
@@ -651,8 +678,9 @@ export const TOOL_CELL_INDENT = "  ";
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
   const mark =
+    // 判定/等待授权属于「还不确定」，用 warning 黄；成功绿、失败红、被拒黄 ⊘。
     options.status === "judging"
-      ? colors.accent("◈")
+      ? colors.boldYellow("◈")
       : options.status === "running"
         ? colors.accent("●")
         : options.status === "success"
@@ -699,7 +727,8 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("└")} ${styled}`);
     // 预览和结果说明的文字对齐（└ 加一个空格占两格）。
     const previewWidth = Math.max(1, bodyWidth - 2);
-    for (const line of (options.preview || []).slice(0, TOOL_PREVIEW_LINES)) {
+    const previewBudget = Math.max(1, options.maxPreviewLines ?? TOOL_PREVIEW_LINES);
+    for (const line of (options.preview || []).slice(0, previewBudget)) {
       rows.push(`${TOOL_CELL_INDENT}    ${colors.muted(fitText(line, previewWidth))}`);
     }
   }
@@ -841,6 +870,94 @@ export function formatReasoningPreview(reasoning: string, width: number, maxRows
     .slice(-maxRows)
     .map((row) => row.replace(/\x1b\[0m$/, ""));
   return `${rows.map((row) => `  ${colors.gray(`┊ ${row}`)}`).join("\n")}\n`;
+}
+
+/**
+ * 思维链正文块：把整段推理按宽度折行后常驻在对话区（默认不折叠）。
+ * 灰色 + `┊ ` 竖线标记，与折叠模式的底部预览保持同一视觉语言；
+ * 段落之间的空行保留一个，末尾统一补换行，后续正文从新行开始。
+ */
+export function formatReasoningBlock(reasoning: string, width: number): string {
+  const text = sanitizeTerminalText(reasoning).replace(/\r\n?/g, "\n").trim();
+  if (!text) return "";
+  const contentWidth = Math.max(8, width - 6);
+  const rows: string[] = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      // 连续空行折叠成一个空行，避免长推理把对话区拉出大片空白。
+      if (rows.length > 0 && rows[rows.length - 1] !== "") rows.push("");
+      continue;
+    }
+    for (const row of wrapAnsi(line, contentWidth)) {
+      rows.push(`  ${colors.gray(`┊ ${row.replace(/\x1b\[0m$/, "")}`)}`);
+    }
+  }
+  while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
+  if (rows.length === 0) return "";
+  return `${rows.join("\n")}\n`;
+}
+
+/** ReasoningBlockWriter 需要的对话区能力（只取用到的那几个）。 */
+export interface ReasoningBlockTarget {
+  getChatLength(): number;
+  getContentWidth(): number;
+  isInteractive(): boolean;
+  updateChatFrom(offset: number, value: string): void;
+  writeLine(value?: string): void;
+}
+
+/**
+ * 把思维链按「一个不断长大的灰色块」写进对话区（默认不折叠）。
+ *
+ * 锚点在构造时确定，之后一直改写同一段尾部；`seal()` 之后不再改动，
+ * 调用方可以安全地把后续正文写在它下面（正文起点 = 之后的 getChatLength()）。
+ * 关闭思维链显示时本类整体空转，调用方无需分支。
+ * 管道/无头模式没有重绘能力，只在 seal 时整体写一次，避免重复回放增量。
+ */
+export class ReasoningBlockWriter {
+  private readonly anchor: number;
+  private renderedChars = 0;
+  private sealed = false;
+
+  constructor(
+    private readonly target: ReasoningBlockTarget,
+    private readonly enabled = true,
+  ) {
+    this.anchor = target.getChatLength();
+  }
+
+  /** 是否已收尾（收尾后再 append 是空操作）。 */
+  get isSealed(): boolean {
+    return this.sealed;
+  }
+
+  /**
+   * 写入当前推理文本；`force` 用于收尾那一次。返回是否真的动过对话区。
+   * 增量太小就跳过改写，避免每帧重排长文本；小片段仍会在下一次或收尾时落盘。
+   */
+  append(reasoning: string, force = false): boolean {
+    if (!this.enabled || this.sealed || !reasoning) return false;
+    if (!force && reasoning.length - this.renderedChars < 16) return false;
+    const block = formatReasoningBlock(reasoning, this.target.getContentWidth());
+    if (!this.target.isInteractive()) {
+      if (!force) return false;
+      this.sealed = true;
+      if (block) this.target.writeLine(block.trimEnd());
+      return Boolean(block);
+    }
+    if (block) this.target.updateChatFrom(this.anchor, block);
+    this.renderedChars = reasoning.length;
+    if (force) this.sealed = true;
+    return Boolean(block);
+  }
+
+  /** 收尾：写满当前文本并停止继续改写同一锚点。 */
+  seal(reasoning: string): boolean {
+    const written = this.append(reasoning, true);
+    this.sealed = true;
+    return written;
+  }
 }
 
 export interface ModelErrorDescription {

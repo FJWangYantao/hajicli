@@ -192,7 +192,12 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
       },
       {
         command: "/fold",
-        description: "开关对话区过程折叠（工具调用 / 思考收成一行）",
+        description: "开关对话区过程折叠（工具调用收成一行）",
+        argHint: "[on|off]",
+      },
+      {
+        command: "/think",
+        description: "开关思维链展开（默认展开，完整推理常驻对话区）",
         argHint: "[on|off]",
       },
     ],
