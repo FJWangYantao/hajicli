@@ -5,6 +5,7 @@ import {
   buildToolDisplay,
   formatGenericToolArgs,
   formatToolCallDraft,
+  formatToolCallDraftCell,
   toolCellStatus,
   toolDisplayStatus,
 } from "../dist/tool-display.js";
@@ -95,4 +96,44 @@ test("tool call draft shows the growing argument prefix while arguments stream",
     formatToolCallDraft({ name: "bash", argumentsText: '{"command":"npm test"}' }),
     "npm test · 22 字",
   );
+});
+
+test("draft cell streams the instruction body instead of waiting for full args", () => {
+  // 头部只报进度，指令原文在块体里，随分片增长——这是「流式给出指令」的可见点。
+  const partial = formatToolCallDraftCell(
+    { name: "bash", argumentsText: '{"command": "git sta' },
+    60,
+  );
+  assert.equal(partial[0].includes("bash"), true);
+  assert.equal(partial[0].includes("20 字"), true);
+  assert.equal(partial[1].includes("git sta"), true);
+
+  const longer = formatToolCallDraftCell(
+    { name: "bash", argumentsText: '{"command": "git status -sb"}' },
+    60,
+  );
+  // 分片变长后块体同步变长，且不再露出 JSON 外壳。
+  assert.equal(longer[1].includes("git status -sb"), true);
+  assert.equal(
+    longer.some((line) => line.includes("{")),
+    false,
+  );
+});
+
+test("draft cell strips the JSON envelope and falls back to the raw slice", () => {
+  // 认得出结构：只留值（`{"path": "...}}"` → 路径本身）。
+  const read = formatToolCallDraftCell({ name: "read", argumentsText: '{"path": "src/a"}' }, 60);
+  assert.equal(read[1].includes("src/a"), true);
+  // 认不出结构：宁可露出原始分片，也不显示空块。
+  const raw = formatToolCallDraftCell({ argumentsText: '{"pa' }, 60);
+  assert.equal(raw[1].includes('{"pa'), true);
+});
+
+test("draft cell caps long instructions and marks the truncation", () => {
+  const command = `echo ${"x".repeat(240)}`;
+  const args = JSON.stringify({ command });
+  const rows = formatToolCallDraftCell({ name: "bash", argumentsText: args }, 40, 3);
+  // 头部 1 行 + 正文最多 3 行。
+  assert.equal(rows.length, 4);
+  assert.equal(rows.at(-1).includes("…"), true);
 });

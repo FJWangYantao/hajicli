@@ -522,3 +522,22 @@ Error [12:5] Type 'string' is not assignable to type 'number'
   「值的前缀」，拼成 `read packages/cli/src/ind · 24 字`；参数越生成越长，这一行本身就是进度。
 - turn-runner：首个分片把活动行切到 `tool` 相位（`⠋ 生成工具调用 1s read … · 24 字`），
   之后每个分片刷新 detail。完整调用仍以 `onToolCall` 为准，执行阶段的工具块不变。
+
+### 3. 参数生成期间就把指令本身显示出来（2026-10-26 修正）
+
+上一版把「参数前缀」只放进了底部活动行的一行 detail（`read src/a.ts · 24 字`），
+实测体验仍然像一次性输出：真正在涨的只有尾部的字数，指令文本本身看不见；
+参数一完成，整块工具格才带着完整参数突然出现。
+
+改为把生成中的调用渲染成一个实时块，占 `ui.setLiveTail` 这个槽位——正是执行阶段
+`ToolRunView` 用的同一个位置，于是「拼装参数 → 执行」在原地连续发生：
+
+- `formatToolCallDraftCell(draft, width, maxLines = 4)`：复用 `formatToolCell`
+  的 `●` 运行态样式，头部只报进度（`● bash  56 字`），块体是参数原文折行
+  （`wrapArgumentLines`，超出行数用 `…` 收尾）；块体经 `draftBodyText` 去掉 JSON 外壳
+  （`{"command": "git sta` → `git sta`），认不出结构时退回原始分片。
+- turn-runner：每个分片 `ui.setLiveTail(...)`；活动行只留转圈、耗时与 `Esc 中止`，
+  不再重复参数（`activityIndicator.transition("tool", "生成工具调用")`）。
+- 让位与清理：`stopActiveTurnVisuals` 里 `clearToolCallDraft()` 清空实时块，
+  随后 ToolRunView 接管同一槽位；中止 / 校验失败时也不会留下半截草稿块。
+- 非交互（`--print`、管道）模式仍然不输出中间帧：`setLiveTail` 不落盘，正文不受影响。

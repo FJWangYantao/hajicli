@@ -63,7 +63,7 @@ import {
   raceWithAbort,
   runToolCallBatch,
 } from "./tool-batch.js";
-import { buildToolDisplay, formatToolCallDraft } from "./tool-display.js";
+import { buildToolDisplay, formatToolCallDraftCell } from "./tool-display.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
 export interface TurnDeps {
@@ -403,9 +403,17 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       reasoningPreviewShown = false;
       ui.setLiveTail("");
     };
+    // 参数生成中的工具块占用同一个实时区域；工具开始执行前必须让位给 ToolRunView。
+    let toolCallDraftShown = false;
+    const clearToolCallDraft = () => {
+      if (!toolCallDraftShown) return;
+      toolCallDraftShown = false;
+      ui.setLiveTail("");
+    };
     stopActiveTurnVisuals = () => {
       isThinking = false;
       clearReasoningPreview();
+      clearToolCallDraft();
       // 收尾：没有正文的回合（纯工具迭代、中止）也要把已有推理留在对话区。
       reasoningBlock.seal(reasoningContent);
       activityIndicator.stop();
@@ -427,13 +435,16 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       },
       onToolCallDelta: (delta) => {
         if (isTurnAborted) return;
-        const draft = formatToolCallDraft(delta);
+        // 指令本身边生成边写进实时区域：工具开始执行时由 ToolRunView 原地接管，
+        // 视觉上「拼装参数 → 执行」是连续的，而不是等参数齐了一次性出整块。
+        ui.setLiveTail(`${formatToolCallDraftCell(delta, ui.getContentWidth()).join("\n")}\n`);
+        toolCallDraftShown = true;
         if (!toolCallDraftActive) {
           toolCallDraftActive = true;
-          // 参数还在生成时也要有可见反馈：活动行显示正在组装的调用与其参数前缀。
-          activityIndicator.transition("tool", "生成工具调用", draft);
+          // 活动行只负责转圈、耗时与 Esc 提示；参数正文已经在上面的块里，不再重复。
+          activityIndicator.transition("tool", "生成工具调用");
         } else {
-          activityIndicator.progress(draft);
+          activityIndicator.progress();
         }
       },
       onReasoning: (content: string) => {
