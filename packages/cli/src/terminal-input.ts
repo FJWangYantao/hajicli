@@ -166,6 +166,8 @@ export interface SlashCommand {
   argRequired?: boolean;
   /** 只输入 `/` 时列出的顶层条目。 */
   topLevel?: boolean;
+  /** 回合进行中可立即执行（不进待处理队列），见 cli-help.ts 的 immediate 元数据。 */
+  immediate?: boolean;
 }
 
 export interface TerminalSelectionItem {
@@ -545,6 +547,8 @@ export class TerminalUI {
   private originalRawMode = false;
   private onShiftTabCallback?: () => void;
   private onEscCallback?: () => void;
+  /** 被 pushEscHandler 临时压栈的上层处理器，弹出时原样恢复。 */
+  private escHandlerStack: Array<() => void> = [];
   private queueText = "";
   private cachedContentWithStatus = "";
   private cachedWrappedWidth = 0;
@@ -938,6 +942,24 @@ export class TerminalUI {
 
   onEsc(callback?: () => void): void {
     this.onEscCallback = callback;
+    this.escHandlerStack = [];
+  }
+
+  /**
+   * 临时接管 ESC，返回恢复函数（可重复调用，幂等）。
+   *
+   * 回合进行中开选择器等场景需要它：`onEsc` 是单槽，直接覆盖会丢掉「ESC 中止回合」
+   * 的上层语义——选择器里按一次 Esc 会把整轮对话也一起中止。压栈后弹出即恢复。
+   */
+  pushEscHandler(callback: () => void): () => void {
+    if (this.onEscCallback) this.escHandlerStack.push(this.onEscCallback);
+    this.onEscCallback = callback;
+    let restored = false;
+    return () => {
+      if (restored) return;
+      restored = true;
+      this.onEscCallback = this.escHandlerStack.pop();
+    };
   }
 
   /**

@@ -94,6 +94,7 @@ import {
   buildLogo,
   buildSessionHelpLines,
   buildSlashCommandCatalog,
+  classifyCommandTiming,
   expandCommandInput,
   findAliasSkillConflicts,
   getTopLevelSlashCommands,
@@ -2159,13 +2160,251 @@ async function main() {
     updateStatusUI();
   };
 
+  // ── 立即执行通道 ────────────────────────────────────────────────────────────
+  // 回合进行中的输入默认进 pendingInputs 排队（/compact 之类必须等本轮结束）；
+  // 标记为 immediate 的指令（见 cli-help.ts 的 immediate 元数据）在这里就地执行。
+  // 硬约束：只允许不读改 messages / 会话快照的指令。需要重建 system prompt 的
+  // （/model、/effort）只置脏，由 turn-runner 在下一个安全点落地。
+  let pendingPromptRefresh = false;
+  let pendingImmediateNotices: string[] = [];
+
+  /**
+   * 回合进行中把输出寄存到安全点：流式渲染每帧都从尾部起点整段重写，
+   * 此刻直接 append 到对话区会在下一个 chunk 被抹掉。
+   */
+  const immediateWriteLine = (text: string): void => {
+    if (foregroundAbortSignal) {
+      pendingImmediateNotices.push(text);
+      return;
+    }
+    ui.writeLine(text);
+  };
+  const immediateWriteChat = (text: string): void => {
+    if (foregroundAbortSignal) {
+      pendingImmediateNotices.push(text);
+      return;
+    }
+    ui.writeChat(text);
+  };
+
+  /** 安全点收尾：落地推迟的 system prompt 重建与寄存的输出。 */
+  const flushImmediateEffects = async (): Promise<void> => {
+    if (pendingPromptRefresh) {
+      pendingPromptRefresh = false;
+      await refreshSystemPromptPreservingContext();
+    }
+    if (pendingImmediateNotices.length === 0) return;
+    const notices = pendingImmediateNotices;
+    pendingImmediateNotices = [];
+    for (const notice of notices) ui.writeLine(notice);
+  };
+
+  /** 空闲时立刻重建（保持原语义）；回合进行中推迟到下一个安全点，避免和流式写入抢状态。 */
+  const requestPromptRefresh = async (): Promise<void> => {
+    pendingPromptRefresh = true;
+    if (!foregroundAbortSignal) await flushImmediateEffects();
+  };
+
+  const runModelCommand = async (): Promise<void> => {
+    try {
+      const selection = await readSelectionSafely({
+        title: "选择模型",
+        items: availableModels,
+        selectedValue: selectedModel,
+        secondary: {
+          label: "思考强度",
+          items: EFFORT_OPTIONS,
+          selectedValue: reasoningEffort,
+        },
+      });
+      if (!isReasoningEffort(selection.secondaryValue)) {
+        throw new Error("模型选择器返回了无效配置");
+      }
+      const newModel = selection.value;
+      const newProviderName = detectProviderForModel(newModel, providerConfig, currentProviderName);
+      // 如果切换了模型，重建 Provider 实例（在飞回合持有的是旧实例快照，不受影响）。
+      if (newModel !== selectedModel || newProviderName !== currentProviderName) {
+        provider = buildProvider(newModel, undefined, currentProviderName);
+        currentProviderName = newProviderName;
+      }
+      selectedModel = newModel;
+      reasoningEffort = selection.secondaryValue;
+      await requestPromptRefresh();
+      // 持久化用户偏好到本地（保留 sidebar / foldProcess / autoEnvironment 等未在此修改的字段）。
+      const currentPreference = loadPreference();
+      savePreference(
+        {
+          ...(currentPreference ?? {}),
+          model: selectedModel,
+          reasoningEffort,
+          provider: currentProviderName,
+        },
+        showRuntimeWarning,
+      );
+      updateStatusUI();
+      immediateWriteLine(
+        colors.okLine(
+          `模型：${selectedModel} · 思考强度：${reasoningEffort} · 提供商：${providerLabel(currentProviderName)}`,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof TerminalInputCancelledError) {
+        immediateWriteLine(colors.gray("已取消模型选择。"));
+        return;
+      }
+      throw error;
+    }
+  };
+
+  const runEffortCommand = async (parts: readonly string[]): Promise<void> => {
+    let requestedEffort = parts[1]?.toLowerCase();
+    if (!requestedEffort) {
+      try {
+        const selection = await readSelectionSafely({
+          title: "选择思考强度",
+          items: EFFORT_OPTIONS,
+          selectedValue: reasoningEffort,
+        });
+        requestedEffort = selection.value;
+      } catch (error) {
+        if (error instanceof TerminalInputCancelledError) {
+          immediateWriteLine(colors.gray("已取消切换思考强度。"));
+          return;
+        }
+        throw error;
+      }
+    }
+    if (!isReasoningEffort(requestedEffort)) {
+      immediateWriteLine(colors.failLine(`无效思考强度：${requestedEffort}`));
+      immediateWriteLine(colors.gray("可选：low、medium、high、xhigh、max"));
+      return;
+    }
+    reasoningEffort = requestedEffort;
+    await requestPromptRefresh();
+    updateStatusUI();
+    immediateWriteLine(colors.okLine(`已切换到 ${reasoningEffort}，当前会话历史已保留。`));
+  };
+
+  const runThemeCommand = async (parts: readonly string[]): Promise<void> => {
+    let presetArg = parts[1]?.toLowerCase();
+    const currentPreset = getThemePreset();
+    if (!presetArg) {
+      // 无参 → 直接列出主题供选择，省去记忆与打字；/theme <名称> 仍是直连快路径。
+      try {
+        const selection = await readSelectionSafely({
+          title: "配色主题",
+          items: listThemePresets().map((preset) => ({
+            value: preset.name,
+            label: preset.name === currentPreset ? `${preset.name}（当前）` : preset.name,
+            description: preset.description,
+          })),
+          selectedValue: currentPreset,
+        });
+        presetArg = selection.value.toLowerCase();
+      } catch (error) {
+        if (error instanceof TerminalInputCancelledError) return;
+        throw error;
+      }
+    }
+    if (!(THEME_PRESET_NAMES as readonly string[]).includes(presetArg)) {
+      immediateWriteLine(
+        colors.failLine(`未知主题 "${presetArg}"。可用：${THEME_PRESET_NAMES.join(" / ")}。`),
+      );
+      return;
+    }
+    const preset = presetArg as ThemePresetName;
+    const changed = setThemePreset(preset);
+    persistThemePreset(preset);
+    ui.forceRedraw();
+    immediateWriteLine(
+      changed
+        ? colors.okLine(`已切换到主题 ${preset}（历史消息保留旧配色）。`)
+        : colors.gray(`当前已是主题 ${preset}。`),
+    );
+  };
+
+  const runCostCommand = async (parts: readonly string[]): Promise<void> => {
+    const costSub = (parts[1] || "").toLowerCase();
+    if (costSub === "config") return openPricingConfig();
+    if (costSub === "price") return applyPricingFromArgs(parts.slice(2));
+    if (costSub === "agent") {
+      showPricingAgentDetails();
+      return;
+    }
+    immediateWriteChat(costTracker.formatCostReport().join("\n"));
+    if (costTracker.getSummary().hasUnpriced) {
+      immediateWriteLine(
+        colors.gray(
+          "  补单价：点击侧栏「费用」，或 /cost config（也可 /cost price <模型> <输入单价> <输出单价>）。",
+        ),
+      );
+    }
+  };
+
+  const printSessionHelp = (): void => {
+    // 从 COMMAND_SURFACE 生成指令表：枢纽加粗，成员子指令灰显缩进。
+    const helpLines = buildSessionHelpLines({
+      width: ui.getContentWidth(),
+      permissionMode,
+      reasoningEffort,
+      model: selectedModel,
+      toolNames: tools.map((tool) => tool.name),
+    });
+    immediateWriteChat(`${helpLines.join("\n")}\n\n`);
+  };
+
+  /**
+   * 立即执行一条斜杠指令。返回 true 表示已由本通道处理（无论成功、取消还是报错），
+   * 调用方不要再入队；返回 false 表示按规定应继续排队。
+   */
+  const runImmediateCommand = async (raw: string): Promise<boolean> => {
+    if (classifyCommandTiming(raw) !== "immediate") return false;
+    const expanded = expandCommandInput(raw);
+    const words = expanded.trim().slice(1).split(/\s+/).filter(Boolean);
+    const command = words[0]?.toLowerCase() ?? "";
+    // 选择器要临时接管输入行与 ESC：把回合的「ESC 中止」压在栈底，
+    // 否则在选择器里按一下 Esc 会顺手把正在跑的回合也中止掉。
+    const restoreEsc = ui.pushEscHandler(() => {});
+    try {
+      immediateWriteLine(
+        colors.gray(`› ${redactSensitiveCommand(sanitizeTerminalText(raw.trim()))}`),
+      );
+      if (command === "model") await runModelCommand();
+      else if (command === "effort") await runEffortCommand(words);
+      else if (command === "theme") await runThemeCommand(words);
+      else if (command === "cost") await runCostCommand(words);
+      else if (command === "help") printSessionHelp();
+      else return false;
+      return true;
+    } catch (error) {
+      // 立即通道不能把异常抛回输入回调：那会变成未处理的 rejection，回合还在跑。
+      immediateWriteLine(
+        colors.failLine(`指令执行失败: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return true;
+    } finally {
+      restoreEsc();
+    }
+  };
+
   const startBackgroundInput = (initialValue?: string) => {
     // 无头模式没有“边跑边输入下一句”的场景，避免 readline 挂在 stdin 上。
     if (headlessRequest) return;
     if (ui.isInputActive()) return;
     ui.readInput({ slashCommands, initialValue })
-      .then((input) => {
+      .then(async (input) => {
         const trimmed = input.trim();
+        // 立即指令就地执行，不进待处理队列：/model、/theme 这类输入完即可交互。
+        if (trimmed && (await runImmediateCommand(trimmed))) {
+          // 回合仍在跑：把输入行还回去继续编辑。选择器可能还占着输入行，
+          // 等它收尾再起，避免撞上「已有输入请求正在等待处理」。
+          if (foregroundAbortSignal) {
+            void ui.waitForInputIdle().then(() => {
+              if (foregroundAbortSignal) startBackgroundInput();
+            });
+          }
+          return;
+        }
         if (trimmed) {
           pendingInputs.push(trimmed);
           ui.setQueue(pendingInputs);
@@ -2927,6 +3166,7 @@ async function main() {
     showRuntimeWarning,
     refreshAgentVerificationContext,
     startBackgroundInput,
+    flushImmediateEffects,
     getCostSnapshot: () => costTracker.getSummary(),
     getLastTypeCheck: (sinceMs) =>
       lastPostEditCheck && lastPostEditCheck.at >= sinceMs
@@ -3019,6 +3259,8 @@ async function main() {
         break;
       }
       injectAgentNotifications();
+      // 上一轮里执行的立即指令（/model 等）留下的收尾：提示与 system prompt 重建。
+      await flushImmediateEffects();
       // /skills reload 等操作会改变可调用的 Skill，每轮刷新补全目录。
       slashCommands = buildSlashCommandCatalog(skillRegistry.list());
       let userInput: string;
@@ -3405,89 +3647,11 @@ async function main() {
           continue;
         }
         if (command === "effort") {
-          let requestedEffort = parts[1]?.toLowerCase();
-          if (!requestedEffort) {
-            try {
-              const selection = await readSelectionSafely({
-                title: "选择思考强度",
-                items: EFFORT_OPTIONS,
-                selectedValue: reasoningEffort,
-              });
-              requestedEffort = selection.value;
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消切换思考强度。"));
-                continue;
-              }
-              throw error;
-            }
-          }
-          if (!isReasoningEffort(requestedEffort)) {
-            ui.writeLine(colors.failLine(`无效思考强度：${requestedEffort}`));
-            ui.writeLine(colors.gray("可选：low、medium、high、xhigh、max"));
-            continue;
-          }
-
-          reasoningEffort = requestedEffort;
-          await refreshSystemPromptPreservingContext();
-          updateStatusUI();
-          ui.writeLine(colors.okLine(`已切换到 ${reasoningEffort}，当前会话历史已保留。`));
+          await runEffortCommand(parts);
           continue;
         }
         if (command === "model") {
-          try {
-            const selection = await readSelectionSafely({
-              title: "选择模型",
-              items: availableModels,
-              selectedValue: selectedModel,
-              secondary: {
-                label: "思考强度",
-                items: EFFORT_OPTIONS,
-                selectedValue: reasoningEffort,
-              },
-            });
-
-            if (!isReasoningEffort(selection.secondaryValue)) {
-              throw new Error("模型选择器返回了无效配置");
-            }
-            const newModel = selection.value;
-            const newProviderName = detectProviderForModel(
-              newModel,
-              providerConfig,
-              currentProviderName,
-            );
-            // 如果切换了模型，重建 Provider 实例
-            if (newModel !== selectedModel || newProviderName !== currentProviderName) {
-              provider = buildProvider(newModel, undefined, currentProviderName);
-              currentProviderName = newProviderName;
-            }
-            selectedModel = newModel;
-            reasoningEffort = selection.secondaryValue;
-            await refreshSystemPromptPreservingContext();
-            // 持久化用户偏好到本地（保留 sidebar / foldProcess / autoEnvironment 等未在此修改的字段）。
-            const currentPreference = loadPreference();
-            savePreference(
-              {
-                ...(currentPreference ?? {}),
-                model: selectedModel,
-                reasoningEffort,
-                provider: currentProviderName,
-              },
-              showRuntimeWarning,
-            );
-            updateStatusUI();
-            ui.writeLine(
-              colors.okLine(
-                `模型：${selectedModel} · 思考强度：${reasoningEffort} · 提供商：${providerLabel(currentProviderName)}`,
-              ),
-            );
-          } catch (error) {
-            if (error instanceof TerminalInputCancelledError) {
-              ui.writeLine(colors.gray("已取消模型选择。"));
-              continue;
-            }
-            throw error;
-          }
+          await runModelCommand();
           continue;
         }
         if (command === "provider") {
@@ -3663,41 +3827,7 @@ async function main() {
           continue;
         }
         if (command === "theme") {
-          let presetArg = parts[1]?.toLowerCase();
-          const currentPreset = getThemePreset();
-          if (!presetArg) {
-            // 无参 → 直接列出主题供选择，省去记忆与打字；/theme <名称> 仍是直连快路径。
-            try {
-              const selection = await readSelectionSafely({
-                title: "配色主题",
-                items: listThemePresets().map((preset) => ({
-                  value: preset.name,
-                  label: preset.name === currentPreset ? `${preset.name}（当前）` : preset.name,
-                  description: preset.description,
-                })),
-                selectedValue: currentPreset,
-              });
-              presetArg = selection.value.toLowerCase();
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) continue;
-              throw error;
-            }
-          }
-          if (!(THEME_PRESET_NAMES as readonly string[]).includes(presetArg)) {
-            ui.writeLine(
-              colors.failLine(`未知主题 "${presetArg}"。可用：${THEME_PRESET_NAMES.join(" / ")}。`),
-            );
-            continue;
-          }
-          const preset = presetArg as ThemePresetName;
-          const changed = setThemePreset(preset);
-          persistThemePreset(preset);
-          ui.forceRedraw();
-          ui.writeLine(
-            changed
-              ? colors.okLine(`已切换到主题 ${preset}（历史消息保留旧配色）。`)
-              : colors.gray(`当前已是主题 ${preset}。`),
-          );
+          await runThemeCommand(parts);
           continue;
         }
         if (command === "image") {
@@ -3727,27 +3857,7 @@ async function main() {
           continue;
         }
         if (command === "cost") {
-          const costSub = (parts[1] || "").toLowerCase();
-          if (costSub === "config") {
-            await openPricingConfig();
-            continue;
-          }
-          if (costSub === "price") {
-            await applyPricingFromArgs(parts.slice(2));
-            continue;
-          }
-          if (costSub === "agent") {
-            showPricingAgentDetails();
-            continue;
-          }
-          ui.writeChat(costTracker.formatCostReport().join("\n"));
-          if (costTracker.getSummary().hasUnpriced) {
-            ui.writeLine(
-              colors.gray(
-                "  补单价：点击侧栏「费用」，或 /cost config（也可 /cost price <模型> <输入单价> <输出单价>）。",
-              ),
-            );
-          }
+          await runCostCommand(parts);
           continue;
         }
         if (command === "diff") {
@@ -3886,15 +3996,7 @@ async function main() {
           continue;
         }
         if (command === "help") {
-          // 从 COMMAND_SURFACE 生成指令表：枢纽加粗，成员子指令灰显缩进。
-          const helpLines = buildSessionHelpLines({
-            width: ui.getContentWidth(),
-            permissionMode,
-            reasoningEffort,
-            model: selectedModel,
-            toolNames: tools.map((tool) => tool.name),
-          });
-          ui.writeChat(`${helpLines.join("\n")}\n\n`);
+          printSessionHelp();
           continue;
         }
         if (command === "viewer") {

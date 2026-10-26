@@ -131,6 +131,12 @@ export interface TurnDeps {
   notifyUserAttention?(): void;
   /** 回合正常结束（未中止、未失败）时触发：完成提醒、输入提示轮换等。 */
   onTurnFinished?(durationMs: number): void;
+  /**
+   * 回合中途的立即指令（/model、/effort 等）留下的收尾工作：
+   * system prompt 重建与结果提示会推迟到这里落地，避免与流式追加 messages 抢同一份状态。
+   * 在每次发起新请求前调用（此时没有在飞的流，属于安全点）。
+   */
+  flushImmediateEffects?(): Promise<void>;
 }
 
 export interface TurnInput {
@@ -348,6 +354,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       sessionManager.saveCurrentSession(messages);
     }
     if (deps.refreshAgentVerificationContext(messages)) sessionManager.saveCurrentSession(messages);
+    // 安全点：上一轮流已收尾、下一次请求尚未发出。回合中途的立即指令把收尾工作
+    // （system prompt 重建 / 结果提示）寄存在这里落地，避免和流式写入抢 messages。
+    if (deps.flushImmediateEffects) await deps.flushImmediateEffects();
     deps.startBackgroundInput();
     let currentToolCalls: ToolCall[] | null = null;
     let completionTokens: number | undefined;

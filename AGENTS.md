@@ -89,6 +89,25 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `tool-executor.ts` 的 `mutationPaths` 传**绝对路径**，否则 `/rewind` 覆盖不到。
 - 相关测试：`packages/cli/test/workspace-scope.test.mjs`（scope / engine / roots / 规则 / 外部快照）。
 
+## 斜杠指令：立即执行通道（回合进行中）
+
+回合进行中的输入默认进 `pendingInputs` 排队，等本轮结束再分发（`/compact`、`/clear` 必须如此）。
+但一部分指令不读改对话历史，可以就地生效（`/model`、`/effort`、`/theme`、`/cost`、`/help`）。
+
+- **唯一事实源是元数据**：`cli-help.ts` 的 `CommandSurfaceEntry.immediate`（`args: "any" | [...]`）。
+  判定走 `classifyCommandTiming(input)`（最长前缀匹配，别名先归一；未声明一律 `queued`）。
+  新增指令默认排队，要放开必须显式标注 —— 别在 `index.ts` 里另写白名单。
+- 分发点在 `index.ts` 的 `startBackgroundInput()`：`runImmediateCommand()` 命中就执行、不入队；
+  未命中保持原排队语义。处理器与主循环分支共用同一份实现（`runModelCommand` 等），
+  避免两条路径行为漂移。
+- **硬约束**：立即通道不得读改 `messages` / 会话快照。需要重建 system prompt 的改走
+  `requestPromptRefresh()` 置脏，由 `turn-runner.ts` 在每次请求前调用 `flushImmediateEffects()`
+  落地（此时没有在飞的流，是安全点）。回合进行中的输出也不能直接 append 到对话区
+  （流式渲染每帧从尾部整段重写，会被抹掉），一律经 `immediateWriteLine` / `immediateWriteChat` 寄存。
+- **ESC 归属**：选择器会临时接管输入行。`ui.onEsc` 是单槽，回合用它挂「中止回合」，
+  直接覆盖会让选择器里的 Esc 顺手中止整轮。用 `ui.pushEscHandler()` 压栈，返回的函数弹出恢复。
+- 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
+
 ## Shell / bash 工具（Windows）
 
 - `bash` 工具在 Windows 上不再走 cmd.exe：`resolveShellEnvironment()`（`packages/plugins/src/bash-tool.ts`）优先找

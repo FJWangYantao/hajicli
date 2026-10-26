@@ -32,6 +32,14 @@ export function buildLogo(): string {
 export interface CommandSurfaceEntry {
   command: string;
   description: string;
+  /**
+   * 回合进行中可直接执行（不进待处理队列）。只允许「不读改对话历史 / 快照」的指令：
+   * 调整下一轮参数（/model、/effort）、纯本地展示（/cost、/help）或只改配色（/theme）。
+   * - `args: "any"`（默认）：任意参数都安全；
+   * - `args: [...]`：只有列出的子命令（或无参数）安全，其余回退到排队，
+   *   例如 /cost 本体与 /cost agent 安全，/cost config、/cost price 要排队。
+   */
+  immediate?: { args?: "any" | readonly string[] };
   /** 存在 members 时该条目为枢纽：入口菜单与帮助按分组展开，成员仍可直连调用。 */
   members?: readonly CommandSurfaceEntry[];
   /** 子命令：输入指令并敲空格后作为补全候选，command 为完整指令文本（如 `/memory confirm`）。 */
@@ -97,8 +105,8 @@ const PERMISSION_SUBCOMMANDS: readonly CommandSurfaceEntry[] = [
  * 解析时重写为规范指令（支持多词），不进补全与帮助。
  */
 export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
-  { command: "/help", description: "显示帮助手册" },
-  { command: "/model", description: "选择模型与思考强度（含价格与窗口）" },
+  { command: "/help", description: "显示帮助手册", immediate: {} },
+  { command: "/model", description: "选择模型与思考强度（含价格与窗口）", immediate: {} },
   {
     command: "/config",
     description: "模型与配置",
@@ -169,11 +177,13 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         argHint: "[low|medium|high|xhigh|max]",
         subcommands: EFFORT_SUBCOMMANDS,
         menu: false,
+        immediate: {},
       },
       {
         command: "/theme",
         description: "切换配色主题（无参列出，/theme kero 应用并记住）",
         argHint: "[preset]",
+        immediate: {},
       },
       {
         command: "/sidebar",
@@ -316,6 +326,9 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
       {
         command: "/cost",
         description: "本会话费用估算（按模型单价与 token 用量）",
+        // /cost price 会写单价配置、/cost config 会开选择器，回合中保持排队；
+        // 只读报告与「查看查询过程」不碰对话历史，可以立即执行。
+        immediate: { args: ["agent"] },
         subcommands: [
           { command: "/cost config", description: "配置未定价模型的单价（手动输入 / agent 查询）" },
           {
@@ -436,6 +449,81 @@ export function expandCommandInput(input: string): string {
 }
 
 /**
+ * 指令的时机语义：
+ * - `immediate`：回合进行中也能立即执行，不进待处理队列（只调整下一轮参数或纯展示）；
+ * - `queued`：需要回合结束后再执行（改对话历史、开快照、发起模型回合等）。
+ */
+export type CommandTiming = "immediate" | "queued";
+
+/** 把指令面递归展平（枢纽成员 + 子命令），与补全目录的收录口径保持一致。 */
+function flattenCommandSurface(surface: readonly CommandSurfaceEntry[]): CommandSurfaceEntry[] {
+  const entries: CommandSurfaceEntry[] = [];
+  const walk = (entry: CommandSurfaceEntry): void => {
+    entries.push(entry);
+    for (const member of entry.members ?? []) walk(member);
+    for (const sub of entry.subcommands ?? []) walk(sub);
+  };
+  for (const entry of surface) walk(entry);
+  return entries;
+}
+
+function commandWords(input: string): string[] {
+  const expanded = expandCommandInput(input);
+  if (!expanded.startsWith("/")) return [];
+  return expanded
+    .slice(1)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * 判定一条斜杠指令在「回合进行中」能否立即执行。
+ *
+ * 匹配采用最长前缀：从最具体的条目往回退，第一个声明了 `immediate` 的条目说了算，
+ * 这样 `/effort low` 能继承 `/effort`，而 `/cost price` 会被 `/cost` 的参数白名单挡回队列。
+ * 没有任何条目声明 `immediate`（或参数不在白名单）一律按 `queued` 处理——保守优先，
+ * 新增指令默认不会因为漏标而被提前执行。
+ */
+export function classifyCommandTiming(input: string): CommandTiming {
+  const words = commandWords(input);
+  if (words.length === 0) return "queued";
+  const matches = flattenCommandSurface(COMMAND_SURFACE)
+    .map((entry) => ({
+      entry,
+      parts: entry.command
+        .slice(1)
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => part.toLowerCase()),
+    }))
+    .filter(
+      ({ parts }) =>
+        parts.length > 0 &&
+        parts.length <= words.length &&
+        parts.every((part, index) => words[index] === part),
+    )
+    .sort((a, b) => b.parts.length - a.parts.length);
+  for (const { entry, parts } of matches) {
+    if (!entry.immediate) continue;
+    const rest = words.slice(parts.length);
+    const allowed = entry.immediate.args ?? "any";
+    if (allowed === "any" || rest.length === 0 || allowed.includes(rest[0])) {
+      return "immediate";
+    }
+    return "queued";
+  }
+  return "queued";
+}
+
+/** 供补全 / 帮助展示：声明了立即执行能力的指令（含枢纽成员）。 */
+export function listImmediateCommands(): readonly string[] {
+  return flattenCommandSurface(COMMAND_SURFACE)
+    .filter((entry) => Boolean(entry.immediate))
+    .map((entry) => entry.command);
+}
+
+/**
  * 别名与 Skill 同名检查：别名解析发生在 /skill <name> 分支之前，内置指令别名优先，
  * 启动时调用本函数给出告警，避免用户误以为输入别名能命中同名 Skill。
  */
@@ -487,6 +575,7 @@ export function buildSlashCommandCatalog(skills: readonly HubSkillEntry[] = []):
       argHint: entry.argHint,
       argRequired: entry.argRequired,
       topLevel,
+      immediate: classifyCommandTiming(entry.command) === "immediate",
     });
   };
   for (const entry of COMMAND_SURFACE) add(entry, undefined, true);
