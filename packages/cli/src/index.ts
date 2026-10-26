@@ -2299,7 +2299,10 @@ async function main() {
     if (pendingImmediateNotices.length === 0) return;
     const notices = pendingImmediateNotices;
     pendingImmediateNotices = [];
+    // 寄存的输出是独立块：前后各留一个空行，避免和推理块、工具块、正文粘连。
+    ui.writeBlankLine();
     for (const notice of notices) ui.writeLine(notice);
+    ui.writeBlankLine();
   };
 
   /** 空闲时立刻重建（保持原语义）；回合进行中推迟到下一个安全点，避免和流式写入抢状态。 */

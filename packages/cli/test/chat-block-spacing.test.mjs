@@ -8,11 +8,26 @@ import test from "node:test";
 const testDir = path.dirname(new URL(import.meta.url).pathname);
 const turnSource = fs.readFileSync(path.resolve(testDir, "../src/turn-runner.ts"), "utf8");
 const sessionSource = fs.readFileSync(path.resolve(testDir, "../src/session-commands.ts"), "utf8");
+const indexSource = fs.readFileSync(path.resolve(testDir, "../src/index.ts"), "utf8");
 
 test("实时回合：推理块收尾后与助手正文之间补空行", () => {
   assert.match(
     turnSource,
     /if \(reasoningBlock\.seal\(reasoningContent\)\) ui\.writeBlankLine\(\);/,
+  );
+});
+
+test("实时回合：思考摘要行不贴在推理块最后一行下面", () => {
+  assert.match(
+    turnSource,
+    /ui\.writeBlankLine\(\);\s*\n\s*ui\.writeLine\(colors\.faint\(` {2}思考 \$\{thinkingSeconds\}s\$\{tokenSummary\}`\)\);/,
+  );
+});
+
+test("回合中寄存的立即指令输出前后各留一个空行", () => {
+  assert.match(
+    indexSource,
+    /寄存的输出是独立块[\s\S]*?ui\.writeBlankLine\(\);\s*\n\s*for \(const notice of notices\) ui\.writeLine\(notice\);\s*\n\s*ui\.writeBlankLine\(\);/,
   );
 });
 

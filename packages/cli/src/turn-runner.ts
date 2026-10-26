@@ -627,6 +627,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         completionTokens === undefined
           ? ""
           : ` · ${completionTokens.toLocaleString("en-US")} tokens`;
+      // 思考摘要是一行独立信息，不能贴在推理块最后一行下面。
+      ui.writeBlankLine();
       ui.writeLine(colors.faint(`  思考 ${thinkingSeconds}s${tokenSummary}`));
     } else if (!toolCalls || toolCalls.length === 0 || invalidToolCall) {
       // 无工具调用（或工具调用无效）时正文后补一个空行；
