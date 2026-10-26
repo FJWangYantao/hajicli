@@ -8,7 +8,7 @@ pnpm workspace monorepo：`packages/core`（`@hajicli/core`）、`packages/plugi
 
 | 目的 | 命令 |
 | --- | --- |
-| 构建（TS） | `pnpm run build`（= `tsc --build`，按 references 增量编译到各包 `dist/`） |
+| 构建（TS） | `pnpm run build`（= `tsc --build` + `scripts/postbuild.mjs` 给 bin 补执行位，按 references 增量编译到各包 `dist/`） |
 | 原生终端引擎 | `pnpm run build:native`（产出 `packages/cli/dist/haji_terminal_engine.<platform>-<arch>.node`） |
 | 全量构建 | `pnpm run build:full` |
 | 测试 | `pnpm test`（内部会先 build，再 `node --test packages/cli/test/*.test.mjs`） |
