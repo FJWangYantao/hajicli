@@ -42,10 +42,21 @@ export interface SelfStateSnapshot {
   provider: string;
   reasoningEffort: string;
   context: SelfStateContext;
-  session: { id: string; title: string; userTurns: number };
+  session: { id: string; title: string; userTurns: number; goal?: SelfStateGoal };
   gitBranch?: string;
   /** 子代理调用时带上，便于它知道自己的角色与深度。 */
   agent?: { id: string; depth: number };
+}
+
+/** 会话目标（setgoal 记录）；selfstate 里只暴露摘要字段，完整行为约束在系统提示词里。 */
+export interface SelfStateGoal {
+  text: string;
+  status: "active" | "achieved";
+  createdAt: string;
+  /** 达成时刻（已达成时存在）。 */
+  achievedAt?: string;
+  /** 完成审计摘要（goalfinish 留档）。 */
+  evidence?: string;
 }
 
 const ROOT_LABELS: Record<SelfStateRootSource, string> = {
@@ -77,6 +88,19 @@ export function formatSelfState(snapshot: SelfStateSnapshot): string {
   lines.push(
     `- 会话：${snapshot.session.title || "(未命名)"}（${snapshot.session.id}）· 用户回合 ${snapshot.session.userTurns}`,
   );
+  if (snapshot.session.goal) {
+    const { text, status, createdAt, achievedAt, evidence } = snapshot.session.goal;
+    const goalText = text.length > 60 ? `${text.slice(0, 60)}…` : text;
+    const achievedNote =
+      status === "achieved" && achievedAt ? `（达成于 ${formatTime(achievedAt)}）` : "";
+    lines.push(
+      `- 目标：${status === "active" ? "进行中" : "已达成"}${achievedNote}（设定于 ${formatTime(createdAt)}）· ${goalText}`,
+    );
+    if (status === "achieved" && evidence) {
+      const evidenceText = evidence.length > 120 ? `${evidence.slice(0, 120)}…` : evidence;
+      lines.push(`- 目标完成审计：${evidenceText}`);
+    }
+  }
   lines.push(`- 工作目录：${snapshot.cwd}`);
   if (snapshot.roots.length > 0) {
     const roots = snapshot.roots
@@ -120,7 +144,7 @@ export class SelfStateTool implements BaseTool {
     function: {
       name: "selfstate",
       description:
-        "查询本会话的运行时状态：工作区根（含追加目录）、当前权限档、模型、上下文用量与压缩阈值、会话与 Git 分支。只读、无副作用。不确定路径边界、上下文余量或当前权限档时先调用它，不要靠试探性调用来推断。",
+        "查询本会话的运行时状态：工作区根（含追加目录）、当前权限档、模型、上下文用量与压缩阈值、会话与目标、Git 分支。只读、无副作用。不确定路径边界、上下文余量或当前权限档时先调用它，不要靠试探性调用来推断。",
       parameters: {
         type: "object",
         properties: {},

@@ -32,6 +32,18 @@ export interface SessionUsage {
   lastTurnMs?: number;
 }
 
+/** 会话目标：setgoal 工具设定（模型从用户请求中提炼），随会话记录持久化；/resume 后恢复、/clear 后归零。 */
+export interface SessionGoal {
+  /** 目标原文（用户输入，任务是数据而不是指令）。 */
+  text: string;
+  status: "active" | "achieved";
+  createdAt: string;
+  /** 达成时刻（status === "achieved" 时存在）。 */
+  achievedAt?: string;
+  /** 完成审计摘要（goalfinish 时留档：逐条「验收点 → 证据」）。 */
+  evidence?: string;
+}
+
 export interface StoredSession {
   id: string;
   title: string;
@@ -40,6 +52,8 @@ export interface StoredSession {
   messages: ChatMessage[];
   /** 用量记账；老会话文件没有该字段，按零值处理。 */
   usage?: SessionUsage;
+  /** 会话目标；老会话文件没有该字段，视为未设定。 */
+  goal?: SessionGoal;
 }
 
 interface PendingSessionWrite {
@@ -123,6 +137,8 @@ export class SessionManager {
   private flushTimer: NodeJS.Timeout | null = null;
   private warningHandler?: (message: string) => void;
   private readonly pendingWarnings: string[] = [];
+  /** 已入队的目标快照（JSON 序列化）；用于识别「只有目标变了」的保存请求。 */
+  private lastQueuedGoal = "null";
 
   constructor(
     sessionsDir = path.join(process.cwd(), ".haji", "sessions"),
@@ -194,14 +210,24 @@ export class SessionManager {
     };
   }
 
+  /**
+   * 更新当前会话的目标（undefined 表示清除）。只改内存并标脏：
+   * 真正的落盘与消息一起由随后的 saveCurrentSession / flush 完成。
+   */
+  public setGoal(goal: SessionGoal | undefined): void {
+    this.currentSession.goal = goal;
+  }
+
   /** Updates memory immediately and coalesces disk writes for the same session. */
   public saveCurrentSession(messages: ChatMessage[], title?: string): void {
     if (title) this.currentSession.title = title;
 
     const usageKey = JSON.stringify(this.currentSession.usage ?? null);
+    const goalKey = JSON.stringify(this.currentSession.goal ?? null);
     const unchanged =
       this.lastQueuedTitle === this.currentSession.title &&
       this.lastQueuedUsage === usageKey &&
+      this.lastQueuedGoal === goalKey &&
       sameMessages(this.lastQueuedMessages, messages);
     if (unchanged) return;
 
@@ -230,6 +256,13 @@ export class SessionManager {
                 },
               }
             : {}),
+          ...(this.currentSession.goal
+            ? {
+                goal: {
+                  ...this.currentSession.goal,
+                },
+              }
+            : {}),
         },
       });
     }
@@ -237,6 +270,7 @@ export class SessionManager {
     this.lastQueuedMessages = snapshot;
     this.lastQueuedTitle = this.currentSession.title;
     this.lastQueuedUsage = usageKey;
+    this.lastQueuedGoal = goalKey;
     this.scheduleFlush();
   }
 
@@ -291,6 +325,7 @@ export class SessionManager {
       this.lastQueuedMessages = session.messages.map(cloneMessage);
       this.lastQueuedTitle = session.title;
       this.lastQueuedUsage = JSON.stringify(session.usage ?? null);
+      this.lastQueuedGoal = JSON.stringify(session.goal ?? null);
       return session;
     } catch {
       return null;
@@ -340,6 +375,7 @@ export class SessionManager {
     this.lastQueuedMessages = [];
     this.lastQueuedTitle = "";
     this.lastQueuedUsage = "null";
+    this.lastQueuedGoal = "null";
     return this.currentSession;
   }
 

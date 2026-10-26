@@ -17,7 +17,13 @@ import {
   type ContextCategory,
 } from "./context-breakdown.js";
 import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
-import { SEQ, terminalWidth, truncateAnsiText, truncateText } from "./terminal-text.js";
+import {
+  SEQ,
+  splitGraphemes,
+  terminalWidth,
+  truncateAnsiText,
+  truncateText,
+} from "./terminal-text.js";
 
 /** 右侧信息栏显示所需状态（TerminalUI 持有，渲染时快照传入）。 */
 export interface SidebarState {
@@ -25,6 +31,8 @@ export interface SidebarState {
   maxTokens: number;
   /** 上下文按类别的估算占用（系统/工具/记忆/文件/结果/对话）；缺省时只画圆环与总量。 */
   breakdown?: ContextBreakdown;
+  /** 会话目标（/goal 设定）；缺省时不渲染目标区块。 */
+  goal?: SidebarGoalState;
   /** 会话累计费用（元）；无定价请求时仍是已定价部分的合计。 */
   costCny?: number;
   costRequests?: number;
@@ -55,6 +63,12 @@ export interface SidebarPricingAgentState {
   model: string;
   /** 失败原因或结果摘要（可选，过长会被截断）。 */
   detail?: string;
+}
+
+/** 侧栏目标区块的状态：原文由 /goal 设定，状态只有进行中 / 已达成两档。 */
+export interface SidebarGoalState {
+  text: string;
+  status: "active" | "achieved";
 }
 
 /** 侧栏内一块可命中区域：相对侧栏首行的行偏移与相对侧栏首列的列偏移。 */
@@ -166,6 +180,31 @@ export function formatTurnDuration(durationMs: number): string {
   if (safeMs < 60_000) return `${(safeMs / 1000).toFixed(1)}s`;
   const seconds = Math.round(safeMs / 1000);
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/**
+ * 按显示宽度贪心折行（宽字符占 2 列），最多保留 maxLines 行；
+ * 超出的内容在末行以省略号截断。侧栏目标原文可能很长，这里只给摘要。
+ */
+export function wrapSidebarText(text: string, width: number, maxLines: number): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const safeWidth = Math.max(1, width);
+  const wrapped: string[] = [];
+  let current = "";
+  for (const grapheme of splitGraphemes(normalized)) {
+    if (current && terminalWidth(current + grapheme) > safeWidth) {
+      wrapped.push(current);
+      current = grapheme;
+    } else {
+      current += grapheme;
+    }
+  }
+  if (current) wrapped.push(current);
+  if (wrapped.length <= maxLines) return wrapped;
+  // 末行让出一列给省略号：恰好占满的行 fitText 不会加 …，这里必须显式补上。
+  const kept = wrapped.slice(0, maxLines);
+  kept[maxLines - 1] = `${truncateText(kept[maxLines - 1], Math.max(0, safeWidth - 1))}…`;
+  return kept;
 }
 
 /** 圆环内圈只留 3 列，刚好放得下 "25%" / "100" 这样的短文本。 */
@@ -547,6 +586,15 @@ export function buildSidebarFrame(
   // 整块费用是一个命中区：从章节标题（不含前面的呼吸空行）到最后一行。
   // 高度被裁到 0 时 register 会直接跳过，调用方也就拿不到这块区域。
   register("cost.summary", costHitTop, rows.length - costHitTop, "text", { depth: 1 });
+
+  // ── 目标：模型用 setgoal 记录的会话目标摘要，最多两行（完整原文与完成审计由 selfstate 查询）──
+  // 只显示进行中的目标：达成后收尾反馈由对话区的 goalfinish 工具格承担，侧栏不再占行。
+  if (state.goal && state.goal.status === "active") {
+    section("目标 · 进行中");
+    for (const line of wrapSidebarText(state.goal.text, contentW, 2)) {
+      push(`${SEQ.accent}${line}${SEQ.reset}`);
+    }
+  }
 
   if (state.taskPlan && state.taskPlan.items.length > 0) {
     blank();

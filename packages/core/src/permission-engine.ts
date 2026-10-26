@@ -473,7 +473,7 @@ export class PermissionEngine {
       if (
         this.isReadOnlyTool(toolName) ||
         ["subagent", "verifyagent"].includes(toolName.toLowerCase()) ||
-        ["taskcreate", "tasklist", "updatetask"].includes(toolName.toLowerCase())
+        ["taskcreate", "tasklist", "updatetask", "setgoal"].includes(toolName.toLowerCase())
       ) {
         if (pathScope.status === "deny") return denyByRule();
         if (pathScope.status === "outside" && !allowOutside) return promptOutside();
@@ -533,8 +533,12 @@ export class PermissionEngine {
       return { action: "allow", riskLevel: "safe" };
     }
 
-    // task* 仅写入 .haji 下的会话计划元数据，在所有模式中均可安全使用。
-    if (["taskcreate", "tasklist", "updatetask", "taskfinish"].includes(toolName.toLowerCase())) {
+    // task* 与 goal* 仅写入 .haji 下的会话元数据，在所有模式中均可安全使用。
+    if (
+      ["taskcreate", "tasklist", "updatetask", "taskfinish", "setgoal", "goalfinish"].includes(
+        toolName.toLowerCase(),
+      )
+    ) {
       return { action: "allow", riskLevel: "safe" };
     }
 

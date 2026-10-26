@@ -170,6 +170,16 @@ export class ToolsPromptPart implements SystemPromptPart {
         "- taskfinish：提交该任务的实际验证结果；结束后重新审视剩余计划，全部完成后做总验证。",
       );
     }
+    if (activeTools.includes("setgoal")) {
+      rules.push(
+        "- setgoal：当用户的请求构成跨回合的实质目标（多步骤实现、修复、重构等）时，尽早用一句话可验收的目标调用一次并贯彻到底；琐碎问答不设目标。用户转向新方向时用新目标替换；目标由你维护，用户不需要手动设定。",
+      );
+    }
+    if (activeTools.includes("goalfinish")) {
+      rules.push(
+        "- goalfinish：把当前会话目标标记为达成。仅在目标存在且完成审计通过（每个验收点都有实际证据）时调用一次，evidence 逐条写「验收点 → 证据」；没有活动目标、审计未通过或只有阶段性进展时不要调用。",
+      );
+    }
     if (activeTools.includes("subagent")) {
       rules.push(
         "- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可按需指定 model、匹配的 provider、reasoningEffort 和追加 instructions；也可通过 timeoutMs、maxTokens、maxToolCalls 限制运行时间和资源消耗；可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。",

@@ -38,6 +38,7 @@ import {
   type ReasoningEffort,
   type RiskLevel,
   runCompactionPipeline,
+  type SessionGoal,
   SessionManager,
   SessionTracker,
   SkillRegistry,
@@ -57,6 +58,8 @@ import {
   EditFileTool,
   formatOffPeakWindow,
   GlobalFindFilesTool,
+  type GoalFinishResult,
+  GoalFinishTool,
   GrepSearchTool,
   getModelMetadata,
   getModelPricing,
@@ -77,6 +80,8 @@ import {
   readMcpServerConfigs,
   type SelfStateSnapshot,
   SelfStateTool,
+  type SetGoalResult,
+  SetGoalTool,
   SubagentTool,
   TaskCreateTool,
   TaskFinishTool,
@@ -125,6 +130,7 @@ import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
+import { GoalPromptPart } from "./goal-prompt.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { buildImageView } from "./image-view-command.js";
@@ -956,6 +962,15 @@ async function main() {
     evidence: string;
     evidenceToolCallIds: string[];
   }) => Promise<string> = async () => "错误: Agent 管理器尚未初始化。";
+  // setgoal / goalfinish 的落地实现在 sessionManager 与提示词刷新就绪后接线（同 runSubagent 模式）。
+  let setGoalFromTool: (text: string) => SetGoalResult = () => ({
+    ok: false,
+    message: "错误: 会话目标运行时尚未初始化。",
+  });
+  let finishGoal: (evidence: string) => GoalFinishResult = () => ({
+    ok: false,
+    message: "错误: 会话目标运行时尚未初始化。",
+  });
   const subagentTool = new SubagentTool((request, context) => runSubagent(request, context));
   const verifyAgentTool = new VerifyAgentTool((input) => verifyAgent(input));
   const tools: BaseTool[] = [
@@ -984,6 +999,8 @@ async function main() {
     new TaskListTool(taskStore),
     new UpdateTaskTool(taskStore),
     new TaskFinishTool(taskStore),
+    new SetGoalTool((text) => setGoalFromTool(text)),
+    new GoalFinishTool((evidence) => finishGoal(evidence)),
     subagentTool,
     verifyAgentTool,
   ];
@@ -1021,7 +1038,8 @@ async function main() {
           (tool) =>
             permissionEngine.isReadOnlyTool(tool.name) ||
             ["subagent", "verifyagent"].includes(tool.name) ||
-            ["taskcreate", "tasklist", "updatetask"].includes(tool.name),
+            // setgoal 属计划元数据：调研阶段就该记下目标；goalfinish 是实施后的收尾，不放行。
+            ["taskcreate", "tasklist", "updatetask", "setgoal"].includes(tool.name),
         )
       : tools;
 
@@ -1043,6 +1061,11 @@ async function main() {
   markStartupStage("system_prompt");
 
   const sessionManager = new SessionManager();
+  // 会话目标分片：/goal 设定的目标随会话记录走，激活时注入系统提示词。
+  // 注册晚于上方首帧提示词生成没关系——新会话此刻必然没有目标，分片内容为空。
+  systemPromptManager.registerPart(
+    new GoalPromptPart(() => sessionManager.getCurrentSession().goal),
+  );
   taskStore.setTaskScope(sessionManager.getCurrentSession().id);
   snapshotEngine.setScope(sessionManager.getCurrentSession().id);
 
@@ -1701,6 +1724,17 @@ async function main() {
         id: current.id,
         title: current.title,
         userTurns: messages.filter((message) => message.role === "user").length,
+        ...(current.goal
+          ? {
+              goal: {
+                text: current.goal.text,
+                status: current.goal.status,
+                createdAt: current.goal.createdAt,
+                ...(current.goal.achievedAt ? { achievedAt: current.goal.achievedAt } : {}),
+                ...(current.goal.evidence ? { evidence: current.goal.evidence } : {}),
+              },
+            }
+          : {}),
       },
       ...(branch ? { gitBranch: branch } : {}),
     };
@@ -1710,6 +1744,8 @@ async function main() {
     ui.setModelInfo(selectedModel, reasoningEffort, providerPlainLabel(currentProviderName));
     ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
+    const sessionGoal = sessionManager.getCurrentSession().goal;
+    ui.setGoal(sessionGoal ? { text: sessionGoal.text, status: sessionGoal.status } : undefined);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
     ui.setContextUsage(
       tokens,
@@ -2724,6 +2760,48 @@ async function main() {
       syncSessionUsage();
       updateStatusUI();
     },
+  };
+
+  // 目标工具组的落地：目标存在会话记录上，改动统一走 setGoal + 保存 + 提示词刷新。
+  // 工具在回合中调用时 requestPromptRefresh 只置脏，由 turn-runner 在下一个请求前的安全点重建提示词。
+  const applyGoal = async (goal: SessionGoal | undefined): Promise<void> => {
+    sessionManager.setGoal(goal);
+    sessionManager.saveCurrentSession(messages);
+    await requestPromptRefresh();
+    updateStatusUI();
+  };
+  // setgoal：模型从用户请求中提炼目标后记录/替换（没有用户侧 /goal 指令）。
+  setGoalFromTool = (text: string): SetGoalResult => {
+    const previous = sessionManager.getCurrentSession().goal;
+    void applyGoal({ text, status: "active", createdAt: new Date().toISOString() });
+    return {
+      ok: true,
+      message:
+        previous?.status === "active"
+          ? "已替换会话目标，下一轮起按新目标推进。"
+          : "已记录会话目标，此后每轮注入推进，完成审计通过后请调用 goalfinish 收尾。",
+    };
+  };
+  // goalfinish：完成审计通过的模型把目标标记达成并留档 evidence。
+  finishGoal = (evidence: string): GoalFinishResult => {
+    const goal = sessionManager.getCurrentSession().goal;
+    if (!goal) {
+      return { ok: false, message: "错误：当前会话没有目标，无需调用 goalfinish。" };
+    }
+    if (goal.status === "achieved") {
+      return { ok: false, message: "错误：目标已标记达成，请勿重复调用 goalfinish。" };
+    }
+    void applyGoal({
+      ...goal,
+      status: "achieved",
+      achievedAt: new Date().toISOString(),
+      evidence,
+    });
+    return {
+      ok: true,
+      message:
+        "目标已标记达成并停止注入后续请求。请在最终回复里向用户总结结果、验证情况与剩余风险。",
+    };
   };
 
   // 完成 / 待授权提醒（偏好 notify：off | bell | desktop，默认 bell）。

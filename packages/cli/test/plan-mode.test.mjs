@@ -170,8 +170,10 @@ test("Plan Mode sends only read-only, planning and isolated subagent tool defini
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.match(source, /permissionMode === "plan"/);
   assert.match(source, /\["subagent", "verifyagent"\]\.includes\(tool\.name\)/);
-  assert.match(source, /\["taskcreate", "tasklist", "updatetask"\]/);
-  assert.doesNotMatch(source, /\["taskcreate", "tasklist", "updatetask", "taskfinish"\]/);
+  // setgoal 属计划元数据（调研阶段记录目标）；goalfinish/taskfinish 是实施后的收尾，不进 Plan。
+  assert.match(source, /\["taskcreate", "tasklist", "updatetask", "setgoal"\]/);
+  assert.doesNotMatch(source, /"taskfinish"\]/);
+  assert.doesNotMatch(source, /"goalfinish"\]/);
 });
 
 test("the large HAJI logo remains until the first ordinary user message", () => {

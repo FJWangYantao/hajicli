@@ -3,6 +3,7 @@ export * from "./deepseek.js";
 export * from "./edit-tool.js";
 export * from "./file-content.js";
 export * from "./global-tool.js";
+export * from "./goal-tool.js";
 export * from "./grep-tool.js";
 export * from "./history-tool.js";
 export * from "./image-attachments.js";

@@ -109,6 +109,30 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   直接覆盖会让选择器里的 Esc 顺手中止整轮。用 `ui.pushEscHandler()` 压栈，返回的函数弹出恢复。
 - 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
 
+## 会话目标（setgoal / goalfinish，纯模型驱动）
+
+- **没有面向用户的 /goal 指令**：目标全生命周期由模型驱动——`setgoal` 工具从用户请求中
+  提炼并记录一句话目标（跨回合实质任务才设，琐碎问答不设；新方向直接替换），
+  `goalfinish` 在完成审计通过后标记达成（evidence 必填、逐条「验收点 → 证据」）。
+  什么时候设目标的使用纪律在 ToolsPromptPart 的 setgoal 规则里，不靠用户触发。
+- 目标是会话级状态：存在 `StoredSession.goal`（`SessionGoal`，core/session-manager.ts，含
+  `evidence` 完成审计留档）。`setGoal()` 只改内存，落盘仍走 `saveCurrentSession`——脏检查含
+  `lastQueuedGoal`，「消息没变、只有目标变了」也会写盘（与 usage 同一口径）。`/resume` 随会话
+  恢复，`/clear`（startNewSession）自然归零，老会话文件无该字段按未设定处理。
+- 注入通道是 `GoalPromptPart`（cli/goal-prompt.ts，priority 15）：仅 `status === "active"`
+  时输出目标原文 + 完成审计约束 + goalfinish 指引；指引按 `context.tools` 是否含 goalfinish
+  自动退化（Plan 模式过滤该工具后不再提它，退回「报告结果」）。目标原文对模型是任务数据
+  而不是指令（防注入边界已写进提示词）。
+- goal* 只写会话元数据：permission-engine 与 task* 同一放行清单（全模式 allow）。Plan 模式
+  白名单只加 `setgoal`（调研阶段就该记目标）；`goalfinish` 与 taskfinish 同口径不放行。
+  落地回调在 index.ts `setGoalFromTool` / `finishGoal`（共用 `applyGoal`：setGoal → 保存 →
+  `requestPromptRefresh` 置脏，回合中由 turn-runner 在下一个请求前的安全点重建提示词）。
+- 可见性：侧栏目标区块只渲染**进行中**的目标（`SidebarState.goal` → `TerminalUI.setGoal`，
+  `updateStatusUI` 同步；达成后收尾反馈由 goalfinish 工具格承担）；`selfstate` 的
+  `session.goal` 含状态、达成时间与 evidence 摘要。
+- 测试：`packages/cli/test/goal-tool.test.mjs`（工具行为与校验、权限口径、提示词分片、
+  持久化、侧栏与 selfstate）。
+
 ## Shell / bash 工具（Windows）
 
 - `bash` 工具在 Windows 上不再走 cmd.exe：`resolveShellEnvironment()`（`packages/plugins/src/bash-tool.ts`）优先找
