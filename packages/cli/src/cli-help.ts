@@ -151,6 +151,23 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         ],
       },
       {
+        command: "/worktree",
+        description: "每个新会话自动开独立 git worktree（多进程并行）",
+        argHint: "[on|off|list|remove]",
+        immediate: {},
+        subcommands: [
+          { command: "/worktree on", description: "启用：下一次启动新会话时自动新建工作树" },
+          { command: "/worktree off", description: "关闭自动工作树（已创建的仍保留）" },
+          { command: "/worktree list", description: "列出 haji 创建的工作树" },
+          {
+            command: "/worktree remove",
+            description: "移除工作树（--force 丢弃未提交改动）",
+            argHint: "[--force] <名称|路径>",
+            argRequired: true,
+          },
+        ],
+      },
+      {
         command: "/provider",
         description: "查看 / 切换 / 添加 / 配置提供商",
         argHint: "[名称|add|set|unset]",
@@ -955,6 +972,8 @@ ${colors.bold("选项:")}
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
   --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）
   --add-dir <目录>      追加工作区根（可重复；只对本次进程生效，/workspace add 可持久化）
+  --worktree          本次强制新建 git worktree（忽略项目配置）
+  --no-worktree       本次不新建 git worktree（-c/-r 恢复会话本就不新建）
 
 ${colors.bold("快捷命令 (对话内，枢纽进入后选择细分项):")}
 ${renderCommandSurfaceLines().join("\n")}

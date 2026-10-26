@@ -173,6 +173,17 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 - `/mcp`：查看各 server 状态（running/failed/disabled）、挂载的工具与失败原因
 - 启动时并行连接，单个 server 失败不影响其余与 CLI 本身；MCP 工具失败输出与内置工具同格式（`错误:` 前缀），会被经验系统纳入失败观测
 
+## 并行开发：自动 worktree
+
+在 git 仓库里启用后，每次启动 haji（新会话）都会自动创建一个独立工作树并在其中运行，多个进程可以同时改同一个仓库而互不干扰：
+
+- `/worktree on|off`：开关（写入主仓库 `.haji/config.json`，下次启动生效）；`/worktree` 查看当前状态与存放目录
+- `/worktree list`：列出 haji 创建的工作树；`/worktree remove [--force] <名称|路径>` 清理（会话与快照会先归档到主仓库 `.haji/worktree-archive/`）
+- 启动参数 `--worktree` / `--no-worktree` 可临时覆盖；`-c` / `-r` 恢复会话不新建
+- 新工作树默认在 `~/.haji/worktrees/<仓库名>-<指纹>/<会话名>`，分支为 `haji/<会话名>`；项目配置与未跟踪的 `.env` 会一并带过去，`node_modules` 需要自行安装
+- 配置项：`.haji/config.json` 的 `worktree` 字段，支持 `true` / `false` 或 `{ "enabled": true, "root": "~/wt/{repo}/{name}", "copy": [".env.local"] }`
+- 已经在 worktree 里启动、或仓库还没有提交时会跳过，避免嵌套工作树
+
 ## 安全边界
 
 文件读取、写入、编辑和检索的作用域是「工作区根」：启动目录，加上 `--add-dir <目录>`（本次进程）与 `/workspace add <目录>`（持久化到 `~/.haji/workspaces.json`，按项目分组）追加的目录。路径判定会解析符号链接：目标不存在时按最近的已存在上级目录判断，因此 `../`、绝对路径和指向外部的符号链接都绕不过去。

@@ -235,6 +235,13 @@ import {
   normalizeWorkspaceRoot,
   removeWorkspaceRoot,
 } from "./workspace-roots.js";
+import {
+  loadWorktreeSetting,
+  parseWorktreeArgs,
+  prepareSessionWorktree,
+  worktreeTargetCwd,
+} from "./worktree.js";
+import { handleWorktreeCommand } from "./worktree-commands.js";
 
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
@@ -267,6 +274,55 @@ async function main() {
   if (addDirParse.error) {
     console.error(colors.failLine(addDirParse.error));
     process.exit(1);
+  }
+  // 自动 worktree：每个新会话一个独立工作树，多进程并行互不干扰。
+  // 只在新会话时创建；-c/-r 恢复会话沿用原目录（worktree 内的会话也在 worktree 内恢复）。
+  const worktreeParse = parseWorktreeArgs(cliArgs);
+  if (worktreeParse.error) {
+    console.error(colors.failLine(worktreeParse.error));
+    process.exit(1);
+  }
+  let worktreeNotice: { tone: "info" | "warn"; text: string } | undefined;
+  const worktreeWarnings: string[] = [];
+  const originalCwd = process.cwd();
+  const worktreeSetting = loadWorktreeSetting(process.cwd());
+  const wantWorktree =
+    !sessionResumeRequest &&
+    (worktreeParse.mode === "on" || (worktreeParse.mode !== "off" && worktreeSetting.enabled));
+  if (sessionResumeRequest && worktreeParse.mode === "on") {
+    worktreeNotice = { tone: "warn", text: "恢复会话沿用原目录，--worktree 本次忽略。" };
+  }
+  if (wantWorktree) {
+    const prepared = prepareSessionWorktree({ cwd: process.cwd(), setting: worktreeSetting });
+    if (prepared.ok) {
+      const target = worktreeTargetCwd(prepared.info, process.cwd());
+      process.chdir(target);
+      // 追加工作区根按项目路径分组：把主仓库那份带到新工作树，避免 /workspace add 的目录在并行会话里消失。
+      for (const root of loadWorkspaceRoots(originalCwd)) addWorkspaceRoot(root, process.cwd());
+      worktreeNotice = {
+        tone: "info",
+        text: `worktree · ${prepared.info.branch} → ${target}`,
+      };
+      worktreeWarnings.push(...prepared.info.warnings);
+    } else if ("skipped" in prepared) {
+      // 显式 --worktree 却没建成时才提示；配置启用时静默跳过（例如已在 worktree 里）。
+      if (worktreeParse.mode === "on") {
+        worktreeNotice = { tone: "warn", text: prepared.message };
+      }
+    } else if (worktreeParse.mode === "on") {
+      console.error(colors.failLine(`创建 worktree 失败：${prepared.error}`));
+      process.exit(1);
+    } else {
+      worktreeNotice = {
+        tone: "warn",
+        text: `自动 worktree 创建失败，继续使用当前目录：${prepared.error}`,
+      };
+    }
+    // 无头模式的横幅不打印，提示直接走 stderr，避免污染 stdout 的结果。
+    if (headlessRequest) {
+      if (worktreeNotice) console.error(colors.gray(worktreeNotice.text));
+      for (const warning of worktreeWarnings) console.error(colors.warnLine(warning));
+    }
   }
   if (headlessRequest?.prompt === "-") {
     // prompt 传 "-" 表示从 stdin 管道读取（cat error.log | haji -p "-"）。
@@ -350,6 +406,14 @@ async function main() {
         `${bootProvider} · ${bootModel} · ${savedPreference?.reasoningEffort ?? "medium"}   ${process.cwd()}`,
       ),
     );
+    if (worktreeNotice) {
+      console.log(
+        worktreeNotice.tone === "warn"
+          ? colors.warnLine(`  ${worktreeNotice.text}`)
+          : colors.gray(`  ${worktreeNotice.text}`),
+      );
+    }
+    for (const warning of worktreeWarnings) console.log(colors.gray(`  ↳ ${warning}`));
   }
   markStartupStage("preference");
 
@@ -2492,6 +2556,11 @@ async function main() {
       else if (command === "sidebar") runSidebarCommand(words);
       else if (command === "fold") runFoldCommand(words);
       else if (command === "think") runThinkCommand(words);
+      else if (command === "worktree")
+        handleWorktreeCommand(
+          { cwd: process.cwd(), writeLine: immediateWriteLine, writeChat: immediateWriteChat },
+          words,
+        );
       // 元数据声明了 immediate 却没有处理器：属于内部不一致，宁可报错也不要悄悄回退到排队。
       else throw new Error(`/${command} 标记为立即执行，但缺少对应的处理器`);
       return true;
@@ -3784,6 +3853,13 @@ async function main() {
         }
         if (command === "workspace") {
           await handleWorkspaceCommand(workspaceCommandContext, { parts });
+          continue;
+        }
+        if (command === "worktree") {
+          handleWorktreeCommand(
+            { cwd: process.cwd(), writeLine: immediateWriteLine, writeChat: immediateWriteChat },
+            parts,
+          );
           continue;
         }
         if (command === "permission") {

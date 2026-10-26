@@ -35,6 +35,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 | `subagent-commands.ts` | `/subagent`、`/preset`、`/agents` |
 | `session-commands.ts` | `/clear`、`/resume`、`/rewind` |
 | `workspace-commands.ts` | `/workspace`（根与路径规则：list / add / remove / allow / deny / rules） |
+| `worktree-commands.ts` | `/worktree`（每个新会话自动开独立 git 工作树：on / off / list / remove） |
 | `index.ts` 内联 | `/model`、`/effort`、`/permission`、`/compact`、`/skill(s)`、`/memory`、`/instinct`、`/mcp`、`/perf`、`/help`、枢纽入口等小命令 |
 
 命令模块通过 `*CommandContext` 接口注入会话状态：可变状态（当前模型、消息数组等）一律用 getter/setter 访问器，与 `main()` 的 `let` 绑定保持同步。这是新增命令时应遵循的模式。
@@ -101,6 +102,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 ## 会话、快照与 Rewind
 
 - `SessionManager`（core）：会话持久化于 `<cwd>/.haji/sessions/`，含异步标题生成。
+- 自动 worktree（`worktree.ts`）：启动时在 `main()` 最前面读取主仓库 `.haji/config.json` 的 `worktree` 开关，命中就在 `~/.haji/worktrees/<仓库名>-<指纹>/<会话名>` 建工作树、开 `haji/<会话名>` 分支并 `process.chdir()` 进去；后续所有 `process.cwd()` 读取（会话、快照、工具、工作区根）自然落在新工作树里。`-c/-r` 恢复会话与已在 linked worktree 中启动都会跳过，避免嵌套。`/worktree remove` 会先把工作树内的会话与快照归档到主仓库 `.haji/worktree-archive/`。
 - `SnapshotEngine`：每条用户消息前 `createAnchor` 生成 Git 快照（`.haji/snapshots/`）。快照键工作区内为 posix 相对路径，工作区外为 `external:<绝对路径>`，因此经授权的越界写入同样可回退、可进 `/diff`。`/rewind` 选择历史节点 → `rollbackOwnedChanges` 撤销本会话拥有的改动（外部改动过的文件保留）→ 截断消息历史 → 消息文本回填输入框。bash 的工作区外副作用不在快照范围内。
 - Trace：`trace-logger.ts` 落盘 `.haji/traces/`（meta + events.jsonl），`startTraceServer` 提供本地观测页（`/viewer`）。
 
