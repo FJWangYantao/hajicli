@@ -219,7 +219,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let promptReclaimed = false;
   let isTurnAborted = false;
   let abortNoticeShown = false;
-  let stopActiveTurnVisuals: () => void = () => {};
+  // keepToolCallDraft：流正常结束后，工具调用的草稿块继续留在实时区域，由随后出现的
+  // 正式工具格原地接管，避免「参数生成完 → 工具开跑」之间屏幕上空一段。
+  let stopActiveTurnVisuals: (options?: { keepToolCallDraft?: boolean }) => void = () => {};
 
   const commitPromptForRequest = () => {
     requestStarted = true;
@@ -376,6 +378,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
 
     let textContent = "";
     let reasoningContent = "";
+    // 流是否走到了「最后一帧已渲染」的正常收尾；只有正常收尾才值得让草稿块等工具格接管。
+    let streamCompleted = false;
     // 流式过程中的 token 数按增量估算（不重复扫描全文），与回合结束后的统计口径一致。
     let reasoningTokens = 0;
     let responseTokens = 0;
@@ -410,10 +414,12 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       toolCallDraftShown = false;
       ui.setLiveTail("");
     };
-    stopActiveTurnVisuals = () => {
+    stopActiveTurnVisuals = (options) => {
       isThinking = false;
       clearReasoningPreview();
-      clearToolCallDraft();
+      // 参数已生成完、工具即将执行的这段空档里草稿块必须留着：正式工具格还没画出来，
+      // 提前擦掉就会出现「工具凭空消失」的闪烁；由 ToolRunView 首次 flush 原地覆盖它。
+      if (!options?.keepToolCallDraft) clearToolCallDraft();
       // 收尾：没有正文的回合（纯工具迭代、中止）也要把已有推理留在对话区。
       reasoningBlock.seal(reasoningContent);
       activityIndicator.stop();
@@ -525,6 +531,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         const finalRenderedMarkdown = mdStreamRenderer.render(textContent, true);
         ui.updateChatFrom(streamStartOffset, finalRenderedMarkdown);
       }
+      streamCompleted = true;
     } catch (streamError) {
       stopActiveTurnVisuals();
       if (isTurnAborted) {
@@ -556,7 +563,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       keepCalling = false;
       continue;
     } finally {
-      stopActiveTurnVisuals();
+      // 正常收尾的草稿块先留着：工具格要等 onToolStart 才渲染，这里擦掉就会空一段。
+      stopActiveTurnVisuals({ keepToolCallDraft: streamCompleted && !isTurnAborted });
       if (!isTurnAborted) activityIndicator.stop();
     }
 
@@ -574,6 +582,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     // 有效工具调用：开段（已有打开的段就继续并入），并把本轮推理记一次“思考”。
     // 无效工具调用的拦截告警不开段，保持可见。
     const hasValidToolCalls = Boolean(toolCalls && toolCalls.length > 0 && !invalidToolCall);
+    // 没有可执行的工具（无调用 / 参数不完整）：没有接管者，草稿块必须立刻收掉。
+    if (!hasValidToolCalls) clearToolCallDraft();
     if (hasValidToolCalls) {
       if (!foldGroup) foldGroup = ui.beginFoldGroup();
       // 推理已经常驻显示时不再在摘要里重复“思考 N 次”；关闭显示时才靠计数交代。
