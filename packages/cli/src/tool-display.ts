@@ -327,6 +327,7 @@ export function formatToolCallDraftCell(
     // 标题只报进度（`12 字`），具体指令由下面几行原文体现——否则两处重复同一段文字。
     summary: chars > 0 ? `${chars} 字` : "",
     width,
-    outputTail: lines,
+    // 走参数展开行而不是输出尾部：这是「正在拼的指令」，与结果（输出尾部）不同色。
+    argLines: lines,
   });
 }

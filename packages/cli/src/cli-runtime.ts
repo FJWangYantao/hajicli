@@ -676,6 +676,9 @@ export const TOOL_CELL_INDENT = "  ";
  *       # pass 12
  *       # fail 0
  * 运行中用静止的 ●（动画只在活动行），下方显示输出尾部；完成后结果说明下面带几行预览。
+ *
+ * 配色分工：工具侧（工具名、摘要、参数/命令展开行）一律用青色，结果侧（└ 说明、
+ * 输出预览）用灰色，让「调用了什么」和「拿回了什么」在视觉上分得开。
  */
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
@@ -709,18 +712,17 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     mark,
     " ",
     source ? colors.faint(source) : "",
-    options.toolName,
-    summary ? `  ${summary}` : "",
+    colors.cyan(options.toolName),
+    summary ? `  ${colors.cyan(summary)}` : "",
     timing ? `  ${colors.faint(timing)}` : "",
     verdict ? `  ${colors.faint(verdict)}` : "",
   ].join("");
   const rows = [header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);
   // 参数展开行紧跟在头行下面：多行命令在原位置按原样分行，而不是压成一行摘要。
+  // 这些是「交给工具执行的东西」，与下方结果同色会分不清，统一用工具侧青色。
   for (const line of options.argLines || []) {
-    rows.push(
-      `${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.muted(fitText(line, bodyWidth))}`,
-    );
+    rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.cyan(fitText(line, bodyWidth))}`);
   }
   if (options.status === "running") {
     for (const line of options.outputTail || []) {
