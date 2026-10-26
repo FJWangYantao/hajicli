@@ -28,6 +28,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/diag",
     "/compact",
     "/image",
+    "/view",
     "/clear",
     "/resume",
     "/undo",

@@ -127,6 +127,7 @@ import { handleInstinctCommand, handleMemoryCommand } from "./experience-command
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
+import { buildImageView } from "./image-view-command.js";
 import {
   describeCurrentTier,
   formatPricingLabel,
@@ -3935,6 +3936,28 @@ async function main() {
             promptDisplayStartOffset: ui.getChatLength(),
             promptAttachments: [{ mimeType: attachment.mimeType, base64: attachment.base64 }],
           });
+          continue;
+        }
+        if (command === "view") {
+          // /view <图片路径>：把图片直接画进终端（kitty / iTerm2 协议），只看不给模型。
+          const target = parts
+            .slice(1)
+            .join(" ")
+            .trim()
+            .replace(/^["']|["']$/g, "");
+          if (!target) {
+            ui.writeLine(colors.red("用法：/view <图片路径>，例如 /view .haji/shot-table.png"));
+            continue;
+          }
+          const built = buildImageView(target, {
+            columns: process.stdout.columns || 80,
+            rows: process.stdout.rows || 24,
+          });
+          if (!built.ok) {
+            ui.writeLine(colors.red(`! ${built.error}`));
+            continue;
+          }
+          ui.viewImage(built.view);
           continue;
         }
         if (command === "cost") {

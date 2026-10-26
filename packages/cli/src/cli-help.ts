@@ -364,6 +364,12 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     argHint: "<图片路径> [提示词]",
     argRequired: true,
   },
+  {
+    command: "/view",
+    description: "在终端里直接查看图片（kitty / iTerm2 图形协议）",
+    argHint: "<图片路径>",
+    argRequired: true,
+  },
   { command: "/clear", description: "清空聊天与上下文", aliases: ["new"] },
   {
     command: "/resume",

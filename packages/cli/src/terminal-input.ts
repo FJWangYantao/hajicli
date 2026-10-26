@@ -23,6 +23,7 @@ import {
   inputRowHighlightSpan,
 } from "./input-selection.js";
 import { type ChatSegmentView, type FoldGroupStats, renderSegmentText } from "./process-fold.js";
+import { encodeDeleteImages, type ImageProtocol } from "./terminal-image.js";
 import {
   type ActivityBadge,
   buildActivityRow,
@@ -128,6 +129,16 @@ function enableWindowsVirtualTerminalInput(): boolean {
   );
 
   return result.status === 0;
+}
+
+/** 全屏查看图片的状态：序列已按终端协议编码好，TUI 只负责贴到屏幕上。 */
+export interface ImageOverlayView {
+  protocol: ImageProtocol;
+  sequence: string;
+  cols: number;
+  rows: number;
+  caption: string;
+  tmux: boolean;
 }
 
 export interface TerminalUIOptions {
@@ -555,6 +566,8 @@ export class TerminalUI {
   private renderedChatVisibleStart = 0;
   private renderedChatRegionStart = 0;
   private renderedChatRegionHeight = 0;
+  /** 全屏查看图片时的当前视图；有值就整屏只画图，不画对话区。 */
+  private imageOverlay?: ImageOverlayView;
   private stdoutBackpressured = false;
   private renderPendingAfterDrain = false;
   /** Ctrl+C 防误触：上一次按下时间与被清空的草稿（↑ 可一次性找回）。 */
@@ -1269,6 +1282,11 @@ export class TerminalUI {
     }
     if (this.activeSelection) {
       this.activeSelection = undefined;
+    }
+    if (this.imageOverlay) {
+      const cleanup = encodeDeleteImages(this.imageOverlay.protocol, this.imageOverlay.tmux);
+      this.imageOverlay = undefined;
+      if (cleanup) stdout.write(cleanup);
     }
     // 关闭时没有任何输入行可用：唤醒等空闲者，避免它们永远挂着。
     this.notifyInputIdle();
@@ -2393,6 +2411,11 @@ export class TerminalUI {
   };
 
   private readonly dispatchKeypress = (value: string, key: readline.Key) => {
+    // 看图模式下任意键（含 Esc / 方向键）都只做一件事：退出看图。
+    if (this.imageOverlay) {
+      this.closeImageOverlay();
+      return;
+    }
     if (this.toggleTaskPanel(value, key)) return;
     if (isRealCtrlO(value, key) && !this.activeSelection) {
       this.toggleLatestFoldSegment();
@@ -2897,6 +2920,58 @@ export class TerminalUI {
     performanceMonitor.measureSync("terminal.render", () => this.renderFrame());
   }
 
+  /**
+   * 全屏查看一张图片：清屏 → 贴图 → 图下一行说明，任意键返回原界面。
+   * 序列由 terminal-image.ts 编码好，这里只负责摆放、失效旧帧和清理。
+   */
+  viewImage(view: ImageOverlayView): void {
+    if (!this.interactive) {
+      throw new Error("图片查看需要交互式终端");
+    }
+    this.imageOverlay = view;
+    this.invalidateRenderedFrame();
+    this.scheduleRender(true);
+  }
+
+  /** 关闭图片查看，并删掉 kitty 已贴在屏幕上的图。 */
+  closeImageOverlay(): void {
+    const overlay = this.imageOverlay;
+    if (!overlay) return;
+    this.imageOverlay = undefined;
+    const cleanup = encodeDeleteImages(overlay.protocol, overlay.tmux);
+    if (cleanup) stdout.write(cleanup);
+    this.invalidateRenderedFrame();
+    this.scheduleRender(true);
+  }
+
+  /**
+   * 图片查看整屏一次性绘制，绕开逐行 diff：贴完图后把旧帧标记失效，
+   * 返回对话区时走 fullRefresh 整体重画，避免残留图片或半截文字。
+   */
+  private renderImageOverlay(): void {
+    const overlay = this.imageOverlay;
+    if (!overlay) return;
+    const width = Math.max(1, stdout.columns || 80);
+    const height = Math.max(1, stdout.rows || 24);
+    const captionRow = Math.min(height, overlay.rows + 1);
+    const caption = truncateAnsiText(`${overlay.caption}  ·  任意键返回`, width);
+    const frame =
+      "\x1b[?2026h\x1b[?25l" +
+      themeEnter() +
+      "\x1b[2J\x1b[H" +
+      overlay.sequence +
+      `\x1b[${captionRow};1H${SEQ.muted}${caption}${SEQ.reset}` +
+      "\x1b[?2026l";
+    stdout.write(frame);
+    this.invalidateRenderedFrame();
+  }
+
+  private invalidateRenderedFrame(): void {
+    this.renderedScreenRows = [];
+    this.renderedScreenWidth = 0;
+    this.renderedScreenHeight = 0;
+  }
+
   private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
@@ -2910,6 +2985,12 @@ export class TerminalUI {
     }
     if (this.stdoutBackpressured) {
       this.renderPendingAfterDrain = true;
+      return;
+    }
+
+    // 图片查看是独立整屏视图：有它就只画图，返回时旧帧已失效，自然回到全量重绘。
+    if (this.imageOverlay) {
+      this.renderImageOverlay();
       return;
     }
 
