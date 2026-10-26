@@ -133,7 +133,61 @@ test("draft cell caps long instructions and marks the truncation", () => {
   const command = `echo ${"x".repeat(240)}`;
   const args = JSON.stringify({ command });
   const rows = formatToolCallDraftCell({ name: "bash", argumentsText: args }, 40, 3);
-  // 头部 1 行 + 正文最多 3 行。
-  assert.equal(rows.length, 4);
-  assert.equal(rows.at(-1).includes("…"), true);
+  // 头部 1 行 + 正文最多 3 行 + 收口提示 1 行。
+  assert.equal(rows.length, 5);
+  assert.match(rows.at(-1), /另有 \d+ 字符未显示/);
+});
+
+test("draft cell keeps multi-line commands on their own lines, uncut", () => {
+  const command = ["cat <<EOF > out.txt", "line1", "line2", "line3", "EOF"].join("\n");
+  const rows = formatToolCallDraftCell(
+    { name: "bash", argumentsText: JSON.stringify({ command }) },
+    72,
+  );
+  // 默认预算内整条展开：5 行正文各自成行，没有折成一坨、也没有省略号。
+  assert.deepEqual(
+    rows.slice(1).map((row) => row.trim().replace(/^│ /, "")),
+    ["cat <<EOF > out.txt", "line1", "line2", "line3", "EOF"],
+  );
+  assert.equal(
+    rows.some((row) => row.includes("…")),
+    false,
+  );
+});
+
+test("draft cell keeps script indentation", () => {
+  const command = ["for f in *.ts; do", '  if [ -f "$f" ]; then', '    echo "$f";', "  fi", "done"];
+  const rows = formatToolCallDraftCell(
+    { name: "bash", argumentsText: JSON.stringify({ command: command.join("\n") }) },
+    72,
+  );
+  assert.deepEqual(
+    rows.slice(1).map((row) => row.replace(/^\s*│\s?/, "")),
+    command,
+  );
+});
+
+test("draft cell keeps newlines from a half-streamed JSON slice", () => {
+  // 参数还在下发：`\n` 是 JSON 转义，也要还原成换行，否则多行脚本看起来像一行。
+  const partial = '{"command": "for f in a b c; do\\n  echo $f;\\ndone';
+  const rows = formatToolCallDraftCell({ name: "bash", argumentsText: partial }, 72);
+  assert.deepEqual(
+    // 行首缩进按原样保留，这里只比对各行的文字内容。
+    rows.slice(1).map((row) => row.replace(/^\s*│\s*/, "").trim()),
+    ["for f in a b c; do", "echo $f;", "done"],
+  );
+});
+
+test("draft cell shows a dozen-line command in full by default", () => {
+  const command = Array.from({ length: 12 }, (_, index) => `echo line${index}`).join("\n");
+  const rows = formatToolCallDraftCell(
+    { name: "bash", argumentsText: JSON.stringify({ command }) },
+    72,
+  );
+  // 默认 20 行预算：12 行命令完整可见，不出现收口提示。
+  assert.equal(rows.length, 13);
+  assert.equal(
+    rows.some((row) => row.includes("未显示")),
+    false,
+  );
 });

@@ -532,10 +532,15 @@ Error [12:5] Type 'string' is not assignable to type 'number'
 改为把生成中的调用渲染成一个实时块，占 `ui.setLiveTail` 这个槽位——正是执行阶段
 `ToolRunView` 用的同一个位置，于是「拼装参数 → 执行」在原地连续发生：
 
-- `formatToolCallDraftCell(draft, width, maxLines = 4)`：复用 `formatToolCell`
-  的 `●` 运行态样式，头部只报进度（`● bash  56 字`），块体是参数原文折行
-  （`wrapArgumentLines`，超出行数用 `…` 收尾）；块体经 `draftBodyText` 去掉 JSON 外壳
-  （`{"command": "git sta` → `git sta`），认不出结构时退回原始分片。
+- `formatToolCallDraftCell(draft, width, maxLines = DRAFT_MAX_LINES)`：复用 `formatToolCell`
+  的 `●` 运行态样式，头部只报进度（`● bash  56 字`），块体是参数原文；块体经
+  `draftBodyText` 去掉 JSON 外壳（`{"command": "git sta` → `git sta`），认不出结构时
+  退回原始分片。
+- 不再截在 4 行：整条指令默认完整展开（预算 20 行）。多行脚本保留自身换行
+  （`wrapArgumentLines` 只压缩行内空白），单行长命令按显示宽度折行；只有超过预算才收口，
+  末行标出 `… 另有 N 字符未显示`——避免「看起来完整其实被截了」。
+  流式分片里的 `\n` 是 JSON 转义，也要先还原成换行（`unescapeDraftText`），
+  否则多行脚本在下发过程中会被折成一行。
 - turn-runner：每个分片 `ui.setLiveTail(...)`；活动行只留转圈、耗时与 `Esc 中止`，
   不再重复参数（`activityIndicator.transition("tool", "生成工具调用")`）。
 - 让位与清理：`stopActiveTurnVisuals` 里 `clearToolCallDraft()` 清空实时块，

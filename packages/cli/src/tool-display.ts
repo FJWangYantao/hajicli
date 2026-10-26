@@ -17,7 +17,7 @@ import {
   type ToolResultSummary,
 } from "./cli-runtime.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
-import { fitText, terminalWidth } from "./terminal-text.js";
+import { terminalWidth } from "./terminal-text.js";
 
 /** 展示状态：运行中 / 成功 / 失败 / 被拒（权限或策略拦截）。 */
 export type ToolDisplayStatus = "running" | "ok" | "error" | "denied";
@@ -197,6 +197,16 @@ function takeByWidth(text: string, width: number): [string, string] {
   return [text.slice(0, take), text.slice(take)];
 }
 
+/** 分片里的反斜杠转义先还原成真实字符，多行命令的结构才看得出来。 */
+function unescapeDraftText(raw: string): string {
+  return raw
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "  ")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
+}
+
 /**
  * 生成中的参数正文：去掉 JSON 外壳，只留「正在写进去的值」。
  * `{"command": "git sta` → `git sta`，`{"path": "packages/cli` → `packages/cli`；
@@ -213,28 +223,60 @@ function draftBodyText(draft: ToolCallDraft): string {
       if (values.length > 0) return values.join(" ");
     }
   } catch {
-    const salvaged = Object.values(salvageDraftArgs(raw)).map((value) => String(value));
-    if (salvaged.length > 0) return salvaged.join(" ");
+    // 半截 JSON 解析不了：直接去掉可识别的键外壳，保留值的原始换行，
+    // 于是 `{"command": "for f in ...;\ndo echo $f; done` 边生成就能看出分行结构。
+    const stripped = unescapeDraftText(raw)
+      .replace(/^\s*\{\s*"[^"]+"\s*:\s*"/, "")
+      .replace(/"\s*\}?\s*$/, "");
+    if (stripped.trim()) return stripped;
   }
   return raw;
 }
 
-/** 参数正文折成若干行（压缩连续空白），超出部分用 `…` 收尾。 */
-function wrapArgumentLines(text: string, width: number, maxLines: number): string[] {
-  const body = sanitizeTerminalText(text).replace(/\s+/g, " ").trim();
-  if (!body || maxLines <= 0) return [];
+/**
+ * 参数正文折成若干行。整条指令默认完整展开——`bash` 的命令折下来常常就是四五到十几行，
+ * 过早截断会正好砍掉最要紧的尾部参数；只有超过 `maxLines` 的超长指令才收口，
+ * 并报出还差多少字符，避免「看起来完整其实被截了」。
+ */
+function wrapArgumentLines(
+  text: string,
+  width: number,
+  maxLines: number,
+): { lines: string[]; hiddenChars: number } {
+  // 保留换行与行首缩进（多行脚本的结构就是可读性），只压缩行内连续的空白。
+  const body = sanitizeTerminalText(text)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!body || maxLines <= 0) return { lines: [], hiddenChars: body.length };
+  const logical = body.split("\n");
   const lines: string[] = [];
-  let rest = body;
-  while (rest && lines.length < maxLines) {
-    const [head, tail] = takeByWidth(rest, width);
-    lines.push(head);
-    rest = tail;
+  for (let index = 0; index < logical.length; index += 1) {
+    // 去掉行尾空白、压缩行内空白，但保留行首缩进：脚本缩进本身是可读性的一部分。
+    const indent = /^[^\S\n]*/.exec(logical[index])?.[0] ?? "";
+    let rest = `${indent}${logical[index].slice(indent.length).replace(/[^\S\n]+/g, " ")}`.replace(
+      /\s+$/,
+      "",
+    );
+    if (!rest.trim()) {
+      if (lines.length < maxLines) lines.push("");
+      continue;
+    }
+    while (rest) {
+      if (lines.length >= maxLines) {
+        // 已排下的不算：剩下的当前行 + 之后各行的字符数就是被截掉的部分。
+        const tailChars = logical.slice(index + 1).reduce((sum, line) => sum + line.length + 1, 0);
+        return { lines, hiddenChars: rest.length + tailChars };
+      }
+      const [head, tail] = takeByWidth(rest, width);
+      lines.push(head);
+      rest = tail;
+    }
   }
-  if (rest && lines.length > 0) {
-    lines[lines.length - 1] = fitText(`${lines[lines.length - 1]} …`, width);
-  }
-  return lines;
+  return { lines, hiddenChars: 0 };
 }
+
+/** 生成中工具块的行数预算：常见命令要完整可见，只有超长指令才收口。 */
+const DRAFT_MAX_LINES = 20;
 
 /**
  * 参数还在生成中的工具块：`● bash  git status · 128 字` + 参数原文若干行。
@@ -243,15 +285,26 @@ function wrapArgumentLines(text: string, width: number, maxLines: number): strin
  * ToolRunView 的实时块在原地接管同一个位置，于是「拼装指令 → 执行」是连续的，
  * 而不是等参数全部到齐才一次性出现整块。
  */
-export function formatToolCallDraftCell(draft: ToolCallDraft, width = 100, maxLines = 4): string[] {
+export function formatToolCallDraftCell(
+  draft: ToolCallDraft,
+  width = 100,
+  maxLines = DRAFT_MAX_LINES,
+): string[] {
   const toolName = draft.name?.trim() || "工具调用";
   const chars = draft.argumentsText.length;
+  const { lines, hiddenChars } = wrapArgumentLines(
+    draftBodyText(draft),
+    Math.max(12, width - 10),
+    maxLines,
+  );
+  // 只有真的放不下才提示还剩多少字：行数预算之内命令是完整可见的，不做任何省略。
+  if (hiddenChars > 0) lines.push(`… 另有 ${hiddenChars} 字符未显示`);
   return formatToolCell({
     status: "running",
     toolName,
     // 标题只报进度（`12 字`），具体指令由下面几行原文体现——否则两处重复同一段文字。
     summary: chars > 0 ? `${chars} 字` : "",
     width,
-    outputTail: wrapArgumentLines(draftBodyText(draft), Math.max(12, width - 10), maxLines),
+    outputTail: lines,
   });
 }
