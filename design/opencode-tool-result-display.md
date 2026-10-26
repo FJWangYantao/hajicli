@@ -494,7 +494,7 @@ Error [12:5] Type 'string' is not assignable to type 'number'
 
 | 位置 | 之前 | 现在 |
 | --- | --- | --- |
-| 流式过程中 | 对话区底部 3 行滚动预览（`formatReasoningPreview`），回复一开始就清掉 | 整段推理（`formatReasoningBlock`：灰色 + `┊` 竖线、按宽度折行）实时写进对话区并保留；回复写在它下面 |
+| 流式过程中 | 对话区底部 3 行滚动预览（`formatReasoningPreview`），回复一开始就清掉 | 整段推理（`formatReasoningBlock`：`·` 起头的灰色缩进块、按宽度折行）实时写进对话区并保留；回复写在它下面 |
 | 回合结束后 | 只剩 `思考 Ns · tokens` | 推理正文留在对话区，`思考 Ns · tokens` 作为收尾行 |
 | 过程折叠段 | 摘要行固定带「思考 N 次」 | 推理已可见，不再重复计数；`/think off` 时才靠计数交代 |
 | `/resume` 回放 | 只显示 `深度思考 (N 字)` | 直接回放整段推理正文（在过程段之外，不受折叠影响） |

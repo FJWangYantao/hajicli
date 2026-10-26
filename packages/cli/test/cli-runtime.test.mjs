@@ -426,12 +426,14 @@ test("reasoning block keeps the whole thinking text and stays inside the width",
   const reasoning = `先确认需求。\n\n再读代码：${"读取配置并确认默认值。".repeat(12)}`;
   const block = formatReasoningBlock(reasoning, 40);
   const rows = block.split("\n").filter(Boolean);
-  // 整段推理都在（不是最后几行），每行带 ┊ 竖线且不超宽。
-  const content = rows.map((row) => row.replace(/^ {2}┊ ?/, "")).join("");
+  // 整段推理都在（不是最后几行），首行 `·` 起头、续行缩进，且都不超宽。
+  const strip = (row) => row.replace(/^ {4}· |^ {6}/, "");
+  const content = rows.map(strip).join("");
   assert.ok(content.startsWith("先确认需求。"), content);
   assert.ok(content.endsWith("读取配置并确认默认值。"), content);
+  assert.match(rows[0], /^ {4}· /);
   for (const row of rows) {
-    assert.match(row, /^ {2}┊ /, row);
+    assert.match(row, /^( {4}· | {6})/, row);
     assert.ok(terminalWidth(row) <= 40, row);
   }
   assert.doesNotMatch(block, /\x1b/, "no stray escape codes in no-color mode");
@@ -449,7 +451,11 @@ test("reasoning preview shows the last wrapped rows within the width", () => {
   const rows = preview.split("\n").filter(Boolean);
   assert.equal(rows.length, 3);
   for (const row of rows) assert.ok(terminalWidth(row) <= 40, row);
-  assert.match(rows.map((row) => row.replace(/^ {2}┊ /, "")).join(""), /最后一步：检查输出。$/);
+  assert.match(rows[0], /^ {4}· /);
+  assert.match(
+    rows.map((row) => row.replace(/^ {4}· |^ {6}/, "")).join(""),
+    /最后一步：检查输出。$/,
+  );
   assert.doesNotMatch(preview, /\x1b/, "no stray escape codes in no-color mode");
   assert.equal(formatReasoningPreview("  \n ", 40), "");
 });

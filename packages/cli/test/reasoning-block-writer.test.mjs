@@ -36,7 +36,7 @@ test("推理块改写同一锚点，收尾后正文可以接在下面", () => {
   const long = "先看目录，再确认默认值。".repeat(4);
   assert.equal(writer.append(long), true);
   assert.equal(target.state.updates.at(-1).offset, anchor);
-  assert.match(target.state.chat, /┊ 先看目录/);
+  assert.match(target.state.chat, /· 先看目录/);
 
   // 继续增长仍然改写同一锚点，不会把上一次的内容累加。
   writer.append(`${long}${"再看实现。".repeat(4)}`);

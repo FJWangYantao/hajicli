@@ -103,7 +103,7 @@ test("思维链写在过程段之前，工具折叠成一行后推理仍然可�
     const rows = render(ui);
     const text = rows.join("\n");
     // 推理没被折叠吃掉：正文行仍在屏幕上。
-    assert.match(text, /┊ 先看 token 过期判断/);
+    assert.match(text, /· 先看 token 过期判断/);
     // 工具块收成一行摘要，具体调用行不再出现。
     assert.match(text, /读取 1 个文件，运行 1 条命令/);
     assert.doesNotMatch(text, /read src\/auth\/token\.ts/);
@@ -127,6 +127,6 @@ test("思维链写在新一轮过程段之前不会被后续封口吞掉", () =>
 
     const rows = render(ui).join("\n");
     assert.match(rows, /读取 1 个文件，运行 1 条命令/);
-    assert.match(rows, /┊ 读完了，开始改代码。/);
+    assert.match(rows, /· 读完了，开始改代码。/);
   });
 });

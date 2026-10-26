@@ -903,29 +903,45 @@ export function buildPermissionPreview(
 }
 
 /**
+ * 思维链的排版常量：正文按工具格的标尺缩进。
+ * 工具格正文在第 7 列（`  ` + `  ` + `│ `），这里用「4 空格 + `· `」让首字符落在同一列，
+ * 续行用 6 空格对齐，于是推理段和工具格共用一条看不见的左缘，不再各自一条竖线。
+ */
+const REASONING_MARKER = "·";
+const REASONING_INDENT = "    ";
+const REASONING_CONTINUATION = "      ";
+
+/**
  * 思考过程预览：取推理文本末尾按宽度折行后的最后几行，灰色显示在对话区底部。
- * 返回实时区域文本（以换行结尾）；没有可显示内容时返回空串。
+ * 首行带 `·` 表示这是思维链的开头，续行对齐正文；没有可显示内容时返回空串。
  */
 export function formatReasoningPreview(reasoning: string, width: number, maxRows = 3): string {
   const tail = sanitizeTerminalText(reasoning.slice(-800)).replace(/\s+/g, " ").trim();
   if (!tail) return "";
   // 输入是纯文本，去掉 wrapAnsi 在每行末尾补的复位序列，无色模式下也不残留转义。
-  const rows = wrapAnsi(tail, Math.max(8, width - 6))
+  const rows = wrapAnsi(tail, Math.max(8, width - REASONING_CONTINUATION.length))
     .slice(-maxRows)
     .map((row) => row.replace(/\x1b\[0m$/, ""));
-  return `${rows.map((row) => `  ${colors.gray(`┊ ${row}`)}`).join("\n")}\n`;
+  return `${rows
+    .map((row, idx) =>
+      idx === 0
+        ? `${REASONING_INDENT}${colors.faint(REASONING_MARKER)} ${colors.gray(row)}`
+        : `${REASONING_CONTINUATION}${colors.gray(row)}`,
+    )
+    .join("\n")}\n`;
 }
 
 /**
  * 思维链正文块：把整段推理按宽度折行后常驻在对话区（默认不折叠）。
- * 灰色 + `┊ ` 竖线标记，与折叠模式的底部预览保持同一视觉语言；
+ * 首行 `·` + 缩进、正文灰色，与折叠模式的底部预览保持同一视觉语言；
  * 段落之间的空行保留一个，末尾统一补换行，后续正文从新行开始。
  */
 export function formatReasoningBlock(reasoning: string, width: number): string {
   const text = sanitizeTerminalText(reasoning).replace(/\r\n?/g, "\n").trim();
   if (!text) return "";
-  const contentWidth = Math.max(8, width - 6);
+  const contentWidth = Math.max(8, width - REASONING_CONTINUATION.length);
   const rows: string[] = [];
+  let firstRow = true;
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trimEnd();
     if (!line) {
@@ -934,7 +950,10 @@ export function formatReasoningBlock(reasoning: string, width: number): string {
       continue;
     }
     for (const row of wrapAnsi(line, contentWidth)) {
-      rows.push(`  ${colors.gray(`┊ ${row.replace(/\x1b\[0m$/, "")}`)}`);
+      const body = colors.gray(row.replace(/\x1b\[0m$/, ""));
+      const marker = firstRow ? `${colors.faint(REASONING_MARKER)} ` : "";
+      rows.push(`${firstRow ? REASONING_INDENT : REASONING_CONTINUATION}${marker}${body}`);
+      firstRow = false;
     }
   }
   while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
