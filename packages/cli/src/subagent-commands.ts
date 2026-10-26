@@ -452,7 +452,7 @@ export async function handleAgentsCommand(
           : colors.failLine(`Agent ${selection.value} 当前不可中止。`),
       );
     } else if (selected) {
-      ui.writeChat(JSON.stringify(selected, null, 2));
+      ui.writeChat(`${JSON.stringify(selected, null, 2)}\n`);
     }
   } catch (error) {
     if (!(error instanceof TerminalInputCancelledError)) throw error;

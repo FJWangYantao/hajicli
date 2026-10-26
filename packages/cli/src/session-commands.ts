@@ -185,16 +185,22 @@ async function loadAndRenderSession(
         appendHistoryLine(colors.gray(`深度思考 (${m.reasoning_content.length} 字)`));
       }
       if (hasToolCalls && !m.content) {
+        // 推理块 / 思考摘要与工具块之间留一个空行，对齐实时回合里工具块前的 writeBlankLine。
+        if (m.reasoning_content) appendHistoryLine();
         openGroup();
       }
       if (m.content) {
         sealGroup();
+        // 推理正文块与助手正文之间留一个空行，对齐实时回合。
+        if (m.reasoning_content && thinkingVisible) appendHistoryLine();
         const mdRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
         const rendered = mdRenderer.render(m.content, true);
         appendHistoryLine(rendered);
       }
       if (hasToolCalls && m.content) {
-        // 同一条消息里既有正文又有工具调用：正文先写（封口前一段），工具块开新段。
+        // 同一条消息里既有正文又有工具调用：正文先写（封口前一段），
+        // 与实时回合一致，正文和工具块之间留一个空行，再让工具块开新段。
+        appendHistoryLine();
         openGroup();
       }
       if (hasToolCalls && m.tool_calls) {

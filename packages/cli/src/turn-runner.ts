@@ -528,7 +528,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           isResponding = true;
           clearReasoningPreview();
           // 推理块先收尾，正文起点才能确定：正文必须写在推理块下面。
-          reasoningBlock.seal(reasoningContent);
+          // 推理与正文是两个块，中间留一个空行（与工具块前的间距一致）。
+          if (reasoningBlock.seal(reasoningContent)) ui.writeBlankLine();
           streamStartOffset = ui.getChatLength();
           ui.markStableChatPrefix(streamStartOffset);
           activityIndicator.transition("responding", "生成回复", "正在接收模型输出");

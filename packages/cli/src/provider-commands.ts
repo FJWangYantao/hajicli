@@ -525,5 +525,6 @@ export async function handleProviderCommand(
       "/provider add 引导添加；set/unset 默认全局，附加 --project 操作当前项目；/provider <name> 切换。",
     ),
   );
-  ui.writeChat(rows.join("\n"));
+  // 整块输出以换行收尾：下一次 writeLine 才会另起一行，而不是把新内容接到末行。
+  ui.writeChat(`${rows.join("\n")}\n`);
 }

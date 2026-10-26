@@ -2434,7 +2434,7 @@ async function main() {
       showPricingAgentDetails();
       return;
     }
-    immediateWriteChat(costTracker.formatCostReport().join("\n"));
+    immediateWriteChat(`${costTracker.formatCostReport().join("\n")}\n`);
     if (costTracker.getSummary().hasUnpriced) {
       immediateWriteLine(
         colors.gray(
@@ -2449,7 +2449,7 @@ async function main() {
   };
   // 侧栏各指标行（花费/请求/输入/输出/缓存）：点哪一行，就按哪一种口径把每一轮摊开。
   openTurnReportRef = (metric) => {
-    immediateWriteChat(costTracker.formatTurnReport(metric).join("\n"));
+    immediateWriteChat(`${costTracker.formatTurnReport(metric).join("\n")}\n`);
   };
 
   const printSessionHelp = (): void => {
@@ -2788,13 +2788,13 @@ async function main() {
     }
     const { model, startedAt, lines } = pricingAgentLog;
     ui.writeChat(
-      [
+      `${[
         colors.bold(`定价查询过程 · ${model}`),
         colors.gray(
           `  开始于 ${new Date(startedAt).toLocaleTimeString("zh-CN")} · ${lines.length} 条记录`,
         ),
         ...lines.map((line) => `  ${line}`),
-      ].join(String.fromCharCode(10)),
+      ].join(String.fromCharCode(10))}\n`,
     );
   };
   openPricingAgentDetailsRef = () => showPricingAgentDetails();
@@ -3513,7 +3513,7 @@ async function main() {
               ),
             );
             ui.writeChat(
-              colors.gray(
+              `${colors.gray(
                 JSON.stringify(
                   {
                     mcpServers: {
@@ -3526,7 +3526,7 @@ async function main() {
                   null,
                   2,
                 ),
-              ),
+              )}\n`,
             );
             ui.writeLine(
               colors.gray(
@@ -3553,7 +3553,7 @@ async function main() {
                 lines.push(colors.muted(`    ${status.error.replace(/\s+/g, " ").slice(0, 160)}`));
               for (const tool of status.tools) lines.push(colors.gray(`    ${tool}`));
             }
-            ui.writeChat(lines.join("\n"));
+            ui.writeChat(`${lines.join("\n")}\n`);
           }
           continue;
         }
@@ -3598,7 +3598,7 @@ async function main() {
             );
           } else {
             ui.writeChat(
-              [
+              `${[
                 colors.bold(`Skills (${skills.length})`),
                 ...skills.map((skill) => {
                   const state = loaded.get(skill.name);
@@ -3610,7 +3610,7 @@ async function main() {
                   const invocation = skill.userInvocable ? "" : " · model-only";
                   return `  ${colors.purple(skill.name.padEnd(22))} ${colors.gray(`[${skill.source}] ${status}${invocation}`)}\n    ${skill.description}`;
                 }),
-              ].join("\n"),
+              ].join("\n")}\n`,
             );
           }
           continue;
@@ -4057,14 +4057,14 @@ async function main() {
                 `  ${name.padEnd(24)} avg ${metric.averageMs.toFixed(1).padStart(7)}ms  p95 ${metric.p95Ms.toFixed(1).padStart(7)}ms  max ${metric.maxMs.toFixed(1).padStart(7)}ms  n=${metric.count}`,
             );
           ui.writeChat(
-            [
+            `${[
               colors.bold(`性能指标${reset ? "（已在读取后重置）" : ""}`),
               `  Render Engine           ${nativeRenderer.available ? "Rust native" : "TypeScript fallback"} (${nativeRenderer.mode})`,
               `  Event Loop              avg ${snapshot.eventLoop.meanMs.toFixed(1).padStart(7)}ms  p95 ${snapshot.eventLoop.p95Ms.toFixed(1).padStart(7)}ms  max ${snapshot.eventLoop.maxMs.toFixed(1).padStart(7)}ms`,
               ...(metricRows.length > 0 ? metricRows : [colors.gray("  暂无操作采样。")]),
               "",
               colors.gray("使用 /perf reset 清空历史采样。"),
-            ].join("\n"),
+            ].join("\n")}\n`,
           );
           continue;
         }

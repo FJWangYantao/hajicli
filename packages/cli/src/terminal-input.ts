@@ -1641,7 +1641,8 @@ export class TerminalUI {
     if (this.chatContent && !this.chatContent.endsWith("\n")) {
       this.writeLine();
     }
-    this.writeLine();
+    // 已经以空行结尾时不再追加，避免连续空行（例如上一条消息本就带尾部空行）。
+    if (!this.chatContent.endsWith("\n\n")) this.writeLine();
   }
 
   /**
@@ -3086,8 +3087,19 @@ export class TerminalUI {
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
     const chatPadding = layout.chatPadding;
     const chatWidth = Math.max(1, leftAreaWidth - chatPadding * 2);
+    // 实时区域（工具草稿 / 工具格 / 推理预览）是独立块，与正文之间留一个空行：
+    // 正文经 updateChatFrom 写入时不以换行结尾，只补一个换行会让它和工具块贴在一起。
+    // 正式工具格提交前已有 writeBlankLine，这里只在还缺空行时补，避免出现连续空行。
+    const liveTailGap =
+      !this.liveTail || !this.chatContent
+        ? ""
+        : this.chatContent.endsWith("\n\n")
+          ? ""
+          : this.chatContent.endsWith("\n")
+            ? "\n"
+            : "\n\n";
     const contentWithStatus = this.liveTail
-      ? `${this.chatContent}${this.chatContent && !this.chatContent.endsWith("\n") ? "\n" : ""}${this.liveTail}`
+      ? `${this.chatContent}${liveTailGap}${this.liveTail}`
       : this.chatContent;
     const contentChanged =
       contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;

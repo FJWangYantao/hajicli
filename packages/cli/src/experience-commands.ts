@@ -233,7 +233,7 @@ export async function handleMemoryCommand(
       );
     }
   }
-  ctx.writeChat(lines.join("\n"));
+  ctx.writeChat(`${lines.join("\n")}\n`);
 }
 
 /**
@@ -384,7 +384,7 @@ export async function handleInstinctCommand(
         lines.push(`    ${domain.padEnd(20)} ${count}`);
       }
     }
-    ctx.writeChat(lines.join("\n"));
+    ctx.writeChat(`${lines.join("\n")}\n`);
     return;
   }
 
@@ -410,7 +410,7 @@ export async function handleInstinctCommand(
       colors.gray(`  ...另有 ${instincts.length - 30} 条，使用 /instinct stats 查看统计。`),
     );
   }
-  ctx.writeChat(lines.join("\n"));
+  ctx.writeChat(`${lines.join("\n")}\n`);
 }
 
 /** 可蒸馏为 Skill 的最低门槛：规则已被反复验证，才值得固化成可复用工作流。 */
@@ -457,7 +457,7 @@ async function handleInstinctSkillCommand(
       lines.push(colors.gray(`    ${i.action.replace(/\s+/g, " ").slice(0, 90)}`));
     }
     lines.push(colors.gray("使用 /instinct skill <id> 生成用户级 Skill 草稿。"));
-    ctx.writeChat(lines.join("\n"));
+    ctx.writeChat(`${lines.join("\n")}\n`);
     return;
   }
 

@@ -514,6 +514,40 @@ test("the live tool tail renders below committed chat without entering the trans
   });
 });
 
+test("live tool tail leaves a blank line between assistant text and the tool block", () => {
+  // 正文经 updateChatFrom 写入时末尾没有换行；工具草稿/工具格出现时若只补一个换行，
+  // 会紧贴在正文下一行。实时区域必须和正文之间隔一个空行。
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.setSidebarEnabled(false);
+    ui.chatContent = "assistant text";
+    ui.setLiveTail("  ● bash  make\n");
+  });
+  const rows = frame.plainRows.map((row) => row.trim());
+  const textIndex = rows.findIndex((row) => row.includes("assistant text"));
+  const toolIndex = rows.findIndex((row) => row.includes("bash  make"));
+  assert.ok(textIndex >= 0 && toolIndex > textIndex, "assistant text and tool tail are on screen");
+  assert.equal(toolIndex - textIndex, 2, "exactly one blank line separates them");
+  assert.equal(rows[textIndex + 1], "", "the separating row is blank");
+});
+
+test("writeBlankLine does not stack a second blank line on content that already ends blank", () => {
+  withFakeStdout(80, 24, () => {
+    const ui = createTerminalUI();
+    try {
+      ui.writeChat("上一段\n\n");
+      ui.writeBlankLine();
+      assert.equal(ui.chatContent, "上一段\n\n");
+
+      // 不以换行结尾时补成恰好一个空行。
+      ui.writeChat("下一段");
+      ui.writeBlankLine();
+      assert.equal(ui.chatContent, "上一段\n\n下一段\n\n");
+    } finally {
+      cleanupTerminalUI(ui);
+    }
+  });
+});
+
 test("activity row sits at the chat tail; the status bar stays on the bottom line", () => {
   const activity = (ui, startedAt = Date.now()) => {
     ui.activityFrame = {
