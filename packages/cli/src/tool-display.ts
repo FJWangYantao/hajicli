@@ -278,6 +278,34 @@ function wrapArgumentLines(
 /** 生成中工具块的行数预算：常见命令要完整可见，只有超长指令才收口。 */
 const DRAFT_MAX_LINES = 20;
 
+/** 参数正文 → 展示行；超出预算时追加一行说明还剩多少字符。 */
+function buildArgLines(text: string, width: number, maxLines: number): string[] {
+  const { lines, hiddenChars } = wrapArgumentLines(text, Math.max(12, width - 10), maxLines);
+  // 只有真的放不下才提示还剩多少字：行数预算之内命令是完整可见的，不做任何省略。
+  if (hiddenChars > 0) lines.push(`… 另有 ${hiddenChars} 字符未显示`);
+  return lines;
+}
+
+/**
+ * 执行阶段工具格的参数展开行：只对「头行放不下」的调用返回内容——
+ * 多行脚本（摘要里被压成 `…(+N 行)`）或超宽单行命令（摘要会被宽度截断）。
+ * 短命令返回 undefined，正文里仍是干净的一行摘要，不制造重复。
+ */
+export function formatToolArgLines(
+  args: Record<string, unknown>,
+  title: string,
+  width = 100,
+  maxLines = DRAFT_MAX_LINES,
+): string[] | undefined {
+  const command = typeof args.command === "string" ? args.command : undefined;
+  if (!command) return undefined;
+  const collapsed = command.replace(/\s+/g, " ").trim();
+  if (!collapsed) return undefined;
+  const tooWide = terminalWidth(collapsed) > Math.max(12, width - 10);
+  if (!tooWide && collapsed === title.trim()) return undefined;
+  return buildArgLines(command, width, maxLines);
+}
+
 /**
  * 参数还在生成中的工具块：`● bash  git status · 128 字` + 参数原文若干行。
  *
@@ -292,13 +320,7 @@ export function formatToolCallDraftCell(
 ): string[] {
   const toolName = draft.name?.trim() || "工具调用";
   const chars = draft.argumentsText.length;
-  const { lines, hiddenChars } = wrapArgumentLines(
-    draftBodyText(draft),
-    Math.max(12, width - 10),
-    maxLines,
-  );
-  // 只有真的放不下才提示还剩多少字：行数预算之内命令是完整可见的，不做任何省略。
-  if (hiddenChars > 0) lines.push(`… 另有 ${hiddenChars} 字符未显示`);
+  const lines = buildArgLines(draftBodyText(draft), width, maxLines);
   return formatToolCell({
     status: "running",
     toolName,

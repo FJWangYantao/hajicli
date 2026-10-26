@@ -660,6 +660,8 @@ export interface ToolCellOptions {
   preview?: readonly string[];
   /** 运行中滚动显示的最后几行输出。 */
   outputTail?: readonly string[];
+  /** 调用参数本身的展开行（多行命令原样展开），显示在头行与结果之间。 */
+  argLines?: readonly string[];
   /** 预览最多几行；命令类结果按 shell 预算放宽，默认沿用通用预算。 */
   maxPreviewLines?: number;
 }
@@ -714,6 +716,12 @@ export function formatToolCell(options: ToolCellOptions): string[] {
   ].join("");
   const rows = [header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);
+  // 参数展开行紧跟在头行下面：多行命令在原位置按原样分行，而不是压成一行摘要。
+  for (const line of options.argLines || []) {
+    rows.push(
+      `${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.muted(fitText(line, bodyWidth))}`,
+    );
+  }
   if (options.status === "running") {
     for (const line of options.outputTail || []) {
       rows.push(

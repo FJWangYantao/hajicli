@@ -209,6 +209,8 @@ interface ToolRunEntry {
   toolName: string;
   summary: string;
   sourceLabel?: string;
+  /** 调用参数的展开行（多行命令原样分行）；只有头行放不下时才有。 */
+  argLines?: string[];
   status: ToolCellStatus | "pending";
   startedAt: number;
   durationMs?: number;
@@ -256,13 +258,20 @@ export class ToolRunView {
   }
 
   /** 按调用顺序登记一个工具；在 start() 之前不显示（例如仍在等待授权）。 */
-  register(id: string, toolName: string, summary: string, sourceLabel?: string): void {
+  register(
+    id: string,
+    toolName: string,
+    summary: string,
+    sourceLabel?: string,
+    argLines?: string[],
+  ): void {
     if (this.find(id)) return;
     this.entries.push({
       id,
       toolName,
       summary,
       sourceLabel,
+      argLines,
       status: "pending",
       startedAt: this.now(),
       outputTail: [],
@@ -385,6 +394,9 @@ export class ToolRunView {
         live && entry.verdict && this.now() < entry.verdict.until ? entry.verdict.text : undefined,
       resultText: entry.resultText,
       preview: entry.preview,
+      // 执行中不展开参数：实时区域同时在滚输出尾部，两段同样的 │ 行会打架；
+      // 完成后的提交格才把命令按原样分行写进正文。
+      argLines: running ? undefined : entry.argLines,
       // 命令类结果按 shell 预算放宽到 10 行：报错常常不止三行。
       maxPreviewLines: entry.toolName === "bash" ? SHELL_PREVIEW_LINES : undefined,
       outputTail,

@@ -63,7 +63,7 @@ import {
   raceWithAbort,
   runToolCallBatch,
 } from "./tool-batch.js";
-import { buildToolDisplay, formatToolCallDraftCell } from "./tool-display.js";
+import { buildToolDisplay, formatToolArgLines, formatToolCallDraftCell } from "./tool-display.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
 export interface TurnDeps {
@@ -696,11 +696,13 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
         for (const tc of batch.calls) {
           const registeredArgs = (validateToolCall(tc).arguments || {}) as Record<string, unknown>;
-          toolRunView.register(
-            tc.id,
-            tc.function.name,
-            buildToolDisplay({ toolName: tc.function.name, args: registeredArgs }).title,
-          );
+          const title = buildToolDisplay({
+            toolName: tc.function.name,
+            args: registeredArgs,
+          }).title;
+          // 多行 / 超宽命令按原样分行展开；展开时头行不再重复那份被截断的摘要。
+          const argLines = formatToolArgLines(registeredArgs, title, ui.getContentWidth());
+          toolRunView.register(tc.id, tc.function.name, argLines ? "" : title, undefined, argLines);
         }
         const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
           if (isTurnAborted) {

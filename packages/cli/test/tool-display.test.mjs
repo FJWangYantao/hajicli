@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildToolDisplay,
   formatGenericToolArgs,
+  formatToolArgLines,
   formatToolCallDraft,
   formatToolCallDraftCell,
   toolCellStatus,
@@ -96,6 +97,23 @@ test("tool call draft shows the growing argument prefix while arguments stream",
     formatToolCallDraft({ name: "bash", argumentsText: '{"command":"npm test"}' }),
     "npm test · 22 字",
   );
+});
+
+test("executed cell expands only the calls whose header cannot show them", () => {
+  const title = "for f in *.ts; do …(+2 行)";
+  const command = "for f in *.ts; do\n  echo $f\ndone";
+  assert.deepEqual(formatToolArgLines({ command }, title, 80), [
+    "for f in *.ts; do",
+    "  echo $f",
+    "done",
+  ]);
+  // 短命令摘要本身就是完整命令：不再展开，避免正文里出现两遍。
+  assert.equal(formatToolArgLines({ command: "npm test" }, "npm test", 80), undefined);
+  // 超宽单行命令的摘要会被宽度截断，因此也要展开。
+  const wide = `echo ${"x".repeat(120)}`;
+  assert.equal(formatToolArgLines({ command: wide }, `${wide.slice(0, 40)}…`, 60)?.length, 3);
+  // 没有 command 参数的工具保持一行摘要。
+  assert.equal(formatToolArgLines({ path: "src/a.ts" }, "src/a.ts", 80), undefined);
 });
 
 test("draft cell streams the instruction body instead of waiting for full args", () => {

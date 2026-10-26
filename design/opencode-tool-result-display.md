@@ -546,3 +546,9 @@ Error [12:5] Type 'string' is not assignable to type 'number'
 - 让位与清理：`stopActiveTurnVisuals` 里 `clearToolCallDraft()` 清空实时块，
   随后 ToolRunView 接管同一槽位；中止 / 校验失败时也不会留下半截草稿块。
 - 非交互（`--print`、管道）模式仍然不输出中间帧：`setLiveTail` 不落盘，正文不受影响。
+- 执行完成后提交进正文的工具格同样展开：`formatToolArgLines` 只对「头行放不下」的调用
+  返回内容——多行命令（摘要里被压成 `for f in …; do …(+2 行)`）或超宽单行命令
+  （摘要会被宽度截断）；短命令返回 `undefined`，正文仍是干净的一行，不制造重复。
+  展开时头行不再重复那份被截断的摘要（`summary` 传空），命令按原样分行写在头行下面，
+  结果说明与预览跟在命令之后。执行中（`running`）不展开，实时区域只留输出尾部，
+  避免与提交格的两段 `│` 行打架。

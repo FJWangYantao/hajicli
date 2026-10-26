@@ -272,6 +272,26 @@ test("tool results preview a few lines: bash tail, error context, first search h
   );
   assert.deepEqual(global.preview, ["test/a.test.mjs", "test/b.test.mjs", "test/c.test.mjs"]);
 
+  test("tool cell renders expanded argument lines under the header", () => {
+    const rows = formatToolCell({
+      status: "success",
+      toolName: "bash",
+      summary: "",
+      width: 40,
+      timing: "1.2s",
+      argLines: ["for f in *.ts; do", "  echo $f", "done"],
+      resultText: "退出码 0",
+    });
+    assert.deepEqual(rows.slice(1), [
+      "    │ for f in *.ts; do",
+      "    │   echo $f",
+      "    │ done",
+      "    └ 退出码 0",
+    ]);
+    // 头行不带摘要时不会多出空格，符号与工具名仍然对齐。
+    assert.match(rows[0], /^ {2}✓ bash +1\.2s$/);
+  });
+
   const rows = formatToolCell({
     status: "success",
     toolName: "bash",

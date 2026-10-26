@@ -183,6 +183,24 @@ test("tool run view hides calls until they start and streams an output tail", ()
   assert.match(renders.at(-1), /^ {2}✓ bash {2}make all +6\.0s\n {4}└ 5 行输出 · step 5\n$/);
 });
 
+test("tool run view expands multi-line arguments only in the committed block", () => {
+  const harness = createToolRunView();
+  const { view, renders } = harness;
+  view.register("c1", "bash", "", undefined, ["for f in *.ts; do", "  echo $f", "done"]);
+  view.start("c1");
+  assert.equal(
+    renders.at(-1).includes("for f in"),
+    false,
+    "executing keeps the live block to the output tail",
+  );
+
+  view.finish("c1", { status: "success", text: "退出码 0" }, 1_200);
+  assert.match(renders.at(-1), /│ for f in \*\.ts; do/);
+  const committed = view.commit();
+  assert.match(committed, /│ for f in \*\.ts; do\n {4}│ {3}echo \$f\n {4}│ done/);
+  assert.match(committed, /└ 退出码 0/);
+});
+
 test("tool run view shows the auto-judge state and a short-lived verdict in place", () => {
   const harness = createToolRunView();
   const { view, renders } = harness;
