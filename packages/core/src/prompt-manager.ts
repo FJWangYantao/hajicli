@@ -331,6 +331,28 @@ export class SkillsCatalogPromptPart implements SystemPromptPart {
   }
 }
 
+/**
+ * 告知模型「编辑后会自动跑类型检查」，避免它在每次改动后自己再跑一遍 tsc。
+ *
+ * 只在确实会执行自动验证时注入（探测到命令、且不是 haji 自身仓库）：
+ * 否则模型会误以为系统在替它验证，反而漏掉真正需要的检查。
+ */
+export class EditVerifyPromptPart implements SystemPromptPart {
+  public readonly id = "edit-verify";
+  public readonly priority = 55;
+
+  public getContent(context: PromptContext): string {
+    const command = context.editVerifyCommand?.trim();
+    if (!command) return "";
+    return [
+      "# 编辑后自动验证",
+      `- 每次 write/edit 成功后，系统会自动运行一次项目类型检查（\`${command}\`，有约 10 秒冷却，连续编辑时不会每次都跑）；只有发现问题时才会把诊断反馈给你。`,
+      "- 所以不要为了确认自己的改动而重复运行 tsc / typecheck / 构建：直接继续实现，等系统反馈。",
+      "- 例外：任务明确要求跑测试、系统反馈的诊断不足以定位问题，或你怀疑改动有类型之外的问题时，再自己执行对应命令。",
+    ].join("\n");
+  }
+}
+
 /** Plan 权限模式的只读调研与计划提交约束。 */
 export class PlanModePromptPart implements SystemPromptPart {
   public readonly id = "plan-mode";
@@ -366,6 +388,7 @@ export class SystemPromptManager {
     this.registerPart(new ToolsPromptPart());
     this.registerPart(new ReasoningEffortPromptPart());
     this.registerPart(new SkillsCatalogPromptPart());
+    this.registerPart(new EditVerifyPromptPart());
     this.registerPart(new PlanModePromptPart());
   }
 

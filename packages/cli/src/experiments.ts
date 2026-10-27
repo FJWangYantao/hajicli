@@ -26,6 +26,7 @@ export const EXPERIMENT_NAMES = [
   "read_outline",
   "read_symbol",
   "experience_recall",
+  "edit_verify_hint",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -96,6 +97,13 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     arms: ["system", "message"],
     control: "system",
     defaultValue: "message",
+  },
+  // 是否在提示词里告知「编辑后系统会自动跑类型检查」（避免模型每轮自己再跑 tsc）。
+  // 未验证前默认 baseline：模型可能不信任这条提示，也可能因此漏掉该做的验证。
+  edit_verify_hint: {
+    arms: ["baseline", "hint"],
+    control: "baseline",
+    defaultValue: "baseline",
   },
 };
 

@@ -35,18 +35,22 @@ run_one() {
 
   # arm=old 默认用「修复前的探测」（强制 npm run check）；设了 ALT_CLI 则改跑另一份构建，
   # 用于「同一份代码、只差验证提示」这类必须两个二进制对照的实验。
-  local verify_env="" runner="haji"
+  # baseline / hint 两臂共用同一份构建，只切提示词实验开关（A/B: edit_verify_hint）。
+  local verify_env="" runner="haji" arm_experiments=""
   case "$arm" in
     old)
       if [ -n "${ALT_CLI:-}" ]; then runner="node $ALT_CLI"; else verify_env="npm run check --silent"; fi
       ;;
     fixed) verify_env="" ;;
     off) verify_env="0" ;;
+    baseline) arm_experiments="edit_verify_hint=baseline" ;;
+    hint) arm_experiments="edit_verify_hint=hint" ;;
   esac
 
   local start end code
   start=$(date +%s)
-  ( cd "$wt" && HAJI_POST_EDIT_VERIFY="$verify_env" timeout 420 $runner -p "$(prompt_for "$task")" \
+  ( cd "$wt" && HAJI_EXPERIMENTS="$arm_experiments" HAJI_POST_EDIT_VERIFY="$verify_env" \
+      timeout 420 $runner -p "$(prompt_for "$task")" \
       --no-worktree --permission-mode bypass-permissions --output-format json \
       > "$WB/w${task}-${arm}-r${round}.json" 2> "$WB/w${task}-${arm}-r${round}.err" )
   code=$?
@@ -83,7 +87,7 @@ run_one() {
     tool_stats=$(node -e '
       const fs = require("node:fs");
       const dir = process.argv[1];
-      const counts = { edit: 0, write: 0, bashWrite: 0 };
+      const counts = { edit: 0, write: 0, bashWrite: 0, tsc: 0, test: 0 };
       for (const file of fs.readdirSync(dir)) {
         if (!file.endsWith(".events.jsonl")) continue;
         const lines = fs.readFileSync(`${dir}/${file}`, "utf8").split("\n").filter(Boolean);
@@ -96,13 +100,17 @@ run_one() {
           if (name === "write") counts.write += 1;
           if (name === "bash") {
             const command = String(event.data?.arguments?.command ?? "");
+            if (/\btsc\b/.test(command)) counts.tsc += 1;
+            if (/node --test|npm (run )?test|pnpm test/.test(command)) counts.test += 1;
             if (/\bsed\s+[^|]*-i\b|\bperl\s+-pi\b|\bpython3?\s+-c\b.*>\s|\btee\s+[^\s|>]|(^|\s|;|&&)[^#]*(>|>>)\s*\/?[\w.\/-]+\.(ts|mjs|json|md)\b/.test(command)) {
               counts.bashWrite += 1;
             }
           }
         }
       }
-      console.log(`edit=${counts.edit} write=${counts.write} bashWrite=${counts.bashWrite}`);
+      console.log(
+        `edit=${counts.edit} write=${counts.write} bashWrite=${counts.bashWrite} tsc=${counts.tsc} test=${counts.test}`,
+      );
     ' "$WB/traces-w${task}-${arm}-r${round}") || tool_stats="stats-fail"
     echo "  tools ${tool_stats}"
   fi
@@ -111,7 +119,8 @@ run_one() {
 
 for round in ${ROUNDS:-1}; do
   for task in ${TASKS:-1 2 3}; do
-    run_one "$task" old "$round"
-    run_one "$task" fixed "$round"
+    for arm in ${ARMS:-old fixed}; do
+      run_one "$task" "$arm" "$round"
+    done
   done
 done

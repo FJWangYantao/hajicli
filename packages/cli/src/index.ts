@@ -1136,6 +1136,19 @@ async function main() {
   // 最近一条用户消息：供经验召回等 prompt 分片按当前任务检索（在 messages 声明前初始化，避免闭包 TDZ）
   let lastUserMessageForRecall = "";
 
+  /**
+   * 提示词里告知「编辑后会自动跑类型检查」——只在真的会跑时给（探测到命令、且不是
+   * haji 自身仓库；自身仓库为避免覆盖运行中的 dist 会跳过）。A/B: edit_verify_hint。
+   */
+  const editVerifyHintCommand = (): string | undefined => {
+    if (!experiments.is("edit_verify_hint", "hint")) return undefined;
+    const explicitVerify = Boolean(
+      process.env.HAJI_POST_EDIT_VERIFY?.trim() && process.env.HAJI_POST_EDIT_VERIFY.trim() !== "0",
+    );
+    if (!explicitVerify && isSelfProject(process.cwd())) return undefined;
+    return detectProjectCheckCommand(process.cwd());
+  };
+
   // 动态生成系统初始提示词，指导 AI 环境认知
   const createSystemPrompt = () =>
     systemPromptManager.generatePrompt({
@@ -1151,6 +1164,7 @@ async function main() {
       toolBatching: experiments.is("tool_batching", "batch_first"),
       scopeDiscipline: experiments.is("scope_discipline", "converge"),
       readSymbol: experiments.is("read_symbol", "symbol"),
+      editVerifyCommand: editVerifyHintCommand(),
     });
   let systemPrompt = await createSystemPrompt();
   markStartupStage("system_prompt");

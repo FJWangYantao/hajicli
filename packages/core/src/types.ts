@@ -259,6 +259,11 @@ export interface PromptContext {
   scopeDiscipline?: boolean;
   /** read 是否支持按符号名取定义块（A/B: read_symbol）。 */
   readSymbol?: boolean;
+  /**
+   * 编辑后自动验证实际会执行的命令（A/B: edit_verify_hint）。有值时提示词告知模型
+   * 「编辑后系统会自动跑类型检查」，避免它每轮自己再跑一次 tsc。
+   */
+  editVerifyCommand?: string;
 }
 
 /**

@@ -97,6 +97,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   这类组合脚本（本仓库的 check = lint + 全套测试，每次编辑都只会跑满超时）。
   超时不回注上下文、只在界面提示一次；cwd 是**正在运行的 haji 自身仓库**时跳过
   （`tsc -b` 会覆盖运行中的 dist），显式设置环境变量可强制。
+  静态提示也没用：`edit_verify_hint`（system prompt 写「编辑后会自动 typecheck」）实测
+  模型照样自己跑 `tsc`（7→6 次/9 会话），因为 5/7 次 tsc 是**为跑测试刷新 `dist`**
+  （测试 `import .../plugins/dist/*.js`），本来就省不掉。默认 `baseline`，见
+  `design/ab/2026-10-28-edit-verify-hint.md`。
 
 ## 工作区与路径边界（2026-10 重构）
 
