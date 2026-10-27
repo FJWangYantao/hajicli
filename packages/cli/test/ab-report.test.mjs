@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { sessionMetrics } from "../../../scripts/ab-metrics.mjs";
 
 function writeSession(
   dir,
@@ -128,10 +129,14 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
             { role: "system", content: "sys" },
             { role: "user", content: "任务" },
           ],
+          // provider 归一化后只写 prompt_cache_hit_tokens；另外两个字段在 trace 里
+          // 通常存在但恒为 0，必须验证不会因为 `??` 命中 0 而丢掉命中数。
           usage: {
             prompt_tokens: 1000,
             completion_tokens: 100,
-            cache_read_input_tokens: 200,
+            prompt_cache_hit_tokens: 200,
+            cache_read_input_tokens: 0,
+            cached_tokens: 0,
           },
         },
         {
@@ -189,4 +194,63 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("sessionMetrics counts cache hits from prompt_cache_hit_tokens", () => {
+  const pricing = {
+    inputPerMTokens: 1,
+    outputPerMTokens: 2,
+    cachedInputPerMTokens: 0.5,
+  };
+  const resolvePricing = () => ({ pricing, assumed: false });
+  const llmCall = (usage) => ({
+    type: "llm_call",
+    timestamp: "2026-10-27T00:00:00.000Z",
+    data: { timestamp: "2026-10-27T00:00:00.000Z", model: "test-model", usage },
+  });
+
+  // 归一化字段优先：另外两个旧字段存在且为 0，不能被 `??` 抢先命中。
+  const normalized = sessionMetrics(
+    [
+      llmCall({
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        prompt_cache_hit_tokens: 800,
+        cache_read_input_tokens: 0,
+        cached_tokens: 0,
+      }),
+    ],
+    { resolvePricing },
+  );
+  assert.equal(normalized.cachedPromptTokens, 800);
+  // 未命中 200 × 1 + 命中 800 × 0.5 + 输出 100 × 2 = 800（单位：百万分之一元）
+  assert.ok(Math.abs(normalized.costCny - 0.0008) < 1e-12);
+
+  // 老 trace / 其他 provider 只给旧字段时仍要能统计（向后兼容）。
+  const legacy = sessionMetrics(
+    [
+      llmCall({
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        cache_read_input_tokens: 800,
+      }),
+    ],
+    { resolvePricing },
+  );
+  assert.equal(legacy.cachedPromptTokens, 800);
+  assert.ok(Math.abs(legacy.costCny - 0.0008) < 1e-12);
+
+  // 命中数不超过 prompt_tokens（防御异常上报）。
+  const clamped = sessionMetrics(
+    [
+      llmCall({
+        prompt_tokens: 100,
+        completion_tokens: 0,
+        prompt_cache_hit_tokens: 500,
+      }),
+    ],
+    { resolvePricing },
+  );
+  assert.equal(clamped.cachedPromptTokens, 500);
+  assert.ok(Math.abs(clamped.costCny - 0.00005) < 1e-12);
 });

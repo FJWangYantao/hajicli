@@ -144,20 +144,29 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   子代理耗时/token/工具数，「调用效率」表（`turns` / `calls` / `calls-per-turn` / `dupReads` /
   `batchParam`），以及「请求与成本」表（`requests` / `req÷tool` / `ptok` / `ctok` / `cache%` /
   `cost` / `readTrunc`）。指标口径只在 `scripts/ab-metrics.mjs` 一处实现，两个脚本共用。
-- **调用数 ≠ 请求数**：一次请求可并行发多个工具调用，成本跟的是「请求数 × 上下文 token」。
-  `tool_batching` 实测调用 −24%、请求只有 −12%、费用 −12%；结论一律以请求/token/费用为准，
-  不要拿调用数当成本代理。
+- **调用数 ≠ 请求数 ≠ 未命中 token**：一次请求可并行发多个工具调用，成本跟的是
+  「请求数 × 每次请求的上下文」；而上下文里约 90% 是缓存命中 token（单价约为输入的 1/50），
+  所以真正敏感的是**未命中 token**。`tool_batching` 实测调用 −24%、请求 −12%、
+  prompt token −11%、费用 −7%（未命中 token 只 −2%）；结论以请求/未命中 token/费用为准，
+  不要拿调用数或总 token 当成本代理。
+- **缓存字段口径**：trace 的 `usage` 是 provider 原样透传，缓存命中在
+  `prompt_cache_hit_tokens`；`cache_read_input_tokens` / `cached_tokens` 也存在但**恒为 0**。
+  `ab-metrics.mjs` 必须优先读前者（`??` 不会跳过 0，顺序错了就永远统计不到）。早期报告
+  读错字段，把上下文按全价计、费用高估约 5 倍，已重算。缓存单价按官方价：
+  `deepseek-flash` 命中 ¥0.04 / 未命中 ¥2 / 输出 ¥8（每百万 token，高峰价，空闲时段减半）；
+  注意内置注册表 `model-registry.ts` 的 deepseek 单价仍是旧值（0.5 / 2 / 0.1），与官方不一致。
 - 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
 - **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）
   一次调用覆盖多个目标；`baseline` 组不暴露也不接受 `queries`/`patterns`（构造函数
   `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、模型请求 −12%、
-  费用 −12%、墙钟 −11%，并行率反而下降——**批量参数的收益远大于并行批**。
+  prompt token −11%、费用 −7%、墙钟 −11%，并行率反而下降——**批量参数的收益远大于并行批**。
 - **范围收敛（scope_discipline，实测失败，默认 baseline）**：曾要求「用户原词优先、连续两次
   未命中禁止换同义词、先 global.patterns 定位文件再一次读完目标区块」，并由 `read-tool` 用
   `read-ranges.ts` 记账，同文件重复读重叠 ≥50%、跨度 ≥40 行时提示改走 `nextStartLine`。
-  11 任务配对实测：调用 **+38%**（106→146）、请求 +19%、prompt token **+42%**、费用 +38%、
-  grep +44%、global +91%、墙钟 +14%，按请求数 2 胜 / 7 负 / 2 平；
+  11 任务配对实测：调用 **+38%**（106→146）、请求 +19%、prompt token **+42%**、
+  未命中 token +20.5%、费用 +19%、grep +44%、global +91%、墙钟 +14%，
+  按请求数 2 胜 / 7 负 / 2 平；
   叠读提示实际只触发 1 次（叠读本身很罕见）。结论：**这类"先定位再搜"的提示会把模型推向更多
   枚举**，默认回退 `baseline`，代码保留供后续更窄的变体（例如只在无命中时介入）实验。
   注意：trace 只存请求参数、不存实际返回区间，按参数估算的叠读率会虚高，别据此下结论。
@@ -166,7 +175,8 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   66 次配对实测：截断 −25%，但墙钟 −3.5%（中位 +19%），任务 7 三次全部丢关键结论。
   结论：**截断不是墙钟主因**，更大的上下文抵消了翻页收益；默认回退 `shared`。
   更窄的 `batch_only`（批量读每文件 8k、总量 32k；单文件维持 8k/200 行）已实测：
-  墙钟中性（−2.8%，6 胜 5 负），但请求 −9.8%、token −8.1%、费用 −8.9%，
+  墙钟中性（−2.8%，6 胜 5 负），请求 −9.8%、prompt token −8.2%，但**费用 ≈0（+0.3%）**：
+  省下的是缓存命中 token，未命中 token 反而 +6.4%；
   任务 7 的结论覆盖从 1–2/3 提升到 3/3；唯一回归是任务 3（多文件中等体量，+14.7s）。
   结论：**修"平分"有效，放大单文件无效**；默认值已切到 `batch_only`（`shared` 为对照组）。
   **额度必须把头部算进去**：单块 = 正文 + `[文件读取结果 - 路径]` 等头部行，而合并上限是

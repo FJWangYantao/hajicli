@@ -17,10 +17,17 @@ function isUtilityCall(data) {
   return !messages.some((message) => message?.role === "system");
 }
 
-/** trace 里缓存命中字段在不同 provider 下叫法不同。 */
+/**
+ * trace 里缓存命中字段在不同 provider 下叫法不同。
+ *
+ * `prompt_cache_hit_tokens` 必须排在最前：provider 归一化（openai-stream.ts 的
+ * `cachedUsageFields`）只写这个字段，而 `cache_read_input_tokens` / `cached_tokens`
+ * 在 trace 里通常**存在但恒为 0**——`??` 不会跳过 0，顺序错了就永远统计不到命中。
+ */
 function cachedTokens(usage) {
   if (!usage) return 0;
-  const value = usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0;
+  const value =
+    usage.prompt_cache_hit_tokens ?? usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0;
   return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
