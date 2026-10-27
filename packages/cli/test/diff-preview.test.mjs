@@ -12,10 +12,12 @@ import {
 import {
   buildEditDiff,
   buildWriteDiff,
+  diffWidthFor,
   formatDiffHeader,
   normalizeDiffLines,
+  preferredDiffWidth,
 } from "../dist/diff-preview.js";
-import { terminalWidth } from "../dist/terminal-text.js";
+import { fitText, terminalWidth } from "../dist/terminal-text.js";
 import { setActiveColorLevel } from "../dist/theme.js";
 
 setActiveColorLevel("mono");
@@ -40,9 +42,8 @@ test("buildEditDiff locates oldText with line numbers and context", () => {
   assert.equal(body.startLine, 2);
   assert.equal(body.stats.added, 1);
   assert.equal(body.stats.removed, 1);
-  assert.ok(
-    lines.some((line) => /^ {1}1 {1} {3}const a = 1;$/.test(line) || line.includes("const a = 1;")),
-  );
+  // 常规宽度走单列 unified：上下文行 `行号 │ 内容`，删/增各占一行。
+  assert.ok(lines.some((line) => /^ {3}1 │ {3}const a = 1;/.test(line)));
   assert.ok(lines.some((line) => line.includes("−") && line.includes("const b = load(path);")));
   assert.ok(lines.some((line) => line.includes("+") && line.includes("await load(path);")));
   // 上下文行出现（替换点前后各 2 行）。
@@ -101,6 +102,29 @@ test("buildEditDiff marks truncated remainder", () => {
   const body = buildEditDiff(original, oldText, "replaced", 80, 6);
   assert.ok(body.hiddenLines > 0);
   assert.ok(body.lines.some((line) => plain(line).includes("还有")));
+});
+
+test("preferredDiffWidth mirrors the TUI chat width, and ANSI rows truncate cleanly", () => {
+  // 宽终端（120 列）：wide 布局 chatPadding=3，safeWidth=119 → 对话区 113 → 内容宽 105。
+  // 偏宽哪怕 1 列都会让补白到满宽的分栏行整行被截断（右栏消失）。
+  Object.defineProperty(process.stdout, "columns", { value: 120, configurable: true });
+  Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+  try {
+    assert.equal(preferredDiffWidth(), 105);
+    // 舒适档（80 列）：chatPadding=2 → safeWidth=79 → 75 − 8 = 67。
+    Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
+    assert.equal(preferredDiffWidth(), 67);
+  } finally {
+    Object.defineProperty(process.stdout, "columns", { value: undefined, configurable: true });
+    Object.defineProperty(process.stdout, "rows", { value: undefined, configurable: true });
+  }
+  // fitText 截断带 ANSI 的行时不能把转义序列当可见字符吃宽度（会提前截进转义中间、右栏被裁）。
+  const colored = `\x1b[38;2;120;184;146m${"const value = ".repeat(12)}\x1b[0m`;
+  const fitted = fitText(colored, 40);
+  assert.ok(terminalWidth(fitted) <= 40, `截断后宽度应 ≤40: ${terminalWidth(fitted)}`);
+  assert.ok(fitted.endsWith("…"), "截断应以省略号收尾");
+  // 截断点之后的可见内容确实被丢掉，且没有裸露的半个转义序列。
+  assert.ok(!/\[[0-9;]*$/.test(fitted), "不应残留不完整的转义序列");
 });
 
 test("formatDiffHeader renders path and stats", () => {
@@ -180,7 +204,7 @@ test("completed edit block reuses the pre-edit content (same patch as the permis
     assert.equal(summary.text, "");
     assert.deepEqual(
       summary.preview,
-      buildEditDiff(SAMPLE, oldText, newText, 240, DIFF_PREVIEW_LINES).lines,
+      buildEditDiff(SAMPLE, oldText, newText, preferredDiffWidth(), DIFF_PREVIEW_LINES).lines,
     );
     // 单 hunk 不画 `@@` 头，位置由行号说明。
     assert.ok(!summary.preview.some((line) => plain(line).includes("@@")));
@@ -213,8 +237,101 @@ test("truncated previews keep the changed rows instead of the leading context", 
   const body = buildEditDiff(original, "line 6", "line six", 80, 3);
   const lines = body.lines.map(plain);
   assert.ok(body.hiddenLines > 0);
-  // 3 行窗口：单 hunk 不画头，直接是删除 + 新增 + 下一行上下文。
+  // 3 行窗口：单 hunk 不画头；单列视图删、增各占一行，后跟下一行上下文。
   assert.ok(lines[0].includes("− line 6"));
   assert.ok(lines[1].includes("+ line six"));
   assert.ok(lines.some((line) => line.includes("还有")));
+});
+
+test("wide terminals pair del with add side-by-side; regular widths use unified rows", () => {
+  const original = ["head", "alpha = 1;", "beta = 2;", "tail"].join("\n");
+  const args = ["beta = 2;", ["beta = 20;", "gamma = 3;"].join("\n")];
+
+  // 宽终端（每侧 ≥68 列）才左右分栏：配对的删 + 增合并为同一视觉行（左旧右新）。
+  const split = buildEditDiff(original, args[0], args[1], 160);
+  const splitLines = split.lines.map(plain);
+  const paired = splitLines.find((line) => line.includes("− beta = 2;"));
+  assert.ok(paired, "配对行应包含左侧删除");
+  assert.ok(paired?.includes("+ beta = 20;"), "配对行应同时包含右侧新增");
+  // 未配对的新增行：左侧整栏留空（行号也不画），新行号从配对行顺延。
+  const unpaired = splitLines.find((line) => line.includes("+ gamma = 3;"));
+  assert.match(unpaired ?? "", /^\s*│ {3}4 \+ gamma = 3;/);
+  // 所有分栏行的分隔符列与行宽一致（右栏不漂移、整行不超宽）。
+  const dividers = new Set(splitLines.map((line) => line.indexOf("│")));
+  assert.equal(dividers.size, 1, `分隔符应固定在同一列: ${splitLines.join("\n")}`);
+  for (const line of split.lines) {
+    assert.ok(terminalWidth(line) <= 160, `行宽超限: ${terminalWidth(line)}`);
+  }
+
+  // 常规宽度（120 列终端的 105）退回单列 unified：删/增分行、内容占满全宽。
+  const unified = buildEditDiff(original, args[0], args[1], 105);
+  const unifiedLines = unified.lines.map(plain);
+  assert.ok(unifiedLines.some((line) => /^ {3}3 │ − beta = 2;/.test(line)));
+  assert.ok(unifiedLines.some((line) => /^ {3}3 │ \+ beta = 20;/.test(line)));
+  assert.ok(unifiedLines.some((line) => /^ {3}4 │ \+ gamma = 3;/.test(line)));
+  for (const line of unified.lines) {
+    assert.ok(terminalWidth(line) <= 105, `行宽超限: ${terminalWidth(line)}`);
+  }
+});
+
+test("change cells paint a whole-cell bar in truecolor; context rows stay plain", () => {
+  setActiveColorLevel("truecolor");
+  try {
+    // 新建文件：纯新增行，整块铺淡绿条。
+    const created = buildWriteDiff(undefined, "alpha = 1;\n", 80);
+    const added = created.lines[0];
+    assert.match(added, /\x1b\[48;/, "变更行应带背景铺色");
+    assert.match(added, / {2,}\x1b\[0m/, "铺色应延伸覆盖行尾补白");
+    // 单元格内截断也不产生残缺转义（… 落在铺色/重置之后）。
+    const long = buildWriteDiff(undefined, `${"const x".repeat(30)} = 1;\n`, 64);
+    for (const line of long.lines) {
+      assert.ok(!/\[[0-9;]*$/.test(line), "不应残留不完整的转义序列");
+    }
+    // 编辑：变更行带铺色，上下文行保持无底色。
+    const edited = buildEditDiff(
+      SAMPLE,
+      "const b = load(path);",
+      "const b = await load(path);",
+      80,
+    );
+    const context = edited.lines.find((line) => plain(line).includes("const a = 1;"));
+    assert.ok(context, "应存在上下文行");
+    assert.ok(!/\x1b\[48;/.test(context ?? ""), "上下文行不应铺底色");
+    const change = edited.lines.find((line) => plain(line).includes("− const b ="));
+    assert.match(change ?? "", /\x1b\[48;/, "变更行应铺底色");
+  } finally {
+    setActiveColorLevel("mono");
+  }
+});
+
+test("diffWidthFor derives the build width from the UI content width", () => {
+  assert.equal(diffWidthFor(113), 105);
+  assert.equal(diffWidthFor(72), 64);
+  assert.equal(diffWidthFor(30), 40);
+  assert.equal(diffWidthFor(300), 232);
+});
+
+test("buildPermissionPreview honors the UI content width (sidebar-aware)", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-diff-width-"));
+  try {
+    const target = path.join(cwd, "sample.ts");
+    fs.writeFileSync(target, SAMPLE, "utf8");
+    // 120 列终端 + 侧栏打开：对话区内容宽只剩 72，diff 必须按 64 建，
+    // 否则每行都比渲染宽长一截，右栏整列被裁。
+    const preview = buildPermissionPreview(
+      "edit",
+      {
+        path: "sample.ts",
+        oldText: "const b = load(path);",
+        newText: "const b = await load(path);",
+      },
+      cwd,
+      72,
+    );
+    for (const line of preview) {
+      assert.ok(terminalWidth(line) <= 64, `行宽应 ≤64: ${terminalWidth(line)}`);
+    }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

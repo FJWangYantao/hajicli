@@ -119,3 +119,112 @@ test("applySessionUsage 真的把费用明细灌回 CostTracker", () => {
   assert.match(indexSource, /costTracker\.loadRecords\(usage\?\.costRecords\)/);
   assert.match(indexSource, /ui\.setSessionMetrics\(/);
 });
+
+test("setSearchDirs 跨目录发现会话，loadSession 命中后主目录跟着切换", async () => {
+  const dirA = makeTempDir();
+  const dirB = makeTempDir();
+  const writer = new SessionManager(dirA);
+  const id = writer.getCurrentSession().id;
+  writer.saveCurrentSession(MESSAGES, "跨树会话");
+  await writer.flush();
+
+  // 另一棵树里的进程：把 dirA 并进检索范围后能看到并装载它。
+  const reader = new SessionManager(dirB);
+  reader.setSearchDirs([dirA]);
+  assert.deepEqual(
+    reader.listSessions().map((s) => s.title),
+    ["跨树会话"],
+  );
+  assert.equal(path.resolve(reader.locateSessionDir(id) ?? ""), path.resolve(dirA));
+
+  const loaded = reader.loadSession(id);
+  assert.ok(loaded);
+  // 主目录切到会话原目录：后续保存写回原处，不会在两棵树里各存一份。
+  assert.equal(path.resolve(reader.getSessionsDir()), path.resolve(dirA));
+  reader.saveCurrentSession([...MESSAGES, { role: "user", content: "继续" }]);
+  await reader.flush();
+  assert.ok(fs.readdirSync(dirA).some((file) => file.startsWith("session_")));
+  const forked = fs
+    .readdirSync(dirB)
+    .filter((file) => file.startsWith("session_") && file.endsWith(".json"));
+  assert.deepEqual(forked, [], "不应在旧主目录分叉出新会话文件");
+});
+
+test("同一会话 id 出现在多个目录时按 updatedAt 取最新", () => {
+  const dirA = makeTempDir();
+  const dirB = makeTempDir();
+  const id = "11111111-2222-3333-4444-555555555555";
+  const copies = [
+    [dirA, "旧副本", "2025-01-01T00:00:00.000Z"],
+    [dirB, "新副本", "2025-06-01T00:00:00.000Z"],
+  ];
+  for (const [dir, title, updatedAt] of copies) {
+    fs.writeFileSync(
+      path.join(dir, `session_${id}.json`),
+      JSON.stringify({
+        id,
+        title,
+        createdAt: updatedAt,
+        updatedAt,
+        messages: MESSAGES,
+      }),
+    );
+  }
+  const mgr = new SessionManager(dirA);
+  mgr.setSearchDirs([dirB]);
+  const list = mgr.listSessions();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].title, "新副本");
+});
+
+test("扩展记账字段（耗时/推理 token/用户问题）随会话文件落盘并原样读回", async () => {
+  const dir = makeTempDir();
+  const writer = new SessionManager(dir);
+  const id = writer.getCurrentSession().id;
+
+  const tracker = new CostTracker(() => ({ inputPerMTokens: 2, outputPerMTokens: 8 }));
+  tracker.beginTurn("帮我看看返回按钮为什么点不到");
+  tracker.record(
+    "deepseek-chat",
+    { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 },
+    "主线回合",
+    1_700_000_000_000,
+    {
+      durationMs: 4200,
+      reasoningTokens: 820,
+      turnPrompt: "帮我看看返回按钮为什么点不到",
+    },
+  );
+  tracker.record(
+    "deepseek-chat",
+    { prompt_tokens: 80, completion_tokens: 10, total_tokens: 90 },
+    "标题生成",
+    1_700_000_001_000,
+    {
+      durationMs: 300,
+      reasoningTokens: 0,
+    },
+  );
+
+  writer.saveCurrentSession(MESSAGES);
+  writer.setUsage({ costRecords: tracker.getRecords(), compactionCount: 0, lastTurnMs: 4500 });
+  writer.saveCurrentSession(MESSAGES);
+  await writer.flush();
+
+  // 落盘文件里必须真的带着这几个字段，而不是只活在内存里。
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, `session_${id}.json`), "utf8"));
+  assert.equal(raw.usage.costRecords[0].durationMs, 4200);
+  assert.equal(raw.usage.costRecords[0].reasoningTokens, 820);
+  assert.equal(raw.usage.costRecords[0].turnPrompt, "帮我看看返回按钮为什么点不到");
+  assert.equal(raw.usage.costRecords[1].turnPrompt, undefined, "同一轮后续请求不重复存问题");
+
+  // /resume 路径：重新加载后交给 tracker，页面就能显示真实耗时。
+  const loaded = new SessionManager(dir).loadSession(id);
+  const restored = new CostTracker(() => ({ inputPerMTokens: 2, outputPerMTokens: 8 }));
+  restored.loadRecords(loaded.usage.costRecords);
+  const details = restored.getRequestDetails();
+  assert.equal(details[0].durationMs, 4200);
+  assert.equal(details[0].reasoningTokens, 820);
+  assert.equal(details[0].turnPrompt, "帮我看看返回按钮为什么点不到");
+  assert.equal(details[1].durationMs, 300);
+});

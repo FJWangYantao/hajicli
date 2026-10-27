@@ -116,11 +116,11 @@ function countLineChanges(
  * 如果文件在工具执行后又被用户或其他进程修改，回退会保留该文件并报告冲突。
  */
 export class SnapshotEngine {
-  private readonly cwd: string;
-  private readonly snapshotRoot: string;
-  private readonly manifestsDir: string;
-  private readonly blobsDir: string;
-  private readonly journalsDir: string;
+  private cwd: string;
+  private snapshotRoot: string;
+  private manifestsDir: string;
+  private blobsDir: string;
+  private journalsDir: string;
   private scope = "default";
   private warningHandler?: (message: string) => void;
   private readonly pendingWarnings: string[] = [];
@@ -136,6 +136,18 @@ export class SnapshotEngine {
     this.blobsDir = path.join(this.snapshotRoot, "blobs");
     this.journalsDir = path.join(this.snapshotRoot, "journals");
     this.warningHandler = onWarning;
+  }
+
+  /**
+   * 运行期切换工作目录（恢复其他 worktree 的会话后跟着过去）：
+   * /rewind 依赖的快照与修改日志落在会话所在的树里，作用域（会话 id）保持不变。
+   */
+  retarget(cwd: string = process.cwd()): void {
+    this.cwd = path.resolve(cwd);
+    this.snapshotRoot = path.join(this.cwd, ".haji", "snapshots");
+    this.manifestsDir = path.join(this.snapshotRoot, "manifests");
+    this.blobsDir = path.join(this.snapshotRoot, "blobs");
+    this.journalsDir = path.join(this.snapshotRoot, "journals");
   }
 
   setWarningHandler(handler: (message: string) => void): void {

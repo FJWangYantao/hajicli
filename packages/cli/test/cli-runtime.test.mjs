@@ -377,10 +377,11 @@ test("permission preview shows the command and diff-style file changes", () => {
     { path: "definitely-missing-file.txt", content: "hello\nworld\n" },
     os.tmpdir(),
   );
-  // 新建文件：头部为 路径 + +2 −0 + 新建标记，正文是带双列行号的全绿行（单 hunk 不画 `@@` 头）。
+  // 新建文件：头部为 路径 + +2 −0 + 新建标记；常规宽度走单列 unified（行号 │ + 内容，整行绿条）。
   assert.match(write[0], /definitely-missing-file\.txt {2}\+2 −0 {2}新建文件/);
-  assert.match(write[1], /^\s*1 \+ hello$/);
-  assert.match(write[2], /^\s*2 \+ world$/);
+  assert.match(write[1], /│ \+ hello\s*$/);
+  assert.match(write[2], /│ \+ world\s*$/);
+  assert.ok(write[1].includes("│"));
   assert.ok(write.every((row) => !row.includes("@@")));
 
   const edit = buildPermissionPreview("edit", { path: "a.ts", oldText: "x", newText: "y" }, "/");
@@ -495,6 +496,44 @@ test("edit summary counts real diff lines while write summary counts argument li
     { content: "x\ny\n" },
   );
   assert.equal(write.text, "已写入 2.0 KB · 2 行");
+});
+
+test("write 完成块：有旧内容留档时展示红删绿增 diff，新建全量绿色，回放退回纯预览", () => {
+  // 覆盖写：留档旧内容 → 红删绿增，改动数并进 stats。
+  const overwrite = summarizeToolResult(
+    "write",
+    "[文件写入成功]\n大小: 16 字节",
+    { blocked: false, writeBefore: { existed: true, content: "old\nsame\n" } },
+    { content: "new\nsame\n" },
+  );
+  assert.deepEqual(overwrite.stats, { added: 1, removed: 1 });
+  const overwritePlain = overwrite.preview?.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+  assert.ok(overwritePlain?.some((line) => line.includes("−") && line.includes("old")));
+  assert.ok(overwritePlain?.some((line) => line.includes("+") && line.includes("new")));
+
+  // 新建文件：全量作为新增行（+），无删除。
+  const created = summarizeToolResult(
+    "write",
+    "[文件写入成功]\n大小: 8 字节",
+    { blocked: false, writeBefore: { existed: false } },
+    { content: "a\nb\n" },
+  );
+  assert.deepEqual(created.stats, { added: 2, removed: 0 });
+  const createdPlain = created.preview?.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+  assert.ok(createdPlain?.every((line) => !line.includes("−")));
+
+  // 回放历史（无留档）与读不了的文件（existed 但无内容）：退回带行号的纯内容预览。
+  for (const outcome of [{ blocked: false }, { blocked: false, writeBefore: { existed: true } }]) {
+    const fallback = summarizeToolResult("write", "[文件写入成功]\n大小: 8 字节", outcome, {
+      content: "a\nb\n",
+    });
+    assert.equal(fallback.stats, undefined);
+    const plain = fallback.preview?.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    assert.ok(
+      plain?.some((line) => /^\s*\d+\s+a$/.test(line)),
+      "纯内容预览带行号",
+    );
+  }
 });
 
 test("expanded tool output caps lines and strips terminal escapes", () => {

@@ -537,3 +537,78 @@ test("shared executor applies hooks and records child edits for rewind", async (
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("subagent delegates tool calls to batchToolCalls and preserves result order", async () => {
+  const calls = [];
+  const provider = {
+    async *completeStream(messages, options) {
+      calls.push(structuredClone(messages));
+      if (calls.length === 1) {
+        options.onToolCall([
+          {
+            id: "read-a",
+            type: "function",
+            function: { name: "read", arguments: '{"path":"a.ts"}' },
+          },
+          {
+            id: "read-b",
+            type: "function",
+            function: { name: "read", arguments: '{"path":"b.ts"}' },
+          },
+        ]);
+        return;
+      }
+      yield JSON.stringify({
+        summary: "完成",
+        filesChanged: [],
+        verification: ["read"],
+        unresolved: [],
+      });
+    },
+  };
+  let active = 0;
+  let maxActive = 0;
+  let batchCalls = 0;
+  const runner = new SubagentRunner({
+    cwd: "/repo",
+    getProvider: () => provider,
+    getModel: () => "test-model",
+    getReasoningEffort: () => "low",
+    getTools: () => [
+      {
+        name: "read",
+        definition: definition("read"),
+        async execute() {
+          return "";
+        },
+      },
+    ],
+    executeTool: async (toolCall) => {
+      const value = toolCall.function.arguments;
+      await new Promise((resolve) => setTimeout(resolve, value.includes("a.ts") ? 20 : 5));
+      return value.includes("a.ts") ? "a-content" : "b-content";
+    },
+    batchToolCalls: async (toolCalls, execute) => {
+      batchCalls += 1;
+      return Promise.all(
+        toolCalls.map(async (toolCall, index) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          const output = await execute(toolCall, index);
+          active -= 1;
+          return output;
+        }),
+      );
+    },
+  });
+
+  await runner.run({ description: "读两个文件", role: "research" }, { depth: 0 });
+  assert.equal(batchCalls, 1);
+  assert.equal(maxActive, 2, "批处理回调可以并发执行");
+  const toolMessages = calls[1].filter((message) => message.role === "tool");
+  assert.deepEqual(
+    toolMessages.map((message) => message.content),
+    ["a-content", "b-content"],
+    "输出按调用顺序回填",
+  );
+});

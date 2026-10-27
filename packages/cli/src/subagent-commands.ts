@@ -41,6 +41,8 @@ export interface SubagentCommandContext {
   ) => ReturnType<TerminalUI["readSelection"]>;
   getSelectedModel(): string;
   getMessages(): ChatMessage[];
+  /** 前台子代理跑动期间让输入行保持可用（可选；测试/无头场景不注入）。 */
+  startBackgroundInput?: () => void;
   /** 把当前消息写回会话存储（sessionManager.saveCurrentSession）。 */
   saveSession(): void;
   refreshAgentVerificationContext(messages: ChatMessage[]): boolean;
@@ -134,6 +136,9 @@ export async function handleSubagentCommand(
     ui.onEsc(() => {
       agentManager.abort(launch.agent.id);
     });
+    // 前台子代理可能要跑很久：先把输入行还回去，用户可以先写下一句；
+    // 回车进 pendingInputs，子代理结束后由主循环按队列处理。
+    ctx.startBackgroundInput?.();
     const finished = await launch.completion;
     ui.onEsc();
     if (finished.result) {

@@ -7,6 +7,7 @@ import {
   collapseToolOutput,
   formatOmittedLines,
   SHELL_PREVIEW_LINES,
+  stripToolOutputEnvelope,
 } from "../dist/tool-output.js";
 
 const lines = (count, prefix = "line") =>
@@ -64,4 +65,60 @@ test("the omission marker says which side was folded away", () => {
   assert.equal(formatOmittedLines(0, "start"), "");
   assert.equal(formatOmittedLines(84, "start"), "… 前 84 行未显示");
   assert.equal(formatOmittedLines(84, "end"), "… 另有 84 行未显示");
+});
+
+test("stripToolOutputEnvelope drops receipts but keeps the real output", () => {
+  const bash = [
+    "[命令执行结果 - 退出码 0；耗时 15316ms]",
+    "--- 标准输出 (stdout，保留头尾) ---",
+    "build=0",
+    "test=0",
+    "[verification_evidence_id: call_1]",
+  ].join("\n");
+  assert.equal(stripToolOutputEnvelope("bash", bash), "build=0\ntest=0");
+
+  const read = [
+    "[文件读取结果 - a.ts]",
+    "总行数=2；返回=1-2；hash=abc；hasMore=false",
+    "   1 | x",
+    "   2 | y",
+  ].join("\n");
+  assert.equal(stripToolOutputEnvelope("read", read), "   1 | x\n   2 | y");
+
+  const grep = [
+    "[Grep 搜索结果 - x]",
+    "引擎=ripgrep；offset=0；limit=50；返回=1；hasMore=false",
+    "a.ts:1:2: x",
+  ].join("\n");
+  assert.equal(stripToolOutputEnvelope("grep", grep), "a.ts:1:2: x");
+
+  const global = [
+    "[全局文件查找结果 - *.ts]",
+    "引擎=fd；offset=0；limit=50；返回=1；hasMore=false",
+    "src/a.ts",
+  ].join("\n");
+  assert.equal(stripToolOutputEnvelope("global", global), "src/a.ts");
+
+  // 只剥开头连续块与已知分隔行；正文里形如回执的行原样保留。
+  const noisyBody = [
+    "[命令执行结果 - 退出码 0；耗时 1ms]",
+    "--- 标准输出 (stdout，保留头尾) ---",
+    "[1, 2, 3]",
+    "路径: 正常输出",
+    "总行数=保留",
+  ].join("\n");
+  assert.equal(
+    stripToolOutputEnvelope("bash", noisyBody),
+    "[1, 2, 3]\n路径: 正常输出\n总行数=保留",
+  );
+
+  // 只有回执、没有正文时剥成空串；未知工具只去证据编号。
+  assert.equal(
+    stripToolOutputEnvelope(
+      "bash",
+      "[命令执行结果 - 退出码 0；耗时 1ms]\n(命令执行完成，无控制台输出)",
+    ),
+    "",
+  );
+  assert.equal(stripToolOutputEnvelope("mcp_x", "ok\n[verification_evidence_id: c]"), "ok");
 });

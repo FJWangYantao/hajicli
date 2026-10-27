@@ -501,32 +501,44 @@ test("侧栏定价 agent 状态行给出独立命中区（可点开过程详情�
 
 test("缓存命中的输入 token 按缓存价计费，未上报命中数时按全价", () => {
   // 内置 flash：输入 0.5、输出 2、缓存 0.1（元 / 百万）。
+  // 时刻钉在峰时（BEIJING_14）：内置模型有谷时五折，默认取当前时间会在谷时窗口挂。
   assert.equal(
-    estimateRequestCostCny("deepseek-v4-flash", {
-      prompt_tokens: 1_000_000,
-      completion_tokens: 0,
-      total_tokens: 1_000_000,
-      prompt_cache_hit_tokens: 800_000,
-    }),
+    estimateRequestCostCny(
+      "deepseek-v4-flash",
+      {
+        prompt_tokens: 1_000_000,
+        completion_tokens: 0,
+        total_tokens: 1_000_000,
+        prompt_cache_hit_tokens: 800_000,
+      },
+      undefined,
+      BEIJING_14,
+    ),
     0.2 * 0.5 + 0.8 * 0.1,
   );
   // 没上报 → 全价。
   assert.equal(
-    estimateRequestCostCny("deepseek-v4-flash", {
-      prompt_tokens: 1_000_000,
-      completion_tokens: 0,
-      total_tokens: 1_000_000,
-    }),
+    estimateRequestCostCny(
+      "deepseek-v4-flash",
+      { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      undefined,
+      BEIJING_14,
+    ),
     0.5,
   );
   // 命中数大于 prompt_tokens（口径不一致）时夹逼，不会算出负数。
   assert.equal(
-    estimateRequestCostCny("deepseek-v4-flash", {
-      prompt_tokens: 1_000_000,
-      completion_tokens: 0,
-      total_tokens: 1_000_000,
-      prompt_cache_hit_tokens: 5_000_000,
-    }),
+    estimateRequestCostCny(
+      "deepseek-v4-flash",
+      {
+        prompt_tokens: 1_000_000,
+        completion_tokens: 0,
+        total_tokens: 1_000_000,
+        prompt_cache_hit_tokens: 5_000_000,
+      },
+      undefined,
+      BEIJING_14,
+    ),
     0.1,
   );
 });

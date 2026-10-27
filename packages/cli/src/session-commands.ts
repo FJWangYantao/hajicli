@@ -4,6 +4,8 @@
  *
  * 从 index.ts 主循环分发抽出；会话状态经 SessionCommandContext 注入。
  */
+import fs from "node:fs";
+import path from "node:path";
 import {
   type AgentManager,
   type ChatMessage,
@@ -67,6 +69,11 @@ export interface SessionCommandContext {
    * /resume 用历史会话自己的记录，/clear 传 undefined 归零。
    */
   applySessionUsage(usage: SessionUsage | undefined): void;
+  /**
+   * 恢复其他 worktree 的会话时把整个进程切到那棵树（chdir + 重定向
+   * 会话/任务/快照的存储目录 + 重新注入路径边界）。index.ts 提供。
+   */
+  enterSessionWorktree?(worktreeCwd: string): void;
 }
 
 /** 分发 /clear 指令；调用方负责其后的主循环 continue。 */
@@ -95,6 +102,21 @@ async function loadAndRenderSession(
   sessionId: string,
 ): Promise<boolean> {
   const { ui, sessionManager, taskStore, snapshotEngine, agentManager, skillRegistry } = ctx;
+  await sessionManager.flush();
+  // 会话可能住在别的 worktree（并行会话各占一棵树）：按文件所在目录把进程切过去，
+  // 任务计划、/rewind 快照与后续写盘才和会话待在同一棵树里。
+  const storeDir = sessionManager.locateSessionDir(sessionId);
+  if (!storeDir) {
+    ui.writeLine(colors.warnLine("会话文件已不存在或无法读取。"));
+    return false;
+  }
+  if (path.resolve(storeDir) !== path.resolve(sessionManager.getSessionsDir())) {
+    const worktreeRoot = path.resolve(storeDir, "..", "..");
+    if (ctx.enterSessionWorktree && fs.existsSync(path.join(worktreeRoot, ".git"))) {
+      ctx.enterSessionWorktree(worktreeRoot);
+      ui.writeLine(colors.gray(`已切换到会话所在的工作树：${worktreeRoot}`));
+    }
+  }
   const thinkingVisible = ctx.isThinkingVisible?.() !== false;
   const loaded = sessionManager.loadSession(sessionId);
   if (!loaded || loaded.messages.length === 0) {
@@ -221,6 +243,8 @@ async function loadAndRenderSession(
                     rejected: output === USER_REJECTED_TOOL_OUTPUT,
                   },
                   argsObj,
+                  undefined,
+                  ui.getContentWidth(),
                 );
           for (const row of formatToolCell({
             status: outcome?.status ?? "failed",
@@ -325,6 +349,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext, keyword = 
     return;
   }
 
+  const primaryStoreDir = path.resolve(sessionManager.getSessionsDir());
   const items = sessions.map((s) => {
     const timeStr = new Date(s.updatedAt).toLocaleString("zh-CN", {
       month: "2-digit",
@@ -333,10 +358,16 @@ export async function handleResumeCommand(ctx: SessionCommandContext, keyword = 
       minute: "2-digit",
     });
     const msgCount = s.messages.filter((m) => m.role === "user").length;
+    // 跨工作树的会话标注所属树名，恢复时会切换过去。
+    const storeDir = sessionManager.locateSessionDir(s.id);
+    const worktreeTag =
+      storeDir && path.resolve(storeDir) !== primaryStoreDir
+        ? ` · 工作树 ${path.basename(path.dirname(path.dirname(storeDir)))}`
+        : "";
     return {
       value: s.id,
       label: `[${timeStr}] ${s.title}`,
-      description: `(${msgCount} 条消息)`,
+      description: `(${msgCount} 条消息${worktreeTag})`,
     };
   });
 

@@ -71,12 +71,38 @@ function padToWidth(text: string, width: number): string {
   return `${text}${" ".repeat(width - visible)}`;
 }
 
-/** 顶框：`╭ 标题 ─── 右侧文字 ╮`。 */
-function topBorder(width: number, title: string, right: string): string {
-  const titleText = truncateText(` ${title} `, Math.max(1, width - 2));
-  const rightText = truncateText(` ${right} `, Math.max(0, width - 2 - terminalWidth(titleText)));
+/** 顶栏右侧的返回按钮文案：带方括号，明示这是一颗可点的按钮。 */
+const BACK_LABEL = "[Esc 返回]";
+/** 窄屏用的短文案：标题还要留位置，所以只保留动作。 */
+const BACK_LABEL_SHORT = "[返回]";
+
+/** 按可用宽度挑按钮文案；渲染与命中矩形都走这里，保证两者永远一致。 */
+function backLabelFor(width: number): string {
+  return width >= 68 ? BACK_LABEL : BACK_LABEL_SHORT;
+}
+
+/**
+ * 顶框：`╭ 标题 ─── [Esc 返回] ╮`。
+ *
+ * 先给返回按钮留位再裁标题：按钮是唯一能点回对话区的控件，任何宽度下都得画出来；
+ * 标题放不下时用省略号收尾。
+ */
+function topBorder(width: number, title: string): string {
+  const rightText = truncateText(` ${backLabelFor(width)} `, Math.max(0, width - 2));
+  const titleText = truncateText(` ${title} `, Math.max(0, width - 2 - terminalWidth(rightText)));
   const fill = Math.max(0, width - 2 - terminalWidth(titleText) - terminalWidth(rightText));
-  return `${SEQ.faint}╭${SEQ.reset}${SEQ.boldAccent}${titleText}${SEQ.reset}${SEQ.faint}${"─".repeat(fill)}${SEQ.reset}${SEQ.muted}${rightText}${SEQ.reset}${SEQ.faint}╮${SEQ.reset}`;
+  return `${SEQ.faint}╭${SEQ.reset}${SEQ.boldAccent}${titleText}${SEQ.reset}${SEQ.faint}${"─".repeat(fill)}${SEQ.reset}${SEQ.accent}${rightText}${SEQ.reset}${SEQ.faint}╮${SEQ.reset}`;
+}
+
+/** 把按钮文字宽度换算成整行内的命中矩形（行 0，靠右并左右各放宽 1 列）。 */
+function backHit(textWidth: number, width: number): { row: number; left: number; width: number } {
+  const left = Math.max(0, width - 1 - textWidth);
+  const hitLeft = Math.max(0, left - 1);
+  return {
+    row: 0,
+    left: hitLeft,
+    width: Math.max(0, Math.min(textWidth + 2, width - 1 - hitLeft)),
+  };
 }
 
 /** 底框：提示靠右，`╰─── 提示 ╯`。 */
@@ -255,7 +281,7 @@ export function buildContextInspectorFrame(
 
   const rows: string[] = [];
   const title = `上下文 · ${group.label} · ${group.items.length} 项`;
-  rows.push(topBorder(safeWidth, title, "Esc 返回"));
+  rows.push(topBorder(safeWidth, title));
   rows.push(frameRow(safeWidth, categoryRow(groups, categoryIndex, inner)));
 
   if (twoColumn) {
@@ -279,16 +305,19 @@ export function buildContextInspectorFrame(
     rows.push(hLine(safeWidth, "├", "┤"));
   }
 
+  // 窄屏放不下完整提示，只保留最要紧的两件事：怎么查看、怎么回去。
   const hint =
-    group.items.length > 0
-      ? "↑↓ 条目 · ←→ 分类 · PgUp/PgDn 滚动 · Esc 返回"
-      : "←→ 切分类 · Esc 返回";
+    group.items.length === 0
+      ? "←→ 切分类 · Esc 或点右上返回"
+      : twoColumn
+        ? "点条目查看 · ↑↓/←→ 切换 · PgUp/PgDn 滚动 · Esc 或点右上返回"
+        : "点条目查看 · Esc 或点右上返回";
   rows.push(bottomBorder(safeWidth, hint));
 
   // 行数兜底：窗口比最小高度还矮时补齐，避免调用方切片越界。
   while (rows.length < safeHeight) rows.push(padToWidth("", safeWidth));
 
-  const backText = " Esc 返回 ";
+  const backText = ` ${backLabelFor(safeWidth)} `;
   return {
     rows: rows.slice(0, safeHeight),
     listTop: 3,
@@ -298,10 +327,7 @@ export function buildContextInspectorFrame(
     /** 列表可视区第一条对应的条目下标（选中项滚出视野时 > 0）。 */
     listOffset,
     maxScroll,
-    back: {
-      row: 0,
-      left: Math.max(0, safeWidth - 1 - terminalWidth(backText)),
-      width: terminalWidth(backText),
-    },
+    // 命中区比按钮文字左右各宽 1 列，鼠标差一格也能点中。
+    back: backHit(terminalWidth(backText), safeWidth),
   };
 }

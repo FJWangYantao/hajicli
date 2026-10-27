@@ -378,6 +378,9 @@ export function truncateText(value: string, width: number): string {
 export function fitText(value: string, width: number): string {
   if (width <= 0) return "";
   if (terminalWidth(value) <= width) return value;
+  // 带 ANSI 的行不能走 truncateText：转义序列按显示宽度计 0，纯文本截断会把
+  // 转义字节当可见字符吃掉宽度，提前截进转义序列中间（花屏/断色）。
+  if (value.includes("\x1b")) return truncateAnsiText(value, width);
   return `${truncateText(value, Math.max(0, width - 1))}…`;
 }
 

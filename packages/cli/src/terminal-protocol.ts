@@ -170,6 +170,15 @@ export class TerminalProtocolParser {
         if (this.buffer.length === 1 || this.buffer === "\x1b[") {
           break;
         }
+        // 两个 ESC 相邻：既可能是连按两次 Esc / Alt+Esc，也可能是「单独的 Esc
+        // 恰好和随后的鼠标报告粘在同一个缓冲区」（1003 跟踪下鼠标一动就上报）。
+        // 只消费一个字节，把剩余的 ESC 留给下一轮循环重新按 SGR/CSI 识别，
+        // 否则 ESC[<35;120;12M 会被切成 "\x1b\x1b" + "[<35;120;12M" 漏进输入框。
+        if (this.buffer[1] === "\x1b") {
+          events.push({ type: "keyboard", data: "\x1b" });
+          this.buffer = this.buffer.slice(1);
+          continue;
+        }
         events.push({ type: "keyboard", data: this.buffer.slice(0, 2) });
         this.buffer = this.buffer.slice(2);
         continue;

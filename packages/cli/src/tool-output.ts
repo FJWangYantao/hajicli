@@ -76,3 +76,65 @@ export function collapseToolOutput(output: string, options: CollapseOptions): Co
 export function collapseShellOutput(output: string, options: CollapseOptions): CollapsedOutput {
   return collapse(splitLines(output), options, "tail");
 }
+
+/**
+ * 各工具输出开头连续的回执/元信息行。对话区的工具格头行已经交代了工具名、路径、
+ * 行数与成败，展开正文只需要真正的输出内容。
+ */
+const ENVELOPE_LEADING_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
+  bash: [/^\[命令执行结果 - 退出码 [^；\]]+；耗时 \d+ms\]$/],
+  read: [
+    /^\[(?:批量)?文件读取结果 - .*\]$/,
+    /^\[图片读取结果 - .*\]$/,
+    /^总行数=/,
+    /^类型=/,
+    /^nextStartLine=/,
+    /^提示：/,
+  ],
+  grep: [/^\[Grep 搜索结果 - .*\]$/, /^引擎=/, /^nextOffset=/, /^提示：/],
+  global: [/^\[全局文件查找结果 - .*\]$/, /^引擎=/, /^nextOffset=/, /^提示：/],
+  readskillresource: [/^\[Skill 资源读取 - .*\]$/],
+  websearch: [/^\[网络搜索结果 - .*\]$/],
+  projectinfo: [/^\[项目结构摘要\]$/],
+  edit: [
+    /^\[文件精准编辑成功\]$/,
+    /^\[文件无需修改\]$/,
+    /^路径: /,
+    /^oldHash=/,
+    /^newHash=/,
+    /^currentHash=/,
+    /^替换次数=/,
+    /^说明: /,
+    /^改后片段（第 \d+ 行起）:$/,
+  ],
+  write: [/^\[文件写入成功\]$/, /^路径: /, /^大小: /, /^hash=/, /^说明: /],
+};
+
+/** 正文中间的整行分隔标记（不是开头连续块，需要逐行过滤）。 */
+const ENVELOPE_INLINE_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
+  bash: [/^--- 标准(?:输出|错误) \(.*\) ---$/, /^\(命令执行完成，无控制台输出\)$/],
+};
+
+/**
+ * 剥掉工具输出的回执外壳：开头连续的 `[xxx结果]` 标题与元信息行、bash 的 stdout/stderr
+ * 分隔标记，以及 CLI 执行器追加在末尾的 `[verification_evidence_id: …]`。
+ * 只处理已知工具；正文内容（包括以 `[` 开头或形如 `路径:` 的输出行）原样保留。
+ */
+export function stripToolOutputEnvelope(toolName: string, output: string): string {
+  if (!output) return "";
+  const name = toolName.trim().toLowerCase();
+  const withoutEvidence = output.replace(/\n\[verification_evidence_id: [^\]]*\]\s*$/, "");
+  let lines = withoutEvidence.replace(/\r\n?/g, "\n").split("\n");
+  const leading = ENVELOPE_LEADING_PATTERNS[name];
+  if (leading) {
+    let start = 0;
+    while (start < lines.length && leading.some((pattern) => pattern.test(lines[start])))
+      start += 1;
+    while (start < lines.length && lines[start].trim() === "") start += 1;
+    lines = lines.slice(start);
+  }
+  const inline = ENVELOPE_INLINE_PATTERNS[name];
+  if (inline) lines = lines.filter((line) => !inline.some((pattern) => pattern.test(line)));
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  return lines.join("\n");
+}

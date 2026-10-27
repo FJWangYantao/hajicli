@@ -36,15 +36,14 @@ test("tool batching parallelizes only contiguous allowlisted read-only calls", (
     call("8", "webfetch"),
   ]);
 
-  assert.equal(MAX_PARALLEL_READ_ONLY_TOOLS, 3);
+  assert.equal(MAX_PARALLEL_READ_ONLY_TOOLS, 5);
   assert.deepEqual(
     batches.map((batch) => ({
       ids: batch.calls.map((item) => item.id),
       parallel: batch.parallel,
     })),
     [
-      { ids: ["1", "2", "3"], parallel: true },
-      { ids: ["4"], parallel: false },
+      { ids: ["1", "2", "3", "4"], parallel: true },
       { ids: ["5"], parallel: false },
       { ids: ["6"], parallel: false },
       { ids: ["7"], parallel: false },
@@ -53,18 +52,21 @@ test("tool batching parallelizes only contiguous allowlisted read-only calls", (
   );
 });
 
-test("tool batching caps concurrency at three and treats bash, Skill and task calls as barriers", () => {
-  const batches = createToolCallBatches([
-    call("1", "read"),
-    call("2", "grep"),
-    call("3", "global"),
-    call("4", "read"),
-    call("5", "bash"),
-    call("6", "loadskill"),
-    call("7", "taskcreate"),
-    call("8", "listskillresources"),
-    call("9", "readskillresource"),
-  ]);
+test("tool batching caps concurrency at the configured max and treats bash, Skill and task calls as barriers", () => {
+  const batches = createToolCallBatches(
+    [
+      call("1", "read"),
+      call("2", "grep"),
+      call("3", "global"),
+      call("4", "read"),
+      call("5", "bash"),
+      call("6", "loadskill"),
+      call("7", "taskcreate"),
+      call("8", "listskillresources"),
+      call("9", "readskillresource"),
+    ],
+    { maxParallel: 3 },
+  );
 
   assert.deepEqual(
     batches.map((batch) => batch.calls.map((item) => item.id)),
@@ -73,6 +75,31 @@ test("tool batching caps concurrency at three and treats bash, Skill and task ca
   assert.deepEqual(
     batches.map((batch) => batch.parallel),
     [true, false, false, false, false, true],
+  );
+});
+
+test("a custom isParallelizable predicate can add read-only bash / MCP without touching barriers", () => {
+  const batches = createToolCallBatches(
+    [
+      call("1", "read"),
+      call("2", "bash"),
+      call("3", "mcp_read"),
+      call("4", "edit"),
+      call("5", "bash"),
+    ],
+    {
+      isParallelizable: (item) =>
+        ["read", "mcp_read"].includes(item.function.name) ||
+        (item.function.name === "bash" && item.id === "2"),
+    },
+  );
+  assert.deepEqual(
+    batches.map((batch) => ({ ids: batch.calls.map((item) => item.id), parallel: batch.parallel })),
+    [
+      { ids: ["1", "2", "3"], parallel: true },
+      { ids: ["4"], parallel: false },
+      { ids: ["5"], parallel: false },
+    ],
   );
 });
 

@@ -79,3 +79,76 @@ test("marks only a bare escape as pending so the UI can flush it quickly", () =>
   assert.deepEqual(mousePrefix.push("\x1b["), []);
   assert.equal(mousePrefix.isLoneEscapePending(), false);
 });
+
+// 单独的 Esc 有一个 16ms 等待窗口。1003 any-event 鼠标跟踪常开时，窗口内若来
+// 一条鼠标报告，两者会在缓冲区里粘成 Esc + Esc[<b;x;yM。旧实现把它切成
+// "\x1b\x1b" + "[<b;x;yM"，后半段被当键盘文本写进输入框（按 Esc 时看到的
+// 35;120;12M 泄漏）。以下锁定「只消费一个 ESC、剩余按 SGR 重新识别」的行为。
+
+const ESC = "\x1b";
+const MOUSE = `${ESC}[<35;120;12M`;
+const MOUSE2 = `${ESC}[<35;124;12M`;
+
+function drain(parser, chunks) {
+  const events = [];
+  for (const chunk of chunks) events.push(...parser.push(chunk));
+  events.push(...parser.flushPending());
+  return events;
+}
+
+function keyboardText(events) {
+  return events
+    .filter((event) => event.type === "keyboard")
+    .map((event) => event.data)
+    .join("");
+}
+
+test("esc stuck to a mouse report in one chunk does not leak mouse text", () => {
+  const events = drain(new TerminalProtocolParser(), [`${ESC}${MOUSE}`]);
+  assert.deepEqual(events, [
+    { type: "keyboard", data: ESC },
+    { type: "mouse", action: "move", button: 35, column: 120, row: 12 },
+  ]);
+  assert.equal(keyboardText(events), ESC);
+  assert.doesNotMatch(keyboardText(events), /35;120;12M/);
+});
+
+test("mouse report arriving right after a lone esc does not leak", () => {
+  const events = drain(new TerminalProtocolParser(), [ESC, MOUSE]);
+  assert.deepEqual(events, [
+    { type: "keyboard", data: ESC },
+    { type: "mouse", action: "move", button: 35, column: 120, row: 12 },
+  ]);
+  assert.doesNotMatch(keyboardText(events), /35;/);
+});
+
+test("esc stuck to a burst of mouse reports parses all of them as mouse", () => {
+  const events = drain(new TerminalProtocolParser(), [`${ESC}${MOUSE}${MOUSE2}`]);
+  assert.deepEqual(events, [
+    { type: "keyboard", data: ESC },
+    { type: "mouse", action: "move", button: 35, column: 120, row: 12 },
+    { type: "mouse", action: "move", button: 35, column: 124, row: 12 },
+  ]);
+});
+
+test("two adjacent escapes split into two keyboard events", () => {
+  const events = drain(new TerminalProtocolParser(), [`${ESC}${ESC}`]);
+  assert.deepEqual(events, [
+    { type: "keyboard", data: ESC },
+    { type: "keyboard", data: ESC },
+  ]);
+});
+
+test("plain CSI sequences stay intact after the esc fix", () => {
+  assert.deepEqual(drain(new TerminalProtocolParser(), [`${ESC}[A`]), [
+    { type: "keyboard", data: `${ESC}[A` },
+  ]);
+});
+
+test("mouse report right after a paste end is still a mouse event", () => {
+  const events = drain(new TerminalProtocolParser(), [`${ESC}[200~ok${ESC}[201~${MOUSE}`]);
+  assert.deepEqual(events, [
+    { type: "paste", text: "ok" },
+    { type: "mouse", action: "move", button: 35, column: 120, row: 12 },
+  ]);
+});

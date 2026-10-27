@@ -43,10 +43,57 @@ export interface TraceToolExecution {
   duration?: number;
 }
 
+/** 一次工具批的观测：并行 A/B 的核心指标。 */
+export interface TraceToolBatch {
+  timestamp: string;
+  /** 批内调用数。 */
+  size: number;
+  /** 工具名（与调用顺序一致）。 */
+  names: string[];
+  /** 是否走了并行执行（size > 1 且全部可并行）。 */
+  parallel: boolean;
+  wallTimeMs: number;
+  serialEstimateMs: number;
+  savedTimeMs: number;
+  /** 子代理内部批次时标记来源；主 Agent 缺省。 */
+  source?: "main" | "subagent";
+  agentId?: string;
+}
+
+/** 进程启动时落一份实验分配快照。 */
+export interface TraceExperimentAssignment {
+  timestamp: string;
+  unitId: string;
+  experiments: Record<string, string>;
+}
+
+/** 子代理启动：用于按 arm 比较调用率/角色/访问级别。 */
+export interface TraceSubagentLaunch {
+  timestamp: string;
+  agentId: string;
+  role: string;
+  access: "readonly" | "workspace-write";
+  background: boolean;
+}
+
+/** 子代理结束：用于按 arm 比较耗时、token 与工具调用效率。 */
+export interface TraceSubagentResult {
+  timestamp: string;
+  agentId: string;
+  status: string;
+  durationMs: number;
+  totalTokens: number;
+  toolCalls: number;
+}
+
 export type TraceEvent =
   | { type: "user_input"; timestamp: string; content: string }
   | { type: "llm_call"; timestamp: string; data: TraceLlmCall }
-  | { type: "tool_execution"; timestamp: string; data: TraceToolExecution };
+  | { type: "tool_execution"; timestamp: string; data: TraceToolExecution }
+  | { type: "tool_batch"; timestamp: string; data: TraceToolBatch }
+  | { type: "experiment_assignment"; timestamp: string; data: TraceExperimentAssignment }
+  | { type: "subagent_launch"; timestamp: string; data: TraceSubagentLaunch }
+  | { type: "subagent_result"; timestamp: string; data: TraceSubagentResult };
 
 export interface TraceSession {
   id: string;
@@ -132,6 +179,7 @@ function compactEvent(event: TraceEvent): TraceEvent {
       },
     };
   }
+  if (event.type !== "llm_call") return event;
   const compacted = compactMessages(event.data.messages);
   return {
     ...event,
@@ -283,6 +331,32 @@ export class SessionTracker {
       timestamp,
       data: { timestamp, toolCallId, name, arguments: args, approved, output, duration },
     });
+  }
+
+  /** 并行批观测：A/B 报告按 `size / parallel / savedTimeMs` 汇总。 */
+  public recordToolBatch(data: Omit<TraceToolBatch, "timestamp">): void {
+    const timestamp = new Date().toISOString();
+    this.append({ type: "tool_batch", timestamp, data: { timestamp, ...data } });
+  }
+
+  /** 进程启动时记录实验分配，报告据此把后续事件归到 arm。 */
+  public recordExperimentAssignment(experiments: Record<string, string>): void {
+    const timestamp = new Date().toISOString();
+    this.append({
+      type: "experiment_assignment",
+      timestamp,
+      data: { timestamp, unitId: this.meta.id, experiments },
+    });
+  }
+
+  public recordSubagentLaunch(data: Omit<TraceSubagentLaunch, "timestamp">): void {
+    const timestamp = new Date().toISOString();
+    this.append({ type: "subagent_launch", timestamp, data: { timestamp, ...data } });
+  }
+
+  public recordSubagentResult(data: Omit<TraceSubagentResult, "timestamp">): void {
+    const timestamp = new Date().toISOString();
+    this.append({ type: "subagent_result", timestamp, data: { timestamp, ...data } });
   }
 
   public async save(): Promise<string> {

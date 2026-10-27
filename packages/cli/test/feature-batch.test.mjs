@@ -31,18 +31,30 @@ test("model registry carries pricing and tiers for cost and utility routing", ()
 });
 
 test("cost tracker aggregates usage and estimates cost by model", () => {
+  // 内置模型有谷时五折（北京 00:30–08:30），时刻不钉死会在谷时窗口按半价挂掉。
+  const BEIJING_NOON = Date.parse("2025-01-02T04:00:00Z");
   const tracker = new CostTracker();
   assert.equal(tracker.getSummary().requests, 0);
-  tracker.record("deepseek-v4-pro", {
-    prompt_tokens: 1_000_000,
-    completion_tokens: 500_000,
-    total_tokens: 1_500_000,
-  });
-  tracker.record("custom-x", {
-    prompt_tokens: 100,
-    completion_tokens: 100,
-    total_tokens: 200,
-  });
+  tracker.record(
+    "deepseek-v4-pro",
+    {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 500_000,
+      total_tokens: 1_500_000,
+    },
+    "主线回合",
+    BEIJING_NOON,
+  );
+  tracker.record(
+    "custom-x",
+    {
+      prompt_tokens: 100,
+      completion_tokens: 100,
+      total_tokens: 200,
+    },
+    "主线回合",
+    BEIJING_NOON,
+  );
   const summary = tracker.getSummary();
   assert.equal(summary.requests, 2);
   assert.equal(summary.hasUnpriced, true, "custom-x 未定价");
@@ -57,19 +69,21 @@ test("cost tracker aggregates usage and estimates cost by model", () => {
   assert.equal(formatCostCny(0.000015), "¥0.0000");
   assert.equal(formatCostCny(12.5), "¥12.50");
   assert.equal(
-    estimateRequestCostCny("deepseek-v4-flash", {
-      prompt_tokens: 1_000_000,
-      completion_tokens: 0,
-      total_tokens: 1_000_000,
-    }),
+    estimateRequestCostCny(
+      "deepseek-v4-flash",
+      { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      undefined,
+      BEIJING_NOON,
+    ),
     0.5,
   );
   assert.equal(
-    estimateRequestCostCny("unknown", {
-      prompt_tokens: 1,
-      completion_tokens: 1,
-      total_tokens: 2,
-    }),
+    estimateRequestCostCny(
+      "unknown",
+      { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      undefined,
+      BEIJING_NOON,
+    ),
     null,
   );
 });

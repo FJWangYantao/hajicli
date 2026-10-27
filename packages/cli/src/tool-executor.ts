@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   type BaseTool,
@@ -22,6 +23,12 @@ export interface ToolExecutionResult {
   blocked: boolean;
   /** 被 PreToolUse 钩子拦截（用户拒绝或安全策略拒绝），工具本身未执行。 */
   rejected?: boolean;
+  /**
+   * write 专用：执行前抢读的旧内容留档。覆盖写完成后旧内容就没了，完成块的
+   * 红删绿增 diff 预览只能靠这份（不进工具输出，不给模型上下文添负担）。
+   * existed=true 但 content 缺失 = 文件存在却读不了；回放历史没有此字段。
+   */
+  writeBefore?: { existed: boolean; content?: string };
 }
 
 export interface SharedToolExecutorOptions {
@@ -144,6 +151,19 @@ export class SharedToolExecutor {
       this.options.onToolProgress?.({ toolName, progress, context });
     };
     this.options.onToolStart?.({ toolName, args, context });
+    // write 覆盖写完成后旧内容就没了：执行前抢读一份（封顶 200k，防超大文件占内存），
+    // 只挂在执行结果上给完成块的 diff 预览用；读失败不阻塞执行（existed 照实记录）。
+    let writeBefore: { existed: boolean; content?: string } | undefined;
+    if (toolName === "write" && typeof args.path === "string") {
+      const beforePath = path.resolve(this.options.cwd, args.path);
+      try {
+        writeBefore = fs.existsSync(beforePath)
+          ? { existed: true, content: fs.readFileSync(beforePath, "utf8").slice(0, 200_000) }
+          : { existed: false };
+      } catch {
+        writeBefore = { existed: true };
+      }
+    }
     // 计时从这里开始：等待用户授权的时间不应计入工具耗时。
     const startedAt = Date.now();
     let finishedAt = startedAt;
@@ -203,6 +223,7 @@ export class SharedToolExecutor {
     return {
       output,
       ...(images?.length ? { images } : {}),
+      ...(writeBefore ? { writeBefore } : {}),
       duration: finishedAt - startedAt,
       blocked: failed,
     };

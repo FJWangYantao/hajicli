@@ -456,3 +456,37 @@ test("tool duration excludes the permission wait and start fires only after appr
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("write 执行前抢读旧内容留档，供完成块的 diff 预览", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-write-before-"));
+  const target = path.join(cwd, "a.txt");
+  fs.writeFileSync(target, "v1\nsame\n");
+  const fakeWrite = {
+    definition: definition("write"),
+    async execute() {
+      return "[文件写入成功]\n大小: 12 字节";
+    },
+  };
+  const executor = new SharedToolExecutor({
+    cwd,
+    tools: new Map([["write", fakeWrite]]),
+    hookEngine: new HookEngine(),
+    permissionEngine: new PermissionEngine(),
+    snapshotEngine: new SnapshotEngine(cwd),
+    taskStore: new TaskStore(path.join(cwd, ".haji", "tasks")),
+  });
+
+  try {
+    const overwrite = await executor.execute("write", { path: target, content: "v2\nsame\n" }, {});
+    assert.deepEqual(overwrite.writeBefore, { existed: true, content: "v1\nsame\n" });
+
+    const created = await executor.execute(
+      "write",
+      { path: path.join(cwd, "new.txt"), content: "n\n" },
+      {},
+    );
+    assert.deepEqual(created.writeBefore, { existed: false });
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

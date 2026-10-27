@@ -173,6 +173,15 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 - `/mcp`：查看各 server 状态（running/failed/disabled）、挂载的工具与失败原因
 - 启动时并行连接，单个 server 失败不影响其余与 CLI 本身；MCP 工具失败输出与内置工具同格式（`错误:` 前缀），会被经验系统纳入失败观测
 
+## 并行工具批与 A/B 实验
+
+同一条模型回复里，**连续的只读调用**会并行执行（默认最多 5 个）；`edit` / `write` / 写型 `bash` / `subagent` / `task*` 仍然是串行屏障。只读 bash 与只读 MCP 是否加入并行白名单由实验开关控制。
+
+- `HAJI_AB=1`：按 trace session 稳定五五分流，跑对照组 / 实验组。
+- `HAJI_EXPERIMENTS="all=control"`：强制全部走旧行为；也可单项覆盖，如 `parallel_prompt=control`。
+- `HAJI_MAX_PARALLEL_TOOLS=1..8`：覆盖并行上限（默认 5）。
+- `pnpm ab:report`：汇总 `~/.haji/traces` 与 `.haji/traces` 里的 `experiment_assignment` / `tool_batch` / `subagent_launch`，按 arm 对比批次数、并行率、平均批大小、节省时间与子代理启动数。
+
 ## 并行开发：自动 worktree
 
 在 git 仓库里启用后，每次启动 haji（新会话）都会自动创建一个独立工作树并在其中运行，多个进程可以同时改同一个仓库而互不干扰：

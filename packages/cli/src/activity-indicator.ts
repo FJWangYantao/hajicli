@@ -6,7 +6,12 @@ import {
   type ToolResultSummary,
 } from "./cli-runtime.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
-import { SHELL_PREVIEW_LINES } from "./tool-output.js";
+import {
+  TOOL_BLOCK_OUTPUT_MAX_CHARS,
+  type ToolBlockRenderInfo,
+  type ToolBlockWrite,
+} from "./tool-block-fold.js";
+import { SHELL_PREVIEW_LINES, stripToolOutputEnvelope } from "./tool-output.js";
 
 export type ActivityPhase =
   | "thinking"
@@ -148,14 +153,18 @@ export class ActivityIndicator {
     this.cancel = options.cancel || ((timer) => clearInterval(timer));
   }
 
-  start(phase: ActivityPhase, label: string, detail?: string): void {
+  /**
+   * 启动一行活动状态。`since` 传入外部锚点（如回合起点）：一轮一个计时，
+   * 后续请求/工具交接都沿用同一锚点，不各自归零。
+   */
+  start(phase: ActivityPhase, label: string, detail?: string, since?: number): void {
     this.clearTimer();
     const now = this.now();
     this.state = {
       phase,
       label: oneLine(label, 48) || label,
       detail: oneLine(detail),
-      startedAt: now,
+      startedAt: since !== undefined ? Math.min(since, now) : now,
       lastProgressAt: now,
     };
     this.tick = 0;
@@ -168,8 +177,29 @@ export class ActivityIndicator {
     this.timer.unref?.();
   }
 
+  /**
+   * 换阶段不换表：行已在跑时只切 phase/label，计时从原锚点继续（一轮一个计时，
+   * 思考 → 生成工具调用 → 回复、工具之间的交接都不归零）；行不在时等价于 start。
+   * 换阶段本身算一次进展，等待/停滞判定重新起算。
+   */
   transition(phase: ActivityPhase, label: string, detail?: string): void {
-    this.start(phase, label, detail);
+    if (!this.state) {
+      this.start(phase, label, detail);
+      return;
+    }
+    const now = this.now();
+    this.state.phase = phase;
+    this.state.label = oneLine(label, 48) || label;
+    this.state.detail = oneLine(detail);
+    this.state.lastProgressAt = now;
+    this.emit(now);
+    if (!this.timer && phase !== "permission") {
+      this.timer = this.schedule(() => {
+        this.tick += 1;
+        this.emit(this.now());
+      }, this.intervalMs);
+      this.timer.unref?.();
+    }
   }
 
   progress(detail?: string): void {
@@ -222,6 +252,8 @@ interface ToolRunEntry {
   partialLine: string;
   /** 自动模式判定结论及其过期时间：只挂在实时区域，不进对话正文。 */
   verdict?: { text: string; until: number };
+  /** 完整输出留档（截到 TOOL_BLOCK_OUTPUT_MAX_CHARS）：提交后供二级折叠展开重渲染。 */
+  fullOutput?: string;
 }
 
 interface ToolRunViewOptions {
@@ -328,7 +360,7 @@ export class ToolRunView {
     this.flush();
   }
 
-  finish(id: string, result: ToolResultSummary, durationMs: number): void {
+  finish(id: string, result: ToolResultSummary, durationMs: number, fullOutput?: string): void {
     const entry = this.find(id);
     if (!entry) return;
     entry.status = result.status;
@@ -336,6 +368,11 @@ export class ToolRunView {
     entry.preview = result.preview;
     entry.stats = result.stats;
     entry.durationMs = durationMs;
+    // 全文留档有上限：整文件 read 这类超长输出不进内存，展开时按截断文本渲染。
+    entry.fullOutput =
+      fullOutput && fullOutput.length > 0
+        ? fullOutput.slice(0, TOOL_BLOCK_OUTPUT_MAX_CHARS)
+        : undefined;
     if (!this.entries.some((item) => item.status === "running" || item.status === "judging")) {
       this.clearTimer();
     }
@@ -348,17 +385,61 @@ export class ToolRunView {
 
   /** 返回已结束条目的最终文本（按登记顺序）并清空实时区域。 */
   commit(): string {
+    return this.commitWithBlocks().text;
+  }
+
+  /**
+   * commit 的块感知版本：整格文本之外，同时带出每个工具块的字符区间与渲染配方，
+   * 交给 TerminalUI 做二级折叠（收起数行、点击展开、悬停提示）。
+   * 区间按提交文本（写入 chatContent 前的原文）计算，写入侧负责平移。
+   */
+  commitWithBlocks(): { text: string; blocks: ToolBlockWrite[] } {
     const width = this.getWidth();
-    const text = this.entries
-      .filter(
-        (entry) =>
-          entry.status !== "pending" && entry.status !== "running" && entry.status !== "judging",
-      )
-      .flatMap((entry) => this.formatEntry(entry, width, false))
-      .map((row) => `${row}\n`)
-      .join("");
+    const blocks: ToolBlockWrite[] = [];
+    let text = "";
+    for (const entry of this.entries.filter(
+      (item) => item.status !== "pending" && item.status !== "running" && item.status !== "judging",
+    )) {
+      const rows = this.formatEntry(entry, width, false);
+      if (rows.length === 0) continue;
+      const start = text.length;
+      for (const row of rows) text += `${row}\n`;
+      blocks.push({ start, end: text.length, info: this.buildBlockInfo(entry) });
+    }
     this.reset();
-    return text;
+    return { text, blocks };
+  }
+
+  /** 提交格 → 二级折叠的渲染配方：口径与 formatEntry 的完成态完全一致。 */
+  private buildBlockInfo(entry: ToolRunEntry): ToolBlockRenderInfo {
+    const argLines = entry.argLines;
+    // edit/write 的原始回执（路径 / oldHash / newHash / 改后片段）是给模型做下一次
+    // 编辑与并发校验用的；对话区的内容由 diff 预览承担，展开时不再把回执重复铺一遍。
+    // 没有 diff 预览时仍保留原始输出，避免展开后空无一物。
+    const hideRawReceipt =
+      (entry.toolName === "edit" || entry.toolName === "write") && (entry.preview?.length ?? 0) > 0;
+    // 其余工具剥掉回执外壳（bash 头/段标记、read/grep 元信息、evidence id），
+    // 展开正文只留真正的输出；剥完为空就不留全文，避免展开后空无一物。
+    const fullOutput = hideRawReceipt
+      ? undefined
+      : stripToolOutputEnvelope(entry.toolName, entry.fullOutput ?? "");
+    return {
+      status: entry.status as ToolBlockRenderInfo["status"],
+      toolName: entry.toolName,
+      // 有参数展开行时头行不重复命令（与 formatEntry 完成态一致）。
+      summary: argLines ? "" : entry.summary,
+      timing:
+        entry.durationMs !== undefined && entry.status !== "rejected"
+          ? formatToolDuration(entry.durationMs)
+          : undefined,
+      argLines,
+      resultText: entry.resultText,
+      stats: entry.stats,
+      preview: entry.preview ? [...entry.preview] : undefined,
+      fullOutput: fullOutput || undefined,
+      // bash 的报错与统计几乎都在尾部，展开正文保尾；其余工具保头。
+      keep: entry.toolName === "bash" ? "tail" : "head",
+    };
   }
 
   reset(): void {

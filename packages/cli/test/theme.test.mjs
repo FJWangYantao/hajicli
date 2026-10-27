@@ -100,6 +100,22 @@ test("ansi16 sequences use standard and bright SGR colors", () => {
   assert.match(paint.boldAccent("HAJI"), /^\x1b\[1m\x1b\[95mHAJI/);
 });
 
+test("ansi16 degradation buckets by hue so semantic colors survive pastel themes", () => {
+  setActiveTheme(FIXED_THEME);
+  setColorLevel("ansi16");
+
+  // 低饱和粉彩不能被吸到灰阶——diff 的红删绿增在 16 色终端里必须还能分开。
+  assert.equal(fgSeq("#e07a7a"), "\x1b[91m"); // 主题红（粉彩）→ 红系
+  assert.equal(fgSeq("#78b892"), "\x1b[92m"); // 主题绿（粉彩）→ 绿系
+  assert.equal(fgSeq("#7dcfff"), "\x1b[96m"); // 天青（hue≈202）→ 青系而非蓝系
+  assert.equal(fgSeq("#82aadd"), "\x1b[94m"); // 主题蓝（hue≈214）→ 蓝系
+  // 近中性走灰阶，亮度决定档位。
+  assert.equal(fgSeq("#141414"), "\x1b[30m");
+  assert.equal(fgSeq("#6a7480"), "\x1b[90m");
+  assert.equal(fgSeq("#c8ced6"), "\x1b[37m");
+  assert.equal(fgSeq("#f2f5f8"), "\x1b[97m");
+});
+
 test("mono mode removes ANSI while preserving readable user prefixes", () => {
   setActiveTheme(FIXED_THEME);
   setActiveColorLevel("mono");

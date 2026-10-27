@@ -95,7 +95,7 @@ test("the title names the active category and the item count", () => {
   const frame = buildContextInspectorFrame(state(), 100, 20);
   const title = frame.rows[0].replace(/\x1b\[[0-9;]*m/g, "");
   assert.match(title, /上下文 · 文件 · 3 项/);
-  assert.match(title, /Esc 返回/);
+  assert.match(title, /\[Esc 返回\]/);
   assert.equal(frame.back.row, 0);
   assert.ok(frame.back.left > 80 && frame.back.left + frame.back.width < 100);
 });

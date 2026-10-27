@@ -12,7 +12,11 @@ export const PARALLEL_READ_ONLY_TOOLS = new Set([
   "readskillresource",
 ]);
 
-export const MAX_PARALLEL_READ_ONLY_TOOLS = 3;
+export const MAX_PARALLEL_READ_ONLY_TOOLS = 5;
+
+/** 环境变量 / 实验允许的上限范围。 */
+export const MIN_PARALLEL_READ_ONLY_TOOLS = 1;
+export const MAX_PARALLEL_READ_ONLY_TOOLS_LIMIT = 8;
 
 export interface NamedToolCall {
   function: { name: string };
@@ -34,12 +38,31 @@ export interface ToolBatchRunResult<R> {
   savedTimeMs: number;
 }
 
-/** Groups only contiguous, explicitly allowlisted read-only calls. Mutation and orchestration calls are barriers. */
+export interface ToolBatchOptions<T> {
+  /** 每批最多几个调用；缺省 `MAX_PARALLEL_READ_ONLY_TOOLS`。 */
+  maxParallel?: number;
+  /**
+   * 判定一个调用能否进入并行批。缺省只看静态白名单；
+   * turn-runner 会注入「只读 bash / 只读 MCP」的动态判定。
+   */
+  isParallelizable?: (call: T) => boolean;
+}
+
+/**
+ * Groups only contiguous, explicitly allowlisted read-only calls.
+ * Mutation and orchestration calls are barriers.
+ */
 export function createToolCallBatches<T extends NamedToolCall>(
   calls: readonly T[],
-  maxParallel = MAX_PARALLEL_READ_ONLY_TOOLS,
+  options: ToolBatchOptions<T> = {},
 ): ToolCallBatch<T>[] {
-  const concurrency = Math.max(1, Math.trunc(maxParallel));
+  const concurrency = Math.max(
+    MIN_PARALLEL_READ_ONLY_TOOLS,
+    Math.trunc(options.maxParallel ?? MAX_PARALLEL_READ_ONLY_TOOLS),
+  );
+  const isParallelizable =
+    options.isParallelizable ??
+    ((call: T) => PARALLEL_READ_ONLY_TOOLS.has(call.function.name.toLowerCase()));
   const batches: ToolCallBatch<T>[] = [];
   const pending: T[] = [];
   const flush = () => {
@@ -50,7 +73,7 @@ export function createToolCallBatches<T extends NamedToolCall>(
   };
 
   for (const call of calls) {
-    if (PARALLEL_READ_ONLY_TOOLS.has(call.function.name.toLowerCase())) {
+    if (isParallelizable(call)) {
       pending.push(call);
       if (pending.length >= concurrency) flush();
       continue;

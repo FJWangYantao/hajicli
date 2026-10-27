@@ -36,8 +36,19 @@ export interface TaskPlan {
 /** 按会话隔离持久化任务计划。 */
 export class TaskStore {
   private scope = "default";
+  private tasksDir: string;
 
-  constructor(private readonly tasksDir = path.join(process.cwd(), ".haji", "tasks")) {}
+  constructor(tasksDir = path.join(process.cwd(), ".haji", "tasks")) {
+    this.tasksDir = tasksDir;
+  }
+
+  /**
+   * 运行期切换工作目录（恢复其他 worktree 的会话后跟着过去）：
+   * 任务计划落在会话所在的树里，作用域（会话 id）保持不变。
+   */
+  retarget(cwd: string = process.cwd()): void {
+    this.tasksDir = path.join(cwd, ".haji", "tasks");
+  }
 
   setTaskScope(scope: string): void {
     if (!/^[a-zA-Z0-9_-]+$/.test(scope)) throw new Error("无效的任务作用域");

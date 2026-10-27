@@ -7,7 +7,9 @@ import {
   buildContentPreview,
   buildEditDiff,
   buildWriteDiff,
+  diffWidthFor,
   formatDiffHeader,
+  preferredDiffWidth,
 } from "./diff-preview.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { fitText, terminalWidth, wrapAnsi } from "./terminal-text.js";
@@ -524,12 +526,20 @@ function preEditContentForEdit(
 export function summarizeToolResult(
   toolName: string,
   output: string,
-  outcome: { blocked: boolean; rejected?: boolean },
+  outcome: {
+    blocked: boolean;
+    rejected?: boolean;
+    /** write 执行前抢读的旧内容留档（tool-executor 提供）；回放历史没有此字段。 */
+    writeBefore?: { existed: boolean; content?: string };
+  },
   args: Record<string, unknown> = {},
   /** edit 完成块重建「改动前」全文用；回放历史时不传，避免拿当前磁盘内容冒充旧状态。 */
   cwd?: string,
+  /** UI 对话区实际内容宽（ui.getContentWidth()，含侧栏扣减）；diff 按它建宽，缺省回退终端列数推算。 */
+  uiContentWidth?: number,
 ): ToolResultSummary {
   const body = sanitizeTerminalText(output.replace(VERIFICATION_EVIDENCE_RE, ""));
+  const diffWidth = uiContentWidth ? diffWidthFor(uiContentWidth) : preferredDiffWidth();
   const policyLabel = body.startsWith("[计划模式拦截]")
     ? "计划模式阻止"
     : body.startsWith("[自动模式拦截]") || body.startsWith("[安全引擎拒绝拦截]")
@@ -585,11 +595,29 @@ export function summarizeToolResult(
   if (body.startsWith("[文件写入成功]") && writtenBytes) {
     const content = typeof args.content === "string" ? args.content : "";
     const lines = countTextLines(content);
-    // 与 opencode 的 write 块一致：完成后展示写入后的内容（带行号），而不只是字节数。
+    const text = `已写入 ${formatBytes(Number(writtenBytes[1]))}${lines > 0 ? ` · ${lines} 行` : ""}`;
+    // 有执行前的旧内容留档：完成块展示红删绿增的 diff（覆盖写对比旧内容、
+    // 新建文件全量绿色），改动行数并进头行的 +a −r；留档缺失或读不了的
+    // （回放历史 / 文件不可读）不冒充 diff，退回带行号的纯内容预览。
+    const before = outcome.writeBefore;
+    if (before && (!before.existed || before.content !== undefined)) {
+      const diff = buildWriteDiff(
+        before.existed ? before.content : undefined,
+        content,
+        diffWidth,
+        DIFF_PREVIEW_LINES,
+      );
+      return {
+        status: "success",
+        text,
+        stats: diff.stats,
+        ...(diff.lines.length > 0 ? { preview: diff.lines } : {}),
+      };
+    }
     const preview = buildContentPreview(content, 240, DIFF_PREVIEW_LINES).lines;
     return {
       status: "success",
-      text: `已写入 ${formatBytes(Number(writtenBytes[1]))}${lines > 0 ? ` · ${lines} 行` : ""}`,
+      text,
       ...(preview.length > 0 ? { preview } : {}),
     };
   }
@@ -603,7 +631,13 @@ export function summarizeToolResult(
     // 与授权卡片共用同一份 patch：先还原「改动前」全文，行号与上下文才和授权阶段一致。
     // 回放历史（不传 cwd）或还原不出来时退回 oldText/newText 片段对比。
     const original = cwd === undefined ? undefined : preEditContentForEdit(args, body, cwd);
-    const diff = buildEditDiff(original ?? "", args.oldText, args.newText, 240, DIFF_PREVIEW_LINES);
+    const diff = buildEditDiff(
+      original ?? "",
+      args.oldText,
+      args.newText,
+      diffWidth,
+      DIFF_PREVIEW_LINES,
+    );
     return {
       status: "success",
       // 改动行数并进头行（`+a −r`），不再单独占一行 `└`，与 opencode 的文件头一致。
@@ -688,6 +722,8 @@ export interface ToolCellOptions {
   argLines?: readonly string[];
   /** 预览最多几行；命令类结果按 shell 预算放宽，默认沿用通用预算。 */
   maxPreviewLines?: number;
+  /** 鼠标悬停在这块上：头行整体加下划线，提示整块可点击展开/收起。 */
+  hover?: boolean;
 }
 
 /** 工具块左缩进；过程折叠的摘要行复用它，保证与工具块左对齐。 */
@@ -747,7 +783,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     timing ? `  ${colors.faint(timing)}` : "",
     verdict ? `  ${colors.faint(verdict)}` : "",
   ].join("");
-  const rows = [header];
+  const rows = [options.hover ? `\x1b[4m${header}\x1b[24m` : header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);
   // 参数展开行紧跟在头行下面：多行命令在原位置按原样分行，而不是压成一行摘要。
   // 这些是「交给工具执行的东西」，与下方结果同色会分不清，统一用工具侧青色。
@@ -851,7 +887,10 @@ export function buildPermissionPreview(
   toolName: string,
   args: Record<string, unknown>,
   cwd: string,
+  /** UI 对话区实际内容宽（含侧栏扣减）；缺省回退终端列数推算。 */
+  uiContentWidth?: number,
 ): string[] {
+  const diffWidth = uiContentWidth ? diffWidthFor(uiContentWidth) : preferredDiffWidth();
   if (toolName === "bash" && typeof args.command === "string") {
     return [
       ...previewTextLines(args.command, "", 12).map((line) =>
@@ -874,7 +913,7 @@ export function buildPermissionPreview(
       original = undefined;
     }
     const content = typeof args.content === "string" ? args.content : "";
-    const diff = buildWriteDiff(original, content, 240, 12);
+    const diff = buildWriteDiff(original, content, diffWidth, 12);
     if (diff.lines.length === 0) {
       return [formatDiffHeader(oneLine(args.path), diff.stats, "内容为空")];
     }
@@ -892,7 +931,7 @@ export function buildPermissionPreview(
     } catch {
       original = "";
     }
-    const diff = buildEditDiff(original, oldText, newText, 240, 14);
+    const diff = buildEditDiff(original, oldText, newText, diffWidth, 14);
     return [formatDiffHeader(oneLine(args.path), diff.stats), ...diff.lines];
   }
   const entries = Object.entries(args);

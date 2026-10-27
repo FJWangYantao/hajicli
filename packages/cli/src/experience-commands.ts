@@ -27,6 +27,8 @@ export interface ExperienceCommandContext {
   pick?: (options: ExperiencePickOptions) => Promise<string | undefined>;
   /** 用户级 Skill 目录（/instinct skill 蒸馏目标），缺省 ~/.haji/skills；测试注入临时目录。 */
   userSkillsDir?: string;
+  /** 长耗时提炼期间让输入行保持可用（可选；测试/无头场景不注入）。 */
+  startBackgroundInput?: () => void;
 }
 
 /** 候选选择器的入参：与 TerminalUI.readSelection 的子集保持一致，避免直接耦合。 */
@@ -272,6 +274,8 @@ export async function handleInstinctCommand(
       return;
     }
     ctx.writeLine(colors.gray(`正在提炼 ${obs.length} 条观测...`));
+    // LLM 语义分析可能要跑几十秒：先把输入行还回去，用户可以先写下一句。
+    ctx.startBackgroundInput?.();
     const summary = await engine.runDistill(obs, {
       messages: [],
       cwd: process.cwd(),

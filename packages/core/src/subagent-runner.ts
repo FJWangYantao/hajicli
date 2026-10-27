@@ -118,6 +118,14 @@ export interface SubagentRunnerOptions {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ) => Promise<string>;
+  /**
+   * 可选：按并行策略执行一批工具调用，返回与 calls 顺序对齐的输出。
+   * 缺省严格串行；CLI 注入「连续只读、最多 N 个」的批处理。
+   */
+  batchToolCalls?: (
+    calls: readonly ToolCall[],
+    execute: (call: ToolCall, index: number) => Promise<string>,
+  ) => Promise<string[]>;
   onEvent?: (event: SubagentEvent) => void;
   maxTurns?: number;
 }
@@ -428,7 +436,7 @@ export class SubagentRunner {
           return result;
         }
 
-        for (const toolCall of toolCalls) {
+        const executeOne = async (toolCall: ToolCall): Promise<string> => {
           if (parentContext.abortSignal?.aborted) throw abortError();
           executedToolCalls += 1;
           this.options.onEvent?.({
@@ -455,7 +463,22 @@ export class SubagentRunner {
             toolCallId: toolCall.id,
             durationMs: Date.now() - toolStartedAt,
           });
-          messages.push({ role: "tool", tool_call_id: toolCall.id, content: output });
+          return output;
+        };
+        // 子代理内部同样只并行「连续只读」；有写操作时批处理会自动拆开。
+        const outputs = this.options.batchToolCalls
+          ? await this.options.batchToolCalls(toolCalls, executeOne)
+          : await (async () => {
+              const serial: string[] = [];
+              for (const toolCall of toolCalls) serial.push(await executeOne(toolCall));
+              return serial;
+            })();
+        for (let index = 0; index < toolCalls.length; index += 1) {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCalls[index]!.id,
+            content: outputs[index] ?? "",
+          });
         }
       }
 

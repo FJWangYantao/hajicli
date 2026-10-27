@@ -496,6 +496,24 @@ export function listHajiWorktrees(repoRoot: string): WorktreeEntry[] {
 }
 
 /**
+ * 同仓库其他 haji 工作树的会话目录：worktree 模式下每个并行会话的记录
+ * 都存在自己那棵树的 `.haji/sessions` 里，主目录看不到。/resume、-c/-r
+ * 把这些目录并进检索范围，选中后进程再切到对应的树继续工作。
+ */
+export function siblingSessionStoreDirs(cwd: string = process.cwd()): string[] {
+  const repo = detectGitRepo(cwd);
+  if (!repo) return [];
+  const currentKey = normalizePathKey(process.cwd());
+  const dirs: string[] = [];
+  for (const entry of listHajiWorktrees(repo.root)) {
+    if (normalizePathKey(entry.path) === currentKey) continue;
+    const sessionsDir = path.join(entry.path, ".haji", "sessions");
+    if (fs.existsSync(sessionsDir)) dirs.push(sessionsDir);
+  }
+  return dirs;
+}
+
+/**
  * 移除一个 haji 工作树。`force` 用于丢弃未提交改动（与 `git worktree remove --force` 一致）。
  * 移除前先把会话记录与快照复制到主仓库 `.haji/worktree-archive/<名称>/`，
  * 避免工作树一删、里面的对话历史和 /rewind 数据跟着消失。

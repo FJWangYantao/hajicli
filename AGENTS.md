@@ -90,6 +90,22 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `tool-executor.ts` 的 `mutationPaths` 传**绝对路径**，否则 `/rewind` 覆盖不到。
 - 相关测试：`packages/cli/test/workspace-scope.test.mjs`（scope / engine / roots / 规则 / 外部快照）。
 
+## worktree 并行会话与会话发现
+
+- 自动 worktree（`worktree.ts`）开启时每个新会话建一棵随机命名的树并 `process.chdir` 进去，
+  会话文件（`.haji/sessions`）、任务计划、/rewind 快照全部落在**各自树里**——主仓库互相看不见。
+- 恢复链路（`/resume`、`-c`、`-r`）经 `sessionManager.setSearchDirs(siblingSessionStoreDirs())`
+  把同仓库其他 haji 工作树的会话目录并进检索：`listSessions` 合并展示（同 id 多副本按 updatedAt 取最新，
+  附加目录只读、不删空文件），`loadSession` 命中附加目录后**主目录跟着切过去**，后续保存写回原树不分叉。
+- 选中别树的会话后 `loadAndRenderSession` 调 `ctx.enterSessionWorktree(worktreeRoot)`（index.ts 注入）：
+  `chdir` + `SessionManager.setSessionsDir` + `TaskStore/SnapshotEngine.retarget()` + `syncPathScope()`
+  （路径边界读实时 `process.cwd()`）。**新增 cwd 相关的持久化组件时必须同时补 retarget**，
+  否则跨树恢复后该组件读写还在旧树。
+- SIGINT（第二次 Ctrl+C 强退）也要 `sessionManager.flush()`（经 `sigintSessionFlush` 晚绑定注入，
+  因为处理函数注册早于 manager 创建）；正常退出路径在 `finally` 里 flush，无需处理。
+- 测试：`worktree.test.mjs`（siblingSessionStoreDirs）、`session-usage.test.mjs`（跨目录发现/去重/重定向）。
+  `/worktree remove` 会把会话与快照归档到主仓库 `.haji/worktree-archive/<名称>/`（归档暂不进 resume 列表）。
+
 ## 斜杠指令：立即执行通道（回合进行中）
 
 回合进行中的输入默认进 `pendingInputs` 排队，等本轮结束再分发（`/compact`、`/clear` 必须如此）。
@@ -107,7 +123,31 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   （流式渲染每帧从尾部整段重写，会被抹掉），一律经 `immediateWriteLine` / `immediateWriteChat` 寄存。
 - **ESC 归属**：选择器会临时接管输入行。`ui.onEsc` 是单槽，回合用它挂「中止回合」，
   直接覆盖会让选择器里的 Esc 顺手中止整轮。用 `ui.pushEscHandler()` 压栈，返回的函数弹出恢复。
+- **长耗时但不需要交互的指令**（`/compact`、`/doctor`、`/skills validate|reload`、`/instinct distill`、
+  前台 `/agents`）在 `await` 前调 `startBackgroundInput()`：主循环不在 `readInput` 时输入框只是画出来，
+  没有 `activeInput` 就会吞掉所有字符。回车进 `pendingInputs`，草稿由主循环 `cancelInput()` 取回；
+  新增此类命令必须照此处理（同步阻塞的 git/文件操作除外，那是事件循环被占住，另需拆分）。
 - 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
+
+## 并行工具批与 A/B 实验（parallel-batch / experiments）
+
+- 分组：同一 assistant 消息内**连续只读**调用才并行，默认最多 5 个（`MAX_PARALLEL_READ_ONLY_TOOLS`）；
+  `edit` / `write` / `bash`（写）/ `subagent` / `task*` 等是屏障，顺序不变。
+- 判定：静态白名单在 `tool-batch.ts`，动态部分在 `parallel-policy.ts`——实验开启时只读 bash
+  （`isReadOnlyShellCommand`）与只读 MCP（`permissionEngine.isReadOnlyTool`）也可并行；
+  `loadskill` 虽有加载副作用、权限引擎仍视为只读，但必须继续当屏障。
+- A/B：`experiments.ts`，分配单位是本次进程的 trace session id（同进程内稳定）。
+  `HAJI_AB=1` 按 `sha256(salt:unitId:name)` 五五分流；`HAJI_EXPERIMENTS="name=arm"` 或
+  `all=control` 强制；不设时用推荐默认 arm。`HAJI_MAX_PARALLEL_TOOLS`（1–8）覆盖并行上限。
+- 观测：trace 写 `experiment_assignment` / `tool_batch` / `subagent_launch`；
+  `pnpm ab:report` 按 arm 汇总批次数、并行率、平均批大小、节省时间与子代理启动数。
+- 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
+  `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
+  写入型子代理仍然独占。
+- 测试：`experiments.test.mjs`（分配/覆盖/上限）、`parallel-policy.test.mjs`（静态/动态判定）、
+  `parallel-prompt.test.mjs`（提示词 arm）、`tool-batch.test.mjs`（分组与自定义判定）、
+  `subagent.test.mjs`（子代理批处理）、`persistence-performance.test.mjs`（trace 事件）、
+  `ab-report.test.mjs`（报告聚合）。
 
 ## 会话目标（setgoal / goalfinish，纯模型驱动）
 
@@ -132,6 +172,73 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `session.goal` 含状态、达成时间与 evidence 摘要。
 - 测试：`packages/cli/test/goal-tool.test.mjs`（工具行为与校验、权限口径、提示词分片、
   持久化、侧栏与 selfstate）。
+
+## 工具块二级折叠与鼠标交互（tool-block-fold）
+
+- 两级折叠：一级是过程段收敛成 `● 摘要行`（process-fold.ts，点击/Ctrl+O 展开整段）；
+  二级是**单个工具块**的按行数收口，但默认态是**全展开**——段展开（或 `/fold off`）后
+  每块直接铺开预览全量 + 输出正文至 `TOOL_BLOCK_EXPAND_LINES`（40）行（bash 保尾、其余保头），
+  点块头可单独收起成 `TOOL_BLOCK_COLLAPSE_LINES`（3）行预览 + `⋯ 还有 N 行 · 点击展开`，
+  再点头行/指示行重新展开。封口时 `sealFoldGroup` 把段内块初始化为 `expanded: true`。
+- 数据链路：`ToolRunView.finish(..., fullOutput)` 留档全文（截到 20k 字符/块），
+  `commitWithBlocks()` 带出每个块的字符区间 + 渲染配方（`ToolBlockRenderInfo`，
+  足以在任意宽度重出收起/展开两种形态）；turn-runner 提交走 `ui.writeToolCells(text, blocks)`。
+  区间按提交原文计算，**写入归一化（制表符展开）改变长度时块元数据自动弃用**，退化为纯文本；
+  `pushSegment` 里 `closeTrailingStyle` 的尾部 SGR 插入要给触及段尾的块补偏移（防块尾切进转义序列）。
+- 渲染与命中都在 TerminalUI（terminal-input.ts）：`sealFoldGroup` 把尾部块转成段内区间
+  （`ChatSegment.blocks`），`renderBlockSegmentRows` 挖出块区间按配方现算、其余原文照常换行，
+  同时记录 `blockSpans` 行落位；`getSealedRows` 据此重建 `toolBlockHits`（头行/指示行 → 块 id）
+  与 `toolBlockRanges`（整块行区间，悬停判定用）。封口时机：每轮工具批结束**就地收口**
+  （turn-runner 批循环后，中止/连续失败提前结束的回合也收；随后的提示行写在折叠段下面
+  不会被吞）。**回合进行中的尾部块保持现状**（完整可见、不可点）：点击要改写 chatContent
+  中段，会破坏 turn-runner 持有的流式偏移。
+- 悬停：1003 any-event 跟踪在交互模式常开（`setMouseMotionEnabled(true)`）；指针扫过
+  工具块整块或摘要行 → `chatHoverTarget` → 块头行加下划线（`formatToolCell` 的 `hover` 参数）、
+  摘要行换强调色（`buildFoldHeader` 的 `hovered` 参数）。目标没变不重绘；每帧校验目标
+  仍存在（段被预算回收/组被收起就清空）。**块展开态与悬停态都进段缓存键**
+  （`segmentCacheKey` 的 `|b…h` 段），点击/悬停只重算受影响的段。
+- 展开正文前会剥掉工具回执外壳（`tool-output.ts` 的 `stripToolOutputEnvelope`）：
+  bash 的 `[命令执行结果…]` 与 stdout/stderr 分隔行、read/grep/global 的元信息行、
+  edit/write 的路径/hash/改后片段回执、以及末尾的 `[verification_evidence_id]`。
+  只剥开头连续块与已知分隔行，正文里形如回执的真实输出不受影响；`/output` 仍给原始输出。
+- /resume 回放的历史没有块元数据（session-commands 只重建文本分段），按纯文本渲染，
+  不提供二级折叠；`/output` 仍可看最近一批工具全文。
+- 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
+  ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
+
+## write/edit 完成块的红绿 diff
+
+- write 的「改动前」内容**执行后无法再取**：`tool-executor.ts` 在 `targetTool.execute`
+  之前抢读目标文件，挂到 `ToolExecutionResult.writeBefore`（截 200k）。挂结果不挂工具输出，
+  模型上下文不膨胀。新建文件 `existed:false` → 全绿；读不了的只标 `existed:true` 不带内容。
+- `cli-runtime.ts` 的 `summarizeToolResult("write", ...)` 拿 writeBefore 走
+  `diff-preview.ts` 的 `buildWriteDiff`，edit 走 `buildEditDiff`（优先用
+  `preEditContentForEdit` 还原旧全文，与授权卡片同口径）。
+  渲染按宽度双模式：**常规宽度（每侧 <68 列）走单列 unified**（`行号 │ 标记 全宽内容`，
+  opencode 同款）——硬拆两栏每侧只剩 40 多列，被代码缩进吃一截后长行全靠省略号，
+  行内高亮看不清；**宽终端（构建宽 ≥148）才左右分栏**（左旧右新、双行号，相邻删/增
+  配对合并为同一视觉行）。两种模式共用切分与铺色：行内变更字符段强反色，整行铺淡色条。
+- **变更行整块铺色**：删除/新增单元格从 `−/+` 标记到行尾补白铺成连续色条，
+  行内变更字符段再叠强反色（`redBg`/`greenBg`）。色条由 theme.ts `diffToneBg` 生成：
+  主题红/绿先**提纯成高饱和锚点**（取色相，S .72，深底 V .68 / 浅底 V .9），再小比例
+  **sRGB 直混**到参考背景（深 0.22 / 浅 0.2，对齐 GitHub 叠底）——粉彩前景色直接混底
+  会得到褐红/灰绿的脏色条，Oklab 朝深底混会把亮度非线性压垮，都不能用。
+  `−/+` 标记与强反色段自带的 `themeReset` 会清掉铺底，拼接后必须**重新续上**
+  `diffToneBg + 前景`，否则铺底在标记后就断了。上下文行不铺底。
+  16 色降级深底为 41/42 淡条 + 101/102 强段；16 色浅底淡 tint 会退化成白底（红绿不分），
+  刻意不铺条。
+- **构建宽度必须等于实际渲染宽**：分栏行按满宽补白，构建宽只要比渲染宽多 1 列，
+  行尾被裁的全是右栏。**宽度来源是 `ui.getContentWidth()`（已含侧栏扣减）**，经
+  `diffWidthFor()`（内容宽 − 8）折算后传给 `summarizeToolResult` / `buildPermissionPreview`
+  （末位可选参数 `uiContentWidth`）；`preferredDiffWidth()` 只是无 UI 时的回退
+  （终端列数推 `resolveTuiLayout` 对话区宽 − 8，无 TTY 按 112）。
+- 截断带 ANSI 的行必须走 `truncateAnsiText`/`fitText`（fitText 遇转义序列自动切 ANSI 分支）：
+  `truncateText` 是纯文本口径，会把转义字节当可见宽度，提前截进转义序列中间（花屏/断色）。
+  **writeBefore 缺失或读不了时不冒充 diff**（/resume 回放历史没有此字段），退回带行号纯内容预览。
+- 16 色降级（theme.ts `rgbToAnsi16`）按**色相分桶**而非 RGB 最近色：朴素最近色会把粉彩主题
+  全吸到灰阶，diff 红删绿增在 ansi16 终端分不开。语义色先保色相再按亮度分普通/明亮档；
+  青蓝分界在 hue 210（主题青 #7dcfff hue≈202 归青，主题蓝 hue≥214 归蓝）。
+  回归测试在 `theme.test.mjs`。
 
 ## Shell / bash 工具（Windows）
 

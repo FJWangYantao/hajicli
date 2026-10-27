@@ -25,6 +25,7 @@ import {
   isFailedToolOutput,
   isHardProtectedTarget,
   isPermissionMode,
+  isReadOnlyShellCommand,
   isReasoningEffort,
   MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
   normalizePathKey,
@@ -129,6 +130,7 @@ import { CostTracker, formatCostCny, type TurnMetric } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
+import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
 import { GoalPromptPart } from "./goal-prompt.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
@@ -147,6 +149,7 @@ import {
 } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
+import { createParallelClassifier } from "./parallel-policy.js";
 import {
   isToolAllowedPersistently,
   loadAllPermissionRules,
@@ -208,6 +211,7 @@ import {
   handleSubagentCommand,
   type SubagentCommandContext,
 } from "./subagent-commands.js";
+import { resolveToolSubagentAccess } from "./subagent-policy.js";
 import type { WizardDeps } from "./subagent-wizard.js";
 import { detectTerminalAppearance } from "./terminal-appearance.js";
 import {
@@ -229,6 +233,7 @@ import {
   THEME_PRESET_NAMES,
   type ThemePresetName,
 } from "./theme.js";
+import { createToolCallBatches, runToolCallBatch, type ToolBatchOptions } from "./tool-batch.js";
 import { buildToolDisplay } from "./tool-display.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
@@ -245,6 +250,7 @@ import {
   loadWorktreeSetting,
   parseWorktreeArgs,
   prepareSessionWorktree,
+  siblingSessionStoreDirs,
   worktreeTargetCwd,
 } from "./worktree.js";
 import { handleWorktreeCommand } from "./worktree-commands.js";
@@ -428,6 +434,27 @@ async function main() {
   markStartupStage("perf_monitor");
   const startupWarnings: string[] = [];
   const tracker = new SessionTracker();
+  // 本地 A/B：分配单位是本次进程的 trace session id；分配快照写进 trace，供 ab:report 归组。
+  const experiments = new ExperimentRegistry(tracker.getSessionId());
+  tracker.recordExperimentAssignment(experiments.record());
+  /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
+  const recordSubagentOutcome = (agent: {
+    id: string;
+    status: string;
+    startedAt?: number;
+    finishedAt?: number;
+    toolCalls: number;
+    usage?: { totalTokens?: number };
+  }): void => {
+    tracker.recordSubagentResult({
+      agentId: agent.id,
+      status: agent.status,
+      durationMs:
+        agent.startedAt && agent.finishedAt ? Math.max(0, agent.finishedAt - agent.startedAt) : 0,
+      totalTokens: agent.usage?.totalTokens ?? 0,
+      toolCalls: agent.toolCalls,
+    });
+  };
   const buildProvider = (
     modelValue: string,
     providerOverride?: string,
@@ -693,6 +720,19 @@ async function main() {
   syncPathScope();
 
   /**
+   * 并行批策略：静态白名单 + （实验开启时）只读 bash / 只读 MCP 动态判定。
+   */
+  const isParallelizableTool = createParallelClassifier({
+    dynamic: experiments.is("parallel_allowlist", "dynamic"),
+    isReadOnlyTool: (name) => permissionEngine.isReadOnlyTool(name),
+    isReadOnlyCommand: (command) => isReadOnlyShellCommand(command, process.cwd(), workspaceRoots),
+  });
+  const toolBatchOptions = (): ToolBatchOptions<ToolCall> => ({
+    maxParallel: resolveMaxParallelTools(experiments),
+    isParallelizable: isParallelizableTool,
+  });
+
+  /**
    * 计算一次调用的授权范围：工作区外使用「读/写 + 目录前缀」的键，
    * 让「本会话内总是允许 / 永久允许」只放开这个目录，而不是放开全部写入。
    */
@@ -843,6 +883,9 @@ async function main() {
       const { history, pendingTurn } = splitPendingUserTurn(ctx.messages);
       if (history.length === 0) return;
       autoCompactionArmed = false;
+      // 压缩期间保持输入行可用：摘要模型可能要跑几十秒，用户可以先写下一句；
+      // 回车会进 pendingInputs，压缩结束后由主循环按队列处理。
+      startBackgroundInput();
       ui.writeLine(
         colors.gray(
           `上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
@@ -928,6 +971,8 @@ async function main() {
   // SIGINT 处理：Ctrl+C 时尽力 flush 观测样本（提炼逻辑太重，跳过）
   // Node 默认 Ctrl+C 直接终止跳过 finally，这里补一个最小收尾。
   let sigintHandling = false;
+  // sessionManager 在后面才创建；SIGINT 也要把防抖中的会话写盘冲掉，避免丢最后一次保存。
+  let sigintSessionFlush: (() => Promise<void>) | undefined;
   process.on("SIGINT", async () => {
     // 第二次 Ctrl+C：flush 可能挂住（如上游重试），直接强制退出。
     if (sigintHandling) process.exit(130);
@@ -936,6 +981,7 @@ async function main() {
     const watchdog = setTimeout(() => process.exit(130), 3000);
     watchdog.unref?.();
     try {
+      await sigintSessionFlush?.();
       await experienceStore.flushObservations();
     } catch {
       /* 静默 */
@@ -1056,11 +1102,17 @@ async function main() {
       reasoningEffort,
       permissionMode,
       recentUserMessage: lastUserMessageForRecall,
+      parallelBatchReadOnly: experiments.is("parallel_prompt", "batch"),
+      parallelBatchLimit: resolveMaxParallelTools(experiments),
     });
   let systemPrompt = await createSystemPrompt();
   markStartupStage("system_prompt");
 
   const sessionManager = new SessionManager();
+  // worktree 并行会话各存自己那棵树的 .haji/sessions：并进检索范围，
+  // /resume、-c/-r 才能发现它们（选中后进程切到对应树，见 enterSessionWorktree）。
+  sessionManager.setSearchDirs(siblingSessionStoreDirs(process.cwd()));
+  sigintSessionFlush = (): Promise<void> => sessionManager.flush();
   // 会话目标分片：/goal 设定的目标随会话记录走，激活时注入系统提示词。
   // 注册晚于上方首帧提示词生成没关系——新会话此刻必然没有目标，分片内容为空。
   systemPromptManager.registerPart(
@@ -1126,6 +1178,9 @@ async function main() {
       activeTools().map((tool) => tool.definition),
     ),
   );
+  // 费用日志页的数据来源：点开那一刻取一次逐条请求明细（页面只读，不随回合变动）。
+  // 排序视角归页面自己处理，这里只负责把当前记录整份交出去。
+  ui.setCostLogProvider(() => costTracker.getRequestDetails());
   // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
   let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
   // @ 文件补全：工作区文件列表缓存（60 秒刷新），输入 @ 时弹出模糊搜索。
@@ -1382,7 +1437,8 @@ async function main() {
     snapshotEngine,
     taskStore,
     setStatus: (status) => {
-      if (status) activityIndicator.start("tool", status);
+      // transition：行在跑时只换标签、保住回合计时（一轮一个计时，不随工具调用归零）。
+      if (status) activityIndicator.transition("tool", status);
       else activityIndicator.stop();
     },
     onToolStart: ({ context }) => {
@@ -1441,6 +1497,7 @@ async function main() {
         result,
         args,
         process.cwd(),
+        ui.getContentWidth(),
       );
       for (const row of formatToolCell({
         status: outcome.status,
@@ -1456,6 +1513,21 @@ async function main() {
       }
       return result.output;
     },
+    batchToolCalls: experiments.is("subagent_batch", "batched")
+      ? async (calls, execute) => {
+          const options = toolBatchOptions();
+          const outputs: string[] = [];
+          for (const batch of createToolCallBatches(calls, options)) {
+            const run = await runToolCallBatch(batch, async (call, index) => {
+              const startedAt = Date.now();
+              const output = await execute(call, index);
+              return { output, duration: Date.now() - startedAt };
+            });
+            outputs.push(...run.results.map((result) => result.output));
+          }
+          return outputs;
+        }
+      : undefined,
     onEvent: (event) => {
       if (event.type === "start") {
         if (event.taskId) {
@@ -1571,7 +1643,12 @@ async function main() {
     ) {
       return Promise.resolve(`错误: 活动任务不存在: ${resolvedRequest.taskId}`);
     }
-    const access = context?.permissionMode === "plan" ? "readonly" : "workspace-write";
+    const role = resolvedRequest.role || "research";
+    const access = resolveToolSubagentAccess({
+      role,
+      permissionMode: context?.permissionMode,
+      roleBased: experiments.is("subagent_access", "role"),
+    });
     const launch = agentManager.launch(
       {
         role: resolvedRequest.role || "research",
@@ -1603,7 +1680,14 @@ async function main() {
           },
         ),
     );
+    tracker.recordSubagentLaunch({
+      agentId: launch.agent.id,
+      role: launch.agent.role,
+      access,
+      background: false,
+    });
     return launch.completion.then((agent) => {
+      recordSubagentOutcome(agent);
       return agent.result
         ? formatSubagentResult(agent.result)
         : `错误: 子代理 ${agent.id} 未返回结果。`;
@@ -1653,7 +1737,7 @@ async function main() {
       access === "workspace-write"
         ? snapshotEngine.createAnchor(`before manual subagent ${Date.now()}`) || undefined
         : undefined;
-    return agentManager.launch(
+    const launch = agentManager.launch(
       {
         role: resolvedRequest.role || "research",
         description: resolvedRequest.description,
@@ -1687,6 +1771,14 @@ async function main() {
           },
         ),
     );
+    tracker.recordSubagentLaunch({
+      agentId: launch.agent.id,
+      role: launch.agent.role,
+      access,
+      background,
+    });
+    void launch.completion.then(recordSubagentOutcome);
+    return launch;
   };
 
   /** selfstate 的数据源：全部取自当前运行态；拿不到的字段不猜，直接省略。 */
@@ -1927,7 +2019,7 @@ async function main() {
           ? `需要授权 · ${requester} 请求${permissionVerb(toolName)}${protectedHint}`
           : `需要授权 · ${requester} 请求${permissionVerb(toolName)}${outsideHint}`,
         preview: [
-          ...buildPermissionPreview(toolName, args, process.cwd()),
+          ...buildPermissionPreview(toolName, args, process.cwd(), ui.getContentWidth()),
           ...(outsideReason ? [colors.gray(outsideReason)] : []),
         ],
         items: buildPermissionCardItems(grant, { persistent: !hardProtected }),
@@ -2229,6 +2321,8 @@ async function main() {
     pendingObservations: () => experienceStore.getPendingObservations(),
     writeLine: (line: string) => ui.writeLine(line),
     writeChat: (content: string) => ui.writeChat(content),
+    // 延迟到调用时再取：startBackgroundInput 在 main() 后段才定义。
+    startBackgroundInput: () => startBackgroundInput(),
     pick: async (options: {
       title: string;
       items: ReadonlyArray<{ value: string; label: string; description: string }>;
@@ -2538,6 +2632,9 @@ async function main() {
       showPricingAgentDetails();
       return;
     }
+    // /cost 与侧栏各行共用同一个出口：交互终端里开逐条请求日志页；
+    // 无头/非交互模式页面打不开，退回原来的纯文本报告（可重定向、可贴）。
+    if (ui.openCostLog("cost")) return;
     immediateWriteChat(`${costTracker.formatCostReport().join("\n")}\n`);
     if (costTracker.getSummary().hasUnpriced) {
       immediateWriteLine(
@@ -2547,12 +2644,13 @@ async function main() {
       );
     }
   };
-  // 侧栏费用区块的「看明细」入口：直接复用 /cost 的报告输出，不另做一页。
+  // 侧栏费用区块的「看明细」入口：与 /cost 同一条路径（交互开页面、无头出文本）。
   openCostDetailsRef = () => {
     void runCostCommand(["cost"]);
   };
-  // 侧栏各指标行（花费/请求/输入/输出/缓存）：点哪一行，就按哪一种口径把每一轮摊开。
+  // 侧栏各指标行（花费/请求/输入/输出/缓存）：点哪一行就以哪种口径打开同一个日志页。
   openTurnReportRef = (metric) => {
+    if (ui.openCostLog(metric)) return;
     immediateWriteChat(`${costTracker.formatTurnReport(metric).join("\n")}\n`);
   };
 
@@ -2716,6 +2814,7 @@ async function main() {
     wizardDeps,
     launchManualAgent,
     readSelectionSafely,
+    startBackgroundInput,
     getSelectedModel: () => selectedModel,
     getMessages: () => messages,
     saveSession: () => sessionManager.saveCurrentSession(messages),
@@ -2759,6 +2858,15 @@ async function main() {
       });
       syncSessionUsage();
       updateStatusUI();
+    },
+    // 恢复其他 worktree 的会话：进程整体切到那棵树。会话/任务/快照存储跟着重定向，
+    // 路径边界以新 cwd 重新注入（syncPathScope 读实时 process.cwd()）。
+    enterSessionWorktree: (worktreeCwd) => {
+      process.chdir(worktreeCwd);
+      sessionManager.setSessionsDir(path.join(worktreeCwd, ".haji", "sessions"));
+      taskStore.retarget(worktreeCwd);
+      snapshotEngine.retarget(worktreeCwd);
+      syncPathScope();
     },
   };
 
@@ -3380,6 +3488,12 @@ async function main() {
 
   // 回合执行（turn-runner.ts）的状态注入：permissionMode / riskThreshold 用访问器
   // （Plan 审批会在回合中切档），provider / 模型 / 强度在回合开始时快照即可。
+  /**
+   * 本轮用户问题（回合详情页要显示）。由 beginTurn 写入、recordCost 读取，
+   * 落盘时机交给 CostTracker：只有每轮第一条记录会真的带上它。
+   */
+  let currentTurnPrompt: string | undefined;
+
   const turnDeps: TurnDeps = {
     ui,
     activityIndicator,
@@ -3392,17 +3506,23 @@ async function main() {
     agentManager,
     toolExecutor,
     toolsMap,
+    getToolBatchOptions: toolBatchOptions,
     activeTools,
     getProvider: () => provider,
     getSelectedModel: () => selectedModel,
     getReasoningEffort: () => reasoningEffort,
     isThinkingVisible: () => showThinking,
-    recordCost: (model, usage, purpose) => {
-      costTracker.record(model, usage, purpose);
+    recordCost: (model, usage, purpose, extra) => {
+      costTracker.record(model, usage, purpose, Date.now(), {
+        ...extra,
+        ...(currentTurnPrompt ? { turnPrompt: currentTurnPrompt } : {}),
+      });
       publishCostInfo();
       syncSessionUsage();
     },
-    beginTurn: () => {
+    beginTurn: (prompt) => {
+      // 用户问题跟着开轮一起记下：只有每轮第一条记录会落盘（见 CostTracker.record）。
+      currentTurnPrompt = prompt;
       costTracker.beginTurn();
     },
     getTitleUtility: getUtilityRuntime,
@@ -3715,6 +3835,8 @@ async function main() {
         }
         if (command === "skills") {
           if (parts[1]?.toLowerCase() === "validate") {
+            // 扫描 + 资源校验要读整个 Skill 目录：先让输入行可用，避免看起来卡死。
+            startBackgroundInput();
             await skillRegistry.scan();
             const result = await skillRegistry.validate();
             await refreshSystemPromptPreservingContext();
@@ -3736,6 +3858,7 @@ async function main() {
             continue;
           }
           if (parts[1]?.toLowerCase() === "reload") {
+            startBackgroundInput();
             const result = await skillRegistry.scan();
             await refreshSystemPromptPreservingContext();
             sessionManager.saveCurrentSession(messages);
@@ -3878,6 +4001,9 @@ async function main() {
           continue;
         }
         if (command === "compact") {
+          // 压缩要等摘要模型（几秒到几十秒）：先把输入行还回去，用户可以先写下一句；
+          // 回车会进 pendingInputs，压缩结束后由主循环按队列处理，草稿则随 cancelInput 保留。
+          startBackgroundInput();
           ui.writeLine(colors.boldPurple("正在执行四层上下文压缩管线..."));
           const result = await runCompactionPipeline(messages, {
             forceL4: true,
@@ -4227,6 +4353,8 @@ async function main() {
           } catch {
             doctorConnection = undefined;
           }
+          // 连通测试要发一次真实请求（还可能探测 rg / MCP）：先让输入行可用。
+          startBackgroundInput();
           const rows = await collectDoctorChecks({
             connection: doctorConnection,
             mcpStatuses: mcpManager.getServerStatuses(),

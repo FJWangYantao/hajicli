@@ -82,6 +82,12 @@ export class ToolsPromptPart implements SystemPromptPart {
       "- 优先使用作用域最小的专用工具；bash 仅用于没有专用工具覆盖的构建、测试、依赖或系统操作。",
     );
     rules.push("- 先定位再读取，先读取再编辑。可在一次调用中完成的相关检索不要拆成大量零碎调用。");
+    if (context.parallelBatchReadOnly) {
+      const limit = context.parallelBatchLimit ?? 5;
+      rules.push(
+        `- 互不依赖的只读调用（read、grep、global、projectinfo，以及只读的 bash / MCP 查询）应放在同一条回复里一起发出，系统会并行执行（最多 ${limit} 个）。有依赖关系的调用必须分开：例如 read 的结果要用来决定 edit 的参数时，不要把 read 和 edit 放进同一条消息。不要为了并行把一次完整读取拆碎。`,
+      );
+    }
     rules.push(
       "- 每次调用后必须读取结果并更新判断。工具失败时先分析原因，再调整参数、工具或方案；不要原样重试。",
     );
@@ -182,7 +188,7 @@ export class ToolsPromptPart implements SystemPromptPart {
     }
     if (activeTools.includes("subagent")) {
       rules.push(
-        "- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。可按需指定 model、匹配的 provider、reasoningEffort 和追加 instructions；也可通过 timeoutMs、maxTokens、maxToolCalls 限制运行时间和资源消耗；可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。",
+        "- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。research/review 子代理默认只读，需要子代理改文件时必须显式传 role=implement；可按需指定 model、匹配的 provider、reasoningEffort 和追加 instructions；也可通过 timeoutMs、maxTokens、maxToolCalls 限制运行时间和资源消耗；可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。",
       );
     }
     if (activeTools.includes("verifyagent")) {

@@ -14,6 +14,7 @@ import {
   removeWorktree,
   resolveWorktreePath,
   saveWorktreeEnabled,
+  siblingSessionStoreDirs,
   WORKTREE_BRANCH_PREFIX,
   worktreeTargetCwd,
 } from "../dist/worktree.js";
@@ -266,4 +267,35 @@ test("/worktree on|off 写主仓库配置，list 展示 haji 工作树", () =>
     lines.length = 0;
     handleWorktreeCommand({ ...ctx, cwd: prepared.info.path }, ["/worktree", "on"]);
     assert.equal(loadWorktreeSetting(repo).enabled, true);
+  }));
+
+test("siblingSessionStoreDirs 列出其他 haji 工作树的会话目录（跨树 resume 的基础）", () =>
+  withIsolatedHome(() => {
+    const repo = makeRepo();
+    const w1 = prepareSessionWorktree({
+      cwd: repo,
+      setting: { enabled: true, copy: [] },
+      name: "resume-w1",
+    });
+    const w2 = prepareSessionWorktree({
+      cwd: repo,
+      setting: { enabled: true, copy: [] },
+      name: "resume-w2",
+    });
+    assert.equal(w1.ok, true);
+    assert.equal(w2.ok, true);
+    // 只有 w1 里有会话目录；w2 还没开过会话。
+    fs.mkdirSync(path.join(w1.info.path, ".haji", "sessions"), { recursive: true });
+    const expected = [path.join(w1.info.path, ".haji", "sessions")];
+
+    const previousCwd = process.cwd();
+    try {
+      // 主仓库视角与 w2 视角都只看到 w1 的会话目录；看不到自己。
+      process.chdir(repo);
+      assert.deepEqual(siblingSessionStoreDirs(repo), expected);
+      process.chdir(w2.info.path);
+      assert.deepEqual(siblingSessionStoreDirs(w2.info.path), expected);
+    } finally {
+      process.chdir(previousCwd);
+    }
   }));

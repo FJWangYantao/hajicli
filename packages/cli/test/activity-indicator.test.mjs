@@ -92,12 +92,43 @@ test("indicator owns one timer and progress resets idle detection", () => {
   assert.equal(frames.at(-1).detail, "read: 50%");
 
   indicator.transition("responding", "生成回复");
-  assert.equal(cancelled, 1);
+  // 换阶段不换表：动画计时器继续跑（不取消），phase/label 就地切换。
+  assert.equal(cancelled, 0);
   assert.equal(frames.at(-1).phase, "responding");
+  assert.equal(frames.at(-1).label, "生成回复");
 
   indicator.stop();
-  assert.equal(cancelled, 2);
+  assert.equal(cancelled, 1);
   assert.equal(frames.at(-1), undefined);
+});
+
+test("one timer per turn: start anchors at since and transitions keep elapsed", () => {
+  let now = 10_000;
+  const frames = [];
+  const indicator = new ActivityIndicator({
+    render: (frame) => frames.push(frame),
+    now: () => now,
+    intervalMs: 100,
+    schedule: () => ({ unref() {} }),
+    cancel: () => {},
+  });
+
+  // 回合起点 2s 前启动：耗时从锚点算，不从 start 那一刻算。
+  indicator.start("thinking", "思考中", undefined, 8_000);
+  assert.equal(frames.at(-1).elapsed, "2s");
+
+  // 同一行换阶段：计时连续。
+  now = 70_000;
+  indicator.transition("tool", "运行 bash");
+  assert.equal(frames.at(-1).phase, "tool");
+  assert.equal(frames.at(-1).elapsed, "1m02s");
+
+  // 行停掉后 transition 等价于重新 start：从现在计。
+  indicator.stop();
+  now = 71_000;
+  indicator.transition("tool", "运行 npm test");
+  assert.equal(frames.at(-1).elapsed, "0s");
+  assert.equal(frames.at(-1).label, "运行 npm test");
 });
 
 test("waiting for permission renders one static frame without an animation timer", () => {

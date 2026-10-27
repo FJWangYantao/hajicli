@@ -141,3 +141,54 @@ test("generated session titles drop markdown, labels and trailing punctuation", 
   assert.equal(cleanGeneratedTitle("  \n ", "默认"), "默认");
   assert.equal(cleanGeneratedTitle("长".repeat(30), "默认").length, 20);
 });
+
+test("trace records experiment assignment, tool batches and subagent launches", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-trace-ab-"));
+  try {
+    const tracker = new SessionTracker(dir);
+    tracker.recordExperimentAssignment({ parallel_prompt: "batch", parallel_max: "5" });
+    tracker.recordToolBatch({
+      size: 3,
+      names: ["read", "read", "grep"],
+      parallel: true,
+      wallTimeMs: 12,
+      serialEstimateMs: 30,
+      savedTimeMs: 18,
+    });
+    tracker.recordSubagentLaunch({
+      agentId: "sub-1",
+      role: "research",
+      access: "readonly",
+      background: false,
+    });
+    tracker.recordSubagentResult({
+      agentId: "sub-1",
+      status: "verified",
+      durationMs: 1200,
+      totalTokens: 3400,
+      toolCalls: 2,
+    });
+    await tracker.save();
+    const trace = await SessionTracker.readSession(tracker.getSessionId(), dir);
+    assert.ok(trace);
+    const types = trace.events.map((event) => event.type);
+    assert.deepEqual(types, [
+      "experiment_assignment",
+      "tool_batch",
+      "subagent_launch",
+      "subagent_result",
+    ]);
+    const assignment = trace.events[0];
+    assert.equal(assignment.data.experiments.parallel_prompt, "batch");
+    const batch = trace.events[1];
+    assert.equal(batch.data.size, 3);
+    assert.equal(batch.data.savedTimeMs, 18);
+    const launch = trace.events[2];
+    assert.equal(launch.data.access, "readonly");
+    const result = trace.events[3];
+    assert.equal(result.data.durationMs, 1200);
+    assert.equal(result.data.totalTokens, 3400);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

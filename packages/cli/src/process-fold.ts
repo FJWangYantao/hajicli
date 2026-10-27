@@ -180,8 +180,9 @@ function orderedEntries(stats: FoldGroupStats): Array<{ text: string; count: num
 /**
  * 摘要行：`{缩进}● 读取 4 个文件，搜索 2 次 · 思考 3 次 · 1 次失败`。
  * 按宽度依次降级（丢类别 → “N 次工具调用” → 丢思考 → 截断），保证单行。
+ * hovered 为 true 时（鼠标扫过摘要行）改用强调色：提示这一行可以点击展开。
  */
-export function buildFoldHeader(stats: FoldGroupStats, width: number): string {
+export function buildFoldHeader(stats: FoldGroupStats, width: number, hovered = false): string {
   const maxWidth = Math.max(1, Math.floor(width));
   const entries = orderedEntries(stats);
   const thinking = stats.thinking;
@@ -189,7 +190,9 @@ export function buildFoldHeader(stats: FoldGroupStats, width: number): string {
     stats.calls,
     entries.reduce((sum, entry) => sum + entry.count, 0),
   );
-  const bulletPaint = stats.failed > 0 ? colors.boldRed : colors.muted;
+  const bulletPaint =
+    stats.failed > 0 ? colors.boldRed : hovered ? colors.boldAccent : colors.muted;
+  const textPaint = hovered ? colors.cyan : colors.muted;
 
   const build = (
     categoryTexts: readonly string[],
@@ -205,10 +208,10 @@ export function buildFoldHeader(stats: FoldGroupStats, width: number): string {
         : options.tools === "count" && callCount > 0
           ? `${callCount} 次工具调用`
           : "";
-    if (toolText) parts.push({ text: ` ${toolText}`, paint: colors.muted });
+    if (toolText) parts.push({ text: ` ${toolText}`, paint: textPaint });
     if (options.thinking && thinking > 0) {
       parts.push({ text: " · ", paint: colors.muted });
-      parts.push({ text: `思考 ${thinking} 次`, paint: colors.muted });
+      parts.push({ text: `思考 ${thinking} 次`, paint: textPaint });
     }
     if (stats.failed > 0) {
       parts.push({ text: " · ", paint: colors.muted });
@@ -310,17 +313,19 @@ export interface RenderedSegment {
 /**
  * 段的可见文本：折叠时只留摘要行，展开时摘要行 + 原文正文。
  * 首尾空行按原文保留，只替换中间——折叠前后段与段的间距保持一致。
+ * hovered 只影响摘要行配色（鼠标悬停提示可点击），不影响文本内容。
  */
 export function renderSegmentText(
   segment: ChatSegmentView,
   width: number,
   foldEnabled: boolean,
+  hovered = false,
 ): RenderedSegment {
   if (segment.kind !== "fold" || !segment.stats || !foldEnabled) {
     return { text: segment.raw };
   }
   const { leading, body, trailing } = splitBlankEdges(segment.raw);
-  const header = buildFoldHeader(segment.stats, width);
+  const header = buildFoldHeader(segment.stats, width, hovered);
   const headerRow = (leading.match(/\n/g) ?? []).length;
   const text = segment.expanded
     ? `${leading}${header}\n${body}${trailing}`

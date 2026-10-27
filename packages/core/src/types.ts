@@ -249,6 +249,10 @@ export interface PromptContext {
   permissionMode?: string;
   /** 最近一条用户消息，供经验召回等分片按当前任务做相关性检索。 */
   recentUserMessage?: string;
+  /** 是否在提示词里要求把互不依赖的只读调用放同一条回复（A/B: parallel_prompt）。 */
+  parallelBatchReadOnly?: boolean;
+  /** 提示词里告知的并行上限（与实验 arm / HAJI_MAX_PARALLEL_TOOLS 一致）。 */
+  parallelBatchLimit?: number;
 }
 
 /**

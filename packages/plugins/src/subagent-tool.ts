@@ -40,7 +40,8 @@ export class SubagentTool implements BaseTool {
           role: {
             type: "string",
             enum: ["research", "implement", "review"],
-            description: "子代理角色",
+            description:
+              "子代理角色：research / review 只读调研与审查；需要改文件时必须显式传 implement（非 Plan 模式才可写）",
           },
           model: { type: "string", description: "可选：本次子代理使用的模型；不填则继承主 Agent" },
           provider: {

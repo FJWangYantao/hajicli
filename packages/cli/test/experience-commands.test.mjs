@@ -311,6 +311,32 @@ test("/instinct distill reports when no observations", async () => {
   }
 });
 
+test("/instinct distill keeps the input line alive while the LLM runs", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    store.appendObservation({
+      ts: new Date().toISOString(),
+      sessionId: "s",
+      toolName: "bash",
+      args: {},
+      output: "ok",
+      failed: false,
+    });
+    let started = 0;
+    const ctx = {
+      ...makeCtx(store, []),
+      pendingObservations: () => store.getPendingObservations(),
+      startBackgroundInput: () => {
+        started += 1;
+      },
+    };
+    await handleInstinctCommand(["distill"], ctx, noColor);
+    assert.equal(started, 1, "提炼前先把输入行还回去");
+  } finally {
+    fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 // ─── promote 子命令 ──────────────────────────────────────────────────────────
 
 test("/memory promote moves memory to user level", async () => {

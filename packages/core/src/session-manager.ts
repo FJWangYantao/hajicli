@@ -15,12 +15,22 @@ const SESSION_FLUSH_DELAY_MS = 120;
 export interface SessionCostRecord {
   model: string;
   purpose: string;
+  /** 所属轮次（1 起）；0/缺省表示老会话没有轮次信息。 */
+  turn?: number;
   /** 调用发生时刻（ms）；峰谷价按它判定。 */
   at: number;
   promptTokens: number;
   /** 其中命中缓存的输入 token（≤ promptTokens）。 */
   cachedPromptTokens: number;
   completionTokens: number;
+  /** provider 是否上报了缓存命中；缺省表示老会话无从判断。 */
+  cacheReported?: boolean;
+  /** 本次请求耗时（ms）；老会话没有这项，页面显示「—」。 */
+  durationMs?: number;
+  /** 本次请求的推理 token（估算）。 */
+  reasoningTokens?: number;
+  /** 该轮用户问题摘要，只记在每轮第一条记录上。 */
+  turnPrompt?: string;
 }
 
 /** 会话内用量：/resume 时据此把侧栏的费用、压缩次数与上轮耗时复原。 */
@@ -126,7 +136,12 @@ export function cleanGeneratedTitle(raw: string, fallback: string): string {
 }
 
 export class SessionManager {
-  private readonly sessionsDir: string;
+  private sessionsDir: string;
+  /**
+   * 跨目录检索的附加会话目录（同仓库其他 haji 工作树）：listSessions 会合并展示、
+   * loadSession 命中后把主目录切过去。写盘永远只走主目录。
+   */
+  private searchDirs: string[] = [];
   private currentSession: StoredSession;
   private lastQueuedMessages: ChatMessage[] = [];
   private lastQueuedTitle = "";
@@ -178,7 +193,44 @@ export class SessionManager {
   }
 
   private getSessionPath(id: string): string {
-    return path.join(this.sessionsDir, `session_${id}.json`);
+    return this.getSessionPathFor(this.sessionsDir, id);
+  }
+
+  private getSessionPathFor(dir: string, id: string): string {
+    return path.join(dir, `session_${id}.json`);
+  }
+
+  /** 当前主会话目录（写盘目标）。 */
+  public getSessionsDir(): string {
+    return this.sessionsDir;
+  }
+
+  /**
+   * 设置跨目录检索的附加会话目录：/resume、-c/-r 跨工作树发现并行会话用。
+   * 只扩大 listSessions / loadSession 的查找范围，不改变写盘位置。
+   */
+  public setSearchDirs(dirs: string[]): void {
+    const primary = path.resolve(this.sessionsDir);
+    this.searchDirs = dirs.filter((dir) => path.resolve(dir) !== primary);
+  }
+
+  /**
+   * 把主会话目录切到别处：恢复其他 worktree 的会话后跟着会话走，
+   * 后续保存写回会话原来的目录，避免同一会话在两棵树里各存一份。
+   */
+  public setSessionsDir(dir: string): void {
+    this.sessionsDir = dir;
+    this.ensureDir();
+    const moved = path.resolve(dir);
+    this.searchDirs = this.searchDirs.filter((candidate) => path.resolve(candidate) !== moved);
+  }
+
+  /** 找出会话文件所在目录（主目录优先，其次附加目录）；找不到返回 null。 */
+  public locateSessionDir(id: string): string | null {
+    for (const dir of [this.sessionsDir, ...this.searchDirs]) {
+      if (fs.existsSync(this.getSessionPathFor(dir, id))) return dir;
+    }
+    return null;
   }
 
   private scheduleFlush(): void {
@@ -317,10 +369,14 @@ export class SessionManager {
   }
 
   public loadSession(id: string): StoredSession | null {
+    const dir = this.locateSessionDir(id);
+    if (!dir) return null;
     try {
-      const filePath = this.getSessionPath(id);
-      if (!fs.existsSync(filePath)) return null;
-      const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
+      const session = JSON.parse(
+        fs.readFileSync(this.getSessionPathFor(dir, id), "utf8"),
+      ) as StoredSession;
+      // 命中附加目录（其他 worktree 的会话）：主目录跟着切过去，后续保存写回原处。
+      if (path.resolve(dir) !== path.resolve(this.sessionsDir)) this.setSessionsDir(dir);
       this.currentSession = session;
       this.lastQueuedMessages = session.messages.map(cloneMessage);
       this.lastQueuedTitle = session.title;
@@ -335,32 +391,57 @@ export class SessionManager {
   public listSessions(): StoredSession[] {
     try {
       this.ensureDir();
-      const files = fs
-        .readdirSync(this.sessionsDir)
-        .filter((file) => file.startsWith("session_") && file.endsWith(".json"));
-      const sessions: StoredSession[] = [];
-      for (const file of files) {
-        const filePath = path.join(this.sessionsDir, file);
-        try {
-          const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
-          if (session?.id && this.hasEffectiveMessages(session.messages)) {
-            sessions.push(session);
-          } else if (
-            session &&
-            (!session.messages || !this.hasEffectiveMessages(session.messages))
-          ) {
-            try {
-              fs.unlinkSync(filePath);
-            } catch {}
-          }
-        } catch {}
+    } catch {
+      /* 目录不可读时按空处理 */
+    }
+    const collected: StoredSession[] = [];
+    // 主目录里没有有效消息的会话文件按原语义清掉；附加目录（别的 worktree）只读不删。
+    for (const dir of [this.sessionsDir, ...this.searchDirs]) {
+      const isPrimary = path.resolve(dir) === path.resolve(this.sessionsDir);
+      collected.push(...this.readSessionsFrom(dir, isPrimary));
+    }
+    // 同一 id 可能出现在多个目录（跨树恢复后两侧都有副本）：按 updatedAt 取最新。
+    const byId = new Map<string, StoredSession>();
+    for (const session of collected) {
+      if (!session?.id) continue;
+      const existing = byId.get(session.id);
+      if (
+        !existing ||
+        new Date(session.updatedAt).getTime() > new Date(existing.updatedAt).getTime()
+      ) {
+        byId.set(session.id, session);
       }
-      return sessions.sort(
-        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-      );
+    }
+    return [...byId.values()].sort(
+      (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    );
+  }
+
+  /** 读取单个目录下的会话文件；mayDeleteEmpty 只对主目录开启（附加目录只读）。 */
+  private readSessionsFrom(dir: string, mayDeleteEmpty: boolean): StoredSession[] {
+    let files: string[];
+    try {
+      files = fs
+        .readdirSync(dir)
+        .filter((file) => file.startsWith("session_") && file.endsWith(".json"));
     } catch {
       return [];
     }
+    const sessions: StoredSession[] = [];
+    for (const file of files) {
+      const filePath = path.join(dir, file);
+      try {
+        const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
+        if (session?.id && this.hasEffectiveMessages(session.messages)) {
+          sessions.push(session);
+        } else if (mayDeleteEmpty && session) {
+          try {
+            fs.unlinkSync(filePath);
+          } catch {}
+        }
+      } catch {}
+    }
+    return sessions;
   }
 
   public startNewSession(): StoredSession {

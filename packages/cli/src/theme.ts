@@ -226,25 +226,6 @@ const THEME_KEYS = Object.keys(DEFAULT_THEME) as readonly (keyof Theme)[];
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
-const ANSI16_PALETTE: readonly [number, number, number][] = [
-  [0x00, 0x00, 0x00],
-  [0x80, 0x00, 0x00],
-  [0x00, 0x80, 0x00],
-  [0x80, 0x80, 0x00],
-  [0x00, 0x00, 0x80],
-  [0x80, 0x00, 0x80],
-  [0x00, 0x80, 0x80],
-  [0xc0, 0xc0, 0xc0],
-  [0x80, 0x80, 0x80],
-  [0xff, 0x00, 0x00],
-  [0x00, 0xff, 0x00],
-  [0xff, 0xff, 0x00],
-  [0x00, 0x00, 0xff],
-  [0xff, 0x00, 0xff],
-  [0x00, 0xff, 0xff],
-  [0xff, 0xff, 0xff],
-];
-
 /** 将 #RRGGBB 解析为 [r, g, b]；非法时返回 undefined。 */
 function hexToRgb(hex: string): [number, number, number] | undefined {
   if (!HEX_RE.test(hex)) return undefined;
@@ -274,18 +255,80 @@ function rgbToAnsi256(r: number, g: number, b: number): number {
   return 16 + 36 * red + 6 * green + blue;
 }
 
+/**
+ * 16 色降级：先按饱和度分流——近中性走黑/灰/银/白灰阶；有彩的按色相分桶，
+ * 亮度决定普通/明亮档。朴素 RGB 最近色会把主题的低饱和粉彩全部吸到灰上
+ * （16 色调色板里只有霓虹原色，粉彩离灰比离纯红更近），diff 的红删绿增在
+ * 16 色终端里就分不开了；色相分桶保证语义色先保住色相，再谈深浅。
+ */
 function rgbToAnsi16(r: number, g: number, b: number): number {
-  let nearest = 0;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < ANSI16_PALETTE.length; index += 1) {
-    const [pr, pg, pb] = ANSI16_PALETTE[index];
-    const distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
-    if (distance < nearestDistance) {
-      nearest = index;
-      nearestDistance = distance;
-    }
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const value = max / 255;
+  const saturation = max === 0 ? 0 : (max - min) / max;
+  if (saturation <= 0.18) {
+    if (value < 0.25) return 0;
+    if (value < 0.55) return 8;
+    if (value < 0.85) return 7;
+    return 15;
   }
-  return nearest;
+  const hue = hueOf(r, g, b, max, min);
+  const bright = value >= 0.6 ? 8 : 0;
+  if (hue < 15 || hue >= 345) return 1 + bright;
+  if (hue < 70) return 3 + bright;
+  if (hue < 170) return 2 + bright;
+  if (hue < 210) return 6 + bright;
+  if (hue < 250) return 4 + bright;
+  return 5 + bright;
+}
+
+/** HSV 色相（0-360）；max===min（无彩）按 0 处理，调用方已按饱和度分流。 */
+function hueOf(r: number, g: number, b: number, max: number, min: number): number {
+  if (max === min) return 0;
+  const d = max - min;
+  if (max === r) return (60 * (((g - b) / d) % 6) + 360) % 360;
+  if (max === g) return 60 * ((b - r) / d) + 120;
+  return 60 * ((r - g) / d) + 240;
+}
+
+/** HSV 转十六进制色（h 0-360，s/v 0-1）。 */
+function hsvToHex(h: number, s: number, v: number): string {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  const sector = Math.floor(h / 60) % 6;
+  const rgb: [number, number, number] =
+    sector === 0
+      ? [c, x, 0]
+      : sector === 1
+        ? [x, c, 0]
+        : sector === 2
+          ? [0, c, x]
+          : sector === 3
+            ? [0, x, c]
+            : sector === 4
+              ? [x, 0, c]
+              : [c, 0, x];
+  const to255 = (value: number) =>
+    Math.round((value + m) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${to255(rgb[0])}${to255(rgb[1])}${to255(rgb[2])}`;
+}
+
+/**
+ * 把主题红/绿提纯成高饱和锚点色：保留色相，拉高饱和与亮度。
+ * 粉彩前景色（鲑鱼红/鼠尾草绿）直接朝深底混合会得到褐红/灰绿的脏色条；
+ * 先提纯再小比例混底，色相才干净（GitHub diff 也是拿高饱和色小比例叠底）。
+ * 浅色外观用更亮的锚点：朝白混会稀释饱和度，锚点亮度不够混出来就是灰粉/灰绿。
+ */
+function vividDiffAnchor(hex: string, bright: boolean): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const [r, g, b] = rgb;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return hsvToHex(hueOf(r, g, b, max, min), 0.72, bright ? 0.9 : 0.68);
 }
 
 function ansi16Code(index: number, background: boolean): number {
@@ -584,6 +627,44 @@ export function dimHex(color: string, amount = 0.4): string {
 }
 
 /**
+ * diff 分栏单元格的整块铺色底色：删除/新增色朝主题背景混合出的淡色调。
+ * 删除/新增行从标记到右侧补白铺成连续色条，行内变更段再叠 redBg/greenBg 强反色；
+ * mono 模式返回空串（连同相关前景序列一起退化为纯文本）。
+ */
+/**
+ * sRGB 直混（与 CSS alpha 合成同口径）：diff 铺底专用。
+ * Oklab 朝纯黑混合会把亮度非线性压垮（锚点亮 → 混出来近黑），tint 浓度必须走 sRGB。
+ */
+function blendOver(fgHex: string, bgHex: string, alpha: number): string {
+  const fg = hexToRgb(fgHex);
+  const bg = hexToRgb(bgHex);
+  if (!fg || !bg) return fgHex;
+  const mix = (a: number, b: number) =>
+    Math.round(a * alpha + b * (1 - alpha))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${mix(fg[0], bg[0])}${mix(fg[1], bg[1])}${mix(fg[2], bg[2])}`;
+}
+
+/**
+ * diff 分栏单元格的整块铺色底色：主题红/绿**先提纯成高饱和锚点**，再小比例
+ * sRGB 直混到参考背景上（对齐 GitHub diff 的叠底做法）——粉彩前景色直接混底
+ * 会得到褐红/灰绿的脏色条。行内变更段再叠 redBg/greenBg 强反色；mono 返回空串。
+ * 16 色浅底没有可用的淡 tint（粉彩会退化成白底 107，红绿不分），不铺条，
+ * 增删语义仍由 −/+ 前景与强反色段承担。
+ */
+export function diffToneBg(tone: "red" | "green"): string {
+  if (getColorLevel() === "mono") return "";
+  const theme = getTheme();
+  const light = getThemeAppearance() === "light";
+  if (light && getColorLevel() === "ansi16") return "";
+  const anchor = vividDiffAnchor(tone === "red" ? theme.red : theme.green, light);
+  return bgSeq(
+    blendOver(anchor, referenceBackgroundFor(theme, getThemeAppearance()), light ? 0.2 : 0.22),
+  );
+}
+
+/**
  * 第三档文字色（正文 > muted > faint）：思考行、└ 连线、耗时这类辅助信息。
  * 从 muted 朝背景再淡一截，但不低于 3:1，浅色底上也看得见。
  */
@@ -643,7 +724,10 @@ function paintText(text: string, color: string, bold = false): string {
 function paintBgText(text: string, color: string): string {
   if (getColorLevel() === "mono") return text;
   const theme = getTheme();
-  return `${bgSeq(color)}${fgSeq(theme.background)}${text}${themeReset()}`;
+  // 前景用「假定/声明的主题底色」而非终端默认前景：透明底主题下 39m 会落成
+  // 浅色文字压在中亮度的红/绿块上，对比度不足（文字发灰发粉）。
+  const ink = referenceBackgroundFor(theme, getThemeAppearance());
+  return `${bgSeq(color)}${fgSeq(ink)}${text}${themeReset()}`;
 }
 
 /**

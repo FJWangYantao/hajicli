@@ -1,14 +1,41 @@
 /**
  * 编辑 / 写入的 diff 预览（纯函数）：底层用标准 unified patch
- * （与 opencode 同一套 jsdiff `createTwoFilesPatch`），再解析成
- * `@@` hunk 头 + 双列（旧 / 新）行号 + 行内差异高亮。
- * 授权卡片与工具块完成后的预览共用同一套渲染。
- * 所有行按显示宽度 ANSI 感知截断，颜色走 theme 的 token 保证对比度。
+ * （与 opencode 同一套 jsdiff `createTwoFilesPatch`），再解析成展示行——
+ * 终端够宽（每侧 ≥ {@link SPLIT_MIN_SIDE_WIDTH} 列）用**左右分栏**（左旧右新），
+ * 否则退回**单列 unified**（opencode 同款）：行号 + `│` + 标记 + 全宽内容。
+ * 删除/新增行整块铺淡红/淡绿条，行内变更字符段叠强反色。授权卡片与工具块
+ * 完成后的预览共用同一套渲染。所有行按显示宽度 ANSI 感知截断。
  */
 
 import { createTwoFilesPatch } from "diff";
-import { splitGraphemes, truncateAnsiText } from "./terminal-text.js";
-import { colors } from "./theme.js";
+import { splitGraphemes, terminalWidth, truncateAnsiText } from "./terminal-text.js";
+import { colors, diffToneBg, fgSeq, getTheme, themeReset } from "./theme.js";
+import { resolveTuiLayout } from "./tui-layout.js";
+
+/**
+ * 分栏 diff 的构建宽度：必须与**实际渲染宽度**一致——分栏行左右补白到满宽，
+ * 只要构建宽于渲染宽，每行都会被截断（右栏整体被裁掉）。
+ * 有 UI 的调用方应传 `diffWidthFor(ui.getContentWidth())`：内容宽已含侧栏扣减。
+ * 这里只是无 UI 时的回退口径：按 `resolveTuiLayout` 从终端列数推对话区宽再减 8
+ * （授权卡比它宽，按更窄的一方建）。无 TTY（测试 / 无头）按 120 列 wide 布局取 112。
+ */
+export function preferredDiffWidth(): number {
+  const columns = process.stdout?.columns ?? 0;
+  const rows = process.stdout?.rows ?? 0;
+  if (!columns) return 112;
+  const layout = resolveTuiLayout(columns, Math.max(1, rows || 24));
+  const chatWidth = Math.max(1, layout.safeWidth - layout.chatPadding * 2);
+  return diffWidthFor(chatWidth);
+}
+
+/**
+ * 按对话区实际内容宽（`ui.getContentWidth()`，侧栏可见时已扣掉侧栏与间距）
+ * 折算 diff 构建宽：formatToolCell 的预览内容宽 = 内容宽 − 8。
+ * 直接拿终端列数折算会在侧栏打开时建出比渲染宽宽一截的行，右栏被整列裁掉。
+ */
+export function diffWidthFor(contentWidth: number): number {
+  return Math.min(232, Math.max(40, contentWidth - 8));
+}
 
 /** 与 opencode 一致：unified patch 默认前后各 4 行上下文。 */
 export const DEFAULT_PATCH_CONTEXT = 4;
@@ -129,17 +156,26 @@ function parseUnifiedPatch(patch: string): { rows: PatchRow[]; stats: DiffStats 
   return { rows, stats };
 }
 
-/** 相邻删除/新增行的行内高亮：公共前后缀之外的中间段用红底 / 绿底标出。 */
-function highlightIntraLine(
-  delText: string | undefined,
-  addText: string | undefined,
-): { del: string; add: string } {
-  if (delText === undefined || addText === undefined) {
-    return {
-      del: delText === undefined ? "" : colors.red(delText),
-      add: addText === undefined ? "" : colors.green(addText),
-    };
-  }
+/** 行内差异切分：公共前缀/后缀之外的中间段（middle 为空表示无行内高亮，整行走 lead）。 */
+interface ToneSegments {
+  lead: string;
+  middle: string;
+  tail: string;
+}
+
+function wholeSegments(text: string): ToneSegments {
+  return { lead: text, middle: "", tail: "" };
+}
+
+/**
+ * 相邻删除/新增行的行内差异切分：中间段（真正的改动字符）铺强反色，
+ * 前后缀落在整块的淡底色条上；中间段为空（纯增删）或过长（整行几乎都变了）
+ * 时不做行内高亮，整行走淡底。
+ */
+function splitIntraLine(
+  delText: string,
+  addText: string,
+): { del: ToneSegments; add: ToneSegments } {
   const delChars = splitGraphemes(delText);
   const addChars = splitGraphemes(addText);
   let prefix = 0;
@@ -160,17 +196,20 @@ function highlightIntraLine(
   }
   const delMiddle = delChars.slice(prefix, delChars.length - suffix).join("");
   const addMiddle = addChars.slice(prefix, addChars.length - suffix).join("");
-  // 中间段为空（纯增删）或过长（整行几乎都变了）时不做行内高亮，退回整行着色。
   if (!delMiddle || !addMiddle || delMiddle.length > 120 || addMiddle.length > 120) {
-    return { del: colors.red(delText), add: colors.green(addText) };
+    return { del: wholeSegments(delText), add: wholeSegments(addText) };
   }
   return {
-    del: `${colors.red(delChars.slice(0, prefix).join(""))}${colors.redBg(delMiddle)}${colors.red(
-      delChars.slice(delChars.length - suffix).join(""),
-    )}`,
-    add: `${colors.green(addChars.slice(0, prefix).join(""))}${colors.greenBg(
-      addMiddle,
-    )}${colors.green(addChars.slice(addChars.length - suffix).join(""))}`,
+    del: {
+      lead: delChars.slice(0, prefix).join(""),
+      middle: delMiddle,
+      tail: delChars.slice(delChars.length - suffix).join(""),
+    },
+    add: {
+      lead: addChars.slice(0, prefix).join(""),
+      middle: addMiddle,
+      tail: addChars.slice(addChars.length - suffix).join(""),
+    },
   };
 }
 
@@ -180,18 +219,108 @@ function lineNumberLabel(line: number | undefined, columnWidth: number): string 
   return String(line).padStart(columnWidth);
 }
 
-/** 一行的固定布局：` 旧行号 新行号 标记 内容`。 */
-function layoutRow(
-  oldLine: number | undefined,
-  newLine: number | undefined,
-  mark: string,
-  text: string,
-  gutter: number,
-): string {
-  return ` ${lineNumberLabel(oldLine, gutter)} ${lineNumberLabel(newLine, gutter)} ${mark} ${text}`;
+/** 单元格按显示宽度对齐：超宽 ANSI 感知截断（尾缀 …），不足右侧补空格。 */
+function padCell(text: string, width: number): string {
+  const fitted = truncateAnsiText(text, width);
+  const pad = width - terminalWidth(fitted);
+  return pad > 0 ? `${fitted}${" ".repeat(pad)}` : fitted;
 }
 
-/** 把解析后的 patch 行渲染成带 hunk 头、双列行号与行内高亮的展示行。 */
+/** 分栏一侧：行号留在栏外（内容截断也保得住位置），标记 + 已切分内容进单元格。 */
+interface SplitSide {
+  line?: number;
+  mark: string;
+  segments: ToneSegments;
+  /** 整块铺色（红删/绿增）；undefined 表示上下文行，不铺底色。 */
+  tone?: "red" | "green";
+}
+
+/** 无底色单元格（上下文行）：纯文本拼接后按显示宽度对齐。 */
+function joinSegments(side: SplitSide): string {
+  const { lead, middle, tail } = side.segments;
+  return `${side.mark} ${lead}${middle}${tail}`;
+}
+
+/**
+ * 带底色的单元格：从标记到右侧补白整块铺淡红/淡绿（连续色条），
+ * 行内变更段叠强反色，强反色结束（其内部会重置属性）后重新续上淡底与正文色，
+ * 末尾恢复主题属性。mono 模式下各序列全为空串，输出与无底色路径一致。
+ */
+function composeTonedCell(side: SplitSide, width: number): string {
+  const isGreen = side.tone === "green";
+  const toneHex = isGreen ? getTheme().green : getTheme().red;
+  const resume = `${diffToneBg(isGreen ? "green" : "red")}${fgSeq(toneHex)}`;
+  // 标记（−/+）自带 themeReset 会清掉铺底，拼完标记立刻续上；
+  // 行内强高亮段同理，middle 之后也要续一次。
+  let body = `${resume}${side.mark}${resume} ${side.segments.lead}`;
+  if (side.segments.middle) {
+    body += `${(isGreen ? colors.greenBg : colors.redBg)(side.segments.middle)}${resume}`;
+  }
+  body += side.segments.tail;
+  const fitted = truncateAnsiText(body, width);
+  const pad = width - terminalWidth(fitted);
+  return `${fitted}${pad > 0 ? " ".repeat(pad) : ""}${themeReset()}`;
+}
+
+function renderCell(side: SplitSide | undefined, width: number): string {
+  if (!side) return padCell(" ", width);
+  return side.tone ? composeTonedCell(side, width) : padCell(joinSegments(side), width);
+}
+
+/**
+ * 一行的固定布局：` 旧行号 左内容 │ 新行号 右内容`。
+ * 左侧恒定侧宽（对齐后右栏行号不漂移），空侧用空白占位保持分栏结构。
+ */
+function layoutSplitRow(
+  oldSide: SplitSide | undefined,
+  newSide: SplitSide | undefined,
+  gutter: number,
+  sideWidth: number,
+): string {
+  const left = renderCell(oldSide, sideWidth);
+  const right = renderCell(newSide, sideWidth);
+  return ` ${lineNumberLabel(oldSide?.line, gutter)} ${left}${colors.faint("│")} ${lineNumberLabel(
+    newSide?.line,
+    gutter,
+  )} ${right}`;
+}
+
+/**
+ * 单列（unified）布局：` 行号 │ 标记 内容…`，内容占满剩余宽度，删除/新增整块铺色。
+ * 删除行与上下文行用旧文件行号，新增行用新文件行号（unified diff 常规口径）。
+ */
+function layoutUnifiedRow(side: SplitSide, gutter: number, width: number): string {
+  const contentWidth = Math.max(1, width - gutter - 4);
+  return ` ${lineNumberLabel(side.line, gutter)} ${colors.faint("│")} ${renderCell(
+    side,
+    contentWidth,
+  )}`;
+}
+
+/** 未配对的删/增行按模式选布局：分栏另一侧留空，单列独占一行。 */
+function layoutUnifiedOrSplit(
+  oldSide: SplitSide | undefined,
+  newSide: SplitSide | undefined,
+  useSplit: boolean,
+  gutter: number,
+  sideWidth: number,
+  width: number,
+): string {
+  const side = (oldSide ?? newSide)!;
+  return useSplit
+    ? layoutSplitRow(oldSide, newSide, gutter, sideWidth)
+    : layoutUnifiedRow(side, gutter, Math.max(1, width));
+}
+
+/**
+ * 分栏一侧的单元格要放下「标记 + 一段可读代码」至少这么多列：
+ * 常见 120 列终端每侧只有 40 多列，再被代码缩进吃一截后长行全靠省略号，
+ * 行内高亮根本看不清。低于这条线就退回单列 unified（opencode 同款清爽感），
+ * 只有全屏宽终端才值得左右对比。
+ */
+const SPLIT_MIN_SIDE_WIDTH = 68;
+
+/** 把解析后的 patch 行渲染成展示行：够宽用左右分栏，否则单列 unified。 */
 function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
   const { rows, stats } = parseUnifiedPatch(patch);
   // 与 opencode 一致：单 hunk 不画 `@@` 头（行号已经说明位置），多 hunk 才用头分隔。
@@ -199,7 +328,11 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
   // 行号列宽按本次 patch 的最大行号取，小文件不浪费列宽、大文件也不会被截成省略号。
   const maxLine = rows.reduce((max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0), 0);
   const gutter = Math.max(LINE_NUMBER_MIN_WIDTH, String(Math.max(1, maxLine)).length);
-  // 配对相邻的删除块与新增块，按位置做行内高亮（与 patch 的输出顺序一致）。
+  // 侧宽 = (总宽 - 两个行号列 - 分隔开销) / 2；过窄终端保底 4 列，右栏可能被裁但不塌。
+  const sideWidth = Math.max(4, Math.floor((Math.max(1, width) - gutter * 2 - 6) / 2));
+  const useSplit = sideWidth >= SPLIT_MIN_SIDE_WIDTH;
+  // 配对相邻的删除块与新增块：配上的删 + 增在分栏视图合并为同一视觉行（左删右增），
+  // 行内高亮按位置对齐；单列视图虽不合并，强高亮段仍按这对切分。
   const delPair = new Map<number, number>();
   const addPair = new Map<number, number>();
   for (let index = 0; index < rows.length; ) {
@@ -221,6 +354,8 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
 
   type RenderedRow = { row: string; kind: "head" | "context" | "change" };
   const rendered: RenderedRow[] = [];
+  /** 已随配对删除行渲染掉的新增行（仅分栏视图；单列视图每行各自渲染）。 */
+  const addConsumed = new Set<number>();
   /** 第一条真正改动所在的原文件行号；纯新增时取新文件行号。 */
   let startLine: number | undefined;
   for (let index = 0; index < rows.length; index += 1) {
@@ -234,8 +369,15 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
       continue;
     }
     if (row.type === "same") {
+      const context = {
+        line: row.oldLine,
+        mark: " ",
+        segments: wholeSegments(colors.muted(row.text)),
+      };
       rendered.push({
-        row: layoutRow(row.oldLine, row.newLine, " ", colors.muted(row.text), gutter),
+        row: useSplit
+          ? layoutSplitRow(context, { ...context, line: row.newLine }, gutter, sideWidth)
+          : layoutUnifiedRow(context, gutter, Math.max(1, width)),
         kind: "context",
       });
       continue;
@@ -243,20 +385,97 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
     if (row.type === "del") {
       startLine ??= row.oldLine;
       const pairIndex = delPair.get(index);
-      const pair = pairIndex === undefined ? undefined : rows[pairIndex];
-      const highlighted = highlightIntraLine(row.text, pair?.text);
+      if (pairIndex !== undefined) {
+        const pair = rows[pairIndex];
+        const split = splitIntraLine(row.text, pair.text);
+        rendered.push({
+          row: useSplit
+            ? layoutSplitRow(
+                { line: row.oldLine, mark: colors.boldRed("−"), segments: split.del, tone: "red" },
+                {
+                  line: pair.newLine,
+                  mark: colors.boldGreen("+"),
+                  segments: split.add,
+                  tone: "green",
+                },
+                gutter,
+                sideWidth,
+              )
+            : layoutUnifiedRow(
+                { line: row.oldLine, mark: colors.boldRed("−"), segments: split.del, tone: "red" },
+                gutter,
+                Math.max(1, width),
+              ),
+          kind: "change",
+        });
+        if (useSplit) addConsumed.add(pairIndex);
+        continue;
+      }
       rendered.push({
-        row: layoutRow(row.oldLine, row.newLine, colors.boldRed("−"), highlighted.del, gutter),
+        row: layoutUnifiedOrSplit(
+          {
+            line: row.oldLine,
+            mark: colors.boldRed("−"),
+            segments: wholeSegments(row.text),
+            tone: "red",
+          },
+          undefined,
+          useSplit,
+          gutter,
+          sideWidth,
+          width,
+        ),
         kind: "change",
       });
       continue;
     }
+    if (useSplit && addConsumed.has(index)) continue;
     startLine ??= row.newLine;
     const pairIndex = addPair.get(index);
-    const pair = pairIndex === undefined ? undefined : rows[pairIndex];
-    const highlighted = highlightIntraLine(pair?.text, row.text);
+    if (pairIndex !== undefined) {
+      const pair = rows[pairIndex];
+      const split = splitIntraLine(pair.text, row.text);
+      rendered.push({
+        row: useSplit
+          ? layoutSplitRow(
+              { line: pair.oldLine, mark: colors.boldRed("−"), segments: split.del, tone: "red" },
+              {
+                line: row.newLine,
+                mark: colors.boldGreen("+"),
+                segments: split.add,
+                tone: "green",
+              },
+              gutter,
+              sideWidth,
+            )
+          : layoutUnifiedRow(
+              {
+                line: row.newLine,
+                mark: colors.boldGreen("+"),
+                segments: split.add,
+                tone: "green",
+              },
+              gutter,
+              Math.max(1, width),
+            ),
+        kind: "change",
+      });
+      continue;
+    }
     rendered.push({
-      row: layoutRow(row.oldLine, row.newLine, colors.boldGreen("+"), highlighted.add, gutter),
+      row: layoutUnifiedOrSplit(
+        undefined,
+        {
+          line: row.newLine,
+          mark: colors.boldGreen("+"),
+          segments: wholeSegments(row.text),
+          tone: "green",
+        },
+        useSplit,
+        gutter,
+        sideWidth,
+        width,
+      ),
       kind: "change",
     });
   }

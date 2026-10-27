@@ -62,6 +62,7 @@ import {
   RepeatedFailureTracker,
   raceWithAbort,
   runToolCallBatch,
+  type ToolBatchOptions,
 } from "./tool-batch.js";
 import {
   buildToolDisplay,
@@ -83,6 +84,8 @@ export interface TurnDeps {
   agentManager: AgentManager;
   toolExecutor: SharedToolExecutor;
   toolsMap: Map<string, BaseTool>;
+  /** 并行批策略（上限 + 动态只读判定）；缺省只用静态白名单。 */
+  getToolBatchOptions?(): ToolBatchOptions<ToolCall>;
   /** 当前权限档下可用的工具（Plan 模式过滤写操作）。 */
   activeTools(): BaseTool[];
   getProvider(): ObservableModelProvider;
@@ -95,9 +98,10 @@ export interface TurnDeps {
     model: string,
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
     purpose?: string,
+    extra?: { durationMs?: number; reasoningTokens?: number; turnPrompt?: string },
   ) => void;
   /** 每轮开始时通知费用记账开新轮（轮次编号用于侧栏按轮次展开）。 */
-  beginTurn?: () => void;
+  beginTurn?: (prompt?: string) => void;
   /** 会话标题生成用的杂活模型运行时；缺省退回主模型。 */
   getTitleUtility?: () => { provider: ObservableModelProvider; model: string } | undefined;
   getPermissionMode(): PermissionMode;
@@ -346,7 +350,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   }
 
   // 费用记账开新轮：轮次编号用于侧栏按轮次展开（空轮不记账则不会占号）。
-  deps.beginTurn?.();
+  // 顺带把用户问题带过去，记账时落在本轮第一条记录上（回合详情页要显示它）。
+  deps.beginTurn?.(promptInput);
 
   let keepCalling = true;
   let malformedToolRecoveryAttempts = 0;
@@ -356,7 +361,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   // 回合小结：耗时、模型输出 tokens（以 Provider 统计为准）与工具调用次数。
   const turnStartedAt = Date.now();
   // 示意费用记账开新的一轮（一个回合可能多次请求模型，全部归到同一轮）。
-  deps.beginTurn?.();
+  deps.beginTurn?.(promptInput);
   const costBeforeTurn = deps.getCostSnapshot?.();
   let turnOutputTokens: number | undefined;
   let turnToolCalls = 0;
@@ -400,7 +405,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     let isResponding = false;
     // 工具调用参数是边生成边下发的：第一次收到分片就把活动行切到「生成工具调用」。
     let toolCallDraftActive = false;
-    activityIndicator.start("thinking", "思考中", "模型尚未响应");
+    // 一轮一个计时：每个迭代开头的「思考中」都锚定回合起点，跨请求不归零。
+    activityIndicator.start("thinking", "思考中", "模型尚未响应", turnStartedAt);
     // 思维链默认不折叠：推理正文按灰色块实时写进对话区并保留（/think off 可关）。
     // 关闭时退回旧行为——只在对话区底部滚动预览最后几行，回复开始后清除。
     const thinkingVisible = deps.isThinkingVisible?.() !== false;
@@ -452,6 +458,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     const markdownRenderThrottle = new MarkdownRenderThrottle();
     // 本次迭代的正文起点；推理块落盘后才确定，封口时按 sealFoldGroup 的返回值平移。
     let streamStartOffset = ui.getChatLength();
+    // 本次请求的起点：onUsage 里据此给出耗时（历史记录没有这项，页面上显示 —）。
+    const requestStartedAt = Date.now();
     const stream = provider.completeStream(messages, {
       model: selectedModel,
       reasoningEffort,
@@ -504,7 +512,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       onUsage: (usage) => {
         completionTokens = usage.completion_tokens;
         turnOutputTokens = (turnOutputTokens ?? 0) + usage.completion_tokens;
-        deps.recordCost?.(selectedModel, usage, "主线回合");
+        deps.recordCost?.(selectedModel, usage, "主线回合", {
+          durationMs: Date.now() - requestStartedAt,
+          ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
+        });
       },
       onFinish: (finish) => {
         finishReason = finish.reason;
@@ -713,7 +724,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       const anchorSnapshotId = [...messages]
         .reverse()
         .find((message) => message.role === "user" && message.snapshotId)?.snapshotId;
-      const batches = createToolCallBatches(toolCalls);
+      const batches = createToolCallBatches(toolCalls, deps.getToolBatchOptions?.());
       let stoppedByRepeatedFailure = false;
       /** 触发停止的并发写入目标；用于给剩余调用和结束提示换成并发写的说法。 */
       let concurrentWriteTarget: string | undefined;
@@ -742,6 +753,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           continue;
         }
         // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
+        let firstBatchTitle = "";
         for (const tc of batch.calls) {
           const registeredArgs = (validateToolCall(tc).arguments || {}) as Record<string, unknown>;
           const title = buildToolDisplay({
@@ -751,6 +763,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           // 多行 / 超宽命令按原样分行展开。头行摘要照常登记：执行中展开行不显示，
           // 头行靠它报出在跑的命令；结束后展开行接管，摘要自动让位，不会重复。
           const argLines = formatToolArgLines(registeredArgs, title, ui.getContentWidth());
+          if (!firstBatchTitle) firstBatchTitle = title;
           toolRunView.register(tc.id, tc.function.name, title, undefined, argLines);
         }
         const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
@@ -794,8 +807,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               execution,
               args,
               process.cwd(),
+              // 用对话区实际内容宽（含侧栏扣减）建 diff，侧栏打开时右栏不再被裁。
+              deps.ui.getContentWidth(),
             );
-            toolRunView.finish(tc.id, summary, execution.duration);
+            toolRunView.finish(tc.id, summary, execution.duration, execution.output);
             return {
               tc,
               toolName,
@@ -811,17 +826,33 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           }
         };
 
-        if (batch.parallel) {
-          activityIndicator.start("batch", `并行运行 ${batch.calls.length} 个工具`);
-        }
+        // 活动行贯穿执行期：流式收尾的 stop() 之后只有这里能重建它。串行批次此前
+        // 没人接管，「思考中/生成工具调用」那行会在工具执行期间凭空消失，
+        // 只剩对话区里的工具格——这里串行也启动一行，报出正在跑的工具主语。
+        // 锚定回合起点：多工具/多批次交接时计时连续，不随调用归零。
+        activityIndicator.start(
+          batch.parallel ? "batch" : "tool",
+          batch.parallel ? `并行运行 ${batch.calls.length} 个工具` : firstBatchTitle || "运行工具",
+          undefined,
+          turnStartedAt,
+        );
         let batchRun: Awaited<ReturnType<typeof runToolCallBatch<ToolCall, BatchItemResult>>>;
         try {
           batchRun = await runToolCallBatch(batch, executeCall);
+          deps.tracker.recordToolBatch({
+            size: batch.calls.length,
+            names: batch.calls.map((call) => call.function.name),
+            parallel: batch.parallel,
+            wallTimeMs: batchRun.wallTimeMs,
+            serialEstimateMs: batchRun.serialEstimateMs,
+            savedTimeMs: batchRun.savedTimeMs,
+          });
         } finally {
-          if (batch.parallel) activityIndicator.stop();
+          activityIndicator.stop();
           // 整批结束后按调用顺序把工具块写入正文，实时区域随之清空。
-          const committedCells = toolRunView.commit();
-          if (committedCells) ui.writeChat(committedCells);
+          // 块元数据随文本一起交给界面：回合中完整可见，封口后收口成数行、点击展开。
+          const committed = toolRunView.commitWithBlocks();
+          if (committed.text) ui.writeToolCells(committed.text, committed.blocks);
         }
         deps.setLastToolBatchOutputs(
           batchRun.results
@@ -940,6 +971,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       }
       // 工具调用块后空一行：与下方思考/正文分隔
       ui.writeLine();
+      // 本轮过程段就地收口（与下一次迭代开头的封口等价）：中止 / 连续失败停止的
+      // 回合没有下一次迭代，拖到下一回合再封口会把这里随后写入的提示行
+      // （已中止本轮 / 停止重试说明）一起吞进折叠段。
+      if (foldGroup) {
+        ui.sealFoldGroup(foldGroup, ui.getChatLength(), foldStats.snapshot());
+        foldGroup = undefined;
+        foldStats = new FoldStatsCollector();
+      }
       if (isTurnAborted) {
         showAbortNotice();
         keepCalling = false;

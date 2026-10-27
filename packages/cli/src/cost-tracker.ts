@@ -19,6 +19,20 @@ export interface CostRecord {
   /** 其中命中缓存的输入 token（≤ promptTokens）。 */
   cachedPromptTokens: number;
   completionTokens: number;
+  /**
+   * provider 是否上报了缓存命中数。
+   * 老会话文件没有这个字段，读回来是 undefined（无从判断，不能当成「未上报」）。
+   */
+  cacheReported?: boolean;
+  /** 这一次请求从发出到收尾的耗时（ms）；老会话或非主线调用没有这项。 */
+  durationMs?: number;
+  /** 这一次请求里思维链的估算 token 数；没开推理或未上报时为 0/undefined。 */
+  reasoningTokens?: number;
+  /**
+   * 该轮用户提的问题（截断后的单行摘要），只记在这一轮的第一条记录上。
+   * 回合详情页用它说明「这轮是在干什么」；老会话为 undefined。
+   */
+  turnPrompt?: string;
 }
 
 export interface ModelCostSummary {
@@ -71,6 +85,54 @@ export interface TurnCostSummary {
 
 /** 按轮次明细时“先看谁”的排序口径，对应侧栏里可以点的那几行指标。 */
 export type TurnMetric = "cost" | "requests" | "input" | "output" | "cached";
+
+/** 生效单价（元 / 百万 token）；无单价时整块缺省。 */
+export interface RequestPricingTier {
+  inputPerMTokens: number;
+  outputPerMTokens: number;
+  cachedInputPerMTokens?: number;
+}
+
+/**
+ * 一次模型调用的费用明细行（费用日志页的一条）。
+ *
+ * 与 TurnCostSummary 的区别：这里不聚合，就是 records 里的一条，页面上一行一个。
+ * 金额在读取时按调用时刻的单价现算，所以补上单价后历史记录会跟着变。
+ */
+export interface RequestCostDetail {
+  /** 会话内序号（1 起，即 records 下标 +1）；排序后仍用它指回原始记录。 */
+  seq: number;
+  /** 所属轮次（1 起）；0 表示老会话没有轮次信息。 */
+  turn: number;
+  /** 调用发生时刻（ms）。 */
+  at: number;
+  model: string;
+  /** 这次调用的用途（主线回合 / 压缩 / 标题 / 子代理…）。 */
+  purpose: string;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  completionTokens: number;
+  /** 该次调用金额（元）；模型无单价时为 null。 */
+  costCny: number | null;
+  /** 是否命中谷时价。 */
+  offPeak: boolean;
+  /** provider 是否上报了缓存命中；undefined 表示旧记录无从判断。 */
+  cacheReported?: boolean;
+  /** 当时生效的单价；无单价时缺省。 */
+  pricing?: RequestPricingTier;
+  /** 本次请求耗时（ms）；历史记录或非主线调用缺省。 */
+  durationMs?: number;
+  /** 本次请求的推理 token（估算）；未开启推理时缺省。 */
+  reasoningTokens?: number;
+  /** 所属轮次的用户问题摘要（只在该轮首条记录上有）。 */
+  turnPrompt?: string;
+}
+
+/** 用户问题摘要：压成单行并截断，避免把整段 prompt 存进记账。 */
+export function truncateTurnPrompt(text: string, maxLength = 80): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > maxLength ? `${single.slice(0, maxLength - 1)}…` : single;
+}
 
 /** 金额展示：小数额保留 4 位小数，避免四舍五入成 0.0000。 */
 export function formatCostCny(value: number): string {
@@ -170,14 +232,34 @@ export class CostTracker {
     this.turnPending = true;
   }
 
-  record(model: string, usage: CostUsage, purpose = "主线回合", at: number = Date.now()): void {
+  record(
+    model: string,
+    usage: CostUsage,
+    purpose = "主线回合",
+    at: number = Date.now(),
+    extra: { durationMs?: number; reasoningTokens?: number; turnPrompt?: string } = {},
+  ): void {
     if (!Number.isFinite(usage.total_tokens) || usage.total_tokens <= 0) return;
     // 本轮第一次真正记账：现在才把编号落定（见 beginTurn 说明）。
+    const firstOfTurn = this.turnPending;
     if (this.turnPending) {
       this.currentTurn += 1;
       this.turnPending = false;
     }
     const promptTokens = Math.max(0, usage.prompt_tokens);
+    const durationMs =
+      extra.durationMs !== undefined && Number.isFinite(extra.durationMs)
+        ? Math.max(0, Math.round(extra.durationMs))
+        : undefined;
+    const reasoningTokens =
+      extra.reasoningTokens !== undefined && Number.isFinite(extra.reasoningTokens)
+        ? Math.max(0, Math.round(extra.reasoningTokens))
+        : undefined;
+    // 用户问题只在每轮第一条记录上落一次：同一段文字不必在每条调用里重复存。
+    const turnPrompt =
+      firstOfTurn && typeof extra.turnPrompt === "string" && extra.turnPrompt.trim().length > 0
+        ? truncateTurnPrompt(extra.turnPrompt)
+        : undefined;
     this.records.push({
       model,
       purpose,
@@ -187,6 +269,11 @@ export class CostTracker {
       // provider 上报的命中数可能大于 prompt_tokens（先减后加口径不同），夹逼一次。
       cachedPromptTokens: Math.min(promptTokens, Math.max(0, usage.prompt_cache_hit_tokens ?? 0)),
       completionTokens: Math.max(0, usage.completion_tokens),
+      // 记下「上报过没有」：0 命中与没上报在页面上是两件事，事后再看 usage 已经晚了。
+      cacheReported: usage.prompt_cache_hit_tokens !== undefined,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+      ...(turnPrompt !== undefined ? { turnPrompt } : {}),
     });
   }
 
@@ -218,10 +305,78 @@ export class CostTracker {
           Math.max(0, Math.round(Number(record.cachedPromptTokens) || 0)),
         ),
         completionTokens: Math.max(0, Math.round(Number(record.completionTokens) || 0)),
+        ...(typeof record.cacheReported === "boolean"
+          ? { cacheReported: record.cacheReported }
+          : {}),
+        ...(Number.isFinite(record.durationMs)
+          ? { durationMs: Math.max(0, Math.round(Number(record.durationMs))) }
+          : {}),
+        ...(Number.isFinite(record.reasoningTokens)
+          ? { reasoningTokens: Math.max(0, Math.round(Number(record.reasoningTokens))) }
+          : {}),
+        ...(typeof record.turnPrompt === "string" && record.turnPrompt.trim().length > 0
+          ? { turnPrompt: truncateTurnPrompt(record.turnPrompt) }
+          : {}),
       });
     }
     // 续接历史会话：新记账要接在已恢复的轮次之后，而不是从 1 重新数。
     this.currentTurn = maxTurn;
+  }
+
+  /**
+   * 逐条请求的费用明细（费用日志页的数据源）。
+   *
+   * 与 getTurnSummaries 的区别：不按轮聚合，records 里一条就是一行。
+   * 金额用调用时刻的单价现算，所以用户补上单价后，之前那些「未定价」的行
+   * 再打开页面就会变成有金额——这正是这个页面想要的效果。
+   */
+  getRequestDetails(): RequestCostDetail[] {
+    return this.records.map((recordItem, index) => {
+      const pricing = this.resolvePricing(recordItem.model);
+      const tier = pricing ? effectiveModelPricing(pricing, recordItem.at) : undefined;
+      const cost = estimateRequestCostCny(
+        recordItem.model,
+        {
+          prompt_tokens: recordItem.promptTokens,
+          completion_tokens: recordItem.completionTokens,
+          total_tokens: recordItem.promptTokens + recordItem.completionTokens,
+          prompt_cache_hit_tokens: recordItem.cachedPromptTokens,
+        },
+        this.resolvePricing,
+        recordItem.at,
+      );
+      return {
+        seq: index + 1,
+        turn: recordItem.turn && recordItem.turn > 0 ? recordItem.turn : 0,
+        at: recordItem.at,
+        model: recordItem.model,
+        purpose: recordItem.purpose,
+        promptTokens: recordItem.promptTokens,
+        cachedPromptTokens: recordItem.cachedPromptTokens,
+        completionTokens: recordItem.completionTokens,
+        costCny: cost,
+        offPeak: tier?.offPeak ?? false,
+        ...(recordItem.cacheReported !== undefined
+          ? { cacheReported: recordItem.cacheReported }
+          : {}),
+        ...(recordItem.durationMs !== undefined ? { durationMs: recordItem.durationMs } : {}),
+        ...(recordItem.reasoningTokens !== undefined
+          ? { reasoningTokens: recordItem.reasoningTokens }
+          : {}),
+        ...(recordItem.turnPrompt !== undefined ? { turnPrompt: recordItem.turnPrompt } : {}),
+        ...(tier
+          ? {
+              pricing: {
+                inputPerMTokens: tier.inputPerMTokens,
+                outputPerMTokens: tier.outputPerMTokens,
+                ...(tier.cachedInputPerMTokens !== undefined
+                  ? { cachedInputPerMTokens: tier.cachedInputPerMTokens }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+    });
   }
 
   getSummary(): CostSummary {

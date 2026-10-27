@@ -742,6 +742,35 @@
             </div>
           `;
         }
+        else if (event.type === 'tool_batch') {
+          const data = event.data;
+          icon = '⚡';
+          typeLabel = '工具批';
+          bodyHtml = `
+            <div class="tool-info">
+              <div class="tool-header-row">
+                <div>
+                  <span class="tool-badge">${data.size} 个调用</span>
+                  <span style="font-size: 12px; margin-left: 10px; color: var(--text-muted);">${data.parallel ? '并行' : '串行'} · 墙钟 ${Math.round(data.wallTimeMs)}ms · 串行估算 ${Math.round(data.serialEstimateMs)}ms</span>
+                </div>
+                <span class="tool-status-badge status-approved">省 ${Math.round(data.savedTimeMs)}ms</span>
+              </div>
+              <pre class="code-view">${escapeHtml((data.names || []).join(', '))}</pre>
+            </div>
+          `;
+        }
+        else if (event.type === 'experiment_assignment') {
+          const data = event.data;
+          icon = '🧪';
+          typeLabel = 'A/B 分配';
+          bodyHtml = `<pre class="code-view">${escapeHtml(JSON.stringify(data.experiments || {}, null, 2))}</pre>`;
+        }
+        else if (event.type === 'subagent_launch') {
+          const data = event.data;
+          icon = '🤖';
+          typeLabel = '子代理启动';
+          bodyHtml = `<pre class="code-view">${escapeHtml(`${data.agentId} · ${data.role} · ${data.access}${data.background ? ' · 后台' : ''}`)}</pre>`;
+        }
 
         eventEl.innerHTML = `
           <div class="event-icon">${icon}</div>

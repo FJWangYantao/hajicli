@@ -15,6 +15,15 @@ import {
   CONTEXT_INSPECTOR_MIN_ROWS,
   type ContextInspectorFrame,
 } from "./context-inspector.js";
+import {
+  buildCostLogFrame,
+  COST_LOG_MIN_COLUMNS,
+  COST_LOG_MIN_ROWS,
+  type CostLogFrame,
+  type CostLogSort,
+  sortRequestDetails,
+} from "./cost-log-page.js";
+import type { RequestCostDetail } from "./cost-tracker.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   buildInputSelectionGeometry,
@@ -22,7 +31,19 @@ import {
   inputCellFromPoint,
   inputRowHighlightSpan,
 } from "./input-selection.js";
-import { type ChatSegmentView, type FoldGroupStats, renderSegmentText } from "./process-fold.js";
+import {
+  buildFoldHeader,
+  type ChatSegmentView,
+  type FoldGroupStats,
+  renderSegmentText,
+  splitBlankEdges,
+} from "./process-fold.js";
+import {
+  buildRequestDetailFrame,
+  REQUEST_DETAIL_MIN_COLUMNS,
+  REQUEST_DETAIL_MIN_ROWS,
+  type RequestDetailFrame,
+} from "./request-detail-page.js";
 import {
   buildInlineImage,
   clipInlinePlacement,
@@ -77,6 +98,11 @@ import {
 } from "./terminal-text.js";
 import { type TextCell, TextSelectionModel } from "./text-selection.js";
 import { colors, fillUserMsgRowEol, themeEnter } from "./theme.js";
+import {
+  renderToolBlockRows,
+  type ToolBlockRenderInfo,
+  type ToolBlockWrite,
+} from "./tool-block-fold.js";
 import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
 import {
   buildContextCard,
@@ -88,6 +114,13 @@ import {
   type SidebarPricingAgentState,
   type SidebarState,
 } from "./tui-sidebar.js";
+import {
+  buildTurnDetailFrame,
+  collectTurnDetails,
+  TURN_DETAIL_MIN_COLUMNS,
+  TURN_DETAIL_MIN_ROWS,
+  type TurnDetailFrame,
+} from "./turn-detail-page.js";
 
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
 // 保持既有 dist/terminal-input.js 导出面的兼容：拆分后的符号在此统一转发。
@@ -278,15 +311,37 @@ const INLINE_PLACEMENT_ID = 1;
  */
 const INLINE_IMAGE_SCROLL_NUDGE_MS = 80;
 
+/** 已封口段内的工具块：start/end 是 segment.raw 内的字符区间（提交格原文）。 */
+interface SealedToolBlock {
+  id: number;
+  start: number;
+  end: number;
+  info: ToolBlockRenderInfo;
+  expanded: boolean;
+}
+
+/** 块在本段可见行里的落位（渲染时记录，供命中表/点击/滚动锚点换算）。 */
+interface ToolBlockRowSpan {
+  blockId: number;
+  startRow: number;
+  endRow: number;
+  headerRow: number;
+  indicatorRow?: number;
+}
+
 interface ChatSegment {
   id: number;
   kind: "plain" | "fold" | "image";
   raw: string;
   stats?: FoldGroupStats;
   expanded: boolean;
+  /** 段内工具块（二级折叠）；fold 段收起时整段只有摘要行，块不可见。 */
+  blocks?: SealedToolBlock[];
+  /** 本帧各块的行落位；与 rows 同批缓存。 */
+  blockSpans?: ToolBlockRowSpan[];
   /** kind === "image" 时的内联图状态（placement 生命周期挂在段上）。 */
   image?: InlineImageSegmentState;
-  /** 缓存键 `${width}|${expanded}|${foldEnabled}`，命中则直接复用 rows / layout。 */
+  /** 缓存键 `${width}|${expanded}|${foldEnabled}|块状态`，命中则直接复用 rows / layout。 */
   cacheKey?: string;
   /** 去掉末尾光标行后的换行结果。 */
   rows?: string[];
@@ -483,6 +538,21 @@ export class TerminalUI {
   private foldHeaderRows = new Map<number, number>();
   /** 本帧已封口段的行区间（render 时重建，滚动锚定用）。 */
   private sealedRowIndex: Array<{ id: number; start: number; count: number }> = [];
+  /** 尾部（未封口）工具块：start/end 相对 chatContent；sealFoldGroup 时转成段内区间。 */
+  private tailToolBlocks: Array<{
+    id: number;
+    start: number;
+    end: number;
+    info: ToolBlockRenderInfo;
+    expanded: boolean;
+  }> = [];
+  private nextToolBlockId = 1;
+  /** 逻辑行 → 块 id（头行与折叠指示行可点击）；每帧随已封口区渲染重建。 */
+  private readonly toolBlockHits = new Map<number, number>();
+  /** 块 id → 本帧逻辑行区间（整块范围，悬停判定用）。 */
+  private readonly toolBlockRanges = new Map<number, { startRow: number; endRow: number }>();
+  /** 对话区悬停目标：工具块或过程段摘要行；指针移开/目标消失时清空。 */
+  private chatHoverTarget: { type: "block"; id: number } | { type: "fold"; id: number } | undefined;
   /** 下一帧要应用的滚动锚点（切换展开 / 封口时设置）。 */
   private pendingScrollAnchor?: { segmentId: number; rowInSegment: number; screenOffset: number };
   private chatScrollOffset = 0;
@@ -527,6 +597,39 @@ export class TerminalUI {
   };
   /** 上一帧原文区可滚动上限：PgUp/PgDn 与滚轮据此夹紧。 */
   private inspectorMaxScroll = 0;
+  /**
+   * 费用日志页状态；undefined 表示页面关闭。
+   * 与上下文详情页同构：打开时收起侧栏，对话区整块换成「每次请求一行」的列表。
+   */
+  private costLog?: {
+    details: RequestCostDetail[];
+    sort: CostLogSort;
+    selectedIndex: number;
+    /**
+     * 非空表示正停在某一轮的详情页：记下轮次与该轮内的选中下标。
+     * 页面仍是同一个只读快照，Esc 只退回列表（列表的选中与滚动都保着）。
+     */
+    turnDetail?: {
+      turn: number;
+      selectedIndex: number;
+      /** true 表示又往里走了一层：单次请求详情页。 */
+      openDetail?: boolean;
+    };
+  };
+  /** 费用日志页的数据来源：打开那一刻取一次快照（页面只读，回合更新不回溯）。 */
+  private costLogProvider?: (sort: CostLogSort) => RequestCostDetail[];
+  /** 上一帧的命中区域（屏幕绝对行列，1 基）；点击行与「Esc 返回」用。 */
+  private costLogHit?: {
+    listTop: number;
+    listHeight: number;
+    listLeft: number;
+    listWidth: number;
+    listOffset: number;
+    itemHeight: number;
+    backRow: number;
+    backLeft: number;
+    backWidth: number;
+  };
   /** 侧栏显示时对话区最右列（1-based）；0 表示侧栏隐藏，鼠标可整行选字。 */
   private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
@@ -721,6 +824,7 @@ export class TerminalUI {
    */
   openContextInspector(): boolean {
     if (!this.interactive) return false;
+    if (this.costLog) this.closeCostLog();
     if (this.contextInspector) return true;
     const provider = this.contextItemsProvider;
     const groups = provider ? provider() : [];
@@ -751,6 +855,247 @@ export class TerminalUI {
     this.contextInspector = undefined;
     this.contextInspectorHit = undefined;
     this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** 费用日志页是否打开。 */
+  isCostLogOpen(): boolean {
+    return this.costLog !== undefined;
+  }
+
+  setCostLogProvider(provider: (sort: CostLogSort) => RequestCostDetail[]): void {
+    this.costLogProvider = provider;
+  }
+
+  /**
+   * 打开费用日志页（逐条请求明细）。
+   *
+   * sort 是初始排序视角——侧栏五行各对应一个；数据在打开这一瞬间快照，
+   * 之后补单价、继续对话都不会让页面在眼皮底下跳，Esc 关掉再点即刷新。
+   * 返回 false 表示没打开（非交互，或本会话还没有可展示的请求）。
+   */
+  openCostLog(sort: CostLogSort = "cost"): boolean {
+    if (!this.interactive) return false;
+    if (this.contextInspector) this.closeContextInspector();
+    if (this.costLog) {
+      // 已打开时又点了另一行：原地换排序视角，不重新快照（否则选中项会被重置）。
+      if (this.costLog.sort !== sort) {
+        this.costLog.sort = sort;
+        this.costLog.selectedIndex = 0;
+        // 换了排序视角等于换了一份列表，停在某个回合里已经没有意义，退回列表。
+        this.costLog.turnDetail = undefined;
+        this.scheduleRender(true);
+      }
+      return true;
+    }
+    const details = this.costLogProvider ? this.costLogProvider(sort) : [];
+    if (details.length === 0) {
+      this.showTransientHint("本会话暂无已计费的模型调用");
+      return false;
+    }
+    this.costLog = { details, sort, selectedIndex: 0 };
+    // 页面覆盖对话区：清掉进行中的选区与待点击状态，避免两套交互同时生效。
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
+    this.pendingInputSelection = undefined;
+    this.pendingSidebarClick = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+    return true;
+  }
+
+  closeCostLog(): void {
+    if (!this.costLog) return;
+    this.costLog = undefined;
+    this.costLogHit = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** 回合详情页是否打开（打开时费用列表仍在其下层）。 */
+  isTurnDetailOpen(): boolean {
+    return this.costLog?.turnDetail !== undefined;
+  }
+
+  /**
+   * 费用列表按 Enter：进选中请求所属回合的详情页。
+   *
+   * 进页面时光标落在「你刚才选的那一条调用」上，所以按键方向一致：
+   * 列表里挑中的是哪一次调用，进来就还是它。
+   * 返回 false 表示没打开（页面没开着，或这条记录没有轮次信息）。
+   */
+  openTurnDetail(): boolean {
+    const state = this.costLog;
+    if (!state || state.turnDetail) return false;
+    const sorted = sortRequestDetails(state.details, state.sort);
+    const picked =
+      sorted[Math.min(Math.max(0, state.selectedIndex), Math.max(0, sorted.length - 1))];
+    if (!picked) return false;
+    if (picked.turn <= 0) {
+      this.showTransientHint("这条记录没有轮次信息（老会话未分轮）");
+      return false;
+    }
+    const items = collectTurnDetails(state.details, picked.turn);
+    const index = items.findIndex((item) => item.seq === picked.seq);
+    state.turnDetail = {
+      turn: picked.turn,
+      selectedIndex: index < 0 ? 0 : index,
+      openDetail: false,
+    };
+    this.scheduleRender(true);
+    return true;
+  }
+
+  /** 单次请求详情页是否打开（三层结构的最内层）。 */
+  isRequestDetailOpen(): boolean {
+    return this.costLog?.turnDetail?.openDetail === true;
+  }
+
+  /** 回合详情页按 Enter：看选中这一次调用的算法明细。 */
+  openRequestDetail(): boolean {
+    const view = this.costLog?.turnDetail;
+    if (!view || view.openDetail) return false;
+    view.openDetail = true;
+    this.scheduleRender(true);
+    return true;
+  }
+
+  /** 请求详情页 → 回合详情页（回合页的选中行原样留在那一条上）。 */
+  closeRequestDetail(): void {
+    const view = this.costLog?.turnDetail;
+    if (!view?.openDetail) return;
+    view.openDetail = false;
+    this.scheduleRender(true);
+  }
+
+  /** 回合详情页 → 费用列表；列表层的选中与滚动原样保留。 */
+  closeTurnDetail(): void {
+    if (!this.costLog?.turnDetail) return;
+    this.costLog.turnDetail = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** 回合详情页内的选中移动（↑↓/PgUp/PgDn/滚轮/点击共用）。 */
+  private moveTurnDetailSelection(delta: number): void {
+    const state = this.costLog;
+    const view = state?.turnDetail;
+    if (!state || !view || delta === 0) return;
+    const count = collectTurnDetails(state.details, view.turn).length;
+    const next = Math.min(Math.max(0, view.selectedIndex + delta), Math.max(0, count - 1));
+    if (next === view.selectedIndex) return;
+    view.selectedIndex = next;
+    this.scheduleRender(true);
+  }
+
+  /** ↑↓/PgUp/PgDn/滚轮：移动选中项；列表随选中项滚动，选中项永远可见。 */
+  private moveCostLogSelection(delta: number): void {
+    const state = this.costLog;
+    if (!state || delta === 0) return;
+    // 详情页开着时，方向键移动的是「这一次调用」而不是列表行。
+    if (state.turnDetail) {
+      this.moveTurnDetailSelection(delta);
+      return;
+    }
+    const next = Math.min(
+      Math.max(0, state.selectedIndex + delta),
+      Math.max(0, state.details.length - 1),
+    );
+    if (next === state.selectedIndex) return;
+    state.selectedIndex = next;
+    this.scheduleRender(true);
+  }
+
+  /**
+   * 费用日志页的按键：只接管导航键，其余键仍进输入框。
+   * 返回 true 表示已消费，调用方不要再走输入框的默认处理。
+   */
+  private handleCostLogKey(key: readline.Key): boolean {
+    if (!this.costLog) return false;
+    switch (key.name) {
+      case "escape":
+        // 三层结构逐层退回：请求详情 → 回合详情 → 费用列表 → 关闭。
+        if (this.costLog.turnDetail?.openDetail) this.closeRequestDetail();
+        else if (this.costLog.turnDetail) this.closeTurnDetail();
+        else this.closeCostLog();
+        return true;
+      case "return":
+      case "enter": {
+        // 输入框里有字时 Enter 是「发送」，不能被页面抢走；空输入才当成「往里走一层」。
+        const typing = (this.activeInput?.graphemes.length ?? 0) > 0;
+        if (typing) return false;
+        // 列表 → 回合详情；回合详情 → 请求详情；请求详情已是最内层，消费掉即可。
+        if (this.costLog.turnDetail) {
+          this.openRequestDetail();
+          return true;
+        }
+        this.openTurnDetail();
+        return true;
+      }
+      case "left":
+      case "right": {
+        // 详情页里左右切「同一回合内的相邻调用」，列表页仍留给输入框的左右移动。
+        if (!this.costLog.turnDetail) return false;
+        this.moveTurnDetailSelection(key.name === "left" ? -1 : 1);
+        return true;
+      }
+      case "up":
+        this.moveCostLogSelection(-1);
+        return true;
+      case "down":
+        this.moveCostLogSelection(1);
+        return true;
+      case "pageup":
+        this.moveCostLogSelection(-INSPECTOR_PAGE_ROWS);
+        return true;
+      case "pagedown":
+        this.moveCostLogSelection(INSPECTOR_PAGE_ROWS);
+        return true;
+      case "home":
+        if (!key.ctrl) return false;
+        this.moveCostLogSelection(-Number.MAX_SAFE_INTEGER);
+        return true;
+      case "end":
+        if (!key.ctrl) return false;
+        this.moveCostLogSelection(Number.MAX_SAFE_INTEGER);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * 费用日志页内的点击：命中「返回」按钮或某一项；其余位置忽略。
+   *
+   * 命中表是随「当前这一帧」重建的，所以列表页与回合详情页共用同一套坐标换算，
+   * 唯一要分叉的是返回按钮去往哪一层、以及下标属于哪个列表。
+   */
+  private handleCostLogClick(column: number, row: number): void {
+    const hit = this.costLogHit;
+    const state = this.costLog;
+    if (!hit || !state) return;
+    if (row === hit.backRow && column >= hit.backLeft && column < hit.backLeft + hit.backWidth) {
+      if (state.turnDetail?.openDetail) this.closeRequestDetail();
+      else if (state.turnDetail) this.closeTurnDetail();
+      else this.closeCostLog();
+      return;
+    }
+    if (column < hit.listLeft || column >= hit.listLeft + hit.listWidth) return;
+    const offset = Math.floor((row - hit.listTop) / Math.max(1, hit.itemHeight));
+    if (offset < 0 || offset * hit.itemHeight >= hit.listHeight) return;
+    const index = hit.listOffset + offset;
+    if (index < 0) return;
+    const view = state.turnDetail;
+    if (view) {
+      const count = collectTurnDetails(state.details, view.turn).length;
+      if (index >= count || index === view.selectedIndex) return;
+      view.selectedIndex = index;
+      this.scheduleRender(true);
+      return;
+    }
+    if (index >= state.details.length) return;
+    if (index === state.selectedIndex) return;
+    state.selectedIndex = index;
     this.scheduleRender(true);
   }
 
@@ -1052,9 +1397,37 @@ export class TerminalUI {
     if (handle.start >= end) return 0;
     const before = this.chatContent.slice(0, handle.start);
     const group = this.chatContent.slice(handle.start, end);
+    // 段内工具块：完整落在 [handle.start, end) 的尾部块转成段内偏移，
+    // 其余（理论上不存在：工具格总在段开启后写入）留在尾部不动。
+    const sealedBlocks = this.tailToolBlocks
+      .filter((block) => block.start >= handle.start && block.end <= end)
+      .map((block) => ({
+        id: block.id,
+        start: block.start - handle.start,
+        end: block.end - handle.start,
+        info: block.info,
+        // 段展开后块默认全展开：二级折叠退化为「单块手动收起」，
+        // 点开摘要行就能直接看到工具输出，不用再逐块点开。
+        expanded: true,
+      }));
+    if (sealedBlocks.length > 0) {
+      this.tailToolBlocks = this.tailToolBlocks.filter(
+        (block) => !(block.start >= handle.start && block.end <= end),
+      );
+    }
     if (before) this.pushSegment({ kind: "plain", raw: before });
-    this.pushSegment({ kind: "fold", raw: group, stats, expanded: false });
+    this.pushSegment({
+      kind: "fold",
+      raw: group,
+      stats,
+      expanded: false,
+      blocks: sealedBlocks,
+    });
     this.chatContent = this.chatContent.slice(end);
+    // 兜底：仍留在 tailToolBlocks 的块（区间在段外，理论上不该有）不能悬空指向已移出尾部的偏移。
+    this.tailToolBlocks = this.tailToolBlocks.filter(
+      (block) => block.start >= 0 && block.end <= this.chatContent.length,
+    );
     this.chatEpoch += 1;
     this.setStableWrapPrefix("");
     this.cachedContentWithStatus = "";
@@ -1138,6 +1511,10 @@ export class TerminalUI {
     this.cachedWrappedWidth = 0;
     this.cachedWrappedChat = [];
     this.foldHeaderRows.clear();
+    this.tailToolBlocks = [];
+    this.toolBlockHits.clear();
+    this.toolBlockRanges.clear();
+    this.chatHoverTarget = undefined;
     this.pendingScrollAnchor = undefined;
     this.chatEpoch += 1;
     this.sealedVersion += 1;
@@ -1470,6 +1847,10 @@ export class TerminalUI {
     this.nextSegmentId = 1;
     this.foldHeaderRows.clear();
     this.sealedRowIndex = [];
+    this.tailToolBlocks = [];
+    this.toolBlockHits.clear();
+    this.toolBlockRanges.clear();
+    this.chatHoverTarget = undefined;
     this.pendingScrollAnchor = undefined;
     this.selectionLayoutSealedVersion = -1;
     this.chatEpoch += 1;
@@ -1481,31 +1862,50 @@ export class TerminalUI {
   /**
    * 推入一个已封口片段。段尾统一补换行并复位 SGR：
    * 这样“各段独立换行再拼接 ≡ 整串换行”，与 stableWrapPrefix 的 rows.slice(0,-1) 同源。
+   * 块区间按传入原文计算；归一化若改变长度则放弃块元数据（退化为纯文本段）。
    */
   private pushSegment(piece: {
     kind: "plain" | "fold";
     raw: string;
     stats?: FoldGroupStats;
     expanded?: boolean;
+    blocks?: SealedToolBlock[];
   }): void {
     // 与 writeChat 同一套归一化（制表符展开等），保证段与尾部宽度口径一致。
-    const raw = ensureTrailingNewline(normalizeTerminalOutput(piece.raw));
+    const normalized = normalizeTerminalOutput(piece.raw);
+    const raw = ensureTrailingNewline(normalized);
     if (!raw) return;
+    const sealed = closeTrailingStyle(raw);
+    const blocks =
+      piece.blocks && normalized.length === piece.raw.length ? piece.blocks : undefined;
+    if (blocks) {
+      // closeTrailingStyle 会在末个换行前插入 SGR 复位：只有触及段尾的块会被这段
+      // 插入平移（其余块的区间都在插入点之前），补上偏移，避免块尾切进转义序列。
+      const inserted = sealed.length - raw.length;
+      if (inserted > 0) {
+        for (const block of blocks) {
+          if (block.end > normalized.length - 1) {
+            block.end = Math.min(sealed.length, block.end + inserted);
+          }
+        }
+      }
+    }
     this.sealedSegments.push({
       id: this.nextSegmentId,
       kind: piece.kind,
-      raw: closeTrailingStyle(raw),
+      raw: sealed,
       stats: piece.stats,
       expanded: piece.expanded ?? false,
+      ...(blocks ? { blocks } : {}),
     });
     this.nextSegmentId += 1;
     this.sealedVersion += 1;
     this.selectionLayout = undefined;
   }
 
-  /** 段的换行结果（去掉末尾光标行）；宽度或展开状态变化时重算。 */
+  /** 段的换行结果（去掉末尾光标行）；宽度、展开状态或块悬停变化时重算。 */
   private getSegmentRows(segment: ChatSegment, width: number): string[] {
-    const cacheKey = `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}`;
+    const cacheKey = this.segmentCacheKey(segment, width);
     if (segment.cacheKey === cacheKey && segment.rows) return segment.rows;
     const rows = this.renderSegmentRows(segment, width);
     segment.rows = rows.length > 0 ? rows.slice(0, -1) : rows;
@@ -1541,11 +1941,82 @@ export class TerminalUI {
 
   private renderSegmentRows(segment: ChatSegment, width: number): string[] {
     if (segment.kind === "image") return this.renderImageSegmentRows(segment, width);
-    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
+    if (this.segmentBlocksVisible(segment)) {
+      return this.renderBlockSegmentRows(segment, width);
+    }
+    // 块不可见（fold 收起 / 无块）：不能残留上一态的行落位，否则命中表会指到隐藏行。
+    segment.blockSpans = undefined;
+    const rendered = renderSegmentText(
+      segmentView(segment),
+      width,
+      this.foldEnabled,
+      this.chatHoverTarget?.type === "fold" && this.chatHoverTarget.id === segment.id,
+    );
     segment.headerRow = rendered.headerRow;
     return performanceMonitor.measureSync("terminal.wrap.segment", () =>
       wrapAnsi(rendered.text, width),
     );
+  }
+
+  /** 段内块是否按块渲染：有块且段处于展开态（fold 收起时整段只剩摘要行）。 */
+  private segmentBlocksVisible(segment: ChatSegment): boolean {
+    if ((segment.blocks?.length ?? 0) === 0) return false;
+    return segment.kind === "plain" || !this.foldEnabled || segment.expanded;
+  }
+
+  /**
+   * 块感知的段渲染：把 raw 里每个工具块的字符区间挖出来，块内容从渲染配方现算
+   * （收起数行 + 「点击展开」指示行 / 展开 + 输出正文），其余原文片段照常换行。
+   * 返回含末尾光标行的完整行集；块的行落位记进 segment.blockSpans，供命中表换算。
+   */
+  private renderBlockSegmentRows(segment: ChatSegment, width: number): string[] {
+    const { leading, trailing } = splitBlankEdges(segment.raw);
+    const rows: string[] = [];
+    const spans: ToolBlockRowSpan[] = [];
+    const pushWrapped = (text: string): void => {
+      if (!text) return;
+      const wrapped = wrapAnsi(text, width);
+      // 以换行结尾的片段会多带一个光标空行；段内拼接时不重复保留。
+      const visible = text.endsWith("\n") ? wrapped.slice(0, -1) : wrapped;
+      for (const row of visible) rows.push(row);
+    };
+    pushWrapped(leading);
+    if (segment.kind === "fold" && this.foldEnabled && segment.stats) {
+      const hovered =
+        this.chatHoverTarget?.type === "fold" && this.chatHoverTarget.id === segment.id;
+      rows.push(buildFoldHeader(segment.stats, width, hovered));
+      segment.headerRow = rows.length - 1;
+    }
+    const bodyStart = leading.length;
+    const bodyEnd = segment.raw.length - trailing.length;
+    const blocks = [...(segment.blocks ?? [])].sort((a, b) => a.start - b.start);
+    let cursor = bodyStart;
+    for (const block of blocks) {
+      if (block.start > cursor) pushWrapped(segment.raw.slice(cursor, block.start));
+      const hovered =
+        this.chatHoverTarget?.type === "block" && this.chatHoverTarget.id === block.id;
+      const rendered = renderToolBlockRows(block.info, width, {
+        expanded: block.expanded,
+        hovered,
+      });
+      const startRow = rows.length;
+      for (const row of rendered.rows) rows.push(row);
+      spans.push({
+        blockId: block.id,
+        startRow,
+        endRow: rows.length - 1,
+        headerRow: startRow + rendered.headerRow,
+        ...(rendered.indicatorRow !== undefined
+          ? { indicatorRow: startRow + rendered.indicatorRow }
+          : {}),
+      });
+      cursor = Math.max(cursor, block.end);
+    }
+    if (cursor < bodyEnd) pushWrapped(segment.raw.slice(cursor, bodyEnd));
+    pushWrapped(trailing);
+    segment.blockSpans = spans;
+    rows.push("");
+    return rows;
   }
 
   /** 段的独立布局（选区用）；末尾光标行保留，交给 concatAnsiLayouts 处理。 */
@@ -1582,7 +2053,22 @@ export class TerminalUI {
       segment.rows = layout.rows.slice(0, -1).map((row) => row.ansi);
       return layout;
     }
-    const rendered = renderSegmentText(segmentView(segment), width, this.foldEnabled);
+    if (this.segmentBlocksVisible(segment)) {
+      // 块感知段：布局直接建在「本帧可见文本」上，保证选区/复制与显示一致。
+      const rows = this.renderBlockSegmentRows(segment, width);
+      const layout = layoutAnsiDocument(rows.join("\n"), width);
+      segment.layout = layout;
+      segment.cacheKey = this.segmentCacheKey(segment, width);
+      segment.rows = layout.rows.slice(0, -1).map((row) => row.ansi);
+      return layout;
+    }
+    segment.blockSpans = undefined;
+    const rendered = renderSegmentText(
+      segmentView(segment),
+      width,
+      this.foldEnabled,
+      this.chatHoverTarget?.type === "fold" && this.chatHoverTarget.id === segment.id,
+    );
     segment.headerRow = rendered.headerRow;
     const layout = layoutAnsiDocument(rendered.text, width);
     segment.layout = layout;
@@ -1591,24 +2077,69 @@ export class TerminalUI {
     return layout;
   }
 
+  /**
+   * 段缓存键：宽度 / 段展开 / 过程折叠开关之外，块段的各块展开态与悬停态
+   * 也在键里——点击或悬停只让受影响的那一段重算，其余段继续吃缓存。
+   */
   private segmentCacheKey(segment: ChatSegment, width: number): string {
-    return `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}`;
+    let blockKey = "";
+    const hover = this.chatHoverTarget;
+    if (segment.blocks?.length) {
+      const states = segment.blocks.map((block) => (block.expanded ? 1 : 0)).join("");
+      const hovered =
+        hover !== undefined &&
+        ((hover.type === "block" && segment.blocks.some((block) => block.id === hover.id)) ||
+          (hover.type === "fold" && hover.id === segment.id));
+      blockKey = `|b${states}${hovered ? "h" : ""}`;
+    } else if (hover?.type === "fold" && hover.id === segment.id) {
+      blockKey = "|fh";
+    }
+    return `${width}|${segment.expanded ? 1 : 0}|${this.foldEnabled ? 1 : 0}${blockKey}`;
   }
 
-  /** 已封口区的可见行；同时重建摘要行命中表与段行区间。 */
+  /** 已封口区的可见行；同时重建摘要行/工具块命中表与段行区间。 */
   private getSealedRows(width: number): string[] {
     this.foldHeaderRows.clear();
     this.sealedRowIndex = [];
-    if (this.sealedSegments.length === 0) return [];
+    this.toolBlockHits.clear();
+    this.toolBlockRanges.clear();
+    if (this.sealedSegments.length === 0) {
+      this.chatHoverTarget = undefined;
+      return [];
+    }
     const rows: string[] = [];
     for (const segment of this.sealedSegments) {
       const segmentRows = this.getSegmentRows(segment, width);
       if (segment.kind === "fold" && segment.headerRow !== undefined && this.foldEnabled) {
         this.foldHeaderRows.set(rows.length + segment.headerRow, segment.id);
       }
+      // 块命中表：头行与折叠指示行可点击；整块行区间用于悬停判定。
+      for (const span of segment.blockSpans ?? []) {
+        const base = rows.length;
+        this.toolBlockHits.set(base + span.headerRow, span.blockId);
+        if (span.indicatorRow !== undefined) {
+          this.toolBlockHits.set(base + span.indicatorRow, span.blockId);
+        }
+        this.toolBlockRanges.set(span.blockId, {
+          startRow: base + span.startRow,
+          endRow: base + span.endRow,
+        });
+      }
       this.sealedRowIndex.push({ id: segment.id, start: rows.length, count: segmentRows.length });
       // 用循环 push：展开后的段可能有成百上千行，push(...rows) 会爆参数栈。
       for (const row of segmentRows) rows.push(row);
+    }
+    // 悬停目标这一帧可能已消失（段被预算回收、组被收起）：就地作废，避免残留高亮。
+    if (
+      this.chatHoverTarget?.type === "block" &&
+      !this.toolBlockRanges.has(this.chatHoverTarget.id)
+    ) {
+      this.chatHoverTarget = undefined;
+    } else if (
+      this.chatHoverTarget?.type === "fold" &&
+      ![...this.foldHeaderRows.values()].includes(this.chatHoverTarget.id)
+    ) {
+      this.chatHoverTarget = undefined;
     }
     return rows;
   }
@@ -1665,6 +2196,29 @@ export class TerminalUI {
     this.textSelection.clear();
     this.selectionLayout = undefined;
     this.scheduleRender(true);
+  }
+
+  /**
+   * 切换某个工具块的展开状态（二级折叠）。screenOffset 是被点行在视口内的行位置，
+   * 与 toggleFoldSegment 同一套锚点语义：行数变化后视口仍钉在被点的那一行。
+   */
+  private toggleToolBlock(blockId: number, screenOffset: number): void {
+    for (const segment of this.sealedSegments) {
+      const block = segment.blocks?.find((item) => item.id === blockId);
+      if (!block) continue;
+      block.expanded = !block.expanded;
+      this.sealedVersion += 1;
+      const span = segment.blockSpans?.find((item) => item.blockId === blockId);
+      this.pendingScrollAnchor = {
+        segmentId: segment.id,
+        rowInSegment: span ? span.startRow : 0,
+        screenOffset: Math.max(0, screenOffset),
+      };
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
+      this.scheduleRender(true);
+      return;
+    }
   }
 
   /** Ctrl+O：切换最新一个已封口的过程段。 */
@@ -1799,13 +2353,46 @@ export class TerminalUI {
 
     this.chatContent += text;
     if (this.chatContent.length > 200_000) {
+      const cut = this.chatContent.length - 160_000;
       this.chatContent = this.chatContent.slice(-160_000);
+      // 尾部工具块的偏移随截断平移；头部被切掉的块直接丢弃（其正文已不在缓冲里）。
+      this.tailToolBlocks = this.tailToolBlocks
+        .map((block) => ({ ...block, start: block.start - cut, end: block.end - cut }))
+        .filter((block) => block.start >= 0);
       this.cachedContentWithStatus = "";
       this.setStableWrapPrefix("");
       this.chatEpoch += 1;
     }
 
     this.scheduleRender();
+  }
+
+  /**
+   * 写入一批工具格并为每个块登记二级折叠元数据：块正文照常进尾部
+   * （回合进行中完整可见），封口后由 TerminalUI 按块收口成数行、点击展开。
+   * 区间按提交原文计算；若写入归一化改变了文本长度（制表符展开等），
+   * 区间会错位，此时退化为普通写入（块完整可见、不可点，绝不渲染错位内容）。
+   */
+  writeToolCells(text: string, blocks: readonly ToolBlockWrite[] = []): void {
+    if (
+      !this.interactive ||
+      blocks.length === 0 ||
+      normalizeTerminalOutput(text).length !== text.length
+    ) {
+      this.writeChat(text);
+      return;
+    }
+    const base = this.chatContent.length;
+    this.writeChat(text);
+    for (const block of blocks) {
+      this.tailToolBlocks.push({
+        id: this.nextToolBlockId++,
+        start: base + block.start,
+        end: base + block.end,
+        info: block.info,
+        expanded: false,
+      });
+    }
   }
 
   writeLine(value: string = ""): void {
@@ -1870,6 +2457,10 @@ export class TerminalUI {
     this.nextSegmentId = 1;
     this.foldHeaderRows.clear();
     this.sealedRowIndex = [];
+    this.tailToolBlocks = [];
+    this.toolBlockHits.clear();
+    this.toolBlockRanges.clear();
+    this.chatHoverTarget = undefined;
     this.pendingScrollAnchor = undefined;
     this.selectionLayoutSealedVersion = -1;
     this.chatEpoch += 1;
@@ -1894,8 +2485,14 @@ export class TerminalUI {
 
     this.markStableChatPrefix(offset);
     this.chatContent = this.chatContent.slice(0, offset) + text;
+    // 流式重绘只覆盖正文区；防御性丢弃被覆盖到的尾部块，避免区间悬空。
+    this.tailToolBlocks = this.tailToolBlocks.filter((block) => block.end <= offset);
     if (this.chatContent.length > 200_000) {
+      const cut = this.chatContent.length - 160_000;
       this.chatContent = this.chatContent.slice(-160_000);
+      this.tailToolBlocks = this.tailToolBlocks
+        .map((block) => ({ ...block, start: block.start - cut, end: block.end - cut }))
+        .filter((block) => block.start >= 0);
       this.cachedContentWithStatus = "";
       this.setStableWrapPrefix("");
       this.chatEpoch += 1;
@@ -2320,13 +2917,21 @@ export class TerminalUI {
   }
 
   private handleMouseEvent(event: TerminalMouseEvent): void {
-    // 1003 any-event 跟踪下的纯移动（无按键按下）：只用于侧栏圆环的悬停提示。
+    // 1003 any-event 跟踪下的纯移动（无按键按下）：侧栏圆环悬停 + 对话区可点行悬停。
     if (event.action === "move" && (event.button & 3) === 3) {
       this.updateSidebarHover(event.column, event.row);
+      this.updateChatHover(event.column, event.row);
       return;
     }
     if (event.action === "wheel") {
-      // 详情页打开时滚轮归原文；内容不足一屏时 scrollInspector 自己会挡住。
+      // 详情页打开时滚轮归原文；费用日志页没有独立滚动区，滚轮等价于上下移动选中项。
+      if (this.costLog) {
+        const rows = event.wheelRows ?? 0;
+        this.moveCostLogSelection(
+          rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS,
+        );
+        return;
+      }
       if (this.contextInspector) {
         const rows = event.wheelRows ?? 0;
         this.scrollInspector(
@@ -2361,7 +2966,7 @@ export class TerminalUI {
         return;
       }
       // 详情页覆盖了对话区：按下只记录待点击行，不产生文本选区。
-      if (this.contextInspector) {
+      if (this.contextInspector || this.costLog) {
         this.pendingMouseSelection = undefined;
         this.pendingInputSelection = undefined;
         this.pendingSidebarClick = undefined;
@@ -2478,7 +3083,11 @@ export class TerminalUI {
     if (event.action === "up" && isLeftButton && this.pendingInspectorClickRow !== undefined) {
       const pressedRow = this.pendingInspectorClickRow;
       this.pendingInspectorClickRow = undefined;
-      if (pressedRow === event.row) this.handleInspectorClick(event.column, event.row);
+      if (pressedRow === event.row) {
+        // 两个整页视图共用同一个「按下-松开同一行才算点击」的通道，按当前打开的是谁分发。
+        if (this.costLog) this.handleCostLogClick(event.column, event.row);
+        else this.handleInspectorClick(event.column, event.row);
+      }
       return;
     }
 
@@ -2501,12 +3110,18 @@ export class TerminalUI {
       this.pendingMouseSelection = undefined;
       this.selectionPointer = undefined;
       this.selectionLayout = undefined;
-      // 单击 = 按下与松开在同一屏幕行：命中摘要行则切换该段，其余情况与今天一致。
+      // 单击 = 按下与松开在同一屏幕行：命中摘要行则切换该段、命中工具块头行/指示行
+      // 则切换该块（二级折叠），其余情况与今天一致。
       if (pending.row === event.row) {
         const segmentId = this.foldHeaderRows.get(pending.logicalRow);
+        const screenOffset = pending.row - (this.chatViewport?.screenTop ?? 0);
         if (segmentId !== undefined) {
-          const screenOffset = pending.row - (this.chatViewport?.screenTop ?? 0);
           this.toggleFoldSegment(segmentId, screenOffset);
+        } else {
+          const blockId = this.toolBlockHits.get(pending.logicalRow);
+          if (blockId !== undefined) {
+            this.toggleToolBlock(blockId, screenOffset);
+          }
         }
       }
       return;
@@ -3002,8 +3617,9 @@ export class TerminalUI {
   }
 
   /**
-   * 悬停提示需要 1003（any-event）跟踪，但它会让终端把所有鼠标移动都发上来。
-   * 因此只在右侧栏真正显示的帧里开启，侧栏隐藏时立刻关闭，避免窄屏白付流量。
+   * 悬停提示需要 1003（any-event）跟踪，它会让终端把所有鼠标移动都发上来。
+   * 侧栏圆环与对话区工具块/摘要行的悬停都依赖它，交互模式下常开；
+   * 悬停目标没变就不重绘，报文密度高也不会拖慢渲染。
    */
   private setMouseMotionEnabled(enabled: boolean): void {
     if (this.mouseMotionEnabled === enabled) return;
@@ -3019,6 +3635,40 @@ export class TerminalUI {
     const next = this.sidebarRegionAt(column, row);
     if (next === this.sidebarHoverId) return;
     this.sidebarHoverId = next;
+    this.scheduleRender(true);
+  }
+
+  /**
+   * 对话区悬停：指针落在工具块（整块行区间）或过程段摘要行上时记为悬停目标，
+   * 渲染层据此给头行加下划线 / 摘要行换强调色。目标没变就不重绘——
+   * any-event 跟踪的移动报文密度很高，逐帧重绘会明显掉速。
+   */
+  private updateChatHover(column: number, row: number): void {
+    let next: { type: "block"; id: number } | { type: "fold"; id: number } | undefined;
+    if (!this.contextInspector && !this.costLog && !this.isPointerInSidebar(column)) {
+      const logicalRow = this.getLogicalChatRow(row);
+      if (logicalRow !== undefined) {
+        for (const [blockId, range] of this.toolBlockRanges) {
+          if (logicalRow >= range.startRow && logicalRow <= range.endRow) {
+            next = { type: "block", id: blockId };
+            break;
+          }
+        }
+        if (next === undefined) {
+          const segmentId = this.foldHeaderRows.get(logicalRow);
+          if (segmentId !== undefined) next = { type: "fold", id: segmentId };
+        }
+      }
+    }
+    const current = this.chatHoverTarget;
+    const unchanged =
+      (current === undefined && next === undefined) ||
+      (current !== undefined &&
+        next !== undefined &&
+        current.type === next.type &&
+        current.id === next.id);
+    if (unchanged) return;
+    this.chatHoverTarget = next;
     this.scheduleRender(true);
   }
 
@@ -3300,10 +3950,9 @@ export class TerminalUI {
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
     // 右侧会话信息栏：只占对话区高度，输入框与状态栏仍保持整行宽度。
-    // 上下文详情页打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
-    const sidebarWidth = this.contextInspector
-      ? 0
-      : resolveSidebarWidth(width, height, this.sidebarEnabled);
+    // 整页视图（上下文详情 / 费用日志）打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
+    const pageOpen = Boolean(this.contextInspector) || Boolean(this.costLog);
+    const sidebarWidth = pageOpen ? 0 : resolveSidebarWidth(width, height, this.sidebarEnabled);
     const sidebarVisible = sidebarWidth > 0;
     const leftAreaWidth = Math.max(
       1,
@@ -3351,7 +4000,7 @@ export class TerminalUI {
     // 底栏的状态栏因此常驻。minimal 档对话区放不下，仍退回旧行为：活动行顶替状态栏。
     // 临时提示（Ctrl+C 确认等）、复制角标与状态栏轮换：有提示时占位、超时自动消失。
     // 活动行不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
-    let activityInChat = Boolean(this.activityFrame) && !minimal && !this.contextInspector;
+    let activityInChat = Boolean(this.activityFrame) && !minimal && !pageOpen;
     const activityRow =
       (activityInChat ? "" : this.buildActivityRow(width)) ||
       (this.copiedNotice && topRows.length === 0
@@ -3587,7 +4236,9 @@ export class TerminalUI {
     if (this.pendingSidebarClick && !this.sidebarHits.has(this.pendingSidebarClick.id)) {
       this.pendingSidebarClick = undefined;
     }
-    this.setMouseMotionEnabled(sidebarVisible);
+    // 悬停提示（侧栏圆环 + 对话区工具块/摘要行）都需要 1003 any-event 跟踪；
+    // 目标没变不重绘，移动报文本身的处理成本可以忽略。
+    this.setMouseMotionEnabled(true);
     // 圆环悬停卡片：浮层贴在对话区右侧，不占侧栏行数、不改变对话滚动布局，
     // 鼠标移开就消失——比在侧栏里内联展开更不打扰（费用表不会被顶走）。
     const contextCard =
@@ -3610,7 +4261,8 @@ export class TerminalUI {
       const tail = " ".repeat(Math.max(0, leftAreaWidth - (left - 1) - cardWidth));
       return `${head}${pad}${truncateAnsiText(cardRow, cardWidth)}${tail}`;
     };
-    // 上下文详情页：整块替换对话区（活动行、折叠段、悬停卡片都不参与本帧）。
+    // 整页视图（上下文详情 / 费用日志）：整块替换对话区
+    // （活动行、折叠段、悬停卡片都不参与本帧）。
     const inspectorFrame: ContextInspectorFrame | undefined = this.contextInspector
       ? buildContextInspectorFrame(
           {
@@ -3623,19 +4275,86 @@ export class TerminalUI {
           chatHeight,
         )
       : undefined;
+    // 费用页有两个层次：列表，以及按 Enter 进去的回合详情。详情页盖在列表之上，
+    // 同一时刻只排一帧，命中表也随当前这一帧重建。
+    const turnDetailView = this.costLog?.turnDetail;
+    const requestFrame: RequestDetailFrame | undefined =
+      this.costLog && turnDetailView?.openDetail
+        ? buildRequestDetailFrame(
+            {
+              details: this.costLog.details,
+              turn: turnDetailView.turn,
+              selectedIndex: turnDetailView.selectedIndex,
+              sort: this.costLog.sort,
+            },
+            leftAreaWidth,
+            chatHeight,
+          )
+        : undefined;
+    const turnFrame: TurnDetailFrame | undefined =
+      this.costLog && turnDetailView && !requestFrame
+        ? buildTurnDetailFrame(
+            {
+              details: this.costLog.details,
+              turn: turnDetailView.turn,
+              selectedIndex: turnDetailView.selectedIndex,
+            },
+            leftAreaWidth,
+            chatHeight,
+          )
+        : undefined;
+    const costLogFrame: CostLogFrame | undefined =
+      this.costLog && !turnFrame
+        ? buildCostLogFrame(
+            {
+              details: this.costLog.details,
+              sort: this.costLog.sort,
+              selectedIndex: this.costLog.selectedIndex,
+            },
+            leftAreaWidth,
+            chatHeight,
+          )
+        : undefined;
+    const pageMinColumns = requestFrame
+      ? REQUEST_DETAIL_MIN_COLUMNS
+      : turnFrame
+        ? TURN_DETAIL_MIN_COLUMNS
+        : costLogFrame
+          ? COST_LOG_MIN_COLUMNS
+          : CONTEXT_INSPECTOR_MIN_COLUMNS;
+    const pageMinRows = requestFrame
+      ? REQUEST_DETAIL_MIN_ROWS
+      : turnFrame
+        ? TURN_DETAIL_MIN_ROWS
+        : costLogFrame
+          ? COST_LOG_MIN_ROWS
+          : CONTEXT_INSPECTOR_MIN_ROWS;
+    const pageName = requestFrame
+      ? "请求详情页"
+      : turnFrame
+        ? "回合详情页"
+        : costLogFrame
+          ? "费用日志页"
+          : "上下文详情页";
     // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
-    const inspectorTooSmall = Boolean(
-      inspectorFrame &&
-        (leftAreaWidth < CONTEXT_INSPECTOR_MIN_COLUMNS || chatHeight < CONTEXT_INSPECTOR_MIN_ROWS),
+    const pageTooSmall = Boolean(
+      (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
+        (leftAreaWidth < pageMinColumns || chatHeight < pageMinRows),
     );
-    const chatColumn = inspectorTooSmall
-      ? [`${SEQ.muted}终端太小，放不下上下文详情页（Esc 返回）${SEQ.reset}`]
+    const chatColumn = pageTooSmall
+      ? [`${SEQ.muted}终端太小，放不下${pageName}（Esc 返回）${SEQ.reset}`]
       : inspectorFrame
         ? inspectorFrame.rows
-        : [...visibleChat, ...activityRows];
-    if (inspectorFrame && !inspectorTooSmall) {
-      // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
-      const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
+        : requestFrame
+          ? requestFrame.rows
+          : turnFrame
+            ? turnFrame.rows
+            : costLogFrame
+              ? costLogFrame.rows
+              : [...visibleChat, ...activityRows];
+    // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
+    const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
+    if (inspectorFrame && !pageTooSmall) {
       this.inspectorMaxScroll = inspectorFrame.maxScroll;
       this.contextInspectorHit = {
         listTop: chatScreenTop + inspectorFrame.listTop,
@@ -3656,6 +4375,43 @@ export class TerminalUI {
       }
     } else {
       this.contextInspectorHit = undefined;
+    }
+    // 请求详情页没有列表：只登记返回按钮，列表区域留空（点击一律落到空）。
+    if (requestFrame && !pageTooSmall && turnDetailView) {
+      this.costLogHit = {
+        listTop: 0,
+        listHeight: 0,
+        listLeft: 0,
+        listWidth: 0,
+        listOffset: 0,
+        itemHeight: 1,
+        backRow: chatScreenTop + requestFrame.back.row,
+        backLeft: requestFrame.back.left + 1,
+        backWidth: requestFrame.back.width,
+      };
+      // 渲染时夹紧的下标回写，保证 ←→ 换页时和回合页光标一致。
+      turnDetailView.selectedIndex = requestFrame.selectedIndex;
+    }
+    // 列表页与回合详情页共用一张命中表结构：谁在画就用谁的几何。
+    const activeCostFrame = requestFrame ? undefined : (turnFrame ?? costLogFrame);
+    if (activeCostFrame && !pageTooSmall && this.costLog) {
+      this.costLogHit = {
+        listTop: chatScreenTop + activeCostFrame.listTop,
+        listHeight: activeCostFrame.listHeight,
+        listLeft: activeCostFrame.listLeft + 1,
+        listWidth: activeCostFrame.listWidth,
+        listOffset: activeCostFrame.listOffset,
+        itemHeight: activeCostFrame.itemHeight,
+        backRow: chatScreenTop + activeCostFrame.back.row,
+        backLeft: activeCostFrame.back.left + 1,
+        backWidth: activeCostFrame.back.width,
+      };
+      // 渲染时会把超出范围的下标夹紧（比如详情页打开期间记录被清空），这里回写。
+      if (turnFrame && turnDetailView) turnDetailView.selectedIndex = turnFrame.selectedIndex;
+      else if (costLogFrame) this.costLog.selectedIndex = costLogFrame.selectedIndex;
+    } else if (!requestFrame) {
+      // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
+      this.costLogHit = undefined;
     }
     const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")].map(
       (row, index) => {
@@ -3964,6 +4720,10 @@ export class TerminalUI {
     // 详情页是只读覆盖层：导航键先归它；Esc 只关页面，不触发中止回合。
     // 其余按键（含普通输入）继续走输入框，所以用户可以直接打字继续对话。
     if (this.handleInspectorKey(key)) {
+      return;
+    }
+    // 费用日志页同样是只读覆盖层：导航键先归它，Esc 只关页面。
+    if (this.handleCostLogKey(key)) {
       return;
     }
     const activeInput = this.activeInput;
