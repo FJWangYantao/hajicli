@@ -5,7 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ExperienceStore, ExperiencesPromptPart } from "@hajicli/core";
+import {
+  buildExperienceRecall,
+  ExperienceStore,
+  ExperiencesPromptPart,
+  stripExperienceRecall,
+  wrapExperienceRecall,
+} from "@hajicli/core";
 
 function createStoreWithTmp() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "haji-part-"));
@@ -250,4 +256,37 @@ test("ExperiencesPromptPart recalls by recent user message, not fixed vocabulary
   } finally {
     fsp.rm(tmp, { recursive: true, force: true });
   }
+});
+
+test("buildExperienceRecall 按 query 召回，未命中返回 undefined", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct({
+      id: "session-save",
+      trigger: "session save flush",
+      action: "会话保存统一走 SessionManager.saveCurrentSession，flush 在 finally 里",
+      confidence: 0.9,
+      domain: "workflow",
+      source: "statistical",
+      occurrenceCount: 3,
+      observedAt: new Date().toISOString(),
+    });
+    const hit = buildExperienceRecall(store, "session save flush 链路");
+    assert.ok(hit);
+    assert.match(hit, /saveCurrentSession/);
+    assert.equal(buildExperienceRecall(store, "图像压缩 png"), undefined);
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("wrapExperienceRecall / stripExperienceRecall 只剥注入块，保留用户原话", () => {
+  const block = wrapExperienceRecall("# 经验记忆\n- 规则 A");
+  const message = `帮我看看保存链路\n\n${block}`;
+  assert.match(message, /<experience_recall>/);
+  assert.equal(stripExperienceRecall(message), "帮我看看保存链路");
+  // 没有标记时原样返回
+  assert.equal(stripExperienceRecall("普通消息"), "普通消息");
+  // 标记不完整时也不吞掉后半段之外的正文
+  assert.equal(stripExperienceRecall("前半 <experience_recall> 后半"), "前半");
 });

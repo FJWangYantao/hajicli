@@ -33,29 +33,7 @@ export class ExperiencesPromptPart implements SystemPromptPart {
   }
 
   public getContent(context: PromptContext): string {
-    const query = this.buildQuery(context);
-    const instincts = this.store.recallInstincts(query, 8, 0.7);
-    const memories = this.store.recallMemories(query, 5);
-    if (instincts.length === 0 && memories.length === 0) return "";
-
-    const sections: string[] = ["# 经验记忆（系统自动积累，请优先参考）"];
-    const used = sections.join("\n").length;
-    let budget = this.maxChars - used;
-
-    if (instincts.length > 0) {
-      const instinctLines = this.formatInstincts(instincts, budget);
-      if (instinctLines) {
-        sections.push(instinctLines.formatted);
-        budget -= instinctLines.used;
-      }
-    }
-    if (memories.length > 0 && budget > 100) {
-      const memoryLines = this.formatMemories(memories, budget);
-      if (memoryLines) sections.push(memoryLines);
-    }
-
-    const result = sections.join("\n\n");
-    return result.length > this.maxChars ? `${result.slice(0, this.maxChars)}…` : result;
+    return buildExperienceRecall(this.store, this.buildQuery(context), this.maxChars) ?? "";
   }
 
   /**
@@ -69,46 +47,100 @@ export class ExperiencesPromptPart implements SystemPromptPart {
     if (recent) return `${recent} ${projectName}`;
     return `${projectName} workflow edit read test git error prevention`;
   }
+}
 
-  private formatInstincts(
-    instincts: {
-      id: string;
-      domain: string;
-      confidence: number;
-      action: string;
-      scope?: "user" | "project";
-    }[],
-    budget: number,
-  ): { formatted: string; used: number } | null {
-    const lines: string[] = ["## 行为规则（自动提炼，按置信度）"];
-    let used = lines.join("\n").length;
-    for (const inst of instincts) {
-      const conf = inst.confidence.toFixed(2);
-      const action = inst.action.replace(/\s+/g, " ").slice(0, 160);
-      const globalTag = inst.scope === "user" ? " · 全局" : "";
-      const line = `- [${inst.domain} ${conf}${globalTag}] ${action}`;
-      if (used + line.length + 1 > budget) break;
-      lines.push(line);
-      used += line.length + 1;
+/** 随用户消息注入时的边界标记：回放会话时按它剥掉，避免把注入内容当成用户原话。 */
+export const EXPERIENCE_RECALL_OPEN = "<experience_recall>";
+export const EXPERIENCE_RECALL_CLOSE = "</experience_recall>";
+
+/**
+ * 按 query 召回经验并格式化成一段文本；没有命中返回 undefined。
+ *
+ * 两个入口共用同一份格式化逻辑：
+ * - 系统提示词分片（`ExperiencesPromptPart`）——分片内容变了会打断前缀缓存；
+ * - 随用户消息注入（A/B: experience_recall=message）——只动本轮用户消息的尾部。
+ */
+export function buildExperienceRecall(
+  store: ExperienceStore,
+  query: string,
+  maxChars = 2000,
+): string | undefined {
+  const instincts = store.recallInstincts(query, 8, 0.7);
+  const memories = store.recallMemories(query, 5);
+  if (instincts.length === 0 && memories.length === 0) return undefined;
+
+  const sections: string[] = ["# 经验记忆（系统自动积累，请优先参考）"];
+  const used = sections.join("\n").length;
+  let budget = maxChars - used;
+
+  if (instincts.length > 0) {
+    const instinctLines = formatInstincts(instincts, budget);
+    if (instinctLines) {
+      sections.push(instinctLines.formatted);
+      budget -= instinctLines.used;
     }
-    if (lines.length <= 1) return null;
-    return { formatted: lines.join("\n"), used };
+  }
+  if (memories.length > 0 && budget > 100) {
+    const memoryLines = formatMemories(memories, budget);
+    if (memoryLines) sections.push(memoryLines);
   }
 
-  private formatMemories(
-    memories: { type: string; content: string; scope?: "user" | "project" }[],
-    budget: number,
-  ): string {
-    const lines: string[] = ["## 项目知识与偏好"];
-    let used = lines.join("\n").length;
-    for (const mem of memories) {
-      const content = mem.content.replace(/\s+/g, " ").slice(0, 200);
-      const globalTag = mem.scope === "user" ? " · 全局" : "";
-      const line = `- [${mem.type}${globalTag}] ${content}`;
-      if (used + line.length + 1 > budget) break;
-      lines.push(line);
-      used += line.length + 1;
-    }
-    return lines.length <= 1 ? "" : lines.join("\n");
+  const result = sections.join("\n\n");
+  return result.length > maxChars ? `${result.slice(0, maxChars)}…` : result;
+}
+
+/** 给召回文本套上边界标记，注入到用户消息尾部。 */
+export function wrapExperienceRecall(text: string): string {
+  return `${EXPERIENCE_RECALL_OPEN}\n${text}\n${EXPERIENCE_RECALL_CLOSE}`;
+}
+
+/** 回放会话时剥掉注入块，只显示用户原话。 */
+export function stripExperienceRecall(text: string): string {
+  const start = text.indexOf(EXPERIENCE_RECALL_OPEN);
+  if (start < 0) return text;
+  const end = text.indexOf(EXPERIENCE_RECALL_CLOSE, start);
+  const tail = end < 0 ? "" : text.slice(end + EXPERIENCE_RECALL_CLOSE.length);
+  return `${text.slice(0, start)}${tail}`.trimEnd();
+}
+
+function formatInstincts(
+  instincts: {
+    id: string;
+    domain: string;
+    confidence: number;
+    action: string;
+    scope?: "user" | "project";
+  }[],
+  budget: number,
+): { formatted: string; used: number } | null {
+  const lines: string[] = ["## 行为规则（自动提炼，按置信度）"];
+  let used = lines.join("\n").length;
+  for (const inst of instincts) {
+    const conf = inst.confidence.toFixed(2);
+    const action = inst.action.replace(/\s+/g, " ").slice(0, 160);
+    const globalTag = inst.scope === "user" ? " · 全局" : "";
+    const line = `- [${inst.domain} ${conf}${globalTag}] ${action}`;
+    if (used + line.length + 1 > budget) break;
+    lines.push(line);
+    used += line.length + 1;
   }
+  if (lines.length <= 1) return null;
+  return { formatted: lines.join("\n"), used };
+}
+
+function formatMemories(
+  memories: { type: string; content: string; scope?: "user" | "project" }[],
+  budget: number,
+): string {
+  const lines: string[] = ["## 项目知识与偏好"];
+  let used = lines.join("\n").length;
+  for (const mem of memories) {
+    const content = mem.content.replace(/\s+/g, " ").slice(0, 200);
+    const globalTag = mem.scope === "user" ? " · 全局" : "";
+    const line = `- [${mem.type}${globalTag}] ${content}`;
+    if (used + line.length + 1 > budget) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.length <= 1 ? "" : lines.join("\n");
 }

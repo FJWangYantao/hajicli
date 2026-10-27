@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  stripExperienceRecall,
   type AgentManager,
   type ChatMessage,
   isFailedToolOutput,
@@ -187,7 +188,9 @@ async function loadAndRenderSession(
     if (m.role === "user" && typeof m.content === "string") {
       abandonGroup();
       appendHistoryLine();
-      appendHistoryLine(colors.userMsg(sanitizeTerminalText(m.content)));
+      appendHistoryLine(
+        colors.userMsg(sanitizeTerminalText(stripExperienceRecall(m.content))),
+      );
       appendHistoryLine();
     } else if (m.role === "assistant") {
       const hasToolCalls = Boolean(m.tool_calls && m.tool_calls.length > 0);

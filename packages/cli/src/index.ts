@@ -15,9 +15,11 @@ import {
   DistillEngine,
   ExperienceStore,
   ExperiencesPromptPart,
+  buildExperienceRecall,
   estimateMessagesTokens,
   formatPendingAgentVerificationContext,
   formatSubagentResult,
+  wrapExperienceRecall,
   getContextCompactionThresholds,
   type HookContext,
   HookEngine,
@@ -449,6 +451,8 @@ async function main() {
   const readOutline = experiments.is("read_outline", "outline");
   /** A/B：read 是否暴露 symbol 参数（按名字读定义块）。 */
   const readSymbol = experiments.is("read_symbol", "symbol");
+  /** A/B：经验召回放在 system prompt（system）还是随本轮用户消息注入（message）。 */
+  const experienceRecallArm = experiments.arm("experience_recall");
   /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
   const recordSubagentOutcome = (agent: {
     id: string;
@@ -998,7 +1002,10 @@ async function main() {
   }
   const systemPromptManager = new SystemPromptManager();
   const experienceStore = new ExperienceStore({ cwd: process.cwd() });
-  systemPromptManager.registerPart(new ExperiencesPromptPart(experienceStore));
+  // message 臂不再把经验塞进 system prompt（否则每轮重建会打断前缀缓存），改由用户消息注入。
+  if (experienceRecallArm === "system") {
+    systemPromptManager.registerPart(new ExperiencesPromptPart(experienceStore));
+  }
   // SIGINT 处理：Ctrl+C 时尽力 flush 观测样本（提炼逻辑太重，跳过）
   // Node 默认 Ctrl+C 直接终止跳过 finally，这里补一个最小收尾。
   let sigintHandling = false;
@@ -3575,6 +3582,14 @@ async function main() {
     },
     setLastUserMessageForRecall: (message) => {
       lastUserMessageForRecall = message;
+    },
+    buildExperienceRecall: (query) => {
+      if (experienceRecallArm !== "message") return undefined;
+      const recall = buildExperienceRecall(
+        experienceStore,
+        `${query} ${path.basename(process.cwd())}`.slice(0, 400),
+      );
+      return recall ? wrapExperienceRecall(recall) : undefined;
     },
     setForegroundAbortSignal: (signal) => {
       foregroundAbortSignal = signal;

@@ -25,6 +25,7 @@ export const EXPERIMENT_NAMES = [
   "read_budget",
   "read_outline",
   "read_symbol",
+  "experience_recall",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -87,6 +88,14 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     arms: ["baseline", "symbol"],
     control: "baseline",
     defaultValue: "baseline",
+  },
+  // 经验召回放在 system prompt 分片里（system）还是随本轮用户消息注入（message）。
+  // 首轮 pilot：两臂成本持平（费用 +1.7%、未命中 token +4.3%），但 message 臂的召回
+  // 真正跟着本轮任务走（system 臂永远用启动时的兜底词表），属正确性修复，已切为默认。
+  experience_recall: {
+    arms: ["system", "message"],
+    control: "system",
+    defaultValue: "message",
   },
 };
 

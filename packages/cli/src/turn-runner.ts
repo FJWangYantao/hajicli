@@ -109,6 +109,8 @@ export interface TurnDeps {
   getMessages(): ChatMessage[];
   setMessages(messages: ChatMessage[]): void;
   setLastUserMessageForRecall(message: string): void;
+  /** 按当前用户消息召回经验，返回带边界标记的注入块（A/B: experience_recall=message）。 */
+  buildExperienceRecall?(query: string): string | undefined;
   setForegroundAbortSignal(signal: AbortSignal | undefined): void;
   setLastToolBatchOutputs(
     outputs: Array<{ toolName: string; summary: string; output: string }>,
@@ -197,9 +199,12 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     deps.setMessages(next);
   };
   const messagesBeforePrompt = [...messages];
+  // 经验召回随本轮用户消息注入（A/B: experience_recall=message）：只动消息尾部，
+  // 不重建 system prompt，前缀缓存不受影响；回放时按标记剥掉，不冒充用户原话。
+  const recallBlock = deps.buildExperienceRecall?.(promptInput);
   messages.push({
     role: "user",
-    content: promptInput,
+    content: recallBlock ? `${promptInput}\n\n${recallBlock}` : promptInput,
     ...(input.promptAttachments?.length ? { attachments: input.promptAttachments } : {}),
   });
   deps.setLastUserMessageForRecall(promptInput);

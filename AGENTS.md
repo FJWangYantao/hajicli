@@ -75,6 +75,15 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
   走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
   内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
+- **经验召回位置（experience_recall，已切默认 message）**：经验分片原本注册在 system prompt 里，
+  但 system prompt 只在启动/切模型/切权限/`/skills reload` 时重建，**普通回合不重建**，
+  所以召回一直用启动时的兜底词表（`workflow edit read test git error prevention`），与当前任务无关。
+  现在默认由 `turn-runner` 按本轮用户消息召回，追加到用户消息尾部并用
+  `<experience_recall>…</experience_recall>` 包起来；注入块随消息落盘（下一轮前缀与实际发出
+  内容一致，不吃缓存惩罚），`/resume` 回放按标记剥掉。`system` 臂保留为对照组。
+  **本仓库有 570 条项目级 instincts（`.haji/instincts/`），别再说「经验库是空的」。**
+  首轮 pilot（任务 3/7 × 3 轮 × 2 arm）：费用 +1.7%、未命中 token +4.3%（中性），
+  墙钟差异不归因；采纳理由是正确性。测试：`experiences-prompt-part.test.mjs`。
 - 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查并以系统消息回注诊断；
   `HAJI_POST_EDIT_VERIFY=0` 关闭。探测顺序是**只认 `typecheck` 脚本** → tsconfig
   （references 结构用 `npx tsc -b`，普通结构用 `npx tsc --noEmit`）；刻意不认 `check`

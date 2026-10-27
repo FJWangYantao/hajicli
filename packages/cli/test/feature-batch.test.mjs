@@ -388,10 +388,10 @@ test("turn-runner reports usage and passes attachments through", () => {
   assert.ok(source.includes("deps.recordCost?.(selectedModel, usage"), "onUsage 记账");
   assert.ok(source.includes("deps.getTitleUtility?.()"), "标题杂活注入");
   assert.ok(
-    /messages\.push\(\{\s*\n\s*role: "user",\s*\n\s*content: promptInput,\s*\n\s*\.\.\.\(input\.promptAttachments/.test(
+    /messages\.push\(\{\s*\n\s*role: "user",\s*\n\s*content: recallBlock \?[^\n]*: promptInput,\s*\n\s*\.\.\.\(input\.promptAttachments/.test(
       source,
     ),
-    "附件随用户消息入队",
+    "附件随用户消息入队（经验召回块也在同一条消息里）",
   );
 });
 
