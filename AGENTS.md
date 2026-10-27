@@ -89,7 +89,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   **中文双字 + IDF 加权 Jaccard + 分数下限 0.10 + 默认 top2 + minConfidence 0.5**。
   离线评测 `scripts/recall-eval.mjs`（11 个固定任务 + 10 个无关短问）：旧实现相关率 27%、
   无关注入率 60%；新实现相关率 86%、无关注入率 0%。改召回参数前先跑它（`--samples` 可人工复核）。
-- 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查并以系统消息回注诊断；
+- 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查，**只在发现问题时**回注诊断
+  （成功不回注：实测「验证通过」这条消息换不来模型少自检，只有上下文成本，见
+  `design/ab/2026-10-27-verify-notice.md`）；
   `HAJI_POST_EDIT_VERIFY=0` 关闭。探测顺序是**只认 `typecheck` 脚本** → tsconfig
   （references 结构用 `npx tsc -b`，普通结构用 `npx tsc --noEmit`）；刻意不认 `check`
   这类组合脚本（本仓库的 check = lint + 全套测试，每次编辑都只会跑满超时）。

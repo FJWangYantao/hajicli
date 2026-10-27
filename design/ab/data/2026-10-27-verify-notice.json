@@ -1,0 +1,180 @@
+{
+  "experiment": "post_edit_verify_notice",
+  "scope": "pilot",
+  "date": "2026-10-27",
+  "tasks": [
+    1,
+    2,
+    3
+  ],
+  "rounds": 2,
+  "arms": [
+    "notice",
+    "quiet"
+  ],
+  "note": "notice = 验证通过时也回注「通过（未发现错误）」（改动前，HEAD 构建）；quiet = 只在发现问题时回注（改动后）。ALT_CLI 指向预构建的对照二进制，两臂共用同一工作树与 HOME。wallMs 来自 run.sh 日志，其余来自 trace（cost 未算：跨峰谷，绝对值不可比）。",
+  "runs": [
+    {
+      "task": 1,
+      "arm": "notice",
+      "round": 1,
+      "wallMs": 34000,
+      "requests": 10,
+      "toolCalls": 9,
+      "promptTokens": 87477,
+      "missTokens": 4149,
+      "completionTokens": 1617,
+      "editUses": 2
+    },
+    {
+      "task": 1,
+      "arm": "quiet",
+      "round": 1,
+      "wallMs": 36000,
+      "requests": 11,
+      "toolCalls": 9,
+      "promptTokens": 107346,
+      "missTokens": 5330,
+      "completionTokens": 1841,
+      "editUses": 2
+    },
+    {
+      "task": 1,
+      "arm": "notice",
+      "round": 2,
+      "wallMs": 39000,
+      "requests": 13,
+      "toolCalls": 11,
+      "promptTokens": 116027,
+      "missTokens": 4155,
+      "completionTokens": 2290,
+      "editUses": 1
+    },
+    {
+      "task": 1,
+      "arm": "quiet",
+      "round": 2,
+      "wallMs": 59000,
+      "requests": 13,
+      "toolCalls": 11,
+      "promptTokens": 122688,
+      "missTokens": 12352,
+      "completionTokens": 2052,
+      "editUses": 3
+    },
+    {
+      "task": 2,
+      "arm": "notice",
+      "round": 1,
+      "wallMs": 75000,
+      "requests": 19,
+      "toolCalls": 24,
+      "promptTokens": 210058,
+      "missTokens": 10122,
+      "completionTokens": 4326,
+      "editUses": 10
+    },
+    {
+      "task": 2,
+      "arm": "quiet",
+      "round": 1,
+      "wallMs": 92000,
+      "requests": 17,
+      "toolCalls": 22,
+      "promptTokens": 195272,
+      "missTokens": 10312,
+      "completionTokens": 4332,
+      "editUses": 6
+    },
+    {
+      "task": 2,
+      "arm": "notice",
+      "round": 2,
+      "wallMs": 65000,
+      "requests": 18,
+      "toolCalls": 25,
+      "promptTokens": 186751,
+      "missTokens": 15871,
+      "completionTokens": 4483,
+      "editUses": 10
+    },
+    {
+      "task": 2,
+      "arm": "quiet",
+      "round": 2,
+      "wallMs": 90000,
+      "requests": 17,
+      "toolCalls": 23,
+      "promptTokens": 200422,
+      "missTokens": 18662,
+      "completionTokens": 4817,
+      "editUses": 10
+    },
+    {
+      "task": 3,
+      "arm": "notice",
+      "round": 1,
+      "wallMs": 61000,
+      "requests": 15,
+      "toolCalls": 13,
+      "promptTokens": 150523,
+      "missTokens": 5499,
+      "completionTokens": 2971,
+      "editUses": 3
+    },
+    {
+      "task": 3,
+      "arm": "quiet",
+      "round": 1,
+      "wallMs": 32000,
+      "requests": 13,
+      "toolCalls": 12,
+      "promptTokens": 134518,
+      "missTokens": 5494,
+      "completionTokens": 2396,
+      "editUses": 2
+    },
+    {
+      "task": 3,
+      "arm": "notice",
+      "round": 2,
+      "wallMs": 73000,
+      "requests": 17,
+      "toolCalls": 15,
+      "promptTokens": 185213,
+      "missTokens": 13693,
+      "completionTokens": 3484,
+      "editUses": 3
+    },
+    {
+      "task": 3,
+      "arm": "quiet",
+      "round": 2,
+      "wallMs": 53000,
+      "requests": 14,
+      "toolCalls": 15,
+      "promptTokens": 145129,
+      "missTokens": 13289,
+      "completionTokens": 2656,
+      "editUses": 2
+    }
+  ],
+  "byArm": {
+    "notice": {
+      "runs": 6,
+      "avgWallMs": 57833.333333333336,
+      "avgRequests": 15.333333333333334,
+      "avgPromptTokens": 156008.16666666666,
+      "avgMissTokens": 8914.833333333334,
+      "avgCompletionTokens": 3195.1666666666665
+    },
+    "quiet": {
+      "runs": 6,
+      "avgWallMs": 60333.333333333336,
+      "avgRequests": 14.166666666666666,
+      "avgPromptTokens": 150895.83333333334,
+      "avgMissTokens": 10906.5,
+      "avgCompletionTokens": 3015.6666666666665
+    }
+  }
+}

@@ -202,9 +202,10 @@ test("post-edit verify detects check commands and formats notices", () => {
       "utf8",
     );
     assert.equal(detectProjectCheckCommand(root, env), "npm run typecheck --silent");
-    assert.match(
+    // 验证通过不注入：实测这条消息换不来「少自检」，只有上下文成本。
+    assert.equal(
       formatVerificationNotice({ ok: true, timedOut: false, output: "" }, "cmd"),
-      /通过/,
+      undefined,
     );
     assert.match(
       formatVerificationNotice({ ok: false, timedOut: false, output: "TS2345: bad type" }, "cmd"),

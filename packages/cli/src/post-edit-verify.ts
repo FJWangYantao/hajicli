@@ -137,18 +137,19 @@ export function shouldPushVerificationNotice(
 }
 
 /**
- * 格式化为注入给模型的系统消息；通过时也明确告知，避免模型重复自查。
- * 超时返回 undefined：模型拿不到任何诊断，写进上下文只会让它误以为项目有问题。
+ * 格式化为注入给模型的系统消息；**只在发现问题时**才返回内容。
+ *
+ * 验证通过不注入：基准实测（design/ab/2026-10-27-write-edit-forced.md）显示，
+ * 「验证通过」这条消息既没有让模型少跑自己的 `tsc`（两臂都自跑 1 次），又让
+ * 每个验证窗口多一条上下文消息——4/4 轮更慢、请求 +15%、费用 +4.5%，正确性无差别。
+ * 超时同样返回 undefined：模型拿不到诊断，写进上下文只会让它误以为项目有问题。
  */
 export function formatVerificationNotice(
   result: ProjectCheckResult,
   command: string,
   editedPath?: string,
 ): string | undefined {
-  if (result.timedOut) return undefined;
-  if (result.ok) {
-    return `[编辑后验证] ${command} 通过（未发现错误）。`;
-  }
+  if (result.timedOut || result.ok) return undefined;
   if (editedPath && !diagnosticsMentionFile(result.output, editedPath)) {
     return `[编辑后验证] ${command} 报告的问题没有提到本次编辑的文件（${editedPath}），属于项目既有问题，本次改动不需要处理；不要为此修改其他文件。`;
   }

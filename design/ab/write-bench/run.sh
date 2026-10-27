@@ -13,7 +13,7 @@ mkdir -p "$WB"
 cd "$REPO" || exit 1
 
 TASK_PROMPT_1='只改代码，不要问问题：在 packages/plugins/src/bounded-output.ts 新增导出函数 clampText(value: string, maxLength: number): string —— 超长时截断并追加「…」，返回长度不超过 maxLength；maxLength <= 1 时返回空串。再新建 packages/cli/test/bounded-output.test.mjs，用 node:test + node:assert/strict 覆盖三种情况：超长截断、长度刚好等于上限、maxLength=1。完成后运行 node --test packages/cli/test/bounded-output.test.mjs 确认通过。'
-TASK_PROMPT_2='只改代码，不要问问题：把 packages/plugins/src/bounded-output.ts 导出的 truncateSingleLine 重命名为 truncateLine，并同步更新所有引用（packages/plugins/src 下的调用点与 packages/cli/test 下的测试）。不要改变任何行为。'
+TASK_PROMPT_2='只改代码，不要问问题：把 packages/plugins/src/bounded-output.ts 导出的 truncateSingleLine 重命名为 truncateLine，并同步更新所有引用（packages/plugins/src 下的调用点与 packages/cli/test 下的测试）。不要改变任何行为。必须用 edit 工具逐处修改，禁止用 sed/perl/python 等任何 shell 命令写文件（用它们读内容可以）。'
 TASK_PROMPT_3='只改代码，不要问问题：packages/plugins/src/bounded-output.ts 的 truncateSingleLine 在 maxLength <= 1 时返回值长度会超过上限（maxLength=0 时仍返回「…」）。修掉这个边界问题，并在 packages/cli/test/bounded-output.test.mjs 补一条回归测试（文件不存在就新建）。完成后运行该测试文件确认通过。'
 
 prompt_for() {
@@ -33,16 +33,20 @@ run_one() {
   for p in cli core plugins; do cp -a "$REPO/packages/$p/node_modules" "$wt/packages/$p/node_modules"; done
   ( cd "$wt" && pnpm run build >/dev/null 2>&1 )
 
-  local verify_env
+  # arm=old 默认用「修复前的探测」（强制 npm run check）；设了 ALT_CLI 则改跑另一份构建，
+  # 用于「同一份代码、只差验证提示」这类必须两个二进制对照的实验。
+  local verify_env="" runner="haji"
   case "$arm" in
-    old) verify_env="npm run check --silent" ;;
+    old)
+      if [ -n "${ALT_CLI:-}" ]; then runner="node $ALT_CLI"; else verify_env="npm run check --silent"; fi
+      ;;
     fixed) verify_env="" ;;
     off) verify_env="0" ;;
   esac
 
   local start end code
   start=$(date +%s)
-  ( cd "$wt" && HAJI_POST_EDIT_VERIFY="$verify_env" timeout 420 haji -p "$(prompt_for "$task")" \
+  ( cd "$wt" && HAJI_POST_EDIT_VERIFY="$verify_env" timeout 420 $runner -p "$(prompt_for "$task")" \
       --no-worktree --permission-mode bypass-permissions --output-format json \
       > "$WB/w${task}-${arm}-r${round}.json" 2> "$WB/w${task}-${arm}-r${round}.err" )
   code=$?
@@ -71,7 +75,36 @@ run_one() {
   ( cd "$wt" && git status --porcelain > "$WB/w${task}-${arm}-r${round}.status" )
   # trace 落在工作树的 .haji/traces，删树前先拷出来，否则指标没法复核
   if [ -d "$wt/.haji/traces" ]; then
+    # 先清掉同名目录：cp -r 遇到已存在的目标会嵌套一层，导致读到上一次的 trace。
+    rm -rf "$WB/traces-w${task}-${arm}-r${round}"
     cp -r "$wt/.haji/traces" "$WB/traces-w${task}-${arm}-r${round}" 2>/dev/null
+    # 工具用法审计：edit/write 用了几次、bash 里有没有写文件的动作（sed -i / 重定向等）。
+    # 任务提示里禁止了 shell 写命令，但口头约束不算数，必须拿 trace 核实。
+    tool_stats=$(node -e '
+      const fs = require("node:fs");
+      const dir = process.argv[1];
+      const counts = { edit: 0, write: 0, bashWrite: 0 };
+      for (const file of fs.readdirSync(dir)) {
+        if (!file.endsWith(".events.jsonl")) continue;
+        const lines = fs.readFileSync(`${dir}/${file}`, "utf8").split("\n").filter(Boolean);
+        for (const line of lines) {
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event.type !== "tool_execution") continue;
+          const name = event.data?.name ?? "";
+          if (name === "edit") counts.edit += 1;
+          if (name === "write") counts.write += 1;
+          if (name === "bash") {
+            const command = String(event.data?.arguments?.command ?? "");
+            if (/\bsed\s+[^|]*-i\b|\bperl\s+-pi\b|\bpython3?\s+-c\b.*>\s|\btee\s+[^\s|>]|(^|\s|;|&&)[^#]*(>|>>)\s*\/?[\w.\/-]+\.(ts|mjs|json|md)\b/.test(command)) {
+              counts.bashWrite += 1;
+            }
+          }
+        }
+      }
+      console.log(`edit=${counts.edit} write=${counts.write} bashWrite=${counts.bashWrite}`);
+    ' "$WB/traces-w${task}-${arm}-r${round}") || tool_stats="stats-fail"
+    echo "  tools ${tool_stats}"
   fi
   git worktree remove --force "$wt" >/dev/null 2>&1
 }
