@@ -162,6 +162,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   工作日 09:00–12:00、14:00–18:00 为峰时，其余与周末全天为谷时（法定节假日未建模）。
 - 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
+- **写路径基准**（`design/ab/write-bench/run.sh`）：3 个固定写任务（加函数+测试 / 跨文件重命名 /
+  修边界+回归测试）在独立 worktree 里跑，`cp -al` 硬链接 `node_modules` 后先 build 预热。
+  首轮 12 次运行正确性全过，但**重命名任务走 `sed -i` 一条 bash 完成、根本不触发 write/edit
+  钩子**，所以它测的是 sed 不是 edit 路径；改任务时要么强制用 edit，要么给 bash 写操作补验证。
 - **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）
   一次调用覆盖多个目标；`baseline` 组不暴露也不接受 `queries`/`patterns`（构造函数
   `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、模型请求 −12%、

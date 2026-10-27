@@ -1,0 +1,227 @@
+{
+  "experiment": "write_path_baseline",
+  "date": "2026-10-27",
+  "scope": "pilot",
+  "rounds": 2,
+  "tasks": {
+    "1": "在 packages/plugins/src/bounded-output.ts 新增导出函数 clampText(value, maxLength)，并新建 packages/cli/test/bounded-output.test.mjs 覆盖三种情况",
+    "2": "把 packages/plugins/src/bounded-output.ts 导出的 truncateSingleLine 重命名为 truncateLine，同步更新所有引用，不改变行为",
+    "3": "修掉 truncateSingleLine 在 maxLength <= 1 时超出上限的边界问题，并补一条回归测试"
+  },
+  "arms": {
+    "old": "HAJI_POST_EDIT_VERIFY=\"npm run check --silent\"（修复前的探测结果）",
+    "fixed": "默认（detectProjectCodeCheck → npx tsc -b）"
+  },
+  "runs": [
+    {
+      "task": 1,
+      "arm": "old",
+      "round": 1,
+      "wallMs": 61392,
+      "requests": 10,
+      "promptTokens": 116029,
+      "completionTokens": 2639,
+      "costCny": 0.05071,
+      "toolCalls": 15,
+      "sessionId": "b2dd81f4-3bb5-4d22-b2db-c75aafe070f7",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 1,
+      "arm": "old",
+      "round": 2,
+      "wallMs": 73873,
+      "requests": 12,
+      "promptTokens": 126486,
+      "completionTokens": 2049,
+      "costCny": 0.044576,
+      "toolCalls": 12,
+      "sessionId": "c7c9d9b5-7e5b-4b23-8f34-f9903b15baef",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "bash": 9,
+        "read": 1,
+        "edit": 1,
+        "write": 1
+      }
+    },
+    {
+      "task": 1,
+      "arm": "fixed",
+      "round": 1,
+      "wallMs": 46025,
+      "requests": 14,
+      "promptTokens": 157232,
+      "completionTokens": 2971,
+      "costCny": 0.055239,
+      "toolCalls": 15,
+      "sessionId": "f0261634-1ad3-4888-ac82-7d5e2e5c87ed",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 1,
+      "arm": "fixed",
+      "round": 2,
+      "wallMs": 41418,
+      "requests": 9,
+      "promptTokens": 92687,
+      "completionTokens": 1813,
+      "costCny": 0.040569,
+      "toolCalls": 9,
+      "sessionId": "cfa117fc-aae6-44c7-b6a4-804c4d36bad8",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "bash": 7,
+        "read": 1,
+        "edit": 1,
+        "write": 1
+      }
+    },
+    {
+      "task": 2,
+      "arm": "old",
+      "round": 1,
+      "wallMs": 22040,
+      "requests": 7,
+      "promptTokens": 69075,
+      "completionTokens": 1308,
+      "costCny": 0.033962,
+      "toolCalls": 7,
+      "sessionId": "bd5eabb1-a9fe-466d-ac6f-ba814b3688bf",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 2,
+      "arm": "old",
+      "round": 2,
+      "wallMs": 28349,
+      "requests": 10,
+      "promptTokens": 106660,
+      "completionTokens": 1663,
+      "costCny": 0.041976,
+      "toolCalls": 10,
+      "sessionId": "462a19a8-51c6-4ddf-8604-86e2d3d4f5eb",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "read": 1,
+        "grep": 1,
+        "bash": 8
+      }
+    },
+    {
+      "task": 2,
+      "arm": "fixed",
+      "round": 1,
+      "wallMs": 30660,
+      "requests": 11,
+      "promptTokens": 112351,
+      "completionTokens": 1788,
+      "costCny": 0.043069,
+      "toolCalls": 11,
+      "sessionId": "0ddc403a-f7b2-4a3c-9f9a-bd70b0b5046c",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 2,
+      "arm": "fixed",
+      "round": 2,
+      "wallMs": 87342,
+      "requests": 18,
+      "promptTokens": 237602,
+      "completionTokens": 3804,
+      "costCny": 0.072366,
+      "toolCalls": 20,
+      "sessionId": "3deecff1-8ffb-495f-8211-00e67ee08d2f",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "bash": 13,
+        "read": 4,
+        "edit": 6
+      }
+    },
+    {
+      "task": 3,
+      "arm": "old",
+      "round": 1,
+      "wallMs": 80425,
+      "requests": 11,
+      "promptTokens": 120778,
+      "completionTokens": 2532,
+      "costCny": 0.049568,
+      "toolCalls": 12,
+      "sessionId": "40998bed-c296-4d89-9ba7-7a03f39df861",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 3,
+      "arm": "old",
+      "round": 2,
+      "wallMs": 97949,
+      "requests": 12,
+      "promptTokens": 130909,
+      "completionTokens": 2267,
+      "costCny": 0.047388,
+      "toolCalls": 11,
+      "sessionId": "a8cfa494-a60a-4030-8857-161fd57d1852",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "bash": 8,
+        "read": 1,
+        "edit": 1,
+        "write": 1
+      }
+    },
+    {
+      "task": 3,
+      "arm": "fixed",
+      "round": 1,
+      "wallMs": 49590,
+      "requests": 14,
+      "promptTokens": 160161,
+      "completionTokens": 3388,
+      "costCny": 0.058914,
+      "toolCalls": 14,
+      "sessionId": "84f4a0b4-5b86-418b-8bbb-07c750518c52",
+      "verify": "auto (npx tsc -b)"
+    },
+    {
+      "task": 3,
+      "arm": "fixed",
+      "round": 2,
+      "wallMs": 56375,
+      "requests": 10,
+      "promptTokens": 109373,
+      "completionTokens": 2085,
+      "costCny": 0.045008,
+      "toolCalls": 10,
+      "sessionId": "a4ea2892-85a8-46ae-8445-444bfb00bb30",
+      "verify": "auto (npx tsc -b)",
+      "toolCounts": {
+        "read": 2,
+        "bash": 6,
+        "edit": 2,
+        "write": 1
+      }
+    }
+  ],
+  "byArm": {
+    "old": {
+      "runs": 6,
+      "wallMs": 364028,
+      "requests": 62,
+      "promptTokens": 669937,
+      "completionTokens": 12458,
+      "costCny": 0.26818,
+      "toolCalls": 67
+    },
+    "fixed": {
+      "runs": 6,
+      "wallMs": 311410,
+      "requests": 76,
+      "promptTokens": 869406,
+      "completionTokens": 15849,
+      "costCny": 0.31516500000000003,
+      "toolCalls": 79
+    }
+  }
+}
