@@ -160,7 +160,9 @@ export class ToolsPromptPart implements SystemPromptPart {
     }
     if (activeTools.includes("read")) {
       rules.push(
-        "- read：读取已定位的文件。大文件使用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新；此后 edit/write 成功会返回新 hash，后续调用一律以最近一次 read/edit/write 返回的 hash 为准。",
+        context.readSymbol
+          ? "- read：读取已定位的文件。已知符号名（函数/类/接口/方法）时用 symbol 直接取回整个定义块，比先 grep 再翻页少一次请求；其余情况用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新；此后 edit/write 成功会返回新 hash，后续调用一律以最近一次 read/edit/write 返回的 hash 为准。"
+          : "- read：读取已定位的文件。大文件使用 startLine/limit 或 aroundLine/contextLines，按 nextStartLine 继续；需要多个小文件时使用 paths 批量读取。修改前保留返回的 hash，用于防止覆盖外部更新；此后 edit/write 成功会返回新 hash，后续调用一律以最近一次 read/edit/write 返回的 hash 为准。",
       );
     }
     if (activeTools.includes("edit")) {

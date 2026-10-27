@@ -212,6 +212,14 @@ node -e "console.log(require('./packages/cli/package.json').version)"
     12 对）：请求 −12.9%、未命中 token −12.2%、费用 −14.0%、中位墙钟 −16.9%；剔除 1 个
     未触发提纲的离群会话后总墙钟 −11.0%。样本为 4 任务 pilot，按此结论采纳，不再补确认轮。
     测试：`read-outline.test.mjs`。
+- **按符号读定义（read_symbol，机制已实现、默认 baseline）**：`read({ path, symbol })` 按名字
+  取回整个定义块（TS/JS、Python、Go、Rust、JVM/Kotlin、Markdown、Shell），块尾用花括号配平
+  （跳过注释/字符串）或 Python 缩进，Markdown 取到同级标题；找不到时按编辑距离给相近符号。
+  与 `startLine/endLine/aroundLine` 互斥、不能配 `paths`；只在定义块被 limit 截断时给
+  `nextStartLine`。`baseline` 臂直接从 schema 里摘掉 `symbol` 属性。
+  **首轮 pilot（任务 5/7/10 × 2 轮 × 2 arm）symbol 被使用 0 次**，两臂差异全是噪声；
+  显式要求时一次就成，说明问题在「发现」而不是机制。默认保持 baseline，下一步应在 grep
+  命中定义行时给触发点，而不是再加静态提示词。测试：`read-symbol.test.mjs`。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
@@ -220,6 +228,7 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `tool-batch-params.test.mjs`（queries/patterns 批量与 baseline 关闭）、
   `scope-discipline.test.mjs`（叠读判定/提示/提示词 arm）、
   `read-outline.test.mjs`（剩余符号提纲/抽样/预算/批量不丢块）、
+  `read-symbol.test.mjs`（定义块起止/调用点误判/Python 缩进/Markdown 章节/schema 开关）、
   `subagent.test.mjs`（子代理批处理）、`persistence-performance.test.mjs`（trace 事件）、
   `ab-report.test.mjs`（报告聚合）。
 

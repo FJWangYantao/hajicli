@@ -24,6 +24,7 @@ export const EXPERIMENT_NAMES = [
   "scope_discipline",
   "read_budget",
   "read_outline",
+  "read_symbol",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -79,6 +80,13 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     arms: ["baseline", "outline"],
     control: "baseline",
     defaultValue: "outline",
+  },
+  // read 是否暴露 symbol 参数（按名字直接读定义块）。新实验尚未验证，默认 baseline，
+  // 跑完 A/B 再决定是否切 symbol。
+  read_symbol: {
+    arms: ["baseline", "symbol"],
+    control: "baseline",
+    defaultValue: "baseline",
   },
 };
 

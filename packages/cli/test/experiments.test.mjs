@@ -19,6 +19,7 @@ test("defaults use the recommended arms without randomization", () => {
   assert.equal(registry.arm("scope_discipline"), "baseline");
   assert.equal(registry.arm("read_budget"), "batch_only");
   assert.equal(registry.arm("read_outline"), "outline");
+  assert.equal(registry.arm("read_symbol"), "baseline");
   for (const assignment of registry.all()) assert.equal(assignment.source, "default");
 });
 

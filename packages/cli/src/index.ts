@@ -447,6 +447,8 @@ async function main() {
   const readBudgetArm = experiments.arm("read_budget");
   /** A/B：read 截断时是否附剩余符号提纲。 */
   const readOutline = experiments.is("read_outline", "outline");
+  /** A/B：read 是否暴露 symbol 参数（按名字读定义块）。 */
+  const readSymbol = experiments.is("read_symbol", "symbol");
   /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
   const recordSubagentOutcome = (agent: {
     id: string;
@@ -1053,6 +1055,7 @@ async function main() {
     new ReadFileTool({
       overlapHint: scopeDiscipline,
       outline: readOutline,
+      symbol: readSymbol,
       readBudget:
         readBudgetArm === "per_file" || readBudgetArm === "batch_only" ? readBudgetArm : "shared",
     }),
@@ -1140,6 +1143,7 @@ async function main() {
       parallelBatchLimit: resolveMaxParallelTools(experiments),
       toolBatching: experiments.is("tool_batching", "batch_first"),
       scopeDiscipline: experiments.is("scope_discipline", "converge"),
+      readSymbol: experiments.is("read_symbol", "symbol"),
     });
   let systemPrompt = await createSystemPrompt();
   markStartupStage("system_prompt");

@@ -11,6 +11,7 @@ import { takeWholeRecords, truncateSingleLine } from "./bounded-output.js";
 import { contentHash, fileVersions } from "./file-content.js";
 import { buildRemainingOutline, MAX_OUTLINE_CHARS } from "./read-outline.js";
 import { ReadRangeTracker } from "./read-ranges.js";
+import { findSimilarSymbols, findSymbolDefinition } from "./read-symbol.js";
 import { parseIntegerOption } from "./search-filter.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
@@ -23,6 +24,8 @@ interface ReadRequest {
   endLine?: number;
   limit: number;
   aroundLine?: number;
+  /** 按符号名读取定义块；与行范围参数互斥。 */
+  symbol?: string;
   contextLines: number;
   lineNumbers: boolean;
 }
@@ -78,6 +81,22 @@ const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze(
   ".bmp": "image/bmp",
 });
 
+/** 关掉 symbol 能力时把参数从 schema 里摘掉（A/B: read_symbol 的 baseline 组）。 */
+function withoutSymbolParameter(definition: ToolDefinition): ToolDefinition {
+  const parameters = definition.function.parameters as {
+    properties?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  const { symbol: _removed, ...rest } = parameters.properties ?? {};
+  return {
+    ...definition,
+    function: {
+      ...definition.function,
+      parameters: { ...parameters, properties: rest },
+    },
+  };
+}
+
 function parseReadRequest(value: Record<string, unknown>, defaultLimit: number): ReadRequest {
   if (typeof value.path !== "string" || !value.path.trim() || value.path.length > 1_024) {
     throw new Error("path 必须是长度为 1-1024 的非空字符串。");
@@ -103,12 +122,23 @@ function parseReadRequest(value: Record<string, unknown>, defaultLimit: number):
   if (aroundLine !== undefined && (startLine !== undefined || endLine !== undefined)) {
     throw new Error("aroundLine 不能与 startLine/endLine 同时使用。");
   }
+  const symbol =
+    typeof value.symbol === "string" && value.symbol.trim()
+      ? value.symbol.trim().slice(0, 200)
+      : undefined;
+  if (value.symbol !== undefined && !symbol) {
+    throw new Error("symbol 必须是非空字符串。");
+  }
+  if (symbol && (startLine !== undefined || endLine !== undefined || aroundLine !== undefined)) {
+    throw new Error("symbol 不能与 startLine/endLine/aroundLine 同时使用。");
+  }
   return {
     path: value.path,
     startLine,
     endLine,
     limit: parseIntegerOption(value.limit, "limit", defaultLimit, 1, MAX_LINE_LIMIT),
     aroundLine,
+    symbol,
     contextLines: parseIntegerOption(value.contextLines, "contextLines", 20, 0, MAX_CONTEXT_LINES),
     lineNumbers: value.lineNumbers !== false,
   };
@@ -117,6 +147,7 @@ function parseReadRequest(value: Record<string, unknown>, defaultLimit: number):
 function parseRequests(args: Record<string, unknown>, defaultLimit: number): ReadRequest[] {
   if (args.paths !== undefined) {
     if (args.path !== undefined) throw new Error("path 与 paths 不能同时使用。");
+    if (args.symbol !== undefined) throw new Error("symbol 只能用于单文件读取（path）。");
     if (
       !Array.isArray(args.paths) ||
       args.paths.length < 1 ||
@@ -188,7 +219,27 @@ async function renderFile(
   const totalLines = lines.length;
   let firstLine: number;
   let requestedLastLine: number;
-  if (request.aroundLine !== undefined) {
+  let symbolInfo: string | undefined;
+  let symbolEndLine: number | undefined;
+  if (request.symbol) {
+    const definition = findSymbolDefinition(lines, request.symbol, request.path);
+    if (!definition) {
+      const similar = findSimilarSymbols(lines, request.symbol, request.path);
+      return {
+        output: [
+          `[符号读取结果 - ${request.path}]`,
+          `未找到符号 ${request.symbol} 的定义；总行数=${totalLines}；hash=${contentHash(buffer)}`,
+          similar.length > 0
+            ? `相近符号：${similar.map((entry) => `${entry.line} ${entry.label}`).join(" · ")}`
+            : "该文件里没有名字相近的符号，可用 grep 在其他文件里定位。",
+        ].join("\n"),
+      };
+    }
+    firstLine = definition.startLine;
+    requestedLastLine = Math.min(totalLines, definition.endLine, firstLine + request.limit - 1);
+    symbolInfo = `符号=${request.symbol}；定义=${definition.startLine}-${definition.endLine}`;
+    symbolEndLine = definition.endLine;
+  } else if (request.aroundLine !== undefined) {
     firstLine = Math.max(1, request.aroundLine - request.contextLines);
     requestedLastLine = Math.min(totalLines, request.aroundLine + request.contextLines);
   } else {
@@ -222,12 +273,15 @@ async function renderFile(
   const returned = bounded.count;
   const actualLastLine = returned > 0 ? firstLine + returned - 1 : firstLine - 1;
   const hasMore = actualLastLine < totalLines;
+  // 符号读取只在「定义块本身还没读完」时给 nextStartLine，避免把文件后面的内容误标成续读。
+  const hasMoreOfRequestedRange =
+    symbolEndLine !== undefined ? actualLastLine < symbolEndLine : hasMore;
 
   // 剩余符号提纲（A/B: read_outline）：只在单文件读、且「本页之后还有内容」时给。
   // 批量读不走提纲：单块额度本来就小，提纲会挤占正文，合并时还容易把块撑过上限。
-  // aroundLine 是模型明确指定的窗口，也不附加整段剩余提纲。
+  // aroundLine 是模型明确指定的窗口、symbol 是明确的定义块，都不再附加剩余提纲。
   const outlineBudget =
-    outlineEnabled && request.aroundLine === undefined
+    outlineEnabled && request.aroundLine === undefined && request.symbol === undefined
       ? resolveOutlineBudget(outputBudget, request.path.length)
       : 0;
   const outline =
@@ -236,8 +290,9 @@ async function renderFile(
       : undefined;
   const header = [
     `[文件读取结果 - ${request.path}]`,
+    symbolInfo ?? "",
     `总行数=${totalLines}；返回=${returned > 0 ? `${firstLine}-${actualLastLine}` : "0"}；hash=${contentHash(buffer)}；hasMore=${hasMore}`,
-    hasMore && returned > 0 ? `nextStartLine=${actualLastLine + 1}` : "",
+    hasMoreOfRequestedRange && returned > 0 ? `nextStartLine=${actualLastLine + 1}` : "",
     outline ?? "",
     bounded.truncated ? "提示：为保持完整行，当前页已按输出预算提前结束。" : "",
     overlapHint ?? "",
@@ -266,14 +321,24 @@ export class ReadFileTool implements BaseTool {
   /** 截断时是否附「剩余符号提纲」（A/B: read_outline）。 */
   private readonly outlineEnabled: boolean;
 
+  /** 是否暴露 `symbol` 参数（A/B: read_symbol）。 */
+  private readonly symbolEnabled: boolean;
+
   public constructor(
-    options: { overlapHint?: boolean; readBudget?: ReadBudgetMode; outline?: boolean } = {},
+    options: {
+      overlapHint?: boolean;
+      readBudget?: ReadBudgetMode;
+      outline?: boolean;
+      symbol?: boolean;
+    } = {},
   ) {
     if (options.overlapHint !== false) this.tracker = new ReadRangeTracker();
     this.outlineEnabled = options.outline === true;
+    this.symbolEnabled = options.symbol !== false;
     this.budgetMode = options.readBudget ?? "shared";
     this.defaultLineLimit =
       this.budgetMode === "per_file" ? PER_FILE_LINE_LIMIT : DEFAULT_LINE_LIMIT;
+    if (!this.symbolEnabled) this.definition = withoutSymbolParameter(this.definition);
     if (this.budgetMode === "per_file") {
       const properties = this.definition.function.parameters.properties as Record<
         string,
@@ -314,6 +379,11 @@ export class ReadFileTool implements BaseTool {
           },
           startLine: { type: "number", description: "起始行，从 1 开始。" },
           endLine: { type: "number", description: "结束行，包含在内。" },
+          symbol: {
+            type: "string",
+            description:
+              "按符号名读取整个定义块（函数/类/接口/类型/方法），自动定位起止行；与 startLine/endLine/aroundLine 互斥。已知符号名时用它，比先 grep 再翻页省一次请求。",
+          },
           limit: {
             type: "number",
             description: `最多读取行数，默认 ${DEFAULT_LINE_LIMIT}，最大 ${MAX_LINE_LIMIT}。`,
@@ -336,6 +406,9 @@ export class ReadFileTool implements BaseTool {
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<string | ToolOutput> {
+    if (!this.symbolEnabled && args.symbol !== undefined) {
+      return "错误: 当前未启用 symbol 参数，请改用 startLine/endLine 或 aroundLine。";
+    }
     let requests: ReadRequest[];
     try {
       requests = parseRequests(args, this.defaultLineLimit);

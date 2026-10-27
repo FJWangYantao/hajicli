@@ -257,6 +257,8 @@ export interface PromptContext {
   toolBatching?: boolean;
   /** 是否要求搜索/读取范围收敛（A/B: scope_discipline）。 */
   scopeDiscipline?: boolean;
+  /** read 是否支持按符号名取定义块（A/B: read_symbol）。 */
+  readSymbol?: boolean;
 }
 
 /**
