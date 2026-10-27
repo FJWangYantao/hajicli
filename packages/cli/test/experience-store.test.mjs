@@ -451,6 +451,69 @@ test("recallInstincts respects minConfidence filter", async () => {
   }
 });
 
+test("recallInstincts 中文按双字匹配：共享单字不再误召回", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct(
+      makeInstinct({
+        id: "grep-queries",
+        trigger: "调用 grep 工具时",
+        action: "必须传入 1-5 个查询字符串（queries 数组），不要留空",
+        confidence: 0.7,
+        domain: "error-prevention",
+      }),
+    );
+    // 旧实现（中文单字）会靠「的/个/用」这类字命中；双字词之后应该一条都不返回。
+    assert.deepEqual(store.recallInstincts("今天天气不错，帮我写首诗"), []);
+    // 真正相关的查询仍然召回。
+    const hits = store.recallInstincts("grep 必须传 queries 数组吗");
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].id, "grep-queries");
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("recallInstincts 默认接受 0.5 置信度，并最多返回 2 条", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    for (const index of [1, 2, 3]) {
+      await store.upsertInstinct(
+        makeInstinct({
+          id: `session-save-${index}`,
+          trigger: "会话保存",
+          action: `会话保存统一走 saveCurrentSession，flush 在 finally 里（第 ${index} 条）`,
+          confidence: 0.5,
+          domain: "project-context",
+        }),
+      );
+    }
+    const hits = store.recallInstincts("会话保存的入口和 flush 在哪");
+    assert.ok(hits.length > 0, "0.5 置信度的规则应该能召回");
+    assert.ok(hits.length <= 2, "默认只注入 2 条");
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("recallInstincts 低于分数下限时不注入", async () => {
+  const { store, tmp } = createStoreWithTmp();
+  try {
+    await store.upsertInstinct(
+      makeInstinct({
+        id: "unrelated",
+        trigger: "发布 npm 包时",
+        action: "先跑 pack:check 再 publish",
+        confidence: 0.9,
+        domain: "release",
+      }),
+    );
+    assert.deepEqual(store.recallInstincts("会话保存链路"), []);
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("recallMemories matches by keywords and content", async () => {
   const { store, tmp } = createStoreWithTmp();
   try {

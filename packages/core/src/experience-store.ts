@@ -467,20 +467,36 @@ export class ExperienceStore {
 
   /**
    * 召回与查询最相关的 Top-K 规则。
-   * 使用 Jaccard 相似度（英文 token）+ 中文关键字符，跨语言匹配。
-   * 默认过滤 deprecated 与 confidence < minConfidence 的规则。
+   *
+   * 打分用「中文双字词 + IDF 加权 Jaccard」：中文单字会让「的/用/不」这类字都算命中，
+   * 605 条规则下几乎每条都能蹭上一点分；双字词把噪声压下去，IDF 再让罕见词比常用词值钱。
+   * 分数低于 `RECALL_MIN_SCORE` 的一律不返回——宁可这一轮不注入经验，也不要塞不相关的规则。
+   *
+   * 默认 `minConfidence` 取 0.5：distill 产出的规则初始就是 0.5，历史默认 0.7 会让
+   * 绝大多数规则永远没有资格被召回（本仓库 605 条里 557 条停在 0.50）。
    */
-  recallInstincts(query: string, topK = 8, minConfidence = 0.7): Instinct[] {
-    const queryTokens = tokenize(query);
+  recallInstincts(
+    query: string,
+    topK = RECALL_DEFAULT_TOP_K,
+    minConfidence = RECALL_MIN_CONFIDENCE,
+  ): Instinct[] {
+    const queryTokens = tokenizeRecall(query);
+    if (queryTokens.size === 0) return [];
     const candidates = this.loadInstincts().filter(
       (i) => !i.deprecated && i.confidence >= minConfidence,
     );
-    return candidates
-      .map((i) => ({
-        instinct: i,
-        score: jaccardSimilarity(queryTokens, tokenize(`${i.trigger} ${i.action} ${i.domain}`)),
+    if (candidates.length === 0) return [];
+    const docs = candidates.map((instinct) => ({
+      instinct,
+      tokens: tokenizeRecall(`${instinct.trigger} ${instinct.action} ${instinct.domain}`),
+    }));
+    const weights = buildIdfWeights(docs.map((doc) => doc.tokens));
+    return docs
+      .map((doc) => ({
+        instinct: doc.instinct,
+        score: weightedJaccard(queryTokens, doc.tokens, weights),
       }))
-      .filter((x) => x.score > 0)
+      .filter((x) => x.score >= RECALL_MIN_SCORE)
       .sort((a, b) => b.score - a.score || b.instinct.confidence - a.instinct.confidence)
       .slice(0, topK)
       .map((x) => x.instinct);
@@ -822,6 +838,62 @@ export class ExperienceStore {
 }
 
 // ─── 模块级工具函数 ──────────────────────────────────────────────────────────
+
+/** 召回打分的最低相似度：低于它宁可不注入。 */
+export const RECALL_MIN_SCORE = 0.1;
+/** 召回候选的最低置信度：distill 产出的规则初始就是 0.5。 */
+export const RECALL_MIN_CONFIDENCE = 0.5;
+/** 默认最多注入几条规则：宁缺毋滥，避免把上下文刷成规则清单。 */
+export const RECALL_DEFAULT_TOP_K = 2;
+
+/**
+ * 召回专用分词：英文按词，中文按**双字词**（相邻两字）。
+ *
+ * 旧的单字切法会让任何共享汉字（「的」「用」「不」）都算命中，在几百条规则下
+ * 等于没有过滤。单字片段（如单独一个「读」）仍然保留，避免过短的中文完全匹配不上。
+ */
+export function tokenizeRecall(text: string): Set<string> {
+  const tokens = new Set<string>();
+  if (!text) return tokens;
+  const ascii = text.toLowerCase().match(/[a-z0-9][a-z0-9-_]{1,}/g);
+  if (ascii) for (const token of ascii) tokens.add(token);
+  const cjkRuns = text.match(/[\u4e00-\u9fff]+/g) ?? [];
+  for (const run of cjkRuns) {
+    if (run.length === 1) tokens.add(run);
+    for (let index = 0; index < run.length - 1; index += 1) {
+      tokens.add(run.slice(index, index + 2));
+    }
+  }
+  return tokens;
+}
+
+/** 按文档频率算 IDF 权重：越罕见的词越值钱。 */
+function buildIdfWeights(docs: readonly Set<string>[]): Map<string, number> {
+  const df = new Map<string, number>();
+  for (const doc of docs) {
+    for (const token of doc) df.set(token, (df.get(token) ?? 0) + 1);
+  }
+  const total = docs.length;
+  const weights = new Map<string, number>();
+  for (const [token, count] of df) weights.set(token, Math.log((total + 1) / (count + 1)) + 1);
+  return weights;
+}
+
+/** 加权 Jaccard：交并比按 IDF 权重算。 */
+function weightedJaccard(a: Set<string>, b: Set<string>, weights: Map<string, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  let union = 0;
+  for (const token of a) {
+    const weight = weights.get(token) ?? 1;
+    if (b.has(token)) intersection += weight;
+    else union += weight;
+  }
+  for (const token of b) {
+    if (!a.has(token)) union += weights.get(token) ?? 1;
+  }
+  return union === 0 ? 0 : intersection / union;
+}
 
 /**
  * 提取查询/文本的关键词 token 集合。

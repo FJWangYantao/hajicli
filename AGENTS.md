@@ -84,10 +84,11 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   **本仓库有 570 条项目级 instincts（`.haji/instincts/`），别再说「经验库是空的」。**
   首轮 pilot（任务 3/7 × 3 轮 × 2 arm）：费用 +1.7%、未命中 token +4.3%（中性），
   墙钟差异不归因；采纳理由是正确性。测试：`experiences-prompt-part.test.mjs`。
-  **召回质量另说**：605 条 instincts 里 557 条 confidence 只有 0.50（`recallInstincts` 默认
-  要求 ≥0.70），所以现在无论问什么都只召回固定那 2 条。离线评测脚本 `scripts/recall-eval.mjs`
-  （11 个固定任务 + 10 个无关短问，比单字/双字/IDF/阈值）：单字+0.7 相关率 27%、无关注入率 60%；
-  双字+IDF+score≥0.10+top2 相关率 86%、无关注入率 0%。改召回参数前先跑它。
+  **召回打分**：605 条 instincts 里 557 条 confidence 只有 0.50，旧默认（≥0.70）导致无论问什么
+  都只召回固定那 2 条；且中文按单字切，任何共享汉字都算命中。现在 `recallInstincts` 用
+  **中文双字 + IDF 加权 Jaccard + 分数下限 0.10 + 默认 top2 + minConfidence 0.5**。
+  离线评测 `scripts/recall-eval.mjs`（11 个固定任务 + 10 个无关短问）：旧实现相关率 27%、
+  无关注入率 60%；新实现相关率 86%、无关注入率 0%。改召回参数前先跑它（`--samples` 可人工复核）。
 - 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查并以系统消息回注诊断；
   `HAJI_POST_EDIT_VERIFY=0` 关闭。探测顺序是**只认 `typecheck` 脚本** → tsconfig
   （references 结构用 `npx tsc -b`，普通结构用 `npx tsc --noEmit`）；刻意不认 `check`

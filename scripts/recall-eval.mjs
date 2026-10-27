@@ -18,6 +18,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { ExperienceStore, tokenize } from "../packages/core/dist/index.js";
 
+const store = new ExperienceStore({ cwd: process.cwd() });
+
 const args = new Set(process.argv.slice(2));
 const SHOW_SAMPLES = args.has("--samples");
 
@@ -62,8 +64,6 @@ function loadTaskPrompts() {
 }
 
 // ─── 分词与打分 ────────────────────────────────────────────────────────────
-
-const CJK = /[\u4e00-\u9fff]/;
 
 /** ASCII 词 + 中文单字（现状）。 */
 function tokensSingle(text) {
@@ -117,8 +117,10 @@ function buildIdf(docs, tokenizeFn) {
 // ─── 配置 ──────────────────────────────────────────────────────────────────
 
 const CONFIGS = [
+  // 线上真实实现：直接调 store.recallInstincts，避免脚本和产品代码各写一套打分。
+  { name: "线上实现（双字 + IDF + ≥0.10 + top2）", live: true },
   {
-    name: "现状 minConf0.7 + 单字 + top8",
+    name: "旧实现 minConf0.7 + 单字 + top8",
     tokenize: tokensSingle,
     minConfidence: 0.7,
     minScore: 0,
@@ -170,6 +172,9 @@ function runConfig(config, instincts, prompts, idfWeights) {
   const docs = candidates.map((item) => ({ item, tokens: config.tokenize(docsOf(item)) }));
 
   const recall = (query) => {
+    if (config.live) {
+      return store.recallInstincts(query).map((instinct) => ({ instinct, score: 0 }));
+    }
     const queryTokens = config.tokenize(query);
     const scored = [];
     for (const doc of docs) {
@@ -199,11 +204,9 @@ function runConfig(config, instincts, prompts, idfWeights) {
   }
 
   let unrelatedInjected = 0;
-  let unrelatedChars = 0;
   for (const query of UNRELATED) {
     const hits = recall(query);
     if (hits.length > 0) unrelatedInjected += 1;
-    unrelatedChars += hits.reduce((sum, hit) => sum + hit.instinct.action.length, 0);
   }
 
   const taskChars =
@@ -214,7 +217,7 @@ function runConfig(config, instincts, prompts, idfWeights) {
 
   return {
     name: config.name,
-    candidates: candidates.length,
+    candidates: config.live ? "—" : candidates.length,
     precision: taskReturned === 0 ? 0 : taskHits / taskReturned,
     coverage: samples.filter((sample) => sample.relevant.length > 0).length / samples.length,
     unrelatedRate: unrelatedInjected / UNRELATED.length,
@@ -225,7 +228,6 @@ function runConfig(config, instincts, prompts, idfWeights) {
 
 // ─── 主流程 ────────────────────────────────────────────────────────────────
 
-const store = new ExperienceStore({ cwd: process.cwd() });
 const instincts = store.loadInstincts();
 const prompts = [...loadTaskPrompts()].sort((a, b) => a[0] - b[0]);
 

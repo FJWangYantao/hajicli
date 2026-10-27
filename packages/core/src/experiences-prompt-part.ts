@@ -65,7 +65,7 @@ export function buildExperienceRecall(
   query: string,
   maxChars = 2000,
 ): string | undefined {
-  const instincts = store.recallInstincts(query, 8, 0.7);
+  const instincts = store.recallInstincts(query);
   const memories = store.recallMemories(query, 5);
   if (instincts.length === 0 && memories.length === 0) return undefined;
 
