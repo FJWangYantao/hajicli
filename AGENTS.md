@@ -75,8 +75,12 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
   走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
   内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
-- 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目 typecheck 并以系统消息回注诊断；
-  `HAJI_POST_EDIT_VERIFY=0` 关闭。测试涉及真实回合时注意它会真的执行 `npx tsc --noEmit`。
+- 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查并以系统消息回注诊断；
+  `HAJI_POST_EDIT_VERIFY=0` 关闭。探测顺序是**只认 `typecheck` 脚本** → tsconfig
+  （references 结构用 `npx tsc -b`，普通结构用 `npx tsc --noEmit`）；刻意不认 `check`
+  这类组合脚本（本仓库的 check = lint + 全套测试，每次编辑都只会跑满超时）。
+  超时不回注上下文、只在界面提示一次；cwd 是**正在运行的 haji 自身仓库**时跳过
+  （`tsc -b` 会覆盖运行中的 dist），显式设置环境变量可强制。
 
 ## 工作区与路径边界（2026-10 重构）
 

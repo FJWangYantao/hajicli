@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { getModelPricing, MODEL_REGISTRY, messageContentOrParts } from "@hajicli/plugins";
 import { CostTracker, estimateRequestCostCny, formatCostCny } from "../dist/cost-tracker.js";
@@ -11,7 +12,10 @@ import { loadImageAttachment, parseImageCommand } from "../dist/image-command.js
 import {
   detectProjectCheckCommand,
   diagnosticsMentionFile,
+  formatSelfProjectSkipHint,
   formatVerificationNotice,
+  formatVerificationTimeoutHint,
+  isSelfProject,
   shouldPushVerificationNotice,
 } from "../dist/post-edit-verify.js";
 import { resolveUtilityModel } from "../dist/provider-models.js";
@@ -206,10 +210,13 @@ test("post-edit verify detects check commands and formats notices", () => {
       formatVerificationNotice({ ok: false, timedOut: false, output: "TS2345: bad type" }, "cmd"),
       /TS2345: bad type/,
     );
-    assert.match(
+    // 超时不回注模型：模型拿不到诊断，塞进上下文只会让它误以为项目有问题。
+    assert.equal(
       formatVerificationNotice({ ok: false, timedOut: true, output: "" }, "cmd"),
-      /超过时限/,
+      undefined,
     );
+    assert.match(formatVerificationTimeoutHint("cmd"), /超过时限/);
+    assert.match(formatSelfProjectSkipHint(), /haji 本身/);
     // 与本次编辑无关的既有诊断：不催模型修，也不把小结标成失败。
     const unrelated = formatVerificationNotice(
       { ok: false, timedOut: false, output: "packages/core/src/x.ts:461:9 lint × 非空断言" },
@@ -245,6 +252,69 @@ test("post-edit verify detects check commands and formats notices", () => {
     assert.equal(shouldPushVerificationNotice(previous, "same", 70_000), true);
     assert.equal(shouldPushVerificationNotice(previous, "other", 2_000), true);
     assert.equal(shouldPushVerificationNotice(undefined, "same", 2_000), true);
+  });
+});
+
+test("post-edit verify ignores composite check scripts and picks tsc -b for references", () => {
+  withTempWorkspace((root) => {
+    const env = {};
+    // 只有 check（lint && test）这类组合脚本：不探测，否则每次编辑都跑整套测试直到超时。
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "x", scripts: { check: "pnpm lint && pnpm test" } }),
+      "utf8",
+    );
+    assert.equal(detectProjectCheckCommand(root, env), undefined);
+
+    // typecheck 脚本优先级最高。
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "x", scripts: { typecheck: "tsc --noEmit", check: "pnpm test" } }),
+      "utf8",
+    );
+    assert.equal(detectProjectCheckCommand(root, env), "npm run typecheck --silent");
+
+    // references 结构：`tsc --noEmit` 会「假通过」，必须走增量构建。
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "x", scripts: {} }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify({ files: [], references: [{ path: "./packages/a" }] }),
+      "utf8",
+    );
+    assert.equal(detectProjectCheckCommand(root, env), "npx tsc -b");
+
+    // 带注释的 tsconfig 解析失败时按文本粗判，不能退化成 --noEmit。
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      '{\n  // 根配置只做聚合\n  "files": [],\n  "references": [{ "path": "./packages/a" }]\n}\n',
+      "utf8",
+    );
+    assert.equal(detectProjectCheckCommand(root, env), "npx tsc -b");
+
+    // 普通 tsconfig：单项目检查。
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+      "utf8",
+    );
+    assert.equal(detectProjectCheckCommand(root, env), "npx tsc --noEmit");
+  });
+});
+
+test("isSelfProject only matches the repo the running CLI lives in", () => {
+  withTempWorkspace((root) => {
+    const moduleFile = path.join(root, "packages", "cli", "dist", "post-edit-verify.js");
+    fs.mkdirSync(path.dirname(moduleFile), { recursive: true });
+    fs.writeFileSync(moduleFile, "", "utf8");
+    const moduleUrl = pathToFileURL(moduleFile).href;
+    assert.equal(isSelfProject(root, moduleUrl), true);
+    const other = path.join(root, "elsewhere");
+    fs.mkdirSync(other, { recursive: true });
+    assert.equal(isSelfProject(other, moduleUrl), false);
   });
 });
 

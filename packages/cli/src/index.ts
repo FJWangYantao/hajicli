@@ -165,7 +165,10 @@ import {
 import {
   detectProjectCheckCommand,
   diagnosticsMentionFile,
+  formatSelfProjectSkipHint,
   formatVerificationNotice,
+  formatVerificationTimeoutHint,
+  isSelfProject,
   runProjectCheck,
   shouldPushVerificationNotice,
 } from "./post-edit-verify.js";
@@ -827,12 +830,27 @@ async function main() {
   let lastPostEditNotice: { text: string; at: number } | undefined;
   // 最近一次验证结果（回合小结的“类型检查 ✓/✕”数据源；按时间戳只统计本回合触发的）。
   let lastPostEditCheck: { ok: boolean; at: number } | undefined;
+  // 超时/跳过只做一次界面提示：模型没拿到诊断，就不该往上下文里塞消息。
+  let lastPostEditHint = "";
   const POST_EDIT_VERIFY_COOLDOWN_MS = 10_000;
+  const showPostEditHint = (hint: string): void => {
+    if (lastPostEditHint === hint) return;
+    lastPostEditHint = hint;
+    ui.writeLine(colors.muted(hint));
+  };
   const maybeRunPostEditVerify = async (editedPath?: string): Promise<string | undefined> => {
     if (postEditVerifyCommand === null) {
       postEditVerifyCommand = detectProjectCheckCommand(process.cwd());
     }
     if (!postEditVerifyCommand) return undefined;
+    // 显式指定命令时由用户承担风险；否则在 haji 自身仓库跳过，避免构建覆盖运行中的 dist。
+    const explicitVerify = Boolean(
+      process.env.HAJI_POST_EDIT_VERIFY?.trim() && process.env.HAJI_POST_EDIT_VERIFY.trim() !== "0",
+    );
+    if (!explicitVerify && isSelfProject(process.cwd())) {
+      showPostEditHint(formatSelfProjectSkipHint());
+      return undefined;
+    }
     const now = Date.now();
     if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
     postEditVerifyLastRunAt = now;
@@ -841,6 +859,10 @@ async function main() {
     const relevantFailure =
       !result.ok && (!editedPath || diagnosticsMentionFile(result.output, editedPath));
     lastPostEditCheck = { ok: !relevantFailure, at: Date.now() };
+    if (result.timedOut) {
+      showPostEditHint(formatVerificationTimeoutHint(postEditVerifyCommand));
+      return undefined;
+    }
     return formatVerificationNotice(result, postEditVerifyCommand, editedPath);
   };
   hookEngine.register("PostToolUse", async (ctx) => {

@@ -1,15 +1,42 @@
 import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** 诊断输出截断上限（保尾部——错误通常在末尾）。 */
 const MAX_OUTPUT_CHARS = 1_800;
 
+interface TsconfigShape {
+  /** tsconfig 有 references 数组（project references 结构）。 */
+  projectReferences: boolean;
+}
+
+function readTsconfig(cwd: string): TsconfigShape | undefined {
+  const file = path.join(cwd, "tsconfig.json");
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { references?: unknown };
+    return { projectReferences: Array.isArray(parsed.references) && parsed.references.length > 0 };
+  } catch {
+    // tsconfig 允许注释和尾逗号，JSON.parse 会失败：退化成文本粗判，至少别把
+    // references 结构当成普通 tsconfig 去跑 `--noEmit`（那种跑法会「假通过」）。
+    return { projectReferences: /"references"\s*:/.test(raw) };
+  }
+}
+
 /**
  * 探测项目的编辑后验证命令（LSP 的轻量替代）：
- * HAJI_POST_EDIT_VERIFY 环境变量显式指定（"0" 关闭）> package.json 的
- * typecheck / check 脚本 > tsconfig.json 存在时 npx tsc --noEmit。
+ * HAJI_POST_EDIT_VERIFY 环境变量显式指定（"0" 关闭）> package.json 的 typecheck 脚本 >
+ * tsconfig.json（references 结构用 `tsc -b`，普通结构用 `tsc --noEmit`）。
  * 探测不到返回 undefined（项目不支持，静默跳过）。
+ *
+ * 刻意不认 `check` 这类组合脚本：本仓库的 check 是 `lint && test`，每次编辑都跑整套
+ * 测试只会把超时耗满、永远拿不到诊断。复合脚本要用户用环境变量显式指定。
  */
 export function detectProjectCheckCommand(
   cwd: string,
@@ -19,21 +46,42 @@ export function detectProjectCheckCommand(
   if (override === "0") return undefined;
   const trimmedOverride = override?.trim();
   if (trimmedOverride) return trimmedOverride;
-  let pkg: { scripts?: Record<string, string> } | undefined;
+  const scripts = readPackageScripts(cwd);
+  const typecheck = scripts?.typecheck;
+  if (typeof typecheck === "string" && typecheck.trim()) return "npm run typecheck --silent";
+  const tsconfig = readTsconfig(cwd);
+  if (!tsconfig) return undefined;
+  // references 结构（根 tsconfig 只有 files: [] + references）不能用 `tsc --noEmit`：
+  // 它一个文件都不检查却 exit 0，会伪装成「验证通过」。必须用 `tsc -b` 走增量构建。
+  return tsconfig.projectReferences ? "npx tsc -b" : "npx tsc --noEmit";
+}
+
+function readPackageScripts(cwd: string): Record<string, string> | undefined {
   try {
-    pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    return pkg?.scripts ?? {};
   } catch {
     return undefined;
   }
-  const scripts = pkg?.scripts ?? {};
-  if (typeof scripts.typecheck === "string" && scripts.typecheck.trim()) {
-    return "npm run typecheck --silent";
+}
+
+/**
+ * 当前目录是不是「正在运行的 haji 自身仓库」。
+ *
+ * 这种仓库不能跑 `tsc -b`：构建会覆盖进程正在使用的 `dist/`，已经加载的模块不受影响，
+ * 但之后懒加载的模块可能和已加载版本对不上。调用方据此跳过验证（显式设置
+ * HAJI_POST_EDIT_VERIFY 时不跳过，由用户自己承担）。
+ */
+export function isSelfProject(cwd: string, moduleUrl: string = import.meta.url): boolean {
+  try {
+    // dist/post-edit-verify.js → packages/cli/dist → 仓库根
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(moduleUrl)), "../../..");
+    return fs.realpathSync(cwd) === fs.realpathSync(repoRoot);
+  } catch {
+    return false;
   }
-  if (typeof scripts.check === "string" && scripts.check.trim()) {
-    return "npm run check --silent";
-  }
-  if (fs.existsSync(path.join(cwd, "tsconfig.json"))) return "npx tsc --noEmit";
-  return undefined;
 }
 
 export interface ProjectCheckResult {
@@ -88,15 +136,16 @@ export function shouldPushVerificationNotice(
   return !previous || previous.text !== text || now - previous.at >= windowMs;
 }
 
-/** 格式化为注入给模型的系统消息；通过时也明确告知，避免模型重复自查。 */
+/**
+ * 格式化为注入给模型的系统消息；通过时也明确告知，避免模型重复自查。
+ * 超时返回 undefined：模型拿不到任何诊断，写进上下文只会让它误以为项目有问题。
+ */
 export function formatVerificationNotice(
   result: ProjectCheckResult,
   command: string,
   editedPath?: string,
-): string {
-  if (result.timedOut) {
-    return `[编辑后验证] ${command} 超过时限被中止，本次未获得诊断结果。`;
-  }
+): string | undefined {
+  if (result.timedOut) return undefined;
   if (result.ok) {
     return `[编辑后验证] ${command} 通过（未发现错误）。`;
   }
@@ -107,4 +156,14 @@ export function formatVerificationNotice(
   const truncated =
     detail.length > MAX_OUTPUT_CHARS ? `…${detail.slice(-MAX_OUTPUT_CHARS)}` : detail;
   return `[编辑后验证] ${command} 发现以下问题，请在继续任务前优先修复：\n${truncated}`;
+}
+
+/** 超时的界面提示（只出现一次，不进模型上下文）。 */
+export function formatVerificationTimeoutHint(command: string): string {
+  return `编辑后验证：${command} 超过时限已中止，本次跳过（不影响继续编辑）。`;
+}
+
+/** 自身仓库跳过验证的界面提示（只出现一次，不进模型上下文）。 */
+export function formatSelfProjectSkipHint(): string {
+  return "编辑后验证：当前仓库就是正在运行的 haji 本身，已跳过（避免构建覆盖运行中的 dist）。";
 }
