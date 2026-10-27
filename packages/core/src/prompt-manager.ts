@@ -82,6 +82,22 @@ export class ToolsPromptPart implements SystemPromptPart {
       "- 优先使用作用域最小的专用工具；bash 仅用于没有专用工具覆盖的构建、测试、依赖或系统操作。",
     );
     rules.push("- 先定位再读取，先读取再编辑。可在一次调用中完成的相关检索不要拆成大量零碎调用。");
+    if (context.toolBatching) {
+      rules.push(
+        "- 能用工具自带的批量参数一次覆盖多个目标时，优先合并成一次调用：read 的 paths（多文件）、grep 的 queries（多关键词/符号）、global 的 patterns（多名称模式）。不要为同一目的连发多次同类调用；无法批量时，才把互不依赖的只读调用放在同一条回复里并行。",
+      );
+      rules.push(
+        "- 同一文件的同一区间不要重复读取；需要更多内容时用 startLine/limit/aroundLine 精确续读，并按返回的 nextStartLine 继续。",
+      );
+    }
+    if (context.scopeDiscipline) {
+      rules.push(
+        "- 搜索前先用用户原词（函数名、报错文本、配置键）直接搜；同一目标连续两次没有命中时，不要再换同义词试探，改用 global.patterns 按文件名/目录定位候选文件，或先用 projectinfo 了解结构。",
+      );
+      rules.push(
+        "- 定位到候选文件后，一次读完目标区块（给足 limit 或 endLine），不要先读一段再回头补读重叠区间；需要更多内容时按 nextStartLine 继续。",
+      );
+    }
     if (context.parallelBatchReadOnly) {
       const limit = context.parallelBatchLimit ?? 5;
       rules.push(
@@ -106,6 +122,11 @@ export class ToolsPromptPart implements SystemPromptPart {
       rules.push(
         "\n- global：按路径或名称定位文件、了解项目结构。优先使用 include、exclude、fileTypes 缩小范围；存在 nextOffset 时按需分页。已知精确路径时不要全仓库枚举。",
       );
+      if (context.toolBatching) {
+        rules.push(
+          "- global 批量：要按多个名称模式定位文件时，用 patterns 一次调用完成，不要为每个模式单独调用。",
+        );
+      }
     }
     if (activeTools.includes("projectinfo")) {
       rules.push(
@@ -116,6 +137,11 @@ export class ToolsPromptPart implements SystemPromptPart {
       rules.push(
         "- grep：搜索符号、配置、错误文本及引用。默认是字面量搜索；需要模式匹配时使用 regex，并优先用 include、exclude、fileTypes 和上下文参数缩小范围。结果存在 nextOffset 时按需继续分页，再读取命中文件。",
       );
+      if (context.toolBatching) {
+        rules.push(
+          "- grep 批量：要搜索多个关键词/符号时，用 queries 一次调用完成（每个查询独立分节），不要拆成多次调用。",
+        );
+      }
     }
     if (activeTools.includes("selfstate")) {
       rules.push(

@@ -5,7 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-function writeSession(dir, id, experiments, batches, subagents = [], subagentResults = []) {
+function writeSession(
+  dir,
+  id,
+  experiments,
+  batches,
+  subagents = [],
+  subagentResults = [],
+  toolCalls = [],
+) {
   const lines = [
     JSON.stringify({
       type: "experiment_assignment",
@@ -31,6 +39,18 @@ function writeSession(dir, id, experiments, batches, subagents = [], subagentRes
         type: "subagent_result",
         timestamp: `2026-10-27T00:00:2${index}.000Z`,
         data: { timestamp: `2026-10-27T00:00:2${index}.000Z`, ...result },
+      }),
+    ),
+    JSON.stringify({
+      type: "user_input",
+      timestamp: "2026-10-27T00:00:30.000Z",
+      content: "任务",
+    }),
+    ...toolCalls.map((call, index) =>
+      JSON.stringify({
+        type: "tool_execution",
+        timestamp: `2026-10-27T00:00:3${index}.000Z`,
+        data: { timestamp: `2026-10-27T00:00:3${index}.000Z`, ...call },
       }),
     ),
   ];
@@ -74,6 +94,12 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
           toolCalls: 2,
         },
       ],
+      [
+        { name: "read", arguments: { paths: ["a.ts", "b.ts"] } },
+        { name: "read", arguments: { paths: ["a.ts", "b.ts"] } },
+        { name: "grep", arguments: { queries: ["foo", "bar"] } },
+        { name: "global", arguments: { patterns: ["x", "y"] } },
+      ],
     );
     const output = execFileSync(
       process.execPath,
@@ -97,6 +123,13 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
     assert.equal(treatment.avgSubagentTokens, 1000);
     assert.equal(treatment.avgSubagentToolCalls, 2);
     assert.equal(treatment.okSubagents, 1);
+    assert.equal(treatment.turns, 1);
+    assert.equal(treatment.toolCalls, 4);
+    assert.equal(treatment.callsPerTurn, 4);
+    // 第二次读同一区间（a.ts、b.ts 各一次）算 2 次重复读取。
+    assert.equal(treatment.redundantReads, 2);
+    assert.equal(treatment.batchParamCalls, 4);
+    assert.equal(control.toolCalls, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

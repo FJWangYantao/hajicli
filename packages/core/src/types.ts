@@ -253,6 +253,10 @@ export interface PromptContext {
   parallelBatchReadOnly?: boolean;
   /** 提示词里告知的并行上限（与实验 arm / HAJI_MAX_PARALLEL_TOOLS 一致）。 */
   parallelBatchLimit?: number;
+  /** 是否要求优先用工具自带批量参数合并调用（A/B: tool_batching）。 */
+  toolBatching?: boolean;
+  /** 是否要求搜索/读取范围收敛（A/B: scope_discipline）。 */
+  scopeDiscipline?: boolean;
 }
 
 /**

@@ -437,6 +437,10 @@ async function main() {
   // 本地 A/B：分配单位是本次进程的 trace session id；分配快照写进 trace，供 ab:report 归组。
   const experiments = new ExperimentRegistry(tracker.getSessionId());
   tracker.recordExperimentAssignment(experiments.record());
+  /** A/B：baseline 组不暴露 grep.queries / global.patterns（read.paths 一直可用）。 */
+  const batchParams = experiments.is("tool_batching", "batch_first");
+  /** A/B：范围收敛（搜索纪律 + 叠读提示）。 */
+  const scopeDiscipline = experiments.is("scope_discipline", "converge");
   /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
   const recordSubagentOutcome = (agent: {
     id: string;
@@ -1021,10 +1025,10 @@ async function main() {
   const verifyAgentTool = new VerifyAgentTool((input) => verifyAgent(input));
   const tools: BaseTool[] = [
     new BashTool(),
-    new ReadFileTool(),
+    new ReadFileTool({ overlapHint: scopeDiscipline }),
     new WriteFileTool(),
     new EditFileTool(),
-    new GlobalFindFilesTool(),
+    new GlobalFindFilesTool({ batchParams }),
     new ProjectInfoTool(),
     new SelfStateTool(() => buildSelfStateSnapshot()),
     new RequestTool({ approve: (spec) => approveAgentRequest(spec) }),
@@ -1035,7 +1039,7 @@ async function main() {
         messages,
       }),
     }),
-    new GrepSearchTool(),
+    new GrepSearchTool({ batchParams }),
     new WebSearchTool(),
     new WebFetchTool(),
     new LoadSkillTool(skillRegistry),
@@ -1104,6 +1108,8 @@ async function main() {
       recentUserMessage: lastUserMessageForRecall,
       parallelBatchReadOnly: experiments.is("parallel_prompt", "batch"),
       parallelBatchLimit: resolveMaxParallelTools(experiments),
+      toolBatching: experiments.is("tool_batching", "batch_first"),
+      scopeDiscipline: experiments.is("scope_discipline", "converge"),
     });
   let systemPrompt = await createSystemPrompt();
   markStartupStage("system_prompt");
@@ -1477,6 +1483,7 @@ async function main() {
     getModel: (request) => request?.model || selectedModel,
     getReasoningEffort: (request) => request?.reasoningEffort || reasoningEffort,
     getSkills: () => skillRegistry.list(),
+    batchFirst: experiments.is("tool_batching", "batch_first"),
     getTools: (context) =>
       context.agentAccess === "readonly" || context.permissionMode === "plan"
         ? tools.filter((tool) => permissionEngine.isReadOnlyTool(tool.name))

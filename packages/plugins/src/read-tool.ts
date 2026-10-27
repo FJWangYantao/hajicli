@@ -9,6 +9,7 @@ import type {
 } from "@hajicli/core";
 import { takeWholeRecords, truncateSingleLine } from "./bounded-output.js";
 import { contentHash, fileVersions } from "./file-content.js";
+import { ReadRangeTracker } from "./read-ranges.js";
 import { parseIntegerOption } from "./search-filter.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
@@ -124,6 +125,7 @@ async function renderFile(
   request: ReadRequest,
   outputBudget: number,
   context?: ToolExecutionContext,
+  tracker?: ReadRangeTracker,
 ): Promise<ToolOutput> {
   const resolvedPath = await resolveWorkspacePath(request.path);
   const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
@@ -162,6 +164,9 @@ async function renderFile(
     };
   }
 
+  const rangeKey = `${context?.agentId ?? "main"}:${resolvedPath}`;
+  const overlapHint = tracker?.check(rangeKey, firstLine, requestedLastLine);
+
   const records: string[] = [];
   const perLineLimit = Math.min(MAX_RENDERED_LINE_LENGTH, Math.max(80, outputBudget - 360));
   for (let lineNumber = firstLine; lineNumber <= requestedLastLine; lineNumber += 1) {
@@ -177,9 +182,11 @@ async function renderFile(
     `总行数=${totalLines}；返回=${returned > 0 ? `${firstLine}-${actualLastLine}` : "0"}；hash=${contentHash(buffer)}；hasMore=${hasMore}`,
     hasMore && returned > 0 ? `nextStartLine=${actualLastLine + 1}` : "",
     bounded.truncated ? "提示：为保持完整行，当前页已按输出预算提前结束。" : "",
+    overlapHint ?? "",
   ]
     .filter(Boolean)
     .join("\n");
+  if (returned > 0) tracker?.record(rangeKey, firstLine, actualLastLine);
   return {
     output: bounded.text ? `${header}\n${bounded.text}` : `${header}\n(当前页没有可输出内容)`,
   };
@@ -187,6 +194,13 @@ async function renderFile(
 
 export class ReadFileTool implements BaseTool {
   public readonly name = "read";
+
+  /** 叠读提示（A/B: scope_discipline）；关闭时不记账也不提示。 */
+  private readonly tracker?: ReadRangeTracker;
+
+  public constructor(options: { overlapHint?: boolean } = {}) {
+    if (options.overlapHint !== false) this.tracker = new ReadRangeTracker();
+  }
 
   public readonly definition: ToolDefinition = {
     type: "function",
@@ -253,7 +267,7 @@ export class ReadFileTool implements BaseTool {
     for (const request of requests) {
       try {
         throwIfAborted(context);
-        const rendered = await renderFile(request, perFileBudget, context);
+        const rendered = await renderFile(request, perFileBudget, context, this.tracker);
         blocks.push(rendered.output);
         if (rendered.images?.length) images.push(...rendered.images);
       } catch (error) {

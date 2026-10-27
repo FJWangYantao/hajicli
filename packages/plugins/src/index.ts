@@ -12,6 +12,7 @@ export * from "./model-registry.js";
 export * from "./network.js";
 export * from "./openai-compatible.js";
 export * from "./project-info-tool.js";
+export * from "./read-ranges.js";
 export * from "./read-tool.js";
 export * from "./request-tool.js";
 export * from "./self-state-tool.js";

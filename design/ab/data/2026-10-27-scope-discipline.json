@@ -1,0 +1,618 @@
+{
+  "experiment": "scope_discipline",
+  "since": "2026-10-27T08:00:59.000Z",
+  "sessions": [
+    {
+      "unitId": "73bab082-f465-4cbf-a9a4-64d8a65020af",
+      "timestamp": "2026-10-27T08:00:59.966Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：请读取 package.json、AGENTS.md、README.md、packages/cli/src/tool-batch.ts 四个文件，各用一句话总结，最后说明它们的共同点。",
+      "wallMs": 17597,
+      "turns": 1,
+      "toolCalls": 3,
+      "toolCounts": {
+        "read": 3
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 3,
+      "subagents": 0
+    },
+    {
+      "unitId": "fc11d7af-ee5b-447b-b02e-5319f2736847",
+      "timestamp": "2026-10-27T08:01:17.889Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：在 packages/cli/src 下用 grep 搜索 parallel_prompt、tool_batching、MAX_PARALLEL_READ_ONLY_TOOLS 这三个标识符，分别说明出现位置和用途。",
+      "wallMs": 15237,
+      "turns": 1,
+      "toolCalls": 5,
+      "toolCounts": {
+        "grep": 2,
+        "read": 3
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 5,
+      "subagents": 0
+    },
+    {
+      "unitId": "2178ea21-3735-49b4-a8c3-8f188a3df2a4",
+      "timestamp": "2026-10-27T08:01:33.430Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：用 global 查找名字里包含 turn-runner、parallel-policy、experiments 的文件，然后读取其中一个说明其职责。",
+      "wallMs": 8557,
+      "turns": 1,
+      "toolCalls": 2,
+      "toolCounts": {
+        "global": 1,
+        "read": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 2,
+      "subagents": 0
+    },
+    {
+      "unitId": "03636441-3cae-47c8-ac8a-1eb7b19ec389",
+      "timestamp": "2026-10-27T08:01:42.332Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：找出 packages/cli/src 中与「会话保存」相关的实现，读取相关文件后说明保存链路（入口、落盘、flush）。",
+      "wallMs": 48358,
+      "turns": 1,
+      "toolCalls": 20,
+      "toolCounts": {
+        "bash": 2,
+        "grep": 8,
+        "read": 10
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 3,
+      "subagents": 0
+    },
+    {
+      "unitId": "3a56237a-4c40-46dc-a6ec-8e7d765ef215",
+      "timestamp": "2026-10-27T08:02:31.005Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：找出 packages/cli/test 下覆盖并行工具批、A/B 实验、子代理的三个测试文件，各用一句话说明测试内容。",
+      "wallMs": 18107,
+      "turns": 1,
+      "toolCalls": 5,
+      "toolCounts": {
+        "bash": 2,
+        "global": 1,
+        "read": 1,
+        "grep": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 2,
+      "subagents": 0
+    },
+    {
+      "unitId": "2da54bcb-da9b-47f2-9cda-c518e4570f75",
+      "timestamp": "2026-10-27T08:02:49.429Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：追踪 createToolCallBatches 的定义与所有调用点，说明它如何被 turn-runner 使用。",
+      "wallMs": 34216,
+      "turns": 1,
+      "toolCalls": 14,
+      "toolCounts": {
+        "grep": 5,
+        "bash": 1,
+        "read": 8
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 0,
+      "subagents": 0
+    },
+    {
+      "unitId": "d24f1c9a-5be1-475c-8f25-3a83428dc2e4",
+      "timestamp": "2026-10-27T08:03:23.958Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：梳理本仓库的构建与测试配置（根 package.json、tsconfig 相关文件），说明 pnpm run build 与 pnpm test 的执行链。",
+      "wallMs": 49681,
+      "turns": 1,
+      "toolCalls": 17,
+      "toolCounts": {
+        "global": 6,
+        "projectinfo": 1,
+        "read": 6,
+        "bash": 2,
+        "grep": 2
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 4,
+      "subagents": 0
+    },
+    {
+      "unitId": "733aae2b-088e-4ac1-b947-8f300068483b",
+      "timestamp": "2026-10-27T08:04:13.969Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：找出工具执行错误的分类与止损逻辑（重复失败、无操作编辑、并发写），说明触发条件。",
+      "wallMs": 32674,
+      "turns": 1,
+      "toolCalls": 12,
+      "toolCounts": {
+        "bash": 1,
+        "projectinfo": 1,
+        "grep": 3,
+        "global": 1,
+        "read": 6
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 2,
+      "subagents": 0
+    },
+    {
+      "unitId": "14e929ec-b906-4ac3-b7ab-1b70fd0b61ce",
+      "timestamp": "2026-10-27T08:04:46.942Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：阅读 packages/cli/src/experiments.ts 与 scripts/ab-report.mjs，说明一个实验从分配到报告的完整数据流。",
+      "wallMs": 36909,
+      "turns": 1,
+      "toolCalls": 9,
+      "toolCounts": {
+        "bash": 1,
+        "read": 6,
+        "grep": 2
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 7,
+      "subagents": 0
+    },
+    {
+      "unitId": "27a940ef-e769-4712-aeec-792d7f59a92f",
+      "timestamp": "2026-10-27T08:05:24.159Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "只读调研，不要修改任何文件：列出 packages/core/src 下所有 *.ts 文件，并挑三个读取后说明它们各自负责什么。",
+      "wallMs": 15229,
+      "turns": 1,
+      "toolCalls": 5,
+      "toolCounts": {
+        "global": 1,
+        "projectinfo": 1,
+        "read": 2,
+        "grep": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 1,
+      "subagents": 0
+    },
+    {
+      "unitId": "34db0320-1af4-41f7-b169-dd0119ab9340",
+      "timestamp": "2026-10-27T08:05:39.697Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "baseline"
+      },
+      "arm": "baseline",
+      "prompt": "必须使用 subagent 工具（role=research，maxToolCalls=6，timeoutMs=90000）完成只读调研：阅读 packages/cli/src/tool-batch.ts 与 packages/cli/src/parallel-policy.ts，总结并行判定逻辑。不要修改任何文件。",
+      "wallMs": 61583,
+      "turns": 1,
+      "toolCalls": 14,
+      "toolCounts": {
+        "bash": 1,
+        "global": 1,
+        "projectinfo": 1,
+        "read": 7,
+        "grep": 1,
+        "subagent": 2,
+        "verifyagent": 1
+      },
+      "redundantReads": 3,
+      "batchParamCalls": 5,
+      "subagents": 2
+    },
+    {
+      "unitId": "2c45f39e-4d73-499b-9067-8bdc091d0c6c",
+      "timestamp": "2026-10-27T08:06:41.599Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：请读取 package.json、AGENTS.md、README.md、packages/cli/src/tool-batch.ts 四个文件，各用一句话总结，最后说明它们的共同点。",
+      "wallMs": 13125,
+      "turns": 1,
+      "toolCalls": 3,
+      "toolCounts": {
+        "read": 3
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 2,
+      "subagents": 0
+    },
+    {
+      "unitId": "31a41120-d8bd-41d5-b798-f16813cb689c",
+      "timestamp": "2026-10-27T08:06:55.028Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：在 packages/cli/src 下用 grep 搜索 parallel_prompt、tool_batching、MAX_PARALLEL_READ_ONLY_TOOLS 这三个标识符，分别说明出现位置和用途。",
+      "wallMs": 22999,
+      "turns": 1,
+      "toolCalls": 10,
+      "toolCounts": {
+        "grep": 5,
+        "read": 5
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 4,
+      "subagents": 0
+    },
+    {
+      "unitId": "9cc20eec-4666-4d3f-91ad-dd1718fcbb61",
+      "timestamp": "2026-10-27T08:07:18.349Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：用 global 查找名字里包含 turn-runner、parallel-policy、experiments 的文件，然后读取其中一个说明其职责。",
+      "wallMs": 18374,
+      "turns": 1,
+      "toolCalls": 5,
+      "toolCounts": {
+        "global": 3,
+        "bash": 1,
+        "read": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 3,
+      "subagents": 0
+    },
+    {
+      "unitId": "2489a7e3-3567-4e25-9d43-24a1982f89ca",
+      "timestamp": "2026-10-27T08:07:37.055Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：找出 packages/cli/src 中与「会话保存」相关的实现，读取相关文件后说明保存链路（入口、落盘、flush）。",
+      "wallMs": 38710,
+      "turns": 1,
+      "toolCalls": 20,
+      "toolCounts": {
+        "bash": 1,
+        "grep": 4,
+        "global": 3,
+        "read": 12
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 4,
+      "subagents": 0
+    },
+    {
+      "unitId": "d9b4394d-225c-42f5-a9f5-98af9250c4fb",
+      "timestamp": "2026-10-27T08:08:16.090Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：找出 packages/cli/test 下覆盖并行工具批、A/B 实验、子代理的三个测试文件，各用一句话说明测试内容。",
+      "wallMs": 17586,
+      "turns": 1,
+      "toolCalls": 7,
+      "toolCounts": {
+        "bash": 1,
+        "global": 3,
+        "read": 2,
+        "grep": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 2,
+      "subagents": 0
+    },
+    {
+      "unitId": "b394f84a-0c27-4f6b-b5b3-2373eb1605b6",
+      "timestamp": "2026-10-27T08:08:33.998Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：追踪 createToolCallBatches 的定义与所有调用点，说明它如何被 turn-runner 使用。",
+      "wallMs": 34832,
+      "turns": 1,
+      "toolCalls": 16,
+      "toolCounts": {
+        "global": 1,
+        "grep": 7,
+        "read": 8
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 0,
+      "subagents": 0
+    },
+    {
+      "unitId": "ee8ef765-f510-4380-9f4e-c97b35a0f44c",
+      "timestamp": "2026-10-27T08:09:09.187Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：梳理本仓库的构建与测试配置（根 package.json、tsconfig 相关文件），说明 pnpm run build 与 pnpm test 的执行链。",
+      "wallMs": 53324,
+      "turns": 1,
+      "toolCalls": 19,
+      "toolCounts": {
+        "projectinfo": 1,
+        "global": 6,
+        "read": 7,
+        "bash": 2,
+        "grep": 3
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 7,
+      "subagents": 0
+    },
+    {
+      "unitId": "87123538-6873-4938-9429-e54bdf496600",
+      "timestamp": "2026-10-27T08:10:02.828Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：找出工具执行错误的分类与止损逻辑（重复失败、无操作编辑、并发写），说明触发条件。",
+      "wallMs": 52990,
+      "turns": 1,
+      "toolCalls": 25,
+      "toolCounts": {
+        "projectinfo": 1,
+        "bash": 2,
+        "grep": 7,
+        "global": 2,
+        "read": 13
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 8,
+      "subagents": 0
+    },
+    {
+      "unitId": "801a48a2-5d12-450a-b4a2-ae2a6b987fc0",
+      "timestamp": "2026-10-27T08:10:56.146Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：阅读 packages/cli/src/experiments.ts 与 scripts/ab-report.mjs，说明一个实验从分配到报告的完整数据流。",
+      "wallMs": 59366,
+      "turns": 1,
+      "toolCalls": 21,
+      "toolCounts": {
+        "bash": 1,
+        "global": 1,
+        "read": 11,
+        "grep": 8
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 17,
+      "subagents": 0
+    },
+    {
+      "unitId": "cf025372-9396-4fe1-9d8c-f8ba49968bde",
+      "timestamp": "2026-10-27T08:11:55.835Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "只读调研，不要修改任何文件：列出 packages/core/src 下所有 *.ts 文件，并挑三个读取后说明它们各自负责什么。",
+      "wallMs": 10984,
+      "turns": 1,
+      "toolCalls": 4,
+      "toolCounts": {
+        "bash": 1,
+        "selfstate": 1,
+        "global": 1,
+        "read": 1
+      },
+      "redundantReads": 0,
+      "batchParamCalls": 1,
+      "subagents": 0
+    },
+    {
+      "unitId": "9de7fac1-d1a6-4026-864c-e0029daaf592",
+      "timestamp": "2026-10-27T08:12:07.140Z",
+      "experiments": {
+        "parallel_prompt": "batch",
+        "parallel_allowlist": "dynamic",
+        "parallel_max": "5",
+        "subagent_access": "role",
+        "subagent_batch": "batched",
+        "tool_batching": "batch_first",
+        "scope_discipline": "converge"
+      },
+      "arm": "converge",
+      "prompt": "必须使用 subagent 工具（role=research，maxToolCalls=6，timeoutMs=90000）完成只读调研：阅读 packages/cli/src/tool-batch.ts 与 packages/cli/src/parallel-policy.ts，总结并行判定逻辑。不要修改任何文件。",
+      "wallMs": 62553,
+      "turns": 1,
+      "toolCalls": 16,
+      "toolCounts": {
+        "global": 1,
+        "bash": 1,
+        "read": 10,
+        "grep": 1,
+        "subagent": 2,
+        "verifyagent": 1
+      },
+      "redundantReads": 1,
+      "batchParamCalls": 6,
+      "subagents": 2
+    }
+  ],
+  "byArm": {
+    "baseline": {
+      "sessions": 11,
+      "wallMs": 338148,
+      "toolCalls": 106,
+      "redundantReads": 3,
+      "batchParamCalls": 34,
+      "subagents": 2,
+      "avgWallMs": 30740.727272727272,
+      "avgToolCalls": 9.636363636363637,
+      "avgRedundantReads": 0.2727272727272727,
+      "avgBatchParamCalls": 3.090909090909091
+    },
+    "converge": {
+      "sessions": 11,
+      "wallMs": 384843,
+      "toolCalls": 146,
+      "redundantReads": 1,
+      "batchParamCalls": 54,
+      "subagents": 2,
+      "avgWallMs": 34985.72727272727,
+      "avgToolCalls": 13.272727272727273,
+      "avgRedundantReads": 0.09090909090909091,
+      "avgBatchParamCalls": 4.909090909090909
+    }
+  }
+}

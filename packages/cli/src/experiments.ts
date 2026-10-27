@@ -20,6 +20,8 @@ export const EXPERIMENT_NAMES = [
   "parallel_max",
   "subagent_access",
   "subagent_batch",
+  "tool_batching",
+  "scope_discipline",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -47,6 +49,19 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
   subagent_access: { arms: ["write", "role"], control: "write", defaultValue: "role" },
   // 子代理内部是否复用连续只读批处理。
   subagent_batch: { arms: ["serial", "batched"], control: "serial", defaultValue: "batched" },
+  // 是否在提示词里要求优先用工具自带批量参数（read.paths / grep.queries / global.patterns）合并调用。
+  tool_batching: {
+    arms: ["baseline", "batch_first"],
+    control: "baseline",
+    defaultValue: "batch_first",
+  },
+  // 搜索/读取范围收敛：先定位再搜、一次读完目标区块、叠读提示。
+  // 实测 converge 反而更啰嗦（调用 +38%），默认回退到 baseline，保留代码供后续变体实验。
+  scope_discipline: {
+    arms: ["baseline", "converge"],
+    control: "baseline",
+    defaultValue: "baseline",
+  },
 };
 
 export type ExperimentSource = "env" | "hash" | "default";

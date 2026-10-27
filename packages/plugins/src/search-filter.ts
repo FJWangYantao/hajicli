@@ -49,6 +49,11 @@ export const FILE_TYPE_GLOBS: Record<string, string[]> = {
 const MAX_PATTERNS = 32;
 const MAX_PATTERN_LENGTH = 256;
 
+/** 批量参数开关：A/B（tool_batching）下 baseline 组不暴露 queries/patterns。 */
+export interface BatchParamOptions {
+  batchParams?: boolean;
+}
+
 export interface PathFilterOptions {
   include: string[];
   exclude: string[];

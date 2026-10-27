@@ -385,6 +385,7 @@ export class PermissionEngine {
       "grep_search",
       "grep",
       "global_find_files",
+      "global",
       "find_files",
       "projectinfo",
       "selfstate",

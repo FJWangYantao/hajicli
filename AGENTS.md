@@ -139,13 +139,29 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - A/B：`experiments.ts`，分配单位是本次进程的 trace session id（同进程内稳定）。
   `HAJI_AB=1` 按 `sha256(salt:unitId:name)` 五五分流；`HAJI_EXPERIMENTS="name=arm"` 或
   `all=control` 强制；不设时用推荐默认 arm。`HAJI_MAX_PARALLEL_TOOLS`（1–8）覆盖并行上限。
-- 观测：trace 写 `experiment_assignment` / `tool_batch` / `subagent_launch`；
-  `pnpm ab:report` 按 arm 汇总批次数、并行率、平均批大小、节省时间与子代理启动数。
+- 观测：trace 写 `experiment_assignment` / `tool_batch` / `subagent_launch` / `subagent_result`；
+  `pnpm ab:report` 按 arm 汇总批次数、并行率、平均批大小、节省时间、子代理耗时/token/工具数，
+  以及「调用效率」表（`turns` / `calls` / `calls-per-turn` / `dupReads` / `batchParam`）。
+- 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
+  且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
+- **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）
+  一次调用覆盖多个目标；`baseline` 组不暴露也不接受 `queries`/`patterns`（构造函数
+  `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、墙钟 −11%，
+  并行率反而下降——**批量参数的收益远大于并行批**。
+- **范围收敛（scope_discipline，实测失败，默认 baseline）**：曾要求「用户原词优先、连续两次
+  未命中禁止换同义词、先 global.patterns 定位文件再一次读完目标区块」，并由 `read-tool` 用
+  `read-ranges.ts` 记账，同文件重复读重叠 ≥50%、跨度 ≥40 行时提示改走 `nextStartLine`。
+  11 任务配对实测：调用 **+38%**（106→146）、grep +44%、global +91%、墙钟 +14%，8/11 任务更差；
+  叠读提示实际只触发 1 次（叠读本身很罕见）。结论：**这类"先定位再搜"的提示会把模型推向更多
+  枚举**，默认回退 `baseline`，代码保留供后续更窄的变体（例如只在无命中时介入）实验。
+  注意：trace 只存请求参数、不存实际返回区间，按参数估算的叠读率会虚高，别据此下结论。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
 - 测试：`experiments.test.mjs`（分配/覆盖/上限）、`parallel-policy.test.mjs`（静态/动态判定）、
   `parallel-prompt.test.mjs`（提示词 arm）、`tool-batch.test.mjs`（分组与自定义判定）、
+  `tool-batch-params.test.mjs`（queries/patterns 批量与 baseline 关闭）、
+  `scope-discipline.test.mjs`（叠读判定/提示/提示词 arm）、
   `subagent.test.mjs`（子代理批处理）、`persistence-performance.test.mjs`（trace 事件）、
   `ab-report.test.mjs`（报告聚合）。
 

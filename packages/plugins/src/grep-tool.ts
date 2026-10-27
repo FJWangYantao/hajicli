@@ -1,8 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
+import { takeWholeRecords } from "./bounded-output.js";
 import { runRipgrepLines } from "./ripgrep.js";
 import {
+  type BatchParamOptions,
   comparePathsBytewise,
   createPathFilter,
   DEFAULT_EXCLUDED_DIRS,
@@ -46,6 +48,8 @@ interface SearchResult {
 
 const MAX_CONTEXT_LINES = 10;
 const MAX_PAGE_SIZE = 50;
+/** 一次调用最多合并几个查询（调用合并优先，减少往返）。 */
+const MAX_BATCH_QUERIES = 5;
 const MAX_OFFSET = 5_000;
 const MAX_RAW_MATCHES = 20_000;
 const MAX_OUTPUT_LENGTH = 8_000;
@@ -293,20 +297,46 @@ function formatConditions(options: SearchOptions): string {
   return conditions.join("；");
 }
 
+/** 解析批量查询参数；缺省返回 undefined 表示走单查询路径。 */
+function parseQueries(args: Record<string, unknown>): { queries?: string[]; error?: string } {
+  if (args.queries === undefined) return {};
+  if (args.query !== undefined) return { error: "query 与 queries 不能同时使用。" };
+  if (
+    !Array.isArray(args.queries) ||
+    args.queries.length < 1 ||
+    args.queries.length > MAX_BATCH_QUERIES
+  ) {
+    return { error: `queries 必须包含 1-${MAX_BATCH_QUERIES} 个查询字符串。` };
+  }
+  const queries: string[] = [];
+  for (const [index, item] of args.queries.entries()) {
+    if (typeof item !== "string" || !item) {
+      return { error: `queries[${index}] 必须是非空字符串。` };
+    }
+    queries.push(item);
+  }
+  return { queries };
+}
+
 /** Repository text search with regex, path filters, context and stateless pagination. */
 export class GrepSearchTool implements BaseTool {
   public readonly name = "grep";
 
-  public readonly definition: ToolDefinition = {
+  private static readonly baseDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "grep",
       description:
-        "在文本文件中搜索（默认工作区；工作区外需授权）。支持字面量或正则、glob、文件类型、上下文行，以及通过 offset/limit 分页。",
+        "在文本文件中搜索（默认工作区；工作区外需授权）。支持字面量或正则、glob、文件类型、上下文行，以及通过 offset/limit 分页。要搜索多个关键词/符号时优先用 queries 一次调用完成，不要拆成多次调用。",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string", description: "要搜索的文本或正则表达式。" },
+          queries: {
+            type: "array",
+            items: { type: "string" },
+            description: `批量查询，最多 ${MAX_BATCH_QUERIES} 个，一次调用即可搜索多个关键词/符号（每个查询独立分节返回）；不能与 query 同时使用。`,
+          },
           path: { type: "string", description: "搜索起始目录，可选，默认当前工作区。" },
           mode: {
             type: "string",
@@ -343,12 +373,67 @@ export class GrepSearchTool implements BaseTool {
             description: `本页最大结果数，默认 20，最大 ${MAX_PAGE_SIZE}。`,
           },
         },
-        required: ["query"],
       },
     },
   };
 
+  public readonly definition: ToolDefinition;
+  private readonly batchParams: boolean;
+
+  public constructor(options: BatchParamOptions = {}) {
+    this.batchParams = options.batchParams !== false;
+    const base = GrepSearchTool.baseDefinition;
+    const definition: ToolDefinition = {
+      ...base,
+      function: {
+        ...base.function,
+        parameters: {
+          ...base.function.parameters,
+          properties: {
+            ...(base.function.parameters.properties as Record<string, unknown>),
+          },
+        },
+      },
+    };
+    if (!this.batchParams) {
+      delete (definition.function.parameters.properties as Record<string, unknown>).queries;
+      definition.function.description = definition.function.description.replace(
+        "要搜索多个关键词/符号时优先用 queries 一次调用完成，不要拆成多次调用。",
+        "",
+      );
+    }
+    this.definition = definition;
+  }
+
   public async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    const batch = parseQueries(args);
+    if (batch.error) return `错误: ${batch.error}`;
+    if (!this.batchParams) {
+      if (args.queries !== undefined) return "错误: 当前未启用 queries，请改用 query。";
+      return this.runQuery(args, context);
+    }
+    if (!batch.queries) return this.runQuery(args, context);
+    if (batch.queries.length === 1) {
+      return this.runQuery({ ...args, queries: undefined, query: batch.queries[0] }, context);
+    }
+
+    const blocks: string[] = [];
+    for (const query of batch.queries) {
+      if (context?.abortSignal?.aborted) return "[Grep 搜索已中止]";
+      const output = await this.runQuery({ ...args, queries: undefined, query }, context);
+      blocks.push(`## query: ${query}\n${output}`);
+    }
+    const bounded = takeWholeRecords(blocks, MAX_OUTPUT_LENGTH - 220, "\n\n");
+    const header = bounded.truncated
+      ? `[批量 Grep 搜索结果 - 共 ${blocks.length} 个查询，本次返回 ${bounded.count} 个；其余查询请拆分重试]`
+      : `[批量 Grep 搜索结果 - 共 ${blocks.length} 个查询]`;
+    return `${header}\n${bounded.text}`;
+  }
+
+  private async runQuery(
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<string> {

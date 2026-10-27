@@ -4,6 +4,7 @@ import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/co
 import { takeWholeRecords } from "./bounded-output.js";
 import { runRipgrepLines } from "./ripgrep.js";
 import {
+  type BatchParamOptions,
   comparePathsBytewise,
   createPathFilter,
   DEFAULT_EXCLUDED_DIRS,
@@ -36,6 +37,8 @@ interface FindResult {
 
 const MAX_OFFSET = 5_000;
 const MAX_PAGE_SIZE = 200;
+/** 一次调用最多合并几个名称模式。 */
+const MAX_BATCH_PATTERNS = 5;
 const MAX_RAW_FILES = 30_000;
 const MAX_OUTPUT_LENGTH = 8_000;
 
@@ -75,6 +78,27 @@ function parseOptions(args: Record<string, unknown>): FindOptions {
     offset: parseIntegerOption(args.offset, "offset", 0, 0, MAX_OFFSET),
     limit: parseIntegerOption(args.limit, "limit", 100, 1, MAX_PAGE_SIZE),
   };
+}
+
+/** 解析批量模式参数；缺省返回 undefined 表示走单模式路径。 */
+function parsePatterns(args: Record<string, unknown>): { patterns?: string[]; error?: string } {
+  if (args.patterns === undefined) return {};
+  if (args.pattern !== undefined) return { error: "pattern 与 patterns 不能同时使用。" };
+  if (
+    !Array.isArray(args.patterns) ||
+    args.patterns.length < 1 ||
+    args.patterns.length > MAX_BATCH_PATTERNS
+  ) {
+    return { error: `patterns 必须包含 1-${MAX_BATCH_PATTERNS} 个名称模式字符串。` };
+  }
+  const patterns: string[] = [];
+  for (const [index, item] of args.patterns.entries()) {
+    if (typeof item !== "string" || !item) {
+      return { error: `patterns[${index}] 必须是非空字符串。` };
+    }
+    patterns.push(item);
+  }
+  return { patterns };
 }
 
 function createNameFilter(options: FindOptions): (pathname: string) => boolean {
@@ -169,17 +193,22 @@ function formatConditions(options: FindOptions): string {
 export class GlobalFindFilesTool implements BaseTool {
   public readonly name = "global";
 
-  public readonly definition: ToolDefinition = {
+  private static readonly baseDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "global",
       description:
-        "查找文件（默认工作区；工作区外需授权）。支持名称字面量或正则、glob、文件类型，以及通过 offset/limit 分页。",
+        "查找文件（默认工作区；工作区外需授权）。支持名称字面量或正则、glob、文件类型，以及通过 offset/limit 分页。要按多个名称模式定位文件时优先用 patterns 一次调用完成。",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "查找起始目录，可选，默认工作区。" },
           pattern: { type: "string", description: "文件路径名称过滤文本或正则，可选。" },
+          patterns: {
+            type: "array",
+            items: { type: "string" },
+            description: `批量名称模式，最多 ${MAX_BATCH_PATTERNS} 个，每个模式独立分节返回；不能与 pattern 同时使用。`,
+          },
           mode: {
             type: "string",
             enum: ["literal", "regex"],
@@ -207,7 +236,62 @@ export class GlobalFindFilesTool implements BaseTool {
     },
   };
 
+  public readonly definition: ToolDefinition;
+  private readonly batchParams: boolean;
+
+  public constructor(options: BatchParamOptions = {}) {
+    this.batchParams = options.batchParams !== false;
+    const base = GlobalFindFilesTool.baseDefinition;
+    const definition: ToolDefinition = {
+      ...base,
+      function: {
+        ...base.function,
+        parameters: {
+          ...base.function.parameters,
+          properties: {
+            ...(base.function.parameters.properties as Record<string, unknown>),
+          },
+        },
+      },
+    };
+    if (!this.batchParams) {
+      delete (definition.function.parameters.properties as Record<string, unknown>).patterns;
+      definition.function.description = definition.function.description.replace(
+        "要按多个名称模式定位文件时优先用 patterns 一次调用完成。",
+        "",
+      );
+    }
+    this.definition = definition;
+  }
+
   public async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    const batch = parsePatterns(args);
+    if (!this.batchParams && args.patterns !== undefined) {
+      return "错误: 当前未启用 patterns，请改用 pattern。";
+    }
+    if (batch.error) return `错误: ${batch.error}`;
+    if (!this.batchParams || !batch.patterns) return this.runFind(args, context);
+    if (batch.patterns.length === 1) {
+      return this.runFind({ ...args, patterns: undefined, pattern: batch.patterns[0] }, context);
+    }
+
+    const blocks: string[] = [];
+    for (const pattern of batch.patterns) {
+      if (context?.abortSignal?.aborted) return "[文件查找已中止]";
+      const output = await this.runFind({ ...args, patterns: undefined, pattern }, context);
+      blocks.push(`## pattern: ${pattern}\n${output}`);
+    }
+    const bounded = takeWholeRecords(blocks, MAX_OUTPUT_LENGTH - 220, "\n\n");
+    const header = bounded.truncated
+      ? `[批量文件查找结果 - 共 ${blocks.length} 个模式，本次返回 ${bounded.count} 个；其余模式请拆分重试]`
+      : `[批量文件查找结果 - 共 ${blocks.length} 个模式]`;
+    return `${header}\n${bounded.text}`;
+  }
+
+  private async runFind(
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<string> {

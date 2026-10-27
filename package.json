@@ -14,6 +14,7 @@
     "build:full": "pnpm run build && pnpm run build:native",
     "bench:native": "node scripts/benchmark-terminal-engine.mjs",
     "ab:report": "node scripts/ab-report.mjs",
+    "ab:extract": "node scripts/ab-extract.mjs",
     "shot": "node scripts/shot.mjs",
     "clean": "tsc --build --clean",
     "lint": "biome check .",

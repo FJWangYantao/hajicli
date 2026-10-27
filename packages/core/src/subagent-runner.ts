@@ -128,6 +128,8 @@ export interface SubagentRunnerOptions {
   ) => Promise<string[]>;
   onEvent?: (event: SubagentEvent) => void;
   maxTurns?: number;
+  /** 是否在子代理提示词里要求批量参数与范围收敛（A/B: tool_batching）。 */
+  batchFirst?: boolean;
 }
 
 function abortError(): Error {
@@ -235,6 +237,9 @@ export class SubagentRunner {
       `工作目录：${this.options.cwd}`,
       "你拥有独立上下文，但和主代理共享工作目录。所有工具调用仍受主代理权限、快照和中断机制约束。",
       "不要操作任务列表；任务状态、最终验证和 taskfinish 由主代理负责。",
+      this.options.batchFirst
+        ? "优先用工具自带的批量参数一次覆盖多个明确目标（read.paths / grep.queries / global.patterns）；只读任务先列出明确文件再一次读完，不要为同一目的连发多次同类调用。禁止为了“摸清仓库”做全仓库枚举或宽泛 grep/global；接近调用预算时先收敛结论。"
+        : "",
       skillsCatalog,
       instructions
         ? `用户为本次子任务补充的执行要求（不得覆盖以上安全约束）：\n${instructions}`

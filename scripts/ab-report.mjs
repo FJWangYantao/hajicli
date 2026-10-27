@@ -80,7 +80,58 @@ function emptyArm() {
     failedSubagents: 0,
     writeSubagents: 0,
     backgroundSubagents: 0,
+    turns: 0,
+    toolCalls: 0,
+    redundantReads: 0,
+    batchParamCalls: 0,
   };
+}
+
+/**
+ * 单会话指标：回合数、工具调用数、重复读取次数、使用批量参数的调用数。
+ * 重复读取按「路径 + 区间参数」判定，同一区间读第二次即计一次。
+ */
+function collectSessionMetrics(events) {
+  let turns = 0;
+  let toolCalls = 0;
+  let redundantReads = 0;
+  let batchParamCalls = 0;
+  const seenReads = new Set();
+  for (const event of events) {
+    if (event.type === "user_input") {
+      turns += 1;
+      continue;
+    }
+    if (event.type !== "tool_execution") continue;
+    toolCalls += 1;
+    const name = String(event.data?.name || "").toLowerCase();
+    const args = event.data?.arguments;
+    if (name === "read" && args && typeof args === "object") {
+      const batch = Array.isArray(args.paths);
+      if (batch) batchParamCalls += 1;
+      const requests = batch ? args.paths : [args];
+      for (const request of requests) {
+        if (!request) continue;
+        const key =
+          typeof request === "string"
+            ? request
+            : [
+                request.path ?? "",
+                request.startLine ?? "",
+                request.endLine ?? "",
+                request.limit ?? "",
+                request.aroundLine ?? "",
+              ].join("|");
+        if (seenReads.has(key)) redundantReads += 1;
+        else seenReads.add(key);
+      }
+    } else if (name === "grep" && Array.isArray(args?.queries)) {
+      batchParamCalls += 1;
+    } else if (name === "global" && Array.isArray(args?.patterns)) {
+      batchParamCalls += 1;
+    }
+  }
+  return { turns, toolCalls, redundantReads, batchParamCalls };
 }
 
 function main() {
@@ -124,6 +175,16 @@ function main() {
       const byArm = experiments.get(name);
       if (!byArm.has(arm)) byArm.set(arm, emptyArm());
       byArm.get(arm).sessions.add(unitId);
+    }
+
+    const metrics = collectSessionMetrics(events);
+    for (const [name, arm] of Object.entries(arms)) {
+      const bucket = experiments.get(name)?.get(arm);
+      if (!bucket) continue;
+      bucket.turns += metrics.turns;
+      bucket.toolCalls += metrics.toolCalls;
+      bucket.redundantReads += metrics.redundantReads;
+      bucket.batchParamCalls += metrics.batchParamCalls;
     }
 
     for (const event of events) {
@@ -202,6 +263,11 @@ function main() {
             failedSubagents: bucket.failedSubagents,
             writeSubagents: bucket.writeSubagents,
             backgroundSubagents: bucket.backgroundSubagents,
+            turns: bucket.turns,
+            toolCalls: bucket.toolCalls,
+            callsPerTurn: bucket.turns > 0 ? bucket.toolCalls / bucket.turns : 0,
+            redundantReads: bucket.redundantReads,
+            batchParamCalls: bucket.batchParamCalls,
           })),
       ]),
     ),
@@ -244,6 +310,27 @@ function main() {
           Math.round(row.avgSubagentTokens).toString().padStart(10),
           row.avgSubagentToolCalls.toFixed(1).padStart(8),
           String(row.okSubagents).padStart(9),
+        ].join("  "),
+      );
+    }
+  }
+
+  console.log("\n## 调用效率（每回合）");
+  console.log(
+    "experiment        arm          sessions  turns  calls  calls/turn  dupReads  batchParam",
+  );
+  for (const [name, rows] of Object.entries(report.experiments)) {
+    for (const row of rows) {
+      console.log(
+        [
+          name.padEnd(16),
+          row.arm.padEnd(12),
+          String(row.sessions).padStart(8),
+          String(row.turns).padStart(6),
+          String(row.toolCalls).padStart(6),
+          row.callsPerTurn.toFixed(2).padStart(10),
+          String(row.redundantReads).padStart(9),
+          String(row.batchParamCalls).padStart(11),
         ].join("  "),
       );
     }
