@@ -73,11 +73,12 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     defaultValue: "batch_only",
   },
   // read 截断时是否附「剩余符号提纲」（剩余区间的函数/类 + 行号），便于直接 aroundLine 跳转。
-  // 新实验尚未验证，默认 baseline，跑完 A/B 再决定是否切 outline。
+  // 首轮 pilot（4 任务 × 3 轮 × 2 arm）请求 −12.9%、费用 −14.0%、中位墙钟 −16.9%，
+  // 已切为默认；baseline 留作对照组。
   read_outline: {
     arms: ["baseline", "outline"],
     control: "baseline",
-    defaultValue: "baseline",
+    defaultValue: "outline",
   },
 };
 
