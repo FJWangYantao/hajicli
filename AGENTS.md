@@ -202,7 +202,7 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   - 默认 `outline`，`baseline` 为对照组；用 `HAJI_EXPERIMENTS="read_outline=baseline"` 或
     `HAJI_AB=1` 跑 A/B，主指标看请求数，墙钟为最终判据。首轮 pilot（4 任务 × 3 轮 × 2 arm，
     12 对）：请求 −12.9%、未命中 token −12.2%、费用 −14.0%、中位墙钟 −16.9%；剔除 1 个
-    未触发提纲的离群会话后总墙钟 −11.0%。样本仍小，后续可补一轮确认。
+    未触发提纲的离群会话后总墙钟 −11.0%。样本为 4 任务 pilot，按此结论采纳，不再补确认轮。
     测试：`read-outline.test.mjs`。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），

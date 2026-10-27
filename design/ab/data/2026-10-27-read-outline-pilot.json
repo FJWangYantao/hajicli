@@ -1,5 +1,17 @@
 {
   "experiment": "read_outline",
+  "scope": "pilot",
+  "tasks": [
+    3,
+    5,
+    7,
+    9
+  ],
+  "rounds": 3,
+  "arms": [
+    "baseline",
+    "outline"
+  ],
   "since": "2026-10-27T11:24:00.000Z",
   "until": null,
   "note": "首轮 pilot：任务 3/5/7/9 × 3 轮 × 2 arm；剔除 1 个被中断的会话（2026-10-27T11:46:04.471Z）",
