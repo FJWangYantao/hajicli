@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createPricingResolver, sessionMetrics } from "./ab-metrics.mjs";
 
 function parseArgs(argv) {
   const options = { dirs: [], since: 0, json: false };
@@ -84,58 +85,26 @@ function emptyArm() {
     toolCalls: 0,
     redundantReads: 0,
     batchParamCalls: 0,
+    requests: 0,
+    utilityRequests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cachedPromptTokens: 0,
+    costCny: 0,
+    unpricedRequests: 0,
+    assumedPricingRequests: 0,
+    readCalls: 0,
+    truncatedReads: 0,
   };
-}
-
-/**
- * 单会话指标：回合数、工具调用数、重复读取次数、使用批量参数的调用数。
- * 重复读取按「路径 + 区间参数」判定，同一区间读第二次即计一次。
- */
-function collectSessionMetrics(events) {
-  let turns = 0;
-  let toolCalls = 0;
-  let redundantReads = 0;
-  let batchParamCalls = 0;
-  const seenReads = new Set();
-  for (const event of events) {
-    if (event.type === "user_input") {
-      turns += 1;
-      continue;
-    }
-    if (event.type !== "tool_execution") continue;
-    toolCalls += 1;
-    const name = String(event.data?.name || "").toLowerCase();
-    const args = event.data?.arguments;
-    if (name === "read" && args && typeof args === "object") {
-      const batch = Array.isArray(args.paths);
-      if (batch) batchParamCalls += 1;
-      const requests = batch ? args.paths : [args];
-      for (const request of requests) {
-        if (!request) continue;
-        const key =
-          typeof request === "string"
-            ? request
-            : [
-                request.path ?? "",
-                request.startLine ?? "",
-                request.endLine ?? "",
-                request.limit ?? "",
-                request.aroundLine ?? "",
-              ].join("|");
-        if (seenReads.has(key)) redundantReads += 1;
-        else seenReads.add(key);
-      }
-    } else if (name === "grep" && Array.isArray(args?.queries)) {
-      batchParamCalls += 1;
-    } else if (name === "global" && Array.isArray(args?.patterns)) {
-      batchParamCalls += 1;
-    }
-  }
-  return { turns, toolCalls, redundantReads, batchParamCalls };
 }
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  return run(options);
+}
+
+async function run(options) {
+  const resolvePricing = await createPricingResolver();
   const files = [];
   for (const dir of options.dirs) {
     let entries = [];
@@ -177,7 +146,7 @@ function main() {
       byArm.get(arm).sessions.add(unitId);
     }
 
-    const metrics = collectSessionMetrics(events);
+    const metrics = sessionMetrics(events, { resolvePricing });
     for (const [name, arm] of Object.entries(arms)) {
       const bucket = experiments.get(name)?.get(arm);
       if (!bucket) continue;
@@ -185,6 +154,16 @@ function main() {
       bucket.toolCalls += metrics.toolCalls;
       bucket.redundantReads += metrics.redundantReads;
       bucket.batchParamCalls += metrics.batchParamCalls;
+      bucket.requests += metrics.requests;
+      bucket.utilityRequests += metrics.utilityRequests;
+      bucket.promptTokens += metrics.promptTokens;
+      bucket.completionTokens += metrics.completionTokens;
+      bucket.cachedPromptTokens += metrics.cachedPromptTokens;
+      bucket.unpricedRequests += metrics.unpricedRequests;
+      bucket.assumedPricingRequests += metrics.assumedPricingRequests;
+      if (metrics.costCny !== null) bucket.costCny += metrics.costCny;
+      bucket.readCalls += metrics.readCalls;
+      bucket.truncatedReads += metrics.truncatedReads;
     }
 
     for (const event of events) {
@@ -268,6 +247,18 @@ function main() {
             callsPerTurn: bucket.turns > 0 ? bucket.toolCalls / bucket.turns : 0,
             redundantReads: bucket.redundantReads,
             batchParamCalls: bucket.batchParamCalls,
+            requests: bucket.requests,
+            utilityRequests: bucket.utilityRequests,
+            requestsPerTool: bucket.toolCalls > 0 ? bucket.requests / bucket.toolCalls : 0,
+            promptTokens: bucket.promptTokens,
+            completionTokens: bucket.completionTokens,
+            cachedPromptTokens: bucket.cachedPromptTokens,
+            costCny: bucket.unpricedRequests === 0 ? bucket.costCny : null,
+            unpricedRequests: bucket.unpricedRequests,
+            assumedPricingRequests: bucket.assumedPricingRequests,
+            readCalls: bucket.readCalls,
+            truncatedReads: bucket.truncatedReads,
+            truncatedRate: bucket.readCalls > 0 ? bucket.truncatedReads / bucket.readCalls : 0,
           })),
       ]),
     ),
@@ -335,6 +326,43 @@ function main() {
       );
     }
   }
+
+  console.log("\n## 请求与成本（每会话）");
+  console.log(
+    "experiment        arm          sessions  requests  req/tool  ptok/sess  ctok/sess  cache%  cost/sess  readTrunc",
+  );
+  for (const [name, rows] of Object.entries(report.experiments)) {
+    for (const row of rows) {
+      const sessions = row.sessions || 1;
+      const cacheRate =
+        row.promptTokens > 0 ? (row.cachedPromptTokens / row.promptTokens) * 100 : 0;
+      console.log(
+        [
+          name.padEnd(16),
+          row.arm.padEnd(12),
+          String(row.sessions).padStart(8),
+          (row.requests / sessions).toFixed(2).padStart(8),
+          row.requestsPerTool.toFixed(2).padStart(9),
+          Math.round(row.promptTokens / sessions)
+            .toString()
+            .padStart(10),
+          Math.round(row.completionTokens / sessions)
+            .toString()
+            .padStart(10),
+          `${cacheRate.toFixed(1)}%`.padStart(6),
+          (row.costCny === null
+            ? "n/a"
+            : `¥${(row.costCny / sessions).toFixed(3)}${row.assumedPricingRequests > 0 ? "*" : ""}`
+          ).padStart(9),
+          `${row.truncatedReads}/${row.readCalls}`.padStart(9),
+        ].join("  "),
+      );
+    }
+  }
+  console.log(
+    "\n（cost 按 ~/.haji/pricing.json / 内置单价计，峰时价；* 表示部分请求的单价借用同名前缀模型。" +
+      "cache% 为 0 说明 provider 没上报缓存命中，多出来的上下文按全价计。）",
+  );
 }
 
-main();
+await main();

@@ -22,6 +22,7 @@ export const EXPERIMENT_NAMES = [
   "subagent_batch",
   "tool_batching",
   "scope_discipline",
+  "read_budget",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -61,6 +62,14 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     arms: ["baseline", "converge"],
     control: "baseline",
     defaultValue: "baseline",
+  },
+  // read 的输出预算：shared=总量 8k 按文件数平分（旧行为）；per_file=单文件 16k、总量 32k；
+  // batch_only=只修「批量读多个文件时按文件数平分」（单文件维持 8k/200 行）。
+  // 实测 per_file 墙钟无改善且任务 7 质量退化；batch_only 墙钟中性、请求/费用 −9%、质量更好，采纳为默认。
+  read_budget: {
+    arms: ["shared", "per_file", "batch_only"],
+    control: "shared",
+    defaultValue: "batch_only",
   },
 };
 

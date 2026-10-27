@@ -139,22 +139,36 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - A/B：`experiments.ts`，分配单位是本次进程的 trace session id（同进程内稳定）。
   `HAJI_AB=1` 按 `sha256(salt:unitId:name)` 五五分流；`HAJI_EXPERIMENTS="name=arm"` 或
   `all=control` 强制；不设时用推荐默认 arm。`HAJI_MAX_PARALLEL_TOOLS`（1–8）覆盖并行上限。
-- 观测：trace 写 `experiment_assignment` / `tool_batch` / `subagent_launch` / `subagent_result`；
-  `pnpm ab:report` 按 arm 汇总批次数、并行率、平均批大小、节省时间、子代理耗时/token/工具数，
-  以及「调用效率」表（`turns` / `calls` / `calls-per-turn` / `dupReads` / `batchParam`）。
+- 观测：trace 写 `experiment_assignment` / `tool_batch` / `subagent_launch` / `subagent_result` /
+  `llm_call`（含 usage）；`pnpm ab:report` 按 arm 汇总批次数、并行率、平均批大小、节省时间、
+  子代理耗时/token/工具数，「调用效率」表（`turns` / `calls` / `calls-per-turn` / `dupReads` /
+  `batchParam`），以及「请求与成本」表（`requests` / `req÷tool` / `ptok` / `ctok` / `cache%` /
+  `cost` / `readTrunc`）。指标口径只在 `scripts/ab-metrics.mjs` 一处实现，两个脚本共用。
+- **调用数 ≠ 请求数**：一次请求可并行发多个工具调用，成本跟的是「请求数 × 上下文 token」。
+  `tool_batching` 实测调用 −24%、请求只有 −12%、费用 −12%；结论一律以请求/token/费用为准，
+  不要拿调用数当成本代理。
 - 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
 - **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）
   一次调用覆盖多个目标；`baseline` 组不暴露也不接受 `queries`/`patterns`（构造函数
-  `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、墙钟 −11%，
-  并行率反而下降——**批量参数的收益远大于并行批**。
+  `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、模型请求 −12%、
+  费用 −12%、墙钟 −11%，并行率反而下降——**批量参数的收益远大于并行批**。
 - **范围收敛（scope_discipline，实测失败，默认 baseline）**：曾要求「用户原词优先、连续两次
   未命中禁止换同义词、先 global.patterns 定位文件再一次读完目标区块」，并由 `read-tool` 用
   `read-ranges.ts` 记账，同文件重复读重叠 ≥50%、跨度 ≥40 行时提示改走 `nextStartLine`。
-  11 任务配对实测：调用 **+38%**（106→146）、grep +44%、global +91%、墙钟 +14%，8/11 任务更差；
+  11 任务配对实测：调用 **+38%**（106→146）、请求 +19%、prompt token **+42%**、费用 +38%、
+  grep +44%、global +91%、墙钟 +14%，按请求数 2 胜 / 7 负 / 2 平；
   叠读提示实际只触发 1 次（叠读本身很罕见）。结论：**这类"先定位再搜"的提示会把模型推向更多
   枚举**，默认回退 `baseline`，代码保留供后续更窄的变体（例如只在无命中时介入）实验。
   注意：trace 只存请求参数、不存实际返回区间，按参数估算的叠读率会虚高，别据此下结论。
+- **read 输出预算（read_budget，实测失败，默认 shared）**：`shared` 是总量 8k 按文件数平分
+  （单文件 7.75k、4 文件 1.9k/个），`per_file` 是单文件 16k、总量 32k、默认 400 行。
+  66 次配对实测：截断 −25%，但墙钟 −3.5%（中位 +19%），任务 7 三次全部丢关键结论。
+  结论：**截断不是墙钟主因**，更大的上下文抵消了翻页收益；默认回退 `shared`。
+  更窄的 `batch_only`（批量读每文件 8k、总量 32k；单文件维持 8k/200 行）已实测：
+  墙钟中性（−2.8%，6 胜 5 负），但请求 −9.8%、token −8.1%、费用 −8.9%，
+  任务 7 的结论覆盖从 1–2/3 提升到 3/3；唯一回归是任务 3（多文件中等体量，+14.7s）。
+  结论：**修"平分"有效，放大单文件无效**；默认值已切到 `batch_only`（`shared` 为对照组）。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
@@ -221,6 +235,23 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   不提供二级折叠；`/output` 仍可看最近一批工具全文。
 - 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
   ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
+
+## 选区与复制（行号必须与屏幕逐行一致）
+
+- `getSelectionLayout()`（terminal-input.ts）是**复制与拖选唯一的坐标源**：`sealedSegments`
+  逐段取 `getSegmentLayout()`，尾部取 `layoutAnsiDocument(chatContent)`，再
+  `concatAnsiLayouts` 拼成整串。这些布局的**行数/行序必须等于本帧真实渲染的行**
+  （封口区来自 `getSegmentRows()`，尾部来自 `wrapAnsi()`），否则屏幕行索引换成文档偏移时
+  整体错位——复制出来的是选中位置**上方**的内容（实测每错一行就早一行）。
+- **图片段**曾经踩过：旧实现只拿说明行拼文档，再额外补一行「光标行」；而渲染行数由
+  `fitImageCells` 按宽度折算。结果每张内联图让后续所有行**多偏移一行**，11 张图 ≈ 复制早
+  11 行（选中「未完成的项」带出上面表格）。现在与块段同一口径：`renderImageSegmentRows()`
+  的行集 `join("\n")` 后直接 `layoutAnsiDocument`，说明行同样截到聊天区宽度。
+- `concatAnsiLayouts` 的契约是「段与段在屏幕上必然另起一行」：除最后一段外丢掉段末光标行，
+  段文本不以 `\n` 结尾时补一个换行。**新增段类型时不要自己手搓 rows/offset**，走
+  `layoutAnsiDocument(可见行)` 这一条路，缓存键仍交给 `segmentCacheKey`。
+- 测试：`packages/cli/test/inline-image.test.mjs`（图片段布局与屏幕逐行对齐、拖选复制）、
+  `terminal-layout.test.mjs`（layout vs wrap、拼接等价）。
 
 ## write/edit 完成块的红绿 diff
 

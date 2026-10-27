@@ -13,6 +13,9 @@ import { ReadRangeTracker } from "./read-ranges.js";
 import { parseIntegerOption } from "./search-filter.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
 
+/** read 的输出预算档位（A/B: read_budget）。 */
+export type ReadBudgetMode = "shared" | "per_file" | "batch_only";
+
 interface ReadRequest {
   path: string;
   startLine?: number;
@@ -24,10 +27,19 @@ interface ReadRequest {
 }
 
 const DEFAULT_LINE_LIMIT = 200;
+/** per_file 档的默认行数上限：单文件 16k 字符通常能装下 400 行短行，行数上限不跟着放就白给了额度。 */
+const PER_FILE_LINE_LIMIT = 400;
 const MAX_LINE_LIMIT = 1_000;
 const MAX_CONTEXT_LINES = 100;
 const MAX_BATCH_FILES = 10;
-const MAX_OUTPUT_LENGTH = 8_000;
+/** 现状：单次调用总量 8k，按文件数平分（读得越多每个文件拿到的越少）。 */
+const SHARED_OUTPUT_BUDGET = 8_000;
+/** per_file 档：单文件额度与单次调用总量，不再按文件数平分到 8k。 */
+const PER_FILE_OUTPUT_BUDGET = 16_000;
+const TOTAL_OUTPUT_BUDGET = 32_000;
+/** batch_only 档：只修「批量读多个文件时按文件数平分」，单文件读维持 shared 行为。 */
+const BATCH_ONLY_PER_FILE_BUDGET = 8_000;
+const BATCH_ONLY_TOTAL_BUDGET = 32_000;
 const MAX_RENDERED_LINE_LENGTH = 1_000;
 /** 读取图片时的单张体积上限，与 /image 命令保持一致。 */
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -40,7 +52,7 @@ const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze(
   ".bmp": "image/bmp",
 });
 
-function parseReadRequest(value: Record<string, unknown>): ReadRequest {
+function parseReadRequest(value: Record<string, unknown>, defaultLimit: number): ReadRequest {
   if (typeof value.path !== "string" || !value.path.trim() || value.path.length > 1_024) {
     throw new Error("path 必须是长度为 1-1024 的非空字符串。");
   }
@@ -69,14 +81,14 @@ function parseReadRequest(value: Record<string, unknown>): ReadRequest {
     path: value.path,
     startLine,
     endLine,
-    limit: parseIntegerOption(value.limit, "limit", DEFAULT_LINE_LIMIT, 1, MAX_LINE_LIMIT),
+    limit: parseIntegerOption(value.limit, "limit", defaultLimit, 1, MAX_LINE_LIMIT),
     aroundLine,
     contextLines: parseIntegerOption(value.contextLines, "contextLines", 20, 0, MAX_CONTEXT_LINES),
     lineNumbers: value.lineNumbers !== false,
   };
 }
 
-function parseRequests(args: Record<string, unknown>): ReadRequest[] {
+function parseRequests(args: Record<string, unknown>, defaultLimit: number): ReadRequest[] {
   if (args.paths !== undefined) {
     if (args.path !== undefined) throw new Error("path 与 paths 不能同时使用。");
     if (
@@ -89,10 +101,10 @@ function parseRequests(args: Record<string, unknown>): ReadRequest[] {
     return args.paths.map((item, index) => {
       if (!item || typeof item !== "object" || Array.isArray(item))
         throw new Error(`paths[${index}] 必须是对象。`);
-      return parseReadRequest(item as Record<string, unknown>);
+      return parseReadRequest(item as Record<string, unknown>, defaultLimit);
     });
   }
-  return [parseReadRequest(args)];
+  return [parseReadRequest(args, defaultLimit)];
 }
 
 function throwIfAborted(context?: ToolExecutionContext): void {
@@ -198,8 +210,26 @@ export class ReadFileTool implements BaseTool {
   /** 叠读提示（A/B: scope_discipline）；关闭时不记账也不提示。 */
   private readonly tracker?: ReadRangeTracker;
 
-  public constructor(options: { overlapHint?: boolean } = {}) {
+  /** 输出预算档位（A/B: read_budget）。 */
+  private readonly budgetMode: ReadBudgetMode;
+
+  /** 未显式传 limit 时的默认行数上限。 */
+  private readonly defaultLineLimit: number;
+
+  public constructor(options: { overlapHint?: boolean; readBudget?: ReadBudgetMode } = {}) {
     if (options.overlapHint !== false) this.tracker = new ReadRangeTracker();
+    this.budgetMode = options.readBudget ?? "shared";
+    this.defaultLineLimit =
+      this.budgetMode === "per_file" ? PER_FILE_LINE_LIMIT : DEFAULT_LINE_LIMIT;
+    if (this.budgetMode === "per_file") {
+      const properties = this.definition.function.parameters.properties as Record<
+        string,
+        { description?: string }
+      >;
+      if (properties.limit) {
+        properties.limit.description = `最多读取行数，默认 ${PER_FILE_LINE_LIMIT}，最大 ${MAX_LINE_LIMIT}。`;
+      }
+    }
   }
 
   public readonly definition: ToolDefinition = {
@@ -255,13 +285,27 @@ export class ReadFileTool implements BaseTool {
   ): Promise<string | ToolOutput> {
     let requests: ReadRequest[];
     try {
-      requests = parseRequests(args);
+      requests = parseRequests(args, this.defaultLineLimit);
     } catch (error) {
       return `错误: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (context?.abortSignal?.aborted) return "[文件读取已中止]";
 
-    const perFileBudget = Math.max(700, Math.floor((MAX_OUTPUT_LENGTH - 250) / requests.length));
+    // batch_only 只对「一次读多个文件」生效，单文件读保持 shared 的行为。
+    const batchOnly = this.budgetMode === "batch_only" && requests.length > 1;
+    const totalBudget =
+      this.budgetMode === "per_file"
+        ? TOTAL_OUTPUT_BUDGET
+        : batchOnly
+          ? BATCH_ONLY_TOTAL_BUDGET
+          : SHARED_OUTPUT_BUDGET;
+    // shared：总量按文件数平分（现状）；其余两档每个文件有独立额度，只受总量封顶。
+    const perFileBudget =
+      this.budgetMode === "per_file"
+        ? Math.min(PER_FILE_OUTPUT_BUDGET, Math.floor(totalBudget / requests.length))
+        : batchOnly
+          ? Math.min(BATCH_ONLY_PER_FILE_BUDGET, Math.floor(totalBudget / requests.length))
+          : Math.max(700, Math.floor((SHARED_OUTPUT_BUDGET - 250) / requests.length));
     const blocks: string[] = [];
     const images: ToolImage[] = [];
     for (const request of requests) {
@@ -285,7 +329,7 @@ export class ReadFileTool implements BaseTool {
         ? result
         : { output: typeof result === "string" ? result : result.output, images };
     if (blocks.length === 1) return withImages(blocks[0]);
-    const bounded = takeWholeRecords(blocks, MAX_OUTPUT_LENGTH - 180, "\n\n");
+    const bounded = takeWholeRecords(blocks, totalBudget - 180, "\n\n");
     const header = bounded.truncated
       ? `[批量文件读取结果 - 共 ${blocks.length} 个请求，本次返回 ${bounded.count} 个；其余请求请拆分重试]`
       : `[批量文件读取结果 - 共 ${blocks.length} 个请求]`;

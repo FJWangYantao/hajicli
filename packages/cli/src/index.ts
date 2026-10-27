@@ -441,6 +441,7 @@ async function main() {
   const batchParams = experiments.is("tool_batching", "batch_first");
   /** A/B：范围收敛（搜索纪律 + 叠读提示）。 */
   const scopeDiscipline = experiments.is("scope_discipline", "converge");
+  const readBudgetArm = experiments.arm("read_budget");
   /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
   const recordSubagentOutcome = (agent: {
     id: string;
@@ -1025,7 +1026,11 @@ async function main() {
   const verifyAgentTool = new VerifyAgentTool((input) => verifyAgent(input));
   const tools: BaseTool[] = [
     new BashTool(),
-    new ReadFileTool({ overlapHint: scopeDiscipline }),
+    new ReadFileTool({
+      overlapHint: scopeDiscipline,
+      readBudget:
+        readBudgetArm === "per_file" || readBudgetArm === "batch_only" ? readBudgetArm : "shared",
+    }),
     new WriteFileTool(),
     new EditFileTool(),
     new GlobalFindFilesTool({ batchParams }),

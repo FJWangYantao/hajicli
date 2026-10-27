@@ -7,13 +7,20 @@
  *   node scripts/ab-extract.mjs --experiment scope_discipline --json > out.json
  *   node scripts/ab-extract.mjs --experiment tool_batching --since A --until B   # 只看某一轮
  *
- * 与 `pnpm ab:report` 的区别：report 只做 arm 级聚合，这里保留每个会话的原始计数，
- * 方便事后做配对分析、复核结论，或者换一种聚合口径。
+ * 指标口径见 `scripts/ab-metrics.mjs`：除了工具调用，还统计模型请求数、prompt/completion
+ * token、缓存命中、费用与 read 截断次数——调用数下降不代表请求数同比例下降。
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  addSession,
+  averageTotals,
+  createPricingResolver,
+  emptyTotals,
+  sessionMetrics,
+} from "./ab-metrics.mjs";
 
 function parseArgs(argv) {
   const options = {
@@ -101,53 +108,9 @@ function readMetaDurations(dirs) {
   return durations;
 }
 
-function sessionMetrics(events) {
-  const toolCounts = {};
-  let redundantReads = 0;
-  let batchParamCalls = 0;
-  const seenReads = new Set();
-  let turns = 0;
-  let subagents = 0;
-  for (const event of events) {
-    if (event.type === "user_input") {
-      turns += 1;
-      continue;
-    }
-    if (event.type !== "tool_execution") continue;
-    const name = String(event.data?.name || "");
-    toolCounts[name] = (toolCounts[name] || 0) + 1;
-    if (name === "subagent") subagents += 1;
-    const args = event.data?.arguments;
-    if (name === "read" && args && typeof args === "object") {
-      const batch = Array.isArray(args.paths);
-      if (batch) batchParamCalls += 1;
-      for (const request of batch ? args.paths : [args]) {
-        if (!request) continue;
-        const key =
-          typeof request === "string"
-            ? request
-            : [
-                request.path ?? "",
-                request.startLine ?? "",
-                request.endLine ?? "",
-                request.limit ?? "",
-                request.aroundLine ?? "",
-              ].join("|");
-        if (seenReads.has(key)) redundantReads += 1;
-        else seenReads.add(key);
-      }
-    } else if (name === "grep" && Array.isArray(args?.queries)) {
-      batchParamCalls += 1;
-    } else if (name === "global" && Array.isArray(args?.patterns)) {
-      batchParamCalls += 1;
-    }
-  }
-  const toolCalls = Object.values(toolCounts).reduce((sum, value) => sum + value, 0);
-  return { turns, toolCalls, toolCounts, redundantReads, batchParamCalls, subagents };
-}
-
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const resolvePricing = await createPricingResolver();
   const durations = readMetaDurations(options.dirs);
   const sessions = [];
   const seen = new Set();
@@ -175,7 +138,7 @@ function main() {
       seen.add(unitId);
 
       const input = events.find((event) => event.type === "user_input");
-      const metrics = sessionMetrics(events);
+      const metrics = sessionMetrics(events, { resolvePricing });
       sessions.push({
         unitId,
         timestamp: assignment.timestamp,
@@ -192,31 +155,10 @@ function main() {
   const byArm = {};
   for (const session of sessions) {
     const arm = session.arm ?? "(none)";
-    if (!byArm[arm]) {
-      byArm[arm] = {
-        sessions: 0,
-        wallMs: 0,
-        toolCalls: 0,
-        redundantReads: 0,
-        batchParamCalls: 0,
-        subagents: 0,
-      };
-    }
-    const bucket = byArm[arm];
-    bucket.sessions += 1;
-    bucket.wallMs += session.wallMs;
-    bucket.toolCalls += session.toolCalls;
-    bucket.redundantReads += session.redundantReads;
-    bucket.batchParamCalls += session.batchParamCalls;
-    bucket.subagents += session.subagents;
+    if (!byArm[arm]) byArm[arm] = emptyTotals();
+    addSession(byArm[arm], session);
   }
-  for (const bucket of Object.values(byArm)) {
-    const n = bucket.sessions || 1;
-    bucket.avgWallMs = bucket.wallMs / n;
-    bucket.avgToolCalls = bucket.toolCalls / n;
-    bucket.avgRedundantReads = bucket.redundantReads / n;
-    bucket.avgBatchParamCalls = bucket.batchParamCalls / n;
-  }
+  for (const [arm, totals] of Object.entries(byArm)) byArm[arm] = averageTotals(totals);
 
   const report = {
     experiment: options.experiment ?? null,
@@ -232,11 +174,14 @@ function main() {
   console.log(`实验=${report.experiment} 会话=${sessions.length}`);
   for (const [arm, bucket] of Object.entries(byArm)) {
     console.log(
-      `${arm.padEnd(12)} n=${bucket.sessions} calls=${bucket.avgToolCalls.toFixed(2)} ` +
+      `${arm.padEnd(12)} n=${bucket.sessions} ` +
+        `req=${bucket.avgRequests.toFixed(2)} calls=${bucket.avgToolCalls.toFixed(2)} ` +
+        `ptok=${(bucket.avgPromptTokens / 1000).toFixed(0)}k ` +
+        `cost=${bucket.avgCostCny === null ? "n/a" : `¥${bucket.avgCostCny.toFixed(3)}`} ` +
         `dup=${bucket.avgRedundantReads.toFixed(2)} batch=${bucket.avgBatchParamCalls.toFixed(2)} ` +
         `wall=${(bucket.avgWallMs / 1000).toFixed(1)}s sub=${bucket.subagents}`,
     );
   }
 }
 
-main();
+await main();

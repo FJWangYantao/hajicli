@@ -7,23 +7,57 @@
 
 | 日期 | 实验 | 结论 | 报告 |
 | --- | --- | --- | --- |
-| 2026-10-27 | `tool_batching`（批量参数） | **采纳**：调用 −24%、墙钟 −11% | [报告](2026-10-27-tool-batching.md) |
-| 2026-10-27 | `scope_discipline`（范围收敛提示） | **否定**：调用 +38%，默认回退 `baseline` | [报告](2026-10-27-scope-discipline.md) |
+| 2026-10-27 | `tool_batching`（批量参数） | **采纳**：调用 −24%、请求 −12%、费用 −12% | [报告](2026-10-27-tool-batching.md) |
+| 2026-10-27 | `scope_discipline`（范围收敛提示） | **否定**：调用 +38%、token +42%，默认回退 `baseline` | [报告](2026-10-27-scope-discipline.md) |
+| 2026-10-27 | `read_budget` = `per_file`（放大全部输出） | **否定**：墙钟 −3.5% 但中位 +19%，任务 7 质量退化 | [报告](2026-10-27-read-budget.md) |
+| 2026-10-27 | `read_budget` = `batch_only`（只修批量平分） | **采纳（默认）**：墙钟中性（−2.8%），请求 −9.8%、费用 −8.9%、任务 7 质量 3/3 | [报告](2026-10-27-batch-only.md) |
+
+## 指标口径
+
+`scripts/ab-metrics.mjs` 是唯一口径来源，`ab-report` 与 `ab-extract` 共用：
+
+| 字段 | 含义 |
+| --- | --- |
+| `requests` | 模型请求数（`llm_call` 事件数，含子代理与标题/压缩等杂活） |
+| `utilityRequests` | 其中没有 system 消息的杂活请求（标题、压缩、distill） |
+| `toolCalls` | 工具调用数；一次请求可以并行发多个 |
+| `requestsPerTool` | 请求 ÷ 工具调用，越小说明合并得越狠 |
+| `promptTokens` / `completionTokens` | 按 `usage` 累加 |
+| `cachedPromptTokens` | 命中缓存的输入 token（provider 不上报时为 0） |
+| `costCny` | 按 `~/.haji/pricing.json` > 内置单价计；缺价时为 `null`，不猜 |
+| `readCalls` / `truncatedReads` | read 次数 / 回执里带 `nextStartLine=` 的次数 |
+
+**不要再用工具调用数代替成本**：`tool_batching` 那轮调用 −24%，但请求只 −12%，
+因为合并让一个请求里塞进了更多调用。真正跟钱走的是「请求数 × 上下文 token」。
 
 ## 已确认的事实
 
 1. **并行批收益接近 0**（本地只读毫秒级），调用合并才是主变量；并行上限保持 5。
 2. **能力可用性 >> 提示词措辞**：`grep.queries` / `global.patterns` 可用后调用数直接下降，
    同一批任务里仅改提示词只有 −1%。
-3. **提示词"纪律"类改动可能反噬**：`scope_discipline` 让 `global` 调用翻倍。
-4. **轮间方差约 ±30%**：同一配置两次测得 12.64 / 9.64 次调用，小于 10% 的差异不要下结论。
+3. **提示词"纪律"类改动可能反噬**：`scope_discipline` 让 `global` 翻倍、token +42%。
+4. **跨轮不能直接比**：`tool_batching` 轮跑在 `control/static/3/write/serial`，
+   `scope_discipline` 轮跑在默认值 `batch/dynamic/5/role/batched`。
+   两轮 baseline 的 `12.64 → 9.64` 混着四个开关的差异，**不是随机波动**；
+   同一任务多次运行本身也波动很大（任务 7：10–26 次请求），单任务单次结果不要引用。
+5. **read 截断很普遍，但放大额度不等于更快**：592 次 read 里 454 次（77%）被 8k 字符上限截断，
+   74% 的 read 请求是 `startLine > 1` 的续读，47% 的源码文件超过 8k；然而 `per_file`
+   （单文件 16k、总量 32k、400 行）只把截断降了 25%，墙钟 −3.5%、中位墙钟 +19%，
+   任务 7 还出现结论缺失。**截断不是墙钟的主要来源**，更大的上下文会吃掉翻页省下的时间。
+   真正的坏设计是「批量读多个文件时按文件数平分额度」：只修这一处的 `batch_only`
+   （每文件 8k、总量 32k，单文件不变）墙钟中性但请求 −9.8%、费用 −8.9%、任务 7 质量 3/3。
+6. **provider 未上报缓存命中**（2200 次请求 `cache_read_input_tokens` 全为 0），
+   放大工具输出会按全价推高后续每次请求，评估 read 预算时必须同时看 token 与费用。
 
 ## 工具
 
 ```bash
-pnpm ab:report                                   # arm 级聚合（并行率/子代理/调用效率）
-node scripts/ab-extract.mjs --experiment <name> --since <ISO> [--json]
+pnpm ab:report                                   # arm 级聚合（并行/子代理/调用效率/请求与成本）
+pnpm ab:extract --experiment <name> --since <ISO> [--until <ISO>] [--json]
 ```
 
-`ab-extract` 输出每个会话的 `toolCalls` / `toolCounts` / `redundantReads` /
-`batchParamCalls` / `wallMs`，用于配对分析和复核。
+`ab-extract` 输出每个会话的 `requests` / `toolCalls` / `toolCounts` / `promptTokens` /
+`completionTokens` / `cachedPromptTokens` / `costCny` / `readCalls` / `truncatedReads` /
+`redundantReads` / `batchParamCalls` / `wallMs`，用于配对分析和复核。
+
+`--until` 在混跑过多轮实验时必须加：`all=default` 的轮次会把其他实验也记成默认 arm。

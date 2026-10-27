@@ -5,6 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { TerminalUI } from "../dist/terminal-input.js";
+import { cellAtColumn, wrapAnsi } from "../dist/terminal-text.js";
+
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const stripAnsi = (value) => value.replace(ANSI_RE, "");
 
 /** 造一个头部合法的 PNG：内联链路只读签名与尺寸，不校验像素。 */
 function fakePng(width, height) {
@@ -286,6 +290,56 @@ test("同步层：滚动微调节流，收尾帧把最终位置对齐", () => {
     assert.equal(ui.inlineImageNudgePending, false);
     stopScheduledRender(ui);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("内联图片段不改变选区行号：拖选文字复制到的就是选中的那几行", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-inline-ui-"));
+  const descriptor = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  try {
+    const pngPath = path.join(dir, "shot.png");
+    fs.writeFileSync(pngPath, fakePng(160, 90));
+    Object.defineProperty(process.stdout, "columns", { configurable: true, value: 61 });
+    const ui = createTerminalUI();
+    const width = 60;
+
+    ui.writeChat("先来一段正文\n");
+    withEnv({ HAJI_IMAGE_PROTOCOL: "kitty" }, () => ui.appendInlineImage(pngPath));
+    ui.writeChat("图一之后的正文\n");
+    withEnv({ HAJI_IMAGE_PROTOCOL: "kitty" }, () => ui.appendInlineImage(pngPath));
+    const tail = "| 12s | 表格行 |\n## 未完成的项\n- 本机没有 ASR 模型\n";
+    ui.writeChat(tail);
+
+    const sealedRows = ui.getSealedRows(width).map(stripAnsi);
+    const layout = ui.getSelectionLayout();
+    // 图片段的占位行同样占行：布局必须逐行对上屏幕行，多一行就会让后续选区整体上移。
+    for (const [index, row] of sealedRows.entries()) {
+      assert.equal(layout.rows[index]?.plain, row, `第 ${index} 行应与屏幕一致`);
+    }
+    const tailRows = wrapAnsi(tail, width).slice(0, -1).map(stripAnsi);
+    for (const [index, row] of tailRows.entries()) {
+      assert.equal(
+        layout.rows[sealedRows.length + index]?.plain,
+        row,
+        `尾部第 ${index} 行应与屏幕一致`,
+      );
+    }
+
+    // 从「## 未完成的项」拖到最后一行：复制出的就是这三行原文，不带上方的表格。
+    const headingRow = sealedRows.length + 1;
+    const lastRow = sealedRows.length + tailRows.length - 1;
+    const start = cellAtColumn(layout.rows[headingRow], 1);
+    const end = cellAtColumn(layout.rows[lastRow], width, true);
+    assert.ok(start && end, "选区端点应落在正文上");
+    ui.textSelection.begin(start);
+    ui.textSelection.finish(end);
+    assert.equal(ui.getSelectedChatText(), "## 未完成的项\n- 本机没有 ASR 模型");
+
+    stopScheduledRender(ui);
+  } finally {
+    if (descriptor) Object.defineProperty(process.stdout, "columns", descriptor);
+    else delete process.stdout.columns;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

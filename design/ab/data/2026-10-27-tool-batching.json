@@ -18,13 +18,25 @@
       "prompt": "只读调研，不要修改任何文件：请读取 package.json、AGENTS.md、README.md、packages/cli/src/tool-batch.ts 四个文件，各用一句话总结，最后说明它们的共同点。",
       "wallMs": 8807,
       "turns": 1,
+      "requests": 4,
+      "mainRequests": 3,
+      "utilityRequests": 1,
       "toolCalls": 2,
       "toolCounts": {
         "read": 2
       },
+      "requestsPerTool": 2,
+      "promptTokens": 23951,
+      "completionTokens": 987,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0083697,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 2,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 2,
+      "truncatedReads": 1
     },
     {
       "unitId": "a2ed36f8-1543-412f-af9c-69d410e5f4bc",
@@ -41,14 +53,26 @@
       "prompt": "只读调研，不要修改任何文件：在 packages/cli/src 下用 grep 搜索 parallel_prompt、tool_batching、MAX_PARALLEL_READ_ONLY_TOOLS 这三个标识符，分别说明出现位置和用途。",
       "wallMs": 14848,
       "turns": 1,
+      "requests": 6,
+      "mainRequests": 5,
+      "utilityRequests": 1,
       "toolCalls": 9,
       "toolCounts": {
         "grep": 2,
         "read": 7
       },
+      "requestsPerTool": 0.6666666666666666,
+      "promptTokens": 50245,
+      "completionTokens": 2161,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0176667,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 7,
+      "truncatedReads": 6
     },
     {
       "unitId": "359a939f-cc40-4943-8646-5ac12f1ad96b",
@@ -65,14 +89,26 @@
       "prompt": "只读调研，不要修改任何文件：用 global 查找名字里包含 turn-runner、parallel-policy、experiments 的文件，然后读取其中一个说明其职责。",
       "wallMs": 7348,
       "turns": 1,
+      "requests": 4,
+      "mainRequests": 3,
+      "utilityRequests": 1,
       "toolCalls": 4,
       "toolCounts": {
         "global": 3,
         "read": 1
       },
+      "requestsPerTool": 1,
+      "promptTokens": 22545,
+      "completionTokens": 830,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0077595,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 1,
+      "truncatedReads": 0
     },
     {
       "unitId": "ae99c0c7-2372-4bac-a3b9-e189030674e6",
@@ -89,6 +125,9 @@
       "prompt": "只读调研，不要修改任何文件：找出 packages/cli/src 中与「会话保存」相关的实现，读取相关文件后说明保存链路（入口、落盘、flush）。",
       "wallMs": 51428,
       "turns": 1,
+      "requests": 17,
+      "mainRequests": 16,
+      "utilityRequests": 1,
       "toolCalls": 27,
       "toolCounts": {
         "bash": 1,
@@ -96,9 +135,18 @@
         "read": 18,
         "global": 2
       },
+      "requestsPerTool": 0.6296296296296297,
+      "promptTokens": 302069,
+      "completionTokens": 5818,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0976023,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 3,
       "batchParamCalls": 2,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 18,
+      "truncatedReads": 14
     },
     {
       "unitId": "39e4c90d-66e7-4de7-a1e0-58ffac4ff781",
@@ -115,6 +163,9 @@
       "prompt": "只读调研，不要修改任何文件：找出 packages/cli/test 下覆盖并行工具批、A/B 实验、子代理的三个测试文件，各用一句话说明测试内容。",
       "wallMs": 47438,
       "turns": 1,
+      "requests": 22,
+      "mainRequests": 21,
+      "utilityRequests": 1,
       "toolCalls": 19,
       "toolCounts": {
         "bash": 2,
@@ -124,9 +175,18 @@
         "read": 4,
         "grep": 6
       },
+      "requestsPerTool": 1.1578947368421053,
+      "promptTokens": 246720,
+      "completionTokens": 3993,
+      "cachedPromptTokens": 0,
+      "costCny": 0.07880759999999999,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 1,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 4,
+      "truncatedReads": 3
     },
     {
       "unitId": "696aebb3-43eb-43a9-86e4-1dcebba71d5a",
@@ -143,15 +203,27 @@
       "prompt": "只读调研，不要修改任何文件：追踪 createToolCallBatches 的定义与所有调用点，说明它如何被 turn-runner 使用。",
       "wallMs": 41390,
       "turns": 1,
+      "requests": 14,
+      "mainRequests": 13,
+      "utilityRequests": 1,
       "toolCalls": 17,
       "toolCounts": {
         "grep": 7,
         "read": 8,
         "bash": 2
       },
+      "requestsPerTool": 0.8235294117647058,
+      "promptTokens": 193513,
+      "completionTokens": 4132,
+      "cachedPromptTokens": 0,
+      "costCny": 0.06301230000000001,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 8,
+      "truncatedReads": 6
     },
     {
       "unitId": "a8a0629b-2e32-4a37-8ce2-0c4179fb7cf9",
@@ -168,6 +240,9 @@
       "prompt": "只读调研，不要修改任何文件：梳理本仓库的构建与测试配置（根 package.json、tsconfig 相关文件），说明 pnpm run build 与 pnpm test 的执行链。",
       "wallMs": 39936,
       "turns": 1,
+      "requests": 15,
+      "mainRequests": 14,
+      "utilityRequests": 1,
       "toolCalls": 20,
       "toolCounts": {
         "global": 7,
@@ -175,9 +250,18 @@
         "read": 9,
         "grep": 2
       },
+      "requestsPerTool": 0.75,
+      "promptTokens": 159408,
+      "completionTokens": 4491,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0532116,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 3,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 9,
+      "truncatedReads": 4
     },
     {
       "unitId": "d7313b84-e237-4f93-bfff-8995fa3a675d",
@@ -194,6 +278,9 @@
       "prompt": "只读调研，不要修改任何文件：找出工具执行错误的分类与止损逻辑（重复失败、无操作编辑、并发写），说明触发条件。",
       "wallMs": 60361,
       "turns": 1,
+      "requests": 21,
+      "mainRequests": 20,
+      "utilityRequests": 1,
       "toolCalls": 28,
       "toolCounts": {
         "projectinfo": 1,
@@ -202,9 +289,18 @@
         "grep": 9,
         "read": 15
       },
+      "requestsPerTool": 0.75,
+      "promptTokens": 483573,
+      "completionTokens": 5622,
+      "cachedPromptTokens": 0,
+      "costCny": 0.15181830000000002,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 15,
+      "truncatedReads": 11
     },
     {
       "unitId": "2364161d-ca4e-4f6b-bab8-441ca781a593",
@@ -221,15 +317,27 @@
       "prompt": "只读调研，不要修改任何文件：阅读 packages/cli/src/experiments.ts 与 scripts/ab-report.mjs，说明一个实验从分配到报告的完整数据流。",
       "wallMs": 42279,
       "turns": 1,
+      "requests": 14,
+      "mainRequests": 13,
+      "utilityRequests": 1,
       "toolCalls": 20,
       "toolCounts": {
         "read": 10,
         "grep": 9,
         "bash": 1
       },
+      "requestsPerTool": 0.7,
+      "promptTokens": 199926,
+      "completionTokens": 4292,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0651282,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 10,
+      "truncatedReads": 8
     },
     {
       "unitId": "a31f546c-721e-4e5c-b51c-976e1417211a",
@@ -246,6 +354,9 @@
       "prompt": "只读调研，不要修改任何文件：列出 packages/core/src 下所有 *.ts 文件，并挑三个读取后说明它们各自负责什么。",
       "wallMs": 35715,
       "turns": 1,
+      "requests": 15,
+      "mainRequests": 14,
+      "utilityRequests": 1,
       "toolCalls": 22,
       "toolCounts": {
         "bash": 2,
@@ -253,9 +364,18 @@
         "read": 6,
         "grep": 7
       },
+      "requestsPerTool": 0.6818181818181818,
+      "promptTokens": 138114,
+      "completionTokens": 3744,
+      "cachedPromptTokens": 0,
+      "costCny": 0.045926999999999996,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 6,
+      "truncatedReads": 4
     },
     {
       "unitId": "6354c5f1-10a6-4578-94ca-4e0766c8d97e",
@@ -272,6 +392,9 @@
       "prompt": "必须使用 subagent 工具（role=research，maxToolCalls=6，timeoutMs=90000）完成只读调研：阅读 packages/cli/src/tool-batch.ts 与 packages/cli/src/parallel-policy.ts，总结并行判定逻辑。不要修改任何文件。",
       "wallMs": 53764,
       "turns": 1,
+      "requests": 17,
+      "mainRequests": 16,
+      "utilityRequests": 1,
       "toolCalls": 14,
       "toolCounts": {
         "bash": 2,
@@ -280,9 +403,18 @@
         "subagent": 2,
         "verifyagent": 1
       },
+      "requestsPerTool": 1.2142857142857142,
+      "promptTokens": 133665,
+      "completionTokens": 5835,
+      "cachedPromptTokens": 0,
+      "costCny": 0.04710150000000001,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 3,
       "batchParamCalls": 2,
-      "subagents": 2
+      "subagents": 2,
+      "readCalls": 8,
+      "truncatedReads": 5
     },
     {
       "unitId": "242237d2-fa42-46f4-b0cf-bfe76a5221d3",
@@ -299,13 +431,25 @@
       "prompt": "只读调研，不要修改任何文件：请读取 package.json、AGENTS.md、README.md、packages/cli/src/tool-batch.ts 四个文件，各用一句话总结，最后说明它们的共同点。",
       "wallMs": 8406,
       "turns": 1,
+      "requests": 4,
+      "mainRequests": 3,
+      "utilityRequests": 1,
       "toolCalls": 2,
       "toolCounts": {
         "read": 2
       },
+      "requestsPerTool": 2,
+      "promptTokens": 24835,
+      "completionTokens": 904,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0085353,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 2,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 2,
+      "truncatedReads": 1
     },
     {
       "unitId": "7d43f39a-ff0a-4b83-a2ea-7607f43f4aab",
@@ -322,14 +466,26 @@
       "prompt": "只读调研，不要修改任何文件：在 packages/cli/src 下用 grep 搜索 parallel_prompt、tool_batching、MAX_PARALLEL_READ_ONLY_TOOLS 这三个标识符，分别说明出现位置和用途。",
       "wallMs": 18341,
       "turns": 1,
+      "requests": 8,
+      "mainRequests": 7,
+      "utilityRequests": 1,
       "toolCalls": 8,
       "toolCounts": {
         "grep": 4,
         "read": 4
       },
+      "requestsPerTool": 1,
+      "promptTokens": 84854,
+      "completionTokens": 2175,
+      "cachedPromptTokens": 0,
+      "costCny": 0.028066200000000003,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 4,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 4,
+      "truncatedReads": 4
     },
     {
       "unitId": "c30e3738-62bc-4f6e-a4c1-28b3c49bc87c",
@@ -346,14 +502,26 @@
       "prompt": "只读调研，不要修改任何文件：用 global 查找名字里包含 turn-runner、parallel-policy、experiments 的文件，然后读取其中一个说明其职责。",
       "wallMs": 7064,
       "turns": 1,
+      "requests": 4,
+      "mainRequests": 3,
+      "utilityRequests": 1,
       "toolCalls": 2,
       "toolCounts": {
         "global": 1,
         "read": 1
       },
+      "requestsPerTool": 2,
+      "promptTokens": 23982,
+      "completionTokens": 710,
+      "cachedPromptTokens": 0,
+      "costCny": 0.008046600000000001,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 1,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 1,
+      "truncatedReads": 1
     },
     {
       "unitId": "002b65a9-8af8-442d-bb36-ad0c977d82d5",
@@ -370,6 +538,9 @@
       "prompt": "只读调研，不要修改任何文件：找出 packages/cli/src 中与「会话保存」相关的实现，读取相关文件后说明保存链路（入口、落盘、flush）。",
       "wallMs": 34783,
       "turns": 1,
+      "requests": 13,
+      "mainRequests": 12,
+      "utilityRequests": 1,
       "toolCalls": 18,
       "toolCounts": {
         "bash": 1,
@@ -378,9 +549,18 @@
         "grep": 5,
         "read": 6
       },
+      "requestsPerTool": 0.7222222222222222,
+      "promptTokens": 172916,
+      "completionTokens": 4112,
+      "cachedPromptTokens": 0,
+      "costCny": 0.056809200000000004,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 7,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 6,
+      "truncatedReads": 5
     },
     {
       "unitId": "4f3baf5a-d3db-4232-86bb-59e375a8ff2b",
@@ -397,6 +577,9 @@
       "prompt": "只读调研，不要修改任何文件：找出 packages/cli/test 下覆盖并行工具批、A/B 实验、子代理的三个测试文件，各用一句话说明测试内容。",
       "wallMs": 21275,
       "turns": 1,
+      "requests": 10,
+      "mainRequests": 9,
+      "utilityRequests": 1,
       "toolCalls": 9,
       "toolCounts": {
         "bash": 2,
@@ -405,9 +588,18 @@
         "read": 1,
         "grep": 1
       },
+      "requestsPerTool": 1.1111111111111112,
+      "promptTokens": 80910,
+      "completionTokens": 2002,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0266754,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 2,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 1,
+      "truncatedReads": 1
     },
     {
       "unitId": "839f827b-f562-4cb8-baf1-281326a695f8",
@@ -424,15 +616,27 @@
       "prompt": "只读调研，不要修改任何文件：追踪 createToolCallBatches 的定义与所有调用点，说明它如何被 turn-runner 使用。",
       "wallMs": 28267,
       "turns": 1,
+      "requests": 11,
+      "mainRequests": 10,
+      "utilityRequests": 1,
       "toolCalls": 15,
       "toolCounts": {
         "global": 1,
         "grep": 7,
         "read": 7
       },
+      "requestsPerTool": 0.7333333333333333,
+      "promptTokens": 154766,
+      "completionTokens": 2800,
+      "cachedPromptTokens": 0,
+      "costCny": 0.049789799999999995,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 0,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 7,
+      "truncatedReads": 6
     },
     {
       "unitId": "c45bd2af-27cf-4638-ba23-c840561d089a",
@@ -449,6 +653,9 @@
       "prompt": "只读调研，不要修改任何文件：梳理本仓库的构建与测试配置（根 package.json、tsconfig 相关文件），说明 pnpm run build 与 pnpm test 的执行链。",
       "wallMs": 45415,
       "turns": 1,
+      "requests": 16,
+      "mainRequests": 15,
+      "utilityRequests": 1,
       "toolCalls": 22,
       "toolCounts": {
         "projectinfo": 1,
@@ -457,9 +664,18 @@
         "bash": 2,
         "grep": 3
       },
+      "requestsPerTool": 0.7272727272727273,
+      "promptTokens": 206032,
+      "completionTokens": 4847,
+      "cachedPromptTokens": 0,
+      "costCny": 0.06762599999999999,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 8,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 9,
+      "truncatedReads": 2
     },
     {
       "unitId": "4bd6d80b-eb91-467e-9b49-089f73eeeb7d",
@@ -476,6 +692,9 @@
       "prompt": "只读调研，不要修改任何文件：找出工具执行错误的分类与止损逻辑（重复失败、无操作编辑、并发写），说明触发条件。",
       "wallMs": 77491,
       "turns": 1,
+      "requests": 26,
+      "mainRequests": 25,
+      "utilityRequests": 1,
       "toolCalls": 30,
       "toolCounts": {
         "bash": 1,
@@ -483,9 +702,18 @@
         "grep": 13,
         "read": 15
       },
+      "requestsPerTool": 0.8666666666666667,
+      "promptTokens": 590542,
+      "completionTokens": 7291,
+      "cachedPromptTokens": 0,
+      "costCny": 0.18591180000000002,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 0,
       "batchParamCalls": 13,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 15,
+      "truncatedReads": 12
     },
     {
       "unitId": "0ecc4557-2483-4c28-895c-8c6fcd6ab089",
@@ -502,6 +730,9 @@
       "prompt": "只读调研，不要修改任何文件：阅读 packages/cli/src/experiments.ts 与 scripts/ab-report.mjs，说明一个实验从分配到报告的完整数据流。",
       "wallMs": 31525,
       "turns": 1,
+      "requests": 13,
+      "mainRequests": 12,
+      "utilityRequests": 1,
       "toolCalls": 13,
       "toolCounts": {
         "bash": 1,
@@ -509,9 +740,18 @@
         "read": 7,
         "grep": 4
       },
+      "requestsPerTool": 1,
+      "promptTokens": 186585,
+      "completionTokens": 2811,
+      "cachedPromptTokens": 0,
+      "costCny": 0.05934869999999999,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 11,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 7,
+      "truncatedReads": 6
     },
     {
       "unitId": "af999909-381a-421b-9e49-47f2cd4c9640",
@@ -528,15 +768,27 @@
       "prompt": "只读调研，不要修改任何文件：列出 packages/core/src 下所有 *.ts 文件，并挑三个读取后说明它们各自负责什么。",
       "wallMs": 16717,
       "turns": 1,
+      "requests": 7,
+      "mainRequests": 6,
+      "utilityRequests": 1,
       "toolCalls": 5,
       "toolCounts": {
         "global": 2,
         "bash": 1,
         "read": 2
       },
+      "requestsPerTool": 1.4,
+      "promptTokens": 52534,
+      "completionTokens": 1647,
+      "cachedPromptTokens": 0,
+      "costCny": 0.0177366,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 1,
       "redundantReads": 0,
       "batchParamCalls": 2,
-      "subagents": 0
+      "subagents": 0,
+      "readCalls": 2,
+      "truncatedReads": 2
     },
     {
       "unitId": "54cc5c46-603b-4ae0-812e-dc7e11e35008",
@@ -553,6 +805,9 @@
       "prompt": "必须使用 subagent 工具（role=research，maxToolCalls=6，timeoutMs=90000）完成只读调研：阅读 packages/cli/src/tool-batch.ts 与 packages/cli/src/parallel-policy.ts，总结并行判定逻辑。不要修改任何文件。",
       "wallMs": 68713,
       "turns": 1,
+      "requests": 19,
+      "mainRequests": 18,
+      "utilityRequests": 1,
       "toolCalls": 15,
       "toolCounts": {
         "read": 9,
@@ -562,35 +817,86 @@
         "global": 1,
         "verifyagent": 1
       },
+      "requestsPerTool": 1.2666666666666666,
+      "promptTokens": 161581,
+      "completionTokens": 7878,
+      "cachedPromptTokens": 0,
+      "costCny": 0.05792790000000001,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 2,
       "redundantReads": 1,
       "batchParamCalls": 6,
-      "subagents": 2
+      "subagents": 2,
+      "readCalls": 9,
+      "truncatedReads": 7
     }
   ],
   "byArm": {
     "baseline": {
       "sessions": 11,
       "wallMs": 403314,
+      "turns": 11,
+      "requests": 149,
+      "utilityRequests": 11,
       "toolCalls": 182,
+      "promptTokens": 1953729,
+      "completionTokens": 41905,
+      "cachedPromptTokens": 0,
+      "costCny": 0.6364047,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 19,
       "redundantReads": 6,
       "batchParamCalls": 10,
       "subagents": 2,
+      "readCalls": 88,
+      "truncatedReads": 62,
       "avgWallMs": 36664.90909090909,
+      "avgTurns": 1,
+      "avgRequests": 13.545454545454545,
       "avgToolCalls": 16.545454545454547,
+      "avgRequestsPerTool": 0.8186813186813187,
+      "avgPromptTokens": 177611.72727272726,
+      "avgCompletionTokens": 3809.5454545454545,
+      "avgCachedPromptTokens": 0,
+      "avgCostCny": 0.05785497272727273,
       "avgRedundantReads": 0.5454545454545454,
-      "avgBatchParamCalls": 0.9090909090909091
+      "avgBatchParamCalls": 0.9090909090909091,
+      "avgReadCalls": 8,
+      "avgTruncatedReads": 5.636363636363637,
+      "truncatedRate": 0.7045454545454546
     },
     "batch_first": {
       "sessions": 11,
       "wallMs": 357997,
+      "turns": 11,
+      "requests": 131,
+      "utilityRequests": 11,
       "toolCalls": 139,
+      "promptTokens": 1739537,
+      "completionTokens": 37177,
+      "cachedPromptTokens": 0,
+      "costCny": 0.5664735000000001,
+      "unpricedRequests": 0,
+      "assumedPricingRequests": 16,
       "redundantReads": 1,
       "batchParamCalls": 56,
       "subagents": 2,
+      "readCalls": 63,
+      "truncatedReads": 47,
       "avgWallMs": 32545.18181818182,
+      "avgTurns": 1,
+      "avgRequests": 11.909090909090908,
       "avgToolCalls": 12.636363636363637,
+      "avgRequestsPerTool": 0.9424460431654677,
+      "avgPromptTokens": 158139.72727272726,
+      "avgCompletionTokens": 3379.7272727272725,
+      "avgCachedPromptTokens": 0,
+      "avgCostCny": 0.051497590909090916,
       "avgRedundantReads": 0.09090909090909091,
-      "avgBatchParamCalls": 5.090909090909091
+      "avgBatchParamCalls": 5.090909090909091,
+      "avgReadCalls": 5.7272727272727275,
+      "avgTruncatedReads": 4.2727272727272725,
+      "truncatedRate": 0.746031746031746
     }
   }
 }

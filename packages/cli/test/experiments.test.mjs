@@ -17,6 +17,7 @@ test("defaults use the recommended arms without randomization", () => {
   assert.equal(registry.arm("subagent_batch"), "batched");
   assert.equal(registry.arm("tool_batching"), "batch_first");
   assert.equal(registry.arm("scope_discipline"), "baseline");
+  assert.equal(registry.arm("read_budget"), "batch_only");
   for (const assignment of registry.all()) assert.equal(assignment.source, "default");
 });
 

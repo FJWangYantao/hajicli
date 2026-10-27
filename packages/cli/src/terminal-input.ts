@@ -1923,7 +1923,7 @@ export class TerminalUI {
         ? state.desc.caption
         : `${state.desc.caption}（此终端不支持内联贴图，/view 可整屏查看）`,
     );
-    const captionRow = `${SEQ.muted}${caption}${SEQ.reset}`;
+    const captionRow = truncateAnsiText(`${SEQ.muted}${caption}${SEQ.reset}`, width);
     if (state.desc.protocol !== "kitty" || !state.desc.png) {
       // 末尾的空串对齐 wrapAnsi 的「光标行」，由 getSegmentRows 统一切掉。
       return [captionRow, ""];
@@ -2025,29 +2025,12 @@ export class TerminalUI {
       return segment.layout;
     }
     if (segment.kind === "image") {
-      // 图片段没有可选正文：占位行在选区里就是空行，说明行的纯文本用于复制。
+      // 图片段必须与渲染用同一份行集建布局：占位行数由聊天区宽度折算，若按说明行
+      // 单独拼文档，占位行就得靠额外补的行来对齐——每张图会让后续所有行整体偏移
+      // 一行（复制出来的是选中位置之上的内容）。这里直接以「可见行」建文档，
+      // 说明行仍是唯一可选正文，占位行是空行。
       const rows = this.renderImageSegmentRows(segment, width);
-      const plainRows = rows.slice(0, -1);
-      const captionPlain = sanitizeTerminalText(segment.image?.desc.caption ?? "");
-      const layout: AnsiTextLayout = {
-        document: captionPlain,
-        rows: plainRows.map((ansi, index) => {
-          const isCaption = index === plainRows.length - 1 && ansi !== "";
-          const offset = isCaption ? captionPlain.length : 0;
-          return {
-            ansi,
-            plain: isCaption ? captionPlain : "",
-            startOffset: isCaption ? 0 : offset,
-            endOffset: offset,
-          };
-        }),
-      };
-      layout.rows.push({
-        ansi: "",
-        plain: "",
-        startOffset: captionPlain.length,
-        endOffset: captionPlain.length,
-      });
+      const layout = layoutAnsiDocument(rows.join("\n"), width);
       segment.layout = layout;
       segment.cacheKey = this.segmentCacheKey(segment, width);
       segment.rows = layout.rows.slice(0, -1).map((row) => row.ansi);

@@ -662,9 +662,10 @@ export function layoutAnsiDocument(value: string, width: number): AnsiTextLayout
 /**
  * 把若干段独立布局拼成一份整串布局。
  *
- * 前提（由对话区分段写入保证）：除最后一段外，每段文本都以 `\n` 结尾，且段尾不残留
- * 未复位的 SGR。此时“各段独立换行再拼接 ≡ 整串换行”，与 stableWrapPrefix 的
- * `rows.slice(0, -1)` 是同一个技巧：每段末尾那个“光标行”由下一段的首行接上。
+ * 前提（由对话区分段写入保证）：段与段在屏幕上必然另起一行——每段渲染都是整行，
+ * 所以除最后一段外，段末那个“光标行”不单独成行（`rows.slice(0, -1)`，与
+ * stableWrapPrefix 同一技巧）。段文本本身不以 `\n` 结尾时，这里补一个 `\n`：
+ * 否则下一段首行会被并进上一段的同一行，行号与复制偏移整体错位。
  */
 export function concatAnsiLayouts(layouts: readonly AnsiTextLayout[]): AnsiTextLayout {
   const rows: AnsiLayoutRow[] = [];
@@ -685,6 +686,7 @@ export function concatAnsiLayouts(layouts: readonly AnsiTextLayout[]): AnsiTextL
       });
     }
     document += layout.document;
+    if (!isLast && !layout.document.endsWith("\n")) document += "\n";
   }
   return { rows, document };
 }

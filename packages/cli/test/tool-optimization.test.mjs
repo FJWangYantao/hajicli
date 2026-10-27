@@ -112,6 +112,50 @@ test("read returns complete numbered lines with continuation metadata", async ()
   });
 });
 
+test("read budget arms differ in page size and per-file allowance", async () => {
+  await withWorkspace(async (workspace) => {
+    // 500 行短行：shared 档默认 200 行封顶，per_file 档默认 400 行。
+    const shortLines = Array.from({ length: 500 }, (_, index) => `short-${index + 1}-padding`);
+    await fs.writeFile(path.join(workspace, "short.txt"), shortLines.join("\n"));
+    const shared = new ReadFileTool({ readBudget: "shared" });
+    const perFile = new ReadFileTool({ readBudget: "per_file" });
+    const batchOnly = new ReadFileTool({ readBudget: "batch_only" });
+    const sharedPage = await shared.execute({ path: "short.txt" });
+    const perFilePage = await perFile.execute({ path: "short.txt" });
+    assert.match(sharedPage, /返回=1-200；/);
+    assert.match(perFilePage, /返回=1-400；/);
+    assert.ok(perFilePage.length > sharedPage.length);
+    // batch_only 不碰单文件读：和 shared 一样 200 行封顶。
+    const batchOnlyPage = await batchOnly.execute({ path: "short.txt" });
+    assert.match(batchOnlyPage, /返回=1-200；/);
+
+    // 4 个 ~6k 字符的文件：shared 把 8k 平分（每个约 1.9k，截断），per_file 每个 8k。
+    const longLines = Array.from(
+      { length: 100 },
+      (_, index) => `row-${index + 1}-${"y".repeat(50)}`,
+    );
+    const names = [];
+    for (let index = 0; index < 4; index += 1) {
+      const name = `batch-${index}.txt`;
+      names.push(name);
+      await fs.writeFile(path.join(workspace, name), longLines.join("\n"));
+    }
+    const requests = names.map((name) => ({ path: name }));
+    const sharedBatch = await shared.execute({ paths: requests });
+    const perFileBatch = await perFile.execute({ paths: requests });
+    assert.equal((sharedBatch.match(/nextStartLine=/g) ?? []).length, 4);
+    assert.equal((perFileBatch.match(/nextStartLine=/g) ?? []).length, 0);
+    assert.ok(perFileBatch.length > sharedBatch.length * 2);
+    assert.ok(perFileBatch.length <= 32_000);
+
+    // batch_only：每个文件 8k 独立额度（总量 24k 封顶），平分问题修掉但不放大单文件。
+    const batchOnlyBatch = await batchOnly.execute({ paths: requests });
+    assert.equal((batchOnlyBatch.match(/nextStartLine=/g) ?? []).length, 0);
+    assert.ok(batchOnlyBatch.length > sharedBatch.length);
+    assert.ok(batchOnlyBatch.length <= 32_000);
+  });
+});
+
 test("read supports bounded batch requests and binary detection", async () => {
   await withWorkspace(async (workspace) => {
     await fs.writeFile(path.join(workspace, "binary.bin"), Buffer.from([1, 0, 2, 3]));

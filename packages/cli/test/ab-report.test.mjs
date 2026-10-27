@@ -13,6 +13,7 @@ function writeSession(
   subagents = [],
   subagentResults = [],
   toolCalls = [],
+  llmCalls = [],
 ) {
   const lines = [
     JSON.stringify({
@@ -20,6 +21,13 @@ function writeSession(
       timestamp: "2026-10-27T00:00:00.000Z",
       data: { timestamp: "2026-10-27T00:00:00.000Z", unitId: id, experiments },
     }),
+    ...llmCalls.map((call, index) =>
+      JSON.stringify({
+        type: "llm_call",
+        timestamp: `2026-10-27T00:00:0${index}.500Z`,
+        data: { timestamp: `2026-10-27T00:00:0${index}.500Z`, ...call },
+      }),
+    ),
     ...batches.map((batch, index) =>
       JSON.stringify({
         type: "tool_batch",
@@ -59,6 +67,15 @@ function writeSession(
 
 test("ab-report groups tool batches and subagents by experiment arm", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-ab-report-"));
+  const pricingPath = path.join(dir, "pricing.json");
+  fs.writeFileSync(
+    pricingPath,
+    JSON.stringify({
+      models: {
+        "test-model": { inputPerMTokens: 1, outputPerMTokens: 2, cachedInputPerMTokens: 0.5 },
+      },
+    }),
+  );
   try {
     writeSession(dir, "control-1", { parallel_prompt: "control", parallel_max: "3" }, [
       {
@@ -95,16 +112,43 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
         },
       ],
       [
-        { name: "read", arguments: { paths: ["a.ts", "b.ts"] } },
+        {
+          name: "read",
+          arguments: { paths: ["a.ts", "b.ts"] },
+          output: "line\nnextStartLine=41",
+        },
         { name: "read", arguments: { paths: ["a.ts", "b.ts"] } },
         { name: "grep", arguments: { queries: ["foo", "bar"] } },
         { name: "global", arguments: { patterns: ["x", "y"] } },
+      ],
+      [
+        {
+          model: "test-model",
+          messages: [
+            { role: "system", content: "sys" },
+            { role: "user", content: "任务" },
+          ],
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 100,
+            cache_read_input_tokens: 200,
+          },
+        },
+        {
+          model: "test-model",
+          messages: [{ role: "user", content: "起个标题" }],
+          usage: { prompt_tokens: 50, completion_tokens: 10 },
+        },
       ],
     );
     const output = execFileSync(
       process.execPath,
       ["scripts/ab-report.mjs", "--dir", dir, "--json"],
-      { cwd: process.cwd(), encoding: "utf8" },
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, HAJI_PRICING_PATH: pricingPath },
+      },
     );
     const report = JSON.parse(output);
     assert.equal(report.sessionsWithAssignment, 2);
@@ -130,6 +174,18 @@ test("ab-report groups tool batches and subagents by experiment arm", () => {
     assert.equal(treatment.redundantReads, 2);
     assert.equal(treatment.batchParamCalls, 4);
     assert.equal(control.toolCalls, 0);
+    // 模型请求数含杂活（标题生成）调用，且与工具调用数不是一回事。
+    assert.equal(treatment.requests, 2);
+    assert.equal(treatment.utilityRequests, 1);
+    assert.equal(treatment.requestsPerTool, 0.5);
+    assert.equal(treatment.promptTokens, 1050);
+    assert.equal(treatment.completionTokens, 110);
+    assert.equal(treatment.cachedPromptTokens, 200);
+    assert.equal(treatment.readCalls, 2);
+    assert.equal(treatment.truncatedReads, 1);
+    assert.equal(treatment.truncatedRate, 0.5);
+    assert.equal(treatment.unpricedRequests, 0);
+    assert.ok(Math.abs(treatment.costCny - 0.00117) < 1e-9);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
