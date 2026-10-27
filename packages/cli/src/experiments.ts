@@ -23,6 +23,7 @@ export const EXPERIMENT_NAMES = [
   "tool_batching",
   "scope_discipline",
   "read_budget",
+  "read_outline",
 ] as const;
 
 export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
@@ -70,6 +71,13 @@ export const EXPERIMENTS: Readonly<Record<ExperimentName, ExperimentSpec>> = {
     arms: ["shared", "per_file", "batch_only"],
     control: "shared",
     defaultValue: "batch_only",
+  },
+  // read 截断时是否附「剩余符号提纲」（剩余区间的函数/类 + 行号），便于直接 aroundLine 跳转。
+  // 新实验尚未验证，默认 baseline，跑完 A/B 再决定是否切 outline。
+  read_outline: {
+    arms: ["baseline", "outline"],
+    control: "baseline",
+    defaultValue: "baseline",
   },
 };
 

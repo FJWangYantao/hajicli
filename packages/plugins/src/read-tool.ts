@@ -9,6 +9,7 @@ import type {
 } from "@hajicli/core";
 import { takeWholeRecords, truncateSingleLine } from "./bounded-output.js";
 import { contentHash, fileVersions } from "./file-content.js";
+import { buildRemainingOutline, MAX_OUTLINE_CHARS } from "./read-outline.js";
 import { ReadRangeTracker } from "./read-ranges.js";
 import { parseIntegerOption } from "./search-filter.js";
 import { formatWorkspaceError, resolveWorkspacePath } from "./workspace-path.js";
@@ -53,6 +54,19 @@ const MERGE_HEADER_RESERVE = 180;
 /** 合并超限时，剩余空间小于该值就不再追加「截断的下一块」，直接提示拆分重试。 */
 const MIN_PARTIAL_BLOCK_ROOM = 200;
 const MAX_RENDERED_LINE_LENGTH = 1_000;
+/** 剩余符号提纲的最小额度；低于这个值就不值得占头部空间。 */
+const MIN_OUTLINE_CHARS = 80;
+
+/**
+ * 提纲能用的字符数：受单文件预算、头部余量和正文下限共同约束。
+ * 预算越小（批量读多个文件）提纲越短，避免把正文挤没。
+ */
+function resolveOutlineBudget(outputBudget: number, pathLength: number): number {
+  const room = outputBudget - READ_HEADER_RESERVE - pathLength - MIN_FILE_CONTENT_BUDGET;
+  if (room < MIN_OUTLINE_CHARS) return 0;
+  const proportional = Math.max(MIN_OUTLINE_CHARS, Math.floor(outputBudget * 0.15));
+  return Math.min(MAX_OUTLINE_CHARS, room, proportional);
+}
 /** 读取图片时的单张体积上限，与 /image 命令保持一致。 */
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
@@ -150,6 +164,7 @@ async function renderFile(
   outputBudget: number,
   context?: ToolExecutionContext,
   tracker?: ReadRangeTracker,
+  outlineEnabled = false,
 ): Promise<ToolOutput> {
   const resolvedPath = await resolveWorkspacePath(request.path);
   const buffer = await fs.readFile(resolvedPath, { signal: context?.abortSignal });
@@ -207,15 +222,29 @@ async function renderFile(
   const returned = bounded.count;
   const actualLastLine = returned > 0 ? firstLine + returned - 1 : firstLine - 1;
   const hasMore = actualLastLine < totalLines;
+
+  // 剩余符号提纲（A/B: read_outline）：只在单文件读、且「本页之后还有内容」时给。
+  // 批量读不走提纲：单块额度本来就小，提纲会挤占正文，合并时还容易把块撑过上限。
+  // aroundLine 是模型明确指定的窗口，也不附加整段剩余提纲。
+  const outlineBudget =
+    outlineEnabled && request.aroundLine === undefined
+      ? resolveOutlineBudget(outputBudget, request.path.length)
+      : 0;
+  const outline =
+    outlineBudget > 0 && hasMore && returned > 0
+      ? buildRemainingOutline(lines, actualLastLine + 1, request.path, outlineBudget)
+      : undefined;
   const header = [
     `[文件读取结果 - ${request.path}]`,
     `总行数=${totalLines}；返回=${returned > 0 ? `${firstLine}-${actualLastLine}` : "0"}；hash=${contentHash(buffer)}；hasMore=${hasMore}`,
     hasMore && returned > 0 ? `nextStartLine=${actualLastLine + 1}` : "",
+    outline ?? "",
     bounded.truncated ? "提示：为保持完整行，当前页已按输出预算提前结束。" : "",
     overlapHint ?? "",
   ]
     .filter(Boolean)
     .join("\n");
+
   if (returned > 0) tracker?.record(rangeKey, firstLine, actualLastLine);
   return {
     output: bounded.text ? `${header}\n${bounded.text}` : `${header}\n(当前页没有可输出内容)`,
@@ -234,8 +263,14 @@ export class ReadFileTool implements BaseTool {
   /** 未显式传 limit 时的默认行数上限。 */
   private readonly defaultLineLimit: number;
 
-  public constructor(options: { overlapHint?: boolean; readBudget?: ReadBudgetMode } = {}) {
+  /** 截断时是否附「剩余符号提纲」（A/B: read_outline）。 */
+  private readonly outlineEnabled: boolean;
+
+  public constructor(
+    options: { overlapHint?: boolean; readBudget?: ReadBudgetMode; outline?: boolean } = {},
+  ) {
     if (options.overlapHint !== false) this.tracker = new ReadRangeTracker();
+    this.outlineEnabled = options.outline === true;
     this.budgetMode = options.readBudget ?? "shared";
     this.defaultLineLimit =
       this.budgetMode === "per_file" ? PER_FILE_LINE_LIMIT : DEFAULT_LINE_LIMIT;
@@ -333,7 +368,13 @@ export class ReadFileTool implements BaseTool {
     for (const request of requests) {
       try {
         throwIfAborted(context);
-        const rendered = await renderFile(request, perFileBudget, context, this.tracker);
+        const rendered = await renderFile(
+          request,
+          perFileBudget,
+          context,
+          this.tracker,
+          this.outlineEnabled && requests.length === 1,
+        );
         blocks.push(rendered.output);
         if (rendered.images?.length) images.push(...rendered.images);
       } catch (error) {

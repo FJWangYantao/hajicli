@@ -188,6 +188,21 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `(总量 − 180 − 分隔符) / n` 算单文件额度，超限时改为保留下一块的头 + 能放下的完整行
   （不整块丢）。回归测试：`tool-optimization.test.mjs` 的
   "long paths never drop a whole file from a batch read"。
+- **read 截断提纲（read_outline，首轮 pilot 正向，默认仍 baseline）**：`read` 在本页之后还有内容时，
+  除 `nextStartLine` 外再给一行「剩余符号」（函数/类/接口 + 行号，如
+  `[剩余符号] 262 fn main · 386 fn hasCustomProviderKey · …`），模型可直接用 `aroundLine`
+  跳转，不必一页页翻。实现是 `read-outline.ts` 的轻量正则扫描（TS/JS、Python、Go、Rust、
+  JVM/Kotlin、Markdown、Shell），不引入 AST；未知扩展名不输出。
+  - 只扫 `actualLastLine+1` 之后的区间；`aroundLine` 是模型明确指定的窗口，不附提纲。
+  - 条目 >24 时按行号均匀抽样（保留首尾），字符上限 600；超出时保留远端锚点或至少加 `…`。
+  - **只在单文件读时附提纲，不缩减正文**；批量读不附（单块额度小，提纲会挤占正文，
+    合并时还容易把块撑过上限）。`resolveOutlineBudget` 仍按单文件额度与路径长度封顶。
+  - 数据依据：单文件 read 71% 被截断、70% 是 `startLine>1` 的续读；续读里只有 33% 是
+    顺序翻页，29% 是远跳、38% 是回跳/小间隔，所以「给剩余符号」比「加大额度」更对症。
+  - 默认 baseline；用 `HAJI_EXPERIMENTS="read_outline=outline"` 或 `HAJI_AB=1` 跑 A/B，
+    主指标看请求数，墙钟为最终判据。首轮 pilot（4 任务 × 3 轮 × 2 arm，12 对）：
+    请求 −12.9%、未命中 token −12.2%、费用 −14.0%、中位墙钟 −16.9%；剔除 1 个未触发
+    提纲的离群会话后总墙钟 −11.0%。样本仍小，暂不切默认。测试：`read-outline.test.mjs`。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
@@ -195,6 +210,7 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `parallel-prompt.test.mjs`（提示词 arm）、`tool-batch.test.mjs`（分组与自定义判定）、
   `tool-batch-params.test.mjs`（queries/patterns 批量与 baseline 关闭）、
   `scope-discipline.test.mjs`（叠读判定/提示/提示词 arm）、
+  `read-outline.test.mjs`（剩余符号提纲/抽样/预算/批量不丢块）、
   `subagent.test.mjs`（子代理批处理）、`persistence-performance.test.mjs`（trace 事件）、
   `ab-report.test.mjs`（报告聚合）。
 

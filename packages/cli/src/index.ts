@@ -442,6 +442,8 @@ async function main() {
   /** A/B：范围收敛（搜索纪律 + 叠读提示）。 */
   const scopeDiscipline = experiments.is("scope_discipline", "converge");
   const readBudgetArm = experiments.arm("read_budget");
+  /** A/B：read 截断时是否附剩余符号提纲。 */
+  const readOutline = experiments.is("read_outline", "outline");
   /** 子代理结束时把耗时/token/工具数写进 trace，供 A/B 报告比较效率。 */
   const recordSubagentOutcome = (agent: {
     id: string;
@@ -1028,6 +1030,7 @@ async function main() {
     new BashTool(),
     new ReadFileTool({
       overlapHint: scopeDiscipline,
+      outline: readOutline,
       readBudget:
         readBudgetArm === "per_file" || readBudgetArm === "batch_only" ? readBudgetArm : "shared",
     }),
