@@ -3272,7 +3272,7 @@ async function main() {
           cachedPrice = undefined;
         }
       }
-      // 谷时价可选：先问两个谷时单价，再问时段（回车用官方常见的 00:30–08:30 UTC+8）。
+      // 谷时价可选：先问两个谷时单价，再问时段（回车用官方常见的 00:00–09:00 UTC+8）。
       const offPeakText = await readPricingLine(
         colors.muted(`${model} 谷时单价（格式 输入/输出，如 0.25/1；回车跳过）：`),
       );
@@ -3287,9 +3287,9 @@ async function main() {
           ui.writeLine(colors.yellow("谷时单价不低于峰时单价，已跳过谷时配置。"));
         } else {
           const windowText = await readPricingLine(
-            colors.muted("谷时时段（如 00:30-08:30，默认北京时间；回车用 00:30-08:30）："),
+            colors.muted("谷时时段（如 00:00-09:00，默认北京时间；回车用 00:00-09:00）："),
           );
-          const parsedWindow = parseOffPeakWindow(windowText.trim() || "00:30-08:30");
+          const parsedWindow = parseOffPeakWindow(windowText.trim() || "00:00-09:00");
           if (!parsedWindow) {
             ui.writeLine(colors.yellow("谷时时段格式不对（要 HH:MM-HH:MM），已跳过谷时配置。"));
           } else {
@@ -3339,8 +3339,8 @@ async function main() {
       const offOutput = parsePriceInput(offOutputRaw ?? "");
       const parsedWindow = windowArg?.trim()
         ? parseOffPeakWindow(windowArg)
-        : // 省略时段时按官方常见谷时（北京 00:30–08:30）。
-          parseOffPeakWindow("00:30-08:30");
+        : // 省略时段时按官方常见谷时（北京 00:00–09:00）。
+          parseOffPeakWindow("00:00-09:00");
       if (offInput === undefined || offOutput === undefined) {
         ui.writeLine(colors.yellow("谷时单价格式不对（要 输入/输出），已跳过谷时配置。"));
       } else if (offInput >= inputPrice || offOutput >= outputPrice) {

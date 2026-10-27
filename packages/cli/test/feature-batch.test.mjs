@@ -31,8 +31,8 @@ test("model registry carries pricing and tiers for cost and utility routing", ()
 });
 
 test("cost tracker aggregates usage and estimates cost by model", () => {
-  // 内置模型有谷时五折（北京 00:30–08:30），时刻不钉死会在谷时窗口按半价挂掉。
-  const BEIJING_NOON = Date.parse("2025-01-02T04:00:00Z");
+  // 内置模型有峰谷分档，时刻钉在官方峰时（北京工作日 10:00），否则会按谷时五折挂。
+  const BEIJING_PEAK = Date.parse("2025-01-02T02:00:00Z");
   const tracker = new CostTracker();
   assert.equal(tracker.getSummary().requests, 0);
   tracker.record(
@@ -43,7 +43,7 @@ test("cost tracker aggregates usage and estimates cost by model", () => {
       total_tokens: 1_500_000,
     },
     "主线回合",
-    BEIJING_NOON,
+    BEIJING_PEAK,
   );
   tracker.record(
     "custom-x",
@@ -53,17 +53,17 @@ test("cost tracker aggregates usage and estimates cost by model", () => {
       total_tokens: 200,
     },
     "主线回合",
-    BEIJING_NOON,
+    BEIJING_PEAK,
   );
   const summary = tracker.getSummary();
   assert.equal(summary.requests, 2);
   assert.equal(summary.hasUnpriced, true, "custom-x 未定价");
-  // pro: 1M*2 + 0.5M*8 = 6 元
-  assert.equal(summary.totalCostCny, 6);
+  // pro 官方峰时价：1M*9 + 0.5M*27 = 22.5 元
+  assert.equal(summary.totalCostCny, 22.5);
   const byModel = new Map(summary.byModel.map((entry) => [entry.model, entry]));
   assert.equal(byModel.get("custom-x").costCny, null);
   const report = tracker.formatCostReport();
-  assert.match(report[0], /本会话费用估算：¥6/);
+  assert.match(report[0], /本会话费用估算：¥22\.50/);
   assert.match(report.join("\n"), /未定价/);
   // 格式：小于 1 元保留 4 位
   assert.equal(formatCostCny(0.000015), "¥0.0000");
@@ -73,16 +73,16 @@ test("cost tracker aggregates usage and estimates cost by model", () => {
       "deepseek-v4-flash",
       { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
       undefined,
-      BEIJING_NOON,
+      BEIJING_PEAK,
     ),
-    0.5,
+    2,
   );
   assert.equal(
     estimateRequestCostCny(
       "unknown",
       { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       undefined,
-      BEIJING_NOON,
+      BEIJING_PEAK,
     ),
     null,
   );

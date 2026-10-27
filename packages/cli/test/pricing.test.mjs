@@ -105,12 +105,12 @@ test("定价覆盖表可写入、读取、删除，非法条目在读取时被�
 
 test("解析单价时内置注册表优先，其次才是本地覆盖", () => {
   withTempPricing(() => {
-    assert.equal(resolveModelPricing("deepseek-v4-flash")?.inputPerMTokens, 0.5);
+    assert.equal(resolveModelPricing("deepseek-v4-flash")?.inputPerMTokens, 2);
     assert.equal(pricingOrigin("deepseek-v4-flash"), "builtin");
 
     // 覆盖一个内置模型：注册表仍应优先（内置价是发布时校准过的）。
     savePricingOverride("deepseek-v4-flash", { inputPerMTokens: 99, outputPerMTokens: 99 });
-    assert.equal(resolveModelPricing("deepseek-v4-flash")?.inputPerMTokens, 0.5);
+    assert.equal(resolveModelPricing("deepseek-v4-flash")?.inputPerMTokens, 2);
     assert.equal(pricingOrigin("deepseek-v4-flash"), "builtin");
 
     savePricingOverride("cn:deepseek-v4.1-flash", { inputPerMTokens: 0.4, outputPerMTokens: 1.6 });
@@ -500,8 +500,8 @@ test("侧栏定价 agent 状态行给出独立命中区（可点开过程详情�
 });
 
 test("缓存命中的输入 token 按缓存价计费，未上报命中数时按全价", () => {
-  // 内置 flash：输入 0.5、输出 2、缓存 0.1（元 / 百万）。
-  // 时刻钉在峰时（BEIJING_14）：内置模型有谷时五折，默认取当前时间会在谷时窗口挂。
+  // 内置 flash 官方峰时价：输入 2、输出 8、缓存 0.04（元 / 百万）。
+  // 时刻钉在峰时（BEIJING_14）：内置模型有峰谷分档，默认取当前时间可能落在谷时。
   assert.equal(
     estimateRequestCostCny(
       "deepseek-v4-flash",
@@ -514,7 +514,7 @@ test("缓存命中的输入 token 按缓存价计费，未上报命中数时按�
       undefined,
       BEIJING_14,
     ),
-    0.2 * 0.5 + 0.8 * 0.1,
+    0.2 * 2 + 0.8 * 0.04,
   );
   // 没上报 → 全价。
   assert.equal(
@@ -524,7 +524,7 @@ test("缓存命中的输入 token 按缓存价计费，未上报命中数时按�
       undefined,
       BEIJING_14,
     ),
-    0.5,
+    2,
   );
   // 命中数大于 prompt_tokens（口径不一致）时夹逼，不会算出负数。
   assert.equal(
@@ -539,7 +539,7 @@ test("缓存命中的输入 token 按缓存价计费，未上报命中数时按�
       undefined,
       BEIJING_14,
     ),
-    0.1,
+    0.04,
   );
 });
 
@@ -633,6 +633,32 @@ test("谷时窗口判定：跨零点、时区偏移与边界", () => {
   assert.equal(isWithinOffPeak(Date.now(), { startMinute: 60, endMinute: 60 }), false);
 });
 
+test("谷时窗口支持多段与星期过滤（官方工作日/周末分档）", () => {
+  const weekdayWindows = [
+    { startMinute: 0, endMinute: 9 * 60, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+    { startMinute: 12 * 60, endMinute: 14 * 60, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+    { startMinute: 18 * 60, endMinute: 0, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+  ];
+  // 2025-01-02 是周四，2025-01-04 是周六。
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-02T00:00:00Z"), weekdayWindows), true); // 北京 08:00
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-02T03:00:00Z"), weekdayWindows), false); // 北京 11:00 峰
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-02T05:00:00Z"), weekdayWindows), true); // 北京 13:00
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-02T07:00:00Z"), weekdayWindows), false); // 北京 15:00 峰
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-02T11:00:00Z"), weekdayWindows), true); // 北京 19:00
+  // 周六北京 11:00：工作日窗口不生效。
+  assert.equal(isWithinOffPeak(Date.parse("2025-01-04T03:00:00Z"), weekdayWindows), false);
+});
+
+test("内置 deepseek 谷时覆盖工作日非高峰与周末全天", () => {
+  const prompt = { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 };
+  const thursdayNoon = Date.parse("2025-01-02T04:00:00Z"); // 北京周四 12:00，非高峰
+  const saturdayNoon = Date.parse("2025-01-04T04:00:00Z"); // 北京周六 12:00，全天谷时
+  const thursdayPeak = Date.parse("2025-01-02T03:00:00Z"); // 北京周四 11:00，高峰
+  assert.equal(estimateRequestCostCny("deepseek-v4-flash", prompt, undefined, thursdayNoon), 1);
+  assert.equal(estimateRequestCostCny("deepseek-v4-flash", prompt, undefined, saturdayNoon), 1);
+  assert.equal(estimateRequestCostCny("deepseek-v4-flash", prompt, undefined, thursdayPeak), 2);
+});
+
 test("时钟与时段解析：HH:MM、区间、时区后缀", () => {
   assert.equal(parseClockMinute("08:30"), 510);
   assert.equal(parseClockMinute("0:05"), 5);
@@ -664,9 +690,9 @@ test("内置模型按调用时刻选峰/谷价，缓存命中同样享谷时价"
     undefined,
     BEIJING_02,
   );
-  assert.equal(peak, 0.5);
-  assert.equal(offPeak, 0.25);
-  // 谷时 + 缓存命中：0.2×0.25 + 0.8×0.05
+  assert.equal(peak, 2);
+  assert.equal(offPeak, 1);
+  // 谷时 + 缓存命中：0.2×1 + 0.8×0.02
   assert.equal(
     estimateRequestCostCny(
       "deepseek-v4-flash",
@@ -679,7 +705,7 @@ test("内置模型按调用时刻选峰/谷价，缓存命中同样享谷时价"
       undefined,
       BEIJING_02,
     ),
-    0.2 * 0.25 + 0.8 * 0.05,
+    0.2 * 1 + 0.8 * 0.02,
   );
   // 没有峰谷分档的模型，两个时刻同价。
   assert.equal(
@@ -710,7 +736,7 @@ test("CostTracker 按记录时刻分档，并统计谷时请求数", () => {
   const summary = tracker.getSummary();
   assert.equal(summary.offPeakRequests, 1);
   assert.equal(summary.byModel[0].offPeakRequests, 1);
-  assert.equal(summary.totalCostCny, 0.5 + 0.25);
+  assert.equal(summary.totalCostCny, 2 + 1);
   assert.match(tracker.formatCostReport().join(String.fromCharCode(10)), /谷时 1 次/);
 });
 

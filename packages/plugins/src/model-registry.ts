@@ -14,6 +14,11 @@ export interface OffPeakWindow {
   endMinute: number;
   /** 判定用的时区偏移（分钟）；缺省 480 = UTC+8（北京时间）。 */
   utcOffsetMinutes?: number;
+  /**
+   * 只在这些星期生效（0 = 周日 … 6 = 周六）；缺省为每天。
+   * 用于「工作日按 A 时段、周末全天」这类官方分档。
+   */
+  weekdays?: readonly number[];
 }
 
 /** 谷时单价（每百万 token）与其生效时段。 */
@@ -22,11 +27,30 @@ export interface OffPeakPricing {
   outputPerMTokens: number;
   /** 谷时的缓存命中输入价；缺省沿用缓存价与输入价的关系。 */
   cachedInputPerMTokens?: number;
-  window: OffPeakWindow;
+  /** 谷时时段：单个窗口，或一组不连续的窗口（官方常按多段打折）。 */
+  window: OffPeakWindow | readonly OffPeakWindow[];
+  /** 时段的人类可读描述；缺省按 window 自动拼接。 */
+  label?: string;
 }
 
-/** 默认按北京时间判定峰谷（DeepSeek 官方谷时是 UTC 16:30–00:30 = 北京 00:30–08:30）。 */
+/** 默认按北京时间判定峰谷（DeepSeek 官方以北京时间为准）。 */
 export const DEFAULT_UTC_OFFSET_MINUTES = 480;
+
+/**
+ * DeepSeek 官方谷时：除北京时间周一至周五 09:00–12:00、14:00–18:00 外的所有时段，
+ * 含周末全天。法定节假日未建模（按工作日算，会略微高估费用）。
+ */
+const DEEPSEEK_OFF_PEAK_WINDOWS: readonly OffPeakWindow[] = [
+  // 工作日：00:00–09:00、12:00–14:00、18:00–24:00
+  { startMinute: 0, endMinute: 9 * 60, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+  { startMinute: 12 * 60, endMinute: 14 * 60, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+  { startMinute: 18 * 60, endMinute: 0, utcOffsetMinutes: 480, weekdays: [1, 2, 3, 4, 5] },
+  // 周末：全天（拆成两段，避免与「start === end 表示空窗口」的约定冲突）
+  { startMinute: 0, endMinute: 12 * 60, utcOffsetMinutes: 480, weekdays: [0, 6] },
+  { startMinute: 12 * 60, endMinute: 0, utcOffsetMinutes: 480, weekdays: [0, 6] },
+];
+
+const DEEPSEEK_OFF_PEAK_LABEL = "工作日 00:00–09:00、12:00–14:00、18:00–24:00；周末全天";
 
 /** 单价（每百万 token）。用于 /cost 估算与 utility 模型路由排序，均为估算值。 */
 export interface ModelPricing {
@@ -37,9 +61,8 @@ export interface ModelPricing {
    * 命中缓存的输入单价（每百万 token）；缺省表示该模型没有缓存折扣，
    * 或 provider 不上报缓存命中数——两种情况都按 inputPerMTokens 计费。
    *
-   * 下面各模型的缓存价按「输入价的 20%」估算。官方实际比例可能更低
-   * （DeepSeek 定价页上 cache hit 约为 cache miss 的 2%），所以真实账单往往比
-   * 估算更低；需要精确值就让定价 agent 查官方页，或 /cost price 手动覆盖。
+   * DeepSeek 官方缓存价是输入价的 2%（如 flash 命中 ¥0.04 / 未命中 ¥2），
+   * 不要按「20%」估——那是早前的错误口径。
    */
   readonly cachedInputPerMTokens?: number;
   /**
@@ -91,25 +114,58 @@ export function parseOffPeakWindow(text: string): OffPeakWindow | undefined {
   return base;
 }
 
-/** 时段展示：`北京时间 00:30–08:30`。 */
-export function formatOffPeakWindow(window: OffPeakWindow): string {
-  const offset = window.utcOffsetMinutes ?? DEFAULT_UTC_OFFSET_MINUTES;
+function formatUtcOffset(offset: number): string {
+  if (offset === 0) return "UTC";
   const sign = offset >= 0 ? "+" : "-";
   const abs = Math.abs(offset);
-  const zone =
-    abs === 0
-      ? "UTC"
-      : `UTC${sign}${Math.floor(abs / 60)}${abs % 60 === 0 ? "" : `:${String(abs % 60).padStart(2, "0")}`}`;
-  return `${zone} ${formatClockMinute(window.startMinute)}–${formatClockMinute(window.endMinute)}`;
+  return `UTC${sign}${Math.floor(abs / 60)}${abs % 60 === 0 ? "" : `:${String(abs % 60).padStart(2, "0")}`}`;
 }
 
-/** 现在是否落在谷时窗口内（按窗口自带的时区偏移计算）。 */
-export function isWithinOffPeak(nowMs: number, window: OffPeakWindow): boolean {
+function isWindowList(
+  window: OffPeakWindow | readonly OffPeakWindow[],
+): window is readonly OffPeakWindow[] {
+  return Array.isArray(window);
+}
+
+/** 时段展示：`UTC+8 00:30–08:30`；多段用「、」连接。 */
+export function formatOffPeakWindow(window: OffPeakWindow | readonly OffPeakWindow[]): string {
+  if (isWindowList(window)) {
+    const list = window;
+    if (list.length === 0) return "";
+    const zone = formatUtcOffset(list[0].utcOffsetMinutes ?? DEFAULT_UTC_OFFSET_MINUTES);
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const item of list) {
+      const text = `${formatClockMinute(item.startMinute)}–${formatClockMinute(item.endMinute)}`;
+      if (seen.has(text)) continue;
+      seen.add(text);
+      parts.push(text);
+    }
+    return `${zone} ${parts.join("、")}`;
+  }
+  const offset = window.utcOffsetMinutes ?? DEFAULT_UTC_OFFSET_MINUTES;
+  return `${formatUtcOffset(offset)} ${formatClockMinute(window.startMinute)}–${formatClockMinute(window.endMinute)}`;
+}
+
+/** 现在是否落在谷时窗口内（按窗口自带的时区偏移计算；支持多段与星期过滤）。 */
+export function isWithinOffPeak(
+  nowMs: number,
+  window: OffPeakWindow | readonly OffPeakWindow[],
+): boolean {
+  const windows = isWindowList(window) ? window : [window];
+  return windows.some((item) => isWithinSingleOffPeak(nowMs, item));
+}
+
+function isWithinSingleOffPeak(nowMs: number, window: OffPeakWindow): boolean {
   if (!Number.isFinite(nowMs) || window.startMinute === window.endMinute) return false;
   const offset = window.utcOffsetMinutes ?? DEFAULT_UTC_OFFSET_MINUTES;
   const local = nowMs + offset * 60_000;
   const dayMs = 24 * 60 * 60 * 1000;
   const minuteOfDay = Math.floor((((local % dayMs) + dayMs) % dayMs) / 60_000);
+  if (window.weekdays && window.weekdays.length > 0) {
+    const weekday = new Date(local).getUTCDay();
+    if (!window.weekdays.includes(weekday)) return false;
+  }
   return window.startMinute < window.endMinute
     ? minuteOfDay >= window.startMinute && minuteOfDay < window.endMinute
     : minuteOfDay >= window.startMinute || minuteOfDay < window.endMinute;
@@ -137,16 +193,18 @@ export const MODEL_REGISTRY = [
     maxOutputTokens: 8_192,
     tier: "utility",
     pricing: {
-      inputPerMTokens: 0.5,
-      outputPerMTokens: 2,
+      // 官方人民币高峰价：缓存命中 0.04 / 未命中 2 / 输出 8（每百万 token）。
+      inputPerMTokens: 2,
+      outputPerMTokens: 8,
       currency: "CNY",
-      cachedInputPerMTokens: 0.1,
-      // 官方谷时（UTC 16:30–00:30 = 北京 00:30–08:30）约为峰时五折。
+      cachedInputPerMTokens: 0.04,
+      // 谷时五折；法定节假日未建模（按工作日算，会略微高估费用）。
       offPeak: {
-        inputPerMTokens: 0.25,
-        outputPerMTokens: 1,
-        cachedInputPerMTokens: 0.05,
-        window: { startMinute: 30, endMinute: 8 * 60 + 30, utcOffsetMinutes: 480 },
+        inputPerMTokens: 1,
+        outputPerMTokens: 4,
+        cachedInputPerMTokens: 0.02,
+        window: DEEPSEEK_OFF_PEAK_WINDOWS,
+        label: DEEPSEEK_OFF_PEAK_LABEL,
       },
     },
   },
@@ -159,15 +217,17 @@ export const MODEL_REGISTRY = [
     maxOutputTokens: 8_192,
     tier: "flagship",
     pricing: {
-      inputPerMTokens: 2,
-      outputPerMTokens: 8,
+      // 官方人民币高峰价：缓存命中 0.3 / 未命中 9 / 输出 27（每百万 token）。
+      inputPerMTokens: 9,
+      outputPerMTokens: 27,
       currency: "CNY",
-      cachedInputPerMTokens: 0.4,
+      cachedInputPerMTokens: 0.3,
       offPeak: {
-        inputPerMTokens: 1,
-        outputPerMTokens: 4,
-        cachedInputPerMTokens: 0.2,
-        window: { startMinute: 30, endMinute: 8 * 60 + 30, utcOffsetMinutes: 480 },
+        inputPerMTokens: 4.5,
+        outputPerMTokens: 13.5,
+        cachedInputPerMTokens: 0.15,
+        window: DEEPSEEK_OFF_PEAK_WINDOWS,
+        label: DEEPSEEK_OFF_PEAK_LABEL,
       },
     },
   },

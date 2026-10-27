@@ -153,8 +153,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `prompt_cache_hit_tokens`；`cache_read_input_tokens` / `cached_tokens` 也存在但**恒为 0**。
   `ab-metrics.mjs` 必须优先读前者（`??` 不会跳过 0，顺序错了就永远统计不到）。早期报告
   读错字段，把上下文按全价计、费用高估约 5 倍，已重算。缓存单价按官方价：
-  `deepseek-flash` 命中 ¥0.04 / 未命中 ¥2 / 输出 ¥8（每百万 token，高峰价，空闲时段减半）；
-  注意内置注册表 `model-registry.ts` 的 deepseek 单价仍是旧值（0.5 / 2 / 0.1），与官方不一致。
+  `deepseek-flash` 命中 ¥0.04 / 未命中 ¥2 / 输出 ¥8，`deepseek-v4-pro` 命中 ¥0.3 / 未命中 ¥9 / 输出 ¥27
+  （每百万 token，高峰价；谷时五折）。内置注册表已同步这两组价，峰谷按北京时间：
+  工作日 09:00–12:00、14:00–18:00 为峰时，其余与周末全天为谷时（法定节假日未建模）。
 - 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
 - **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）

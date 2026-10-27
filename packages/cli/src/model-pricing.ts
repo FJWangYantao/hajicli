@@ -211,7 +211,7 @@ export function resolveModelPricing(model: string): ModelPricing | undefined {
 
 /**
  * 单价展示：`¥2 / ¥8 每 M（缓存 ¥0.4）`，有谷时价时再追加
- * `；谷时 ¥1 / ¥4（UTC+8 00:30–08:30）`。
+ * `；谷时 ¥1 / ¥4（工作日 00:00–09:00、12:00–14:00、18:00–24:00；周末全天）`。
  */
 export function formatPricingLabel(pricing: ModelPricing): string {
   const trim = (value: number): string => String(Number(value.toFixed(4)));
@@ -221,7 +221,7 @@ export function formatPricingLabel(pricing: ModelPricing): string {
       ? `（缓存 ¥${trim(pricing.cachedInputPerMTokens)}）`
       : "";
   const offPeak = pricing.offPeak
-    ? `；谷时 ¥${trim(pricing.offPeak.inputPerMTokens)} / ¥${trim(pricing.offPeak.outputPerMTokens)}（${formatOffPeakWindow(pricing.offPeak.window)}）`
+    ? `；谷时 ¥${trim(pricing.offPeak.inputPerMTokens)} / ¥${trim(pricing.offPeak.outputPerMTokens)}（${pricing.offPeak.label ?? formatOffPeakWindow(pricing.offPeak.window)}）`
     : "";
   return `${base}${cache}${offPeak}`;
 }
