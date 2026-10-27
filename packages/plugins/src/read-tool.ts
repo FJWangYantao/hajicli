@@ -40,6 +40,18 @@ const TOTAL_OUTPUT_BUDGET = 32_000;
 /** batch_only 档：只修「批量读多个文件时按文件数平分」，单文件读维持 shared 行为。 */
 const BATCH_ONLY_PER_FILE_BUDGET = 8_000;
 const BATCH_ONLY_TOTAL_BUDGET = 32_000;
+/**
+ * 单文件头部的固定余量：`[文件读取结果 - 路径]` 之外的统计行、nextStartLine、
+ * 截断提示与叠读提示。路径长度另外按实计算（见 renderFile），否则深层路径会把
+ * 单块撑过 perFileBudget，合并时整块被丢弃。
+ */
+const READ_HEADER_RESERVE = 300;
+/** 单个文件至少保留的正文额度，避免超长路径把正文挤成 0。 */
+const MIN_FILE_CONTENT_BUDGET = 200;
+/** 批量结果合并时给外层头部与 `\n\n` 分隔符预留的字符数。 */
+const MERGE_HEADER_RESERVE = 180;
+/** 合并超限时，剩余空间小于该值就不再追加「截断的下一块」，直接提示拆分重试。 */
+const MIN_PARTIAL_BLOCK_ROOM = 200;
 const MAX_RENDERED_LINE_LENGTH = 1_000;
 /** 读取图片时的单张体积上限，与 /image 命令保持一致。 */
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -180,12 +192,18 @@ async function renderFile(
   const overlapHint = tracker?.check(rangeKey, firstLine, requestedLastLine);
 
   const records: string[] = [];
-  const perLineLimit = Math.min(MAX_RENDERED_LINE_LENGTH, Math.max(80, outputBudget - 360));
+  // 头部不受额度限制，但合并时要和正文一起占总量：先把「路径长度 + 固定余量」扣掉，
+  // 保证单块输出不超过 outputBudget，n 个文件才装得进总量。
+  const contentBudget = Math.max(
+    MIN_FILE_CONTENT_BUDGET,
+    outputBudget - READ_HEADER_RESERVE - request.path.length,
+  );
+  const perLineLimit = Math.min(MAX_RENDERED_LINE_LENGTH, Math.max(80, contentBudget - 60));
   for (let lineNumber = firstLine; lineNumber <= requestedLastLine; lineNumber += 1) {
     const text = truncateSingleLine(lines[lineNumber - 1], perLineLimit);
     records.push(request.lineNumbers ? `${lineNumber} | ${text}` : text);
   }
-  const bounded = takeWholeRecords(records, Math.max(200, outputBudget - 300));
+  const bounded = takeWholeRecords(records, contentBudget);
   const returned = bounded.count;
   const actualLastLine = returned > 0 ? firstLine + returned - 1 : firstLine - 1;
   const hasMore = actualLastLine < totalLines;
@@ -299,12 +317,16 @@ export class ReadFileTool implements BaseTool {
         : batchOnly
           ? BATCH_ONLY_TOTAL_BUDGET
           : SHARED_OUTPUT_BUDGET;
+    // 合并上限要给外层头部与 n-1 个 "\n\n" 分隔符留位置，再平均到每个文件：
+    // 否则 n × 单文件额度恰好等于总量时，路径稍长就会把最后一个文件整块挤掉。
+    const mergeLimit = totalBudget - MERGE_HEADER_RESERVE;
+    const availableForFiles = mergeLimit - 2 * (requests.length - 1);
     // shared：总量按文件数平分（现状）；其余两档每个文件有独立额度，只受总量封顶。
     const perFileBudget =
       this.budgetMode === "per_file"
-        ? Math.min(PER_FILE_OUTPUT_BUDGET, Math.floor(totalBudget / requests.length))
+        ? Math.min(PER_FILE_OUTPUT_BUDGET, Math.floor(availableForFiles / requests.length))
         : batchOnly
-          ? Math.min(BATCH_ONLY_PER_FILE_BUDGET, Math.floor(totalBudget / requests.length))
+          ? Math.min(BATCH_ONLY_PER_FILE_BUDGET, Math.floor(availableForFiles / requests.length))
           : Math.max(700, Math.floor((SHARED_OUTPUT_BUDGET - 250) / requests.length));
     const blocks: string[] = [];
     const images: ToolImage[] = [];
@@ -329,10 +351,43 @@ export class ReadFileTool implements BaseTool {
         ? result
         : { output: typeof result === "string" ? result : result.output, images };
     if (blocks.length === 1) return withImages(blocks[0]);
-    const bounded = takeWholeRecords(blocks, totalBudget - 180, "\n\n");
+    const bounded = takeWholeRecords(blocks, mergeLimit, "\n\n");
+    let text = bounded.text;
+    let count = bounded.count;
+    // 兜底：额度被 200 下限顶住时（超长路径 + 多文件），整块丢弃会让那个文件一行都拿不到，
+    // 模型只能再发一次请求。这里改为保留下一块的头（含 nextStartLine）+ 能放下的完整行。
+    let partial = false;
+    if (bounded.truncated) {
+      const room = mergeLimit - text.length - (text ? 2 : 0);
+      const piece = truncateBlockToRoom(blocks[bounded.count], room);
+      if (piece) {
+        text = text ? `${text}\n\n${piece}` : piece;
+        count += 1;
+        partial = true;
+      }
+    }
+    const remaining = blocks.length - count;
     const header = bounded.truncated
-      ? `[批量文件读取结果 - 共 ${blocks.length} 个请求，本次返回 ${bounded.count} 个；其余请求请拆分重试]`
+      ? `[批量文件读取结果 - 共 ${blocks.length} 个请求，本次返回 ${count} 个${partial ? `（第 ${count} 个已截断，可用其 nextStartLine 续读）` : ""}；其余 ${remaining} 个请求请拆分重试]`
       : `[批量文件读取结果 - 共 ${blocks.length} 个请求]`;
-    return withImages(`${header}\n${bounded.text}`);
+    return withImages(`${header}\n${text}`);
   }
+}
+
+/** 把单块按行截到 room 字符内（保留开头头部行），放不下时返回空串。 */
+function truncateBlockToRoom(block: string, room: number): string {
+  if (room < MIN_PARTIAL_BLOCK_ROOM) return "";
+  const marker = "\n…（本文件按总量预算截断，可用上方 nextStartLine 续读）";
+  const budget = room - marker.length;
+  if (budget <= 0) return "";
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of block.split("\n")) {
+    const next = length + (kept.length > 0 ? 1 : 0) + line.length;
+    if (next > budget) break;
+    kept.push(line);
+    length = next;
+  }
+  if (kept.length === 0) return "";
+  return `${kept.join("\n")}${marker}`;
 }

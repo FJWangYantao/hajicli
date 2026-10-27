@@ -148,11 +148,49 @@ test("read budget arms differ in page size and per-file allowance", async () => 
     assert.ok(perFileBatch.length > sharedBatch.length * 2);
     assert.ok(perFileBatch.length <= 32_000);
 
-    // batch_only：每个文件 8k 独立额度（总量 24k 封顶），平分问题修掉但不放大单文件。
+    // batch_only：每个文件 8k 独立额度（总量 32k 封顶），平分问题修掉但不放大单文件。
     const batchOnlyBatch = await batchOnly.execute({ paths: requests });
     assert.equal((batchOnlyBatch.match(/nextStartLine=/g) ?? []).length, 0);
     assert.ok(batchOnlyBatch.length > sharedBatch.length);
     assert.ok(batchOnlyBatch.length <= 32_000);
+    // 只断言总长度会漏掉「整块被丢弃」：4 个文件必须都出现在结果里。
+    assert.equal((batchOnlyBatch.match(/\[文件读取结果 - /g) ?? []).length, 4);
+  });
+});
+
+test("long paths never drop a whole file from a batch read", async () => {
+  await withWorkspace(async (workspace) => {
+    // 单块 = 正文 + 头部（含路径）。路径足够长时，n × 单块会超过合并上限，
+    // 旧实现会把最后一个文件整块丢掉（一行都拿不到，必须重发请求）。
+    const lines = Array.from({ length: 1_000 }, (_, index) => `row-${index + 1}-${"y".repeat(40)}`);
+    const body = lines.join("\n");
+    const deepDir = Array.from({ length: 8 }, (_, index) => `level-${index}-${"a".repeat(18)}`);
+    const dir = path.join(workspace, ...deepDir);
+    await fs.mkdir(dir, { recursive: true });
+    for (let index = 0; index < 10; index += 1) {
+      await fs.writeFile(path.join(dir, `file-${index}.txt`), body);
+    }
+    const rel = (index) => [...deepDir, `file-${index}.txt`].join("/");
+
+    for (const [mode, count] of [
+      ["batch_only", 4],
+      ["batch_only", 10],
+      ["per_file", 2],
+      ["shared", 4],
+    ]) {
+      const tool = new ReadFileTool({ readBudget: mode });
+      const result = await tool.execute({
+        paths: Array.from({ length: count }, (_, index) => ({ path: rel(index) })),
+      });
+      const text = typeof result === "string" ? result : result.output;
+      assert.ok(text.length <= 32_000, `${mode}/${count}: 输出超限 ${text.length}`);
+      assert.equal(
+        (text.match(/\[文件读取结果 - /g) ?? []).length,
+        count,
+        `${mode}/${count}: 有文件被整块丢弃`,
+      );
+      assert.doesNotMatch(text, /本次返回/, `${mode}/${count}: 不该再出现整块丢弃`);
+    }
   });
 });
 

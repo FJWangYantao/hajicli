@@ -169,6 +169,14 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   墙钟中性（−2.8%，6 胜 5 负），但请求 −9.8%、token −8.1%、费用 −8.9%，
   任务 7 的结论覆盖从 1–2/3 提升到 3/3；唯一回归是任务 3（多文件中等体量，+14.7s）。
   结论：**修"平分"有效，放大单文件无效**；默认值已切到 `batch_only`（`shared` 为对照组）。
+  **额度必须把头部算进去**：单块 = 正文 + `[文件读取结果 - 路径]` 等头部行，而合并上限是
+  `总量 − 180`。旧实现正文额度 `outputBudget − 300` 不含路径，n=4 时 `n × 8k` 恰好等于总量、
+  余量为 0，路径 ≥198 字符就把第 4 个文件**整块丢掉**（`per_file` 2 文件只要 124 字符，
+  `shared` 4 文件 224 字符——这是老 bug，只是 batch_only 把阈值拉低了）。现在
+  `renderFile` 按 `outputBudget − 300 − 路径长` 算正文，`execute` 按
+  `(总量 − 180 − 分隔符) / n` 算单文件额度，超限时改为保留下一块的头 + 能放下的完整行
+  （不整块丢）。回归测试：`tool-optimization.test.mjs` 的
+  "long paths never drop a whole file from a batch read"。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
