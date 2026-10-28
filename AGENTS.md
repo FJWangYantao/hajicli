@@ -185,7 +185,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   读错字段，把上下文按全价计、费用高估约 5 倍，已重算。缓存单价按官方价：
   `deepseek-flash` 命中 ¥0.04 / 未命中 ¥2 / 输出 ¥8，`deepseek-v4-pro` 命中 ¥0.3 / 未命中 ¥9 / 输出 ¥27
   （每百万 token，高峰价；谷时五折）。内置注册表已同步这两组价，峰谷按北京时间：
-  工作日 09:00–12:00、14:00–18:00 为峰时，其余与周末全天为谷时（法定节假日未建模）。
+  工作日 09:00–12:00、14:00–18:00 为峰时，其余与周末全天为谷时。**刻意不接法定节假日日历**：
+  官方公告只说「周六、周日全天按低谷计费」，没提节假日与调休，按字面国庆工作日仍有峰时、
+  调休上班的周六仍是谷时（`pricing.test.mjs` 有断言）；官方明确前别套国务院放假安排。
 - 实验记录落盘在 `design/ab/`（报告 + `data/*.json` 每会话指标）；原始 trace 在 `.haji/traces/`
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
 - **写路径基准**（`design/ab/write-bench/run.sh`）：3 个固定写任务（加函数+测试 / 跨文件重命名 /

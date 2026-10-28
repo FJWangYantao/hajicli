@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   formatOffPeakWindow,
+  getModelPricing,
   isWithinOffPeak,
   parseClockMinute,
   parseOffPeakWindow,
@@ -894,4 +895,13 @@ test("侧栏显示谷时请求数", () => {
   const line = frame.rows.map(stripAnsi).find((row) => row.includes("谷时"));
   assert.ok(line, "应有谷时行");
   assert.match(line, /1 次/);
+});
+
+test("DeepSeek 峰谷只按星期判定：国庆工作日仍有峰时，调休上班的周六仍是谷时", () => {
+  const window = getModelPricing("deepseek-v4-flash")?.offPeak?.window;
+  assert.ok(window, "内置 DeepSeek 模型带峰谷窗口");
+  // 2026-10-05（周一，国庆假期）10:00 北京时间 = 02:00 UTC：按官方公告字面仍是峰时。
+  assert.equal(isWithinOffPeak(Date.parse("2026-10-05T02:00:00Z"), window), false);
+  // 2026-10-10（周六，调休上班）10:00 北京时间：周六全天谷时。
+  assert.equal(isWithinOffPeak(Date.parse("2026-10-10T02:00:00Z"), window), true);
 });
