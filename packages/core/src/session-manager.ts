@@ -33,6 +33,26 @@ export interface SessionCostRecord {
   turnPrompt?: string;
 }
 
+/**
+ * 最近一次上下文压缩的结果：随会话落盘，/resume 用它回放压缩记录，
+ * selfstate 用它回答「上下文是怎么变小的」。老会话没有该字段。
+ */
+export interface SessionCompaction {
+  /** 压缩时刻（ISO）。 */
+  at: string;
+  beforeTokens: number;
+  afterTokens: number;
+  /** 压缩前后的字符占用（用于回放「释放了多少空间」那行）；老会话缺省。 */
+  beforeChars?: number;
+  afterChars?: number;
+  /** 应用的压缩层，例如 `L1:大结果落盘 -> L4:模型结构化摘要`。 */
+  layers: string[];
+  /** 压缩前完整轨迹（transcript_*.jsonl）；落盘失败时缺省。 */
+  transcriptPath?: string;
+  /** 摘要来源；`fallback` 表示模型摘要失败、用了本地降级摘要。 */
+  summaryMode?: "model" | "fallback";
+}
+
 /** 会话内用量：/resume 时据此把侧栏的费用、压缩次数与上轮耗时复原。 */
 export interface SessionUsage {
   costRecords?: SessionCostRecord[];
@@ -40,6 +60,8 @@ export interface SessionUsage {
   compactionCount?: number;
   /** 上一轮回合耗时（ms）。 */
   lastTurnMs?: number;
+  /** 最近一次压缩的详情；与消息一起落盘，压缩记录才能跨 /resume 还原。 */
+  lastCompaction?: SessionCompaction;
 }
 
 /** 会话目标：setgoal 工具设定（模型从用户请求中提炼），随会话记录持久化；/resume 后恢复、/clear 后归零。 */
@@ -255,10 +277,19 @@ export class SessionManager {
    * 只改内存并标脏：真正的落盘与消息一起由 flush 完成。
    */
   public setUsage(usage: SessionUsage): void {
+    const compaction = usage.lastCompaction;
     this.currentSession.usage = {
       costRecords: usage.costRecords?.map((record) => ({ ...record })) ?? [],
       compactionCount: usage.compactionCount ?? 0,
       lastTurnMs: usage.lastTurnMs ?? 0,
+      ...(compaction
+        ? {
+            lastCompaction: {
+              ...compaction,
+              layers: [...compaction.layers],
+            },
+          }
+        : {}),
     };
   }
 
@@ -305,6 +336,14 @@ export class SessionManager {
                   })),
                   compactionCount: this.currentSession.usage.compactionCount,
                   lastTurnMs: this.currentSession.usage.lastTurnMs,
+                  ...(this.currentSession.usage.lastCompaction
+                    ? {
+                        lastCompaction: {
+                          ...this.currentSession.usage.lastCompaction,
+                          layers: [...this.currentSession.usage.lastCompaction.layers],
+                        },
+                      }
+                    : {}),
                 },
               }
             : {}),

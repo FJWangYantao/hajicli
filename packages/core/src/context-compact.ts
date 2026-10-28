@@ -5,7 +5,11 @@ import {
   AGENT_VERIFICATION_CONTEXT_START,
 } from "./agent-manager.js";
 import { DEFAULT_COMPACTION_TOKEN_THRESHOLD } from "./context-policy.js";
-import { formatSkillActivationContext, stripSkillActivationContext } from "./skill-context.js";
+import {
+  formatSkillActivationContext,
+  SKILL_CONTEXT_START,
+  stripSkillActivationContext,
+} from "./skill-context.js";
 import { validateToolCall } from "./tool-call-validation.js";
 import type { ChatMessage } from "./types.js";
 
@@ -320,6 +324,48 @@ export function microCompact(messages: ChatMessage[], keepRecentCount = 3): Chat
 }
 
 /**
+ * 压缩摘要写进系统提示词时使用的分节标记：刷新提示词、以及 /resume 回放
+ * 压缩记录都靠它定位「摘要从哪里开始」。
+ */
+export const COMPACTED_SUMMARY_MARKER = "\n\n[Compacted Context Summary]";
+/** 摘要后面紧跟的「压缩前完整轨迹」行前缀（compactHistory 写入）。 */
+const TRANSCRIPT_HINT_PREFIX = "\n完整压缩前记录：";
+
+export interface CompactedContextRecord {
+  /** 系统提示词里的结构化摘要正文（已剔除技能/Agent 验证等附加分片）。 */
+  summary: string;
+  /** 压缩前完整轨迹文件；没有落盘时缺省。 */
+  transcriptPath?: string;
+}
+
+/**
+ * 从系统提示词尾部拆出压缩摘要与压缩前轨迹路径；没压缩过时返回 undefined。
+ * 老会话没有压缩元数据时，/resume 与生成压缩记录都靠它兜底。
+ */
+export function readCompactedContext(systemContent: string): CompactedContextRecord | undefined {
+  const markerIndex = systemContent.indexOf(COMPACTED_SUMMARY_MARKER);
+  if (markerIndex < 0) return undefined;
+  const suffix = systemContent.slice(markerIndex + COMPACTED_SUMMARY_MARKER.length);
+  const hintIndex = suffix.indexOf(TRANSCRIPT_HINT_PREFIX);
+  // 摘要正文止于第一个附加分片（轨迹提示 / 技能激活 / Agent 验证上下文）。
+  const boundaries = [
+    hintIndex,
+    suffix.indexOf(SKILL_CONTEXT_START),
+    suffix.indexOf(AGENT_VERIFICATION_CONTEXT_START),
+  ].filter((index) => index >= 0);
+  const end = boundaries.length > 0 ? Math.min(...boundaries) : suffix.length;
+  const summary = suffix.slice(0, end).trim();
+  const transcriptPath =
+    hintIndex >= 0
+      ? suffix
+          .slice(hintIndex + TRANSCRIPT_HINT_PREFIX.length)
+          .split(/\r?\n/, 1)[0]
+          ?.trim() || undefined
+      : undefined;
+  return { summary, ...(transcriptPath ? { transcriptPath } : {}) };
+}
+
+/**
  * L4: compact_history（全量结构化摘要 - 1 API 或本地备份）
  * 完整轨迹存盘至 .haji/transcripts/，并替换为 5 项结构化摘要
  */
@@ -356,14 +402,14 @@ export async function compactHistory(
     content: "你是一个高效的 AI 辅助编程助手。",
   };
   const agentVerificationContext = collectAgentVerificationContext(messages);
-  const summaryMarker = "\n\n[Compacted Context Summary]";
+  const summaryMarker = COMPACTED_SUMMARY_MARKER;
   const cleanSystemContent = stripSkillActivationContext(
     stripAgentVerificationContext(originalSystemMsg.content),
   );
   const markerIndex = cleanSystemContent.indexOf(summaryMarker);
   const baseSystemContent =
     markerIndex >= 0 ? cleanSystemContent.slice(0, markerIndex) : cleanSystemContent;
-  const transcriptHint = transcriptPath ? `\n完整压缩前记录：${transcriptPath}` : "";
+  const transcriptHint = transcriptPath ? `${TRANSCRIPT_HINT_PREFIX}${transcriptPath}` : "";
   const skillActivationContext = formatSkillActivationContext(messages);
   const systemMsg: ChatMessage = {
     ...originalSystemMsg,

@@ -1,0 +1,165 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { SessionManager } from "@hajicli/core";
+
+import { resumeLatestSession } from "../dist/session-commands.js";
+
+/**
+ * /resume 的压缩记录回放：压缩摘要只写在 system 消息里，普通历史渲染会跳过，
+ * 所以这里守着「恢复后仍能看见压缩提示、字符/Token 估算、压缩前轨迹与摘要」。
+ */
+
+const COMPACTED_SYSTEM = [
+  "BASE PROMPT",
+  "",
+  "[Compacted Context Summary]",
+  "",
+  "## 当前目标",
+  "整理分支",
+  "",
+  "完整压缩前记录：/tmp/transcript_9.jsonl",
+  "",
+  "[HAJI_ACTIVE_SKILLS_START]",
+  "skill-line",
+  "[HAJI_ACTIVE_SKILLS_END]",
+].join("\n");
+
+const COMPACTION = {
+  at: "2026-10-27T10:00:00.000Z",
+  beforeTokens: 123_456,
+  afterTokens: 4_567,
+  beforeChars: 234_567,
+  afterChars: 45_678,
+  layers: ["L1:大结果落盘", "L4:模型结构化摘要"],
+  transcriptPath: "/tmp/transcript_9.jsonl",
+  summaryMode: "model",
+};
+
+function makeTempDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "haji-resume-compaction-"));
+}
+
+/** 最小 ctx：只实现 loadAndRenderSession 用到的接口，聊天内容收集到 lines。 */
+function createContext(sessionManager, lines) {
+  const noop = () => {};
+  const ui = {
+    getContentWidth: () => 80,
+    writeLine: (value = "") => lines.push(value),
+    replaceChatSegments: (pieces) => {
+      lines.push("<<CHAT>>");
+      for (const piece of pieces) lines.push(piece.raw);
+    },
+    clearChat: noop,
+  };
+  return {
+    ui,
+    sessionManager,
+    taskStore: { setTaskScope: noop },
+    snapshotEngine: { setScope: noop },
+    agentManager: { setScope: noop },
+    skillRegistry: { restoreScopeFromMessages: noop },
+    readSelectionSafely: async () => ({ value: "" }),
+    getSlashCommands: () => [],
+    pendingInputs: [],
+    getMessages: () => [],
+    setMessages: noop,
+    getSystemPrompt: () => "sys",
+    resetPlanReviewState: noop,
+    syncTaskPlanUI: noop,
+    refreshSystemPrompt: async () => {},
+    refreshAgentVerificationContext: noop,
+    isThinkingVisible: () => true,
+    saveSession: noop,
+    updateStatusUI: noop,
+    applySessionUsage: (usage) => lines.push(`<<USAGE ${usage?.compactionCount}>>`),
+  };
+}
+
+async function seedSession(dir, { usage }) {
+  const writer = new SessionManager(dir);
+  const id = writer.getCurrentSession().id;
+  const messages = [
+    { role: "system", content: COMPACTED_SYSTEM },
+    { role: "user", content: "删除分支" },
+    { role: "assistant", content: "已删除。" },
+  ];
+  writer.saveCurrentSession(messages, "分支整理");
+  if (usage) {
+    writer.setUsage({ costRecords: [], lastTurnMs: 1000, ...usage });
+    writer.saveCurrentSession(messages);
+  }
+  await writer.flush();
+  return id;
+}
+
+async function renderResume(dir) {
+  const lines = [];
+  const reader = new SessionManager(dir);
+  // 主目录里得有一个“当前会话”，resumeLatestSession 才会列出刚种下的那个。
+  reader.startNewSession();
+  const ok = await resumeLatestSession(createContext(reader, lines));
+  assert.equal(ok, true);
+  return lines.join("\n");
+}
+
+test("/resume 回放压缩记录：次数/层级/字符/Token/轨迹与摘要", async () => {
+  const dir = makeTempDir();
+  await seedSession(dir, {
+    usage: { compactionCount: 2, lastCompaction: COMPACTION },
+  });
+
+  const text = await renderResume(dir);
+  assert.match(text, /已恢复会话：「分支整理」/);
+  assert.match(text, /上下文压缩完成（共 2 次/);
+  assert.match(text, /L1:大结果落盘 -> L4:模型结构化摘要/);
+  assert.match(text, /字符占用: 234,567 ➔ 45,678 \(释放了 80\.5% 空间\)/);
+  assert.match(text, /Token 估算: 123,456 ➔ 4,567/);
+  assert.match(text, /压缩前完整记录：\/tmp\/transcript_9\.jsonl/);
+  assert.match(text, /压缩摘要（已并入系统提示词）/);
+  assert.match(text, /整理分支/);
+  // system 消息本身不参与渲染：基础提示词与技能分片都不能漏进聊天区。
+  assert.doesNotMatch(text, /BASE PROMPT/);
+  assert.doesNotMatch(text, /skill-line/);
+  // 侧栏用量仍然照常恢复。
+  assert.match(text, /<<USAGE 2>>/);
+});
+
+test("老会话没有压缩元数据时，用系统提示词里的摘要标记兜底", async () => {
+  const dir = makeTempDir();
+  await seedSession(dir, { usage: { compactionCount: 1 } });
+
+  const text = await renderResume(dir);
+  assert.match(text, /上下文压缩完成（共 1 次）/);
+  // 没有落盘元数据就不编造字符/Token 估算。
+  assert.doesNotMatch(text, /字符占用/);
+  assert.doesNotMatch(text, /Token 估算/);
+  // 轨迹路径仍能从 system 消息尾部解析出来。
+  assert.match(text, /压缩前完整记录：\/tmp\/transcript_9\.jsonl/);
+  assert.match(text, /整理分支/);
+});
+
+test("本地降级摘要在恢复时明确标注", async () => {
+  const dir = makeTempDir();
+  await seedSession(dir, {
+    usage: {
+      compactionCount: 1,
+      lastCompaction: { ...COMPACTION, summaryMode: "fallback" },
+    },
+  });
+
+  const text = await renderResume(dir);
+  assert.match(text, /本地降级摘要/);
+});
+
+// /resume 与 /clear 的压缩记录同步是 index.ts 注入的实现，这里守着接线不被改回去。
+const indexSource = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+
+test("selfstate 读会话持久化的压缩记录，/resume 与 /clear 跟着会话重置", () => {
+  assert.match(indexSource, /const persistedCompaction = current\.usage\?\.lastCompaction/);
+  assert.match(indexSource, /lastCompaction = usage\?\.lastCompaction/);
+  assert.match(indexSource, /\.\.\.\(lastCompaction \? \{ lastCompaction \} : \{\}\)/);
+});

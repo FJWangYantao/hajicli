@@ -7,14 +7,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  stripExperienceRecall,
   type AgentManager,
   type ChatMessage,
   isFailedToolOutput,
+  readCompactedContext,
   type SessionManager,
   type SessionUsage,
   type SkillRegistry,
   type SnapshotEngine,
+  stripExperienceRecall,
   type TaskStore,
 } from "@hajicli/core";
 import {
@@ -97,6 +98,18 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ui.writeLine(colors.okLine("已开启全新对话并重置上下文。"));
 }
 
+/** 压缩记录里的时间戳；与 /resume 选择器用同一套时间格式。 */
+function formatCompactionStamp(iso: string): string {
+  const time = new Date(iso);
+  if (!Number.isFinite(time.getTime())) return "";
+  return time.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** 加载并回显一个历史会话；/resume 与启动参数 -c/-r 共用。 */
 async function loadAndRenderSession(
   ctx: SessionCommandContext,
@@ -174,6 +187,65 @@ async function loadAndRenderSession(
   appendHistoryLine(
     colors.okLine(`已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
   );
+  // 压缩记录：摘要与「压缩前完整记录」路径只写在 system 消息里，而下面的渲染会跳过
+  // system；不显式回放的话，恢复后看起来就像历史莫名少了一截（压缩提示原本也只写终端缓冲）。
+  const compactionSystemContent = loaded.messages.find(
+    (message) => message.role === "system",
+  )?.content;
+  const compacted =
+    typeof compactionSystemContent === "string"
+      ? readCompactedContext(compactionSystemContent)
+      : undefined;
+  const compaction = loaded.usage?.lastCompaction;
+  const compactionCount = loaded.usage?.compactionCount ?? 0;
+  const transcriptPath = compaction?.transcriptPath ?? compacted?.transcriptPath;
+  if (compacted || compaction || compactionCount > 0) {
+    appendHistoryLine();
+    const stamp = compaction ? formatCompactionStamp(compaction.at) : "";
+    const countText = compactionCount > 0 ? `共 ${compactionCount} 次` : "";
+    const detailText = [countText, stamp].filter(Boolean).join(" · ");
+    appendHistoryLine(colors.okLine(`⟳ 上下文压缩完成${detailText ? `（${detailText}）` : ""}`));
+    if (compaction && compaction.layers.length > 0) {
+      appendHistoryLine(colors.gray(`  压缩层: ${compaction.layers.join(" -> ")}`));
+    }
+    if (compaction && compaction.beforeChars !== undefined && compaction.afterChars !== undefined) {
+      const freed = Math.max(
+        0,
+        Math.round(
+          ((compaction.beforeChars - compaction.afterChars) / Math.max(1, compaction.beforeChars)) *
+            1000,
+        ) / 10,
+      );
+      appendHistoryLine(
+        colors.gray(
+          `  字符占用: ${compaction.beforeChars.toLocaleString()} ➔ ${compaction.afterChars.toLocaleString()} (释放了 ${freed}% 空间)`,
+        ),
+      );
+    }
+    if (compaction) {
+      appendHistoryLine(
+        colors.gray(
+          `  Token 估算: ${compaction.beforeTokens.toLocaleString()} ➔ ${compaction.afterTokens.toLocaleString()}`,
+        ),
+      );
+    }
+    if (compaction?.summaryMode === "fallback") {
+      appendHistoryLine(
+        colors.warnLine("  上次压缩使用的是本地降级摘要（模型摘要调用失败），完整记录仍已落盘。"),
+      );
+    }
+    if (transcriptPath) {
+      appendHistoryLine(
+        colors.gray(`  压缩前完整记录：${transcriptPath}（可用 history 工具按「压缩前」检索）`),
+      );
+    }
+    if (compacted?.summary) {
+      appendHistoryLine();
+      appendHistoryLine(colors.gray("压缩摘要（已并入系统提示词）："));
+      const summaryRenderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
+      appendHistoryLine(summaryRenderer.render(compacted.summary, true));
+    }
+  }
   // 工具结果并入对应调用的工具块显示，这里先按调用 id 建立索引。
   const historyToolOutputs = new Map<string, string>();
   for (const m of loaded.messages) {
@@ -188,9 +260,7 @@ async function loadAndRenderSession(
     if (m.role === "user" && typeof m.content === "string") {
       abandonGroup();
       appendHistoryLine();
-      appendHistoryLine(
-        colors.userMsg(sanitizeTerminalText(stripExperienceRecall(m.content))),
-      );
+      appendHistoryLine(colors.userMsg(sanitizeTerminalText(stripExperienceRecall(m.content))));
       appendHistoryLine();
     } else if (m.role === "assistant") {
       const hasToolCalls = Boolean(m.tool_calls && m.tool_calls.length > 0);

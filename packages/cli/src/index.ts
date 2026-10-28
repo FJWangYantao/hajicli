@@ -10,16 +10,17 @@ import {
   AgentManager,
   type AgentRecord,
   type BaseTool,
+  buildExperienceRecall,
   type ChatMessage,
+  COMPACTED_SUMMARY_MARKER,
+  type CompactionResult,
   DEFAULT_PERMISSION_MODE,
   DistillEngine,
   ExperienceStore,
   ExperiencesPromptPart,
-  buildExperienceRecall,
   estimateMessagesTokens,
   formatPendingAgentVerificationContext,
   formatSubagentResult,
-  wrapExperienceRecall,
   getContextCompactionThresholds,
   type HookContext,
   HookEngine,
@@ -40,7 +41,9 @@ import {
   performanceMonitor,
   type ReasoningEffort,
   type RiskLevel,
+  readCompactedContext,
   runCompactionPipeline,
+  type SessionCompaction,
   type SessionGoal,
   SessionManager,
   SessionTracker,
@@ -54,6 +57,7 @@ import {
   TaskStore,
   type ToolCall,
   type ToolExecutionContext,
+  wrapExperienceRecall,
 } from "@hajicli/core";
 import {
   BashTool,
@@ -767,10 +771,27 @@ async function main() {
   const isPathScopedGrant = (grant: PermissionGrant | undefined): boolean =>
     Boolean(grant && /^(?:read|write):/.test(grant.key));
   let autoCompactionArmed = true;
-  /** 最近一次压缩结果：selfstate 用它说明「上下文是怎么变小的」。 */
-  let lastCompaction:
-    | { at: string; beforeTokens: number; afterTokens: number; layers: string[] }
-    | undefined;
+  /**
+   * 最近一次压缩结果：随会话用量落盘（`usage.lastCompaction`），
+   * /resume 回放压缩记录、selfstate 说明「上下文是怎么变小的」都读它。
+   */
+  let lastCompaction: SessionCompaction | undefined;
+  /** 把一次压缩结果整理成会话元数据；压缩前轨迹路径从系统提示词尾部取。 */
+  const recordCompaction = (result: CompactionResult): void => {
+    const systemContent =
+      result.messages[0]?.role === "system" ? String(result.messages[0].content ?? "") : "";
+    const transcriptPath = readCompactedContext(systemContent)?.transcriptPath;
+    lastCompaction = {
+      at: new Date().toISOString(),
+      beforeTokens: result.originalTokens,
+      afterTokens: result.compactedTokens,
+      beforeChars: result.originalChars,
+      afterChars: result.compactedChars,
+      layers: [...result.layersApplied],
+      ...(transcriptPath ? { transcriptPath } : {}),
+      ...(result.summaryMode === "none" ? {} : { summaryMode: result.summaryMode }),
+    };
+  };
 
   // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
   hookEngine.register("PreToolUse", async (ctx) => {
@@ -941,13 +962,9 @@ async function main() {
       // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
       if (result.layersApplied.length > 0) {
         ui.noteCompaction();
+        recordCompaction(result);
+        // 压缩记录属于会话元数据：同步后随下一次落盘写进 usage.lastCompaction。
         syncSessionUsage();
-        lastCompaction = {
-          at: new Date().toISOString(),
-          beforeTokens: result.originalTokens,
-          afterTokens: result.compactedTokens,
-          layers: [...result.layersApplied],
-        };
       }
       const layers =
         result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
@@ -1186,9 +1203,8 @@ async function main() {
   let messages: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const refreshSystemPromptPreservingContext = async (): Promise<void> => {
     const refreshedPrompt = await createSystemPrompt();
-    const summaryMarker = "\n\n[Compacted Context Summary]";
     const currentSystemContent = messages[0]?.role === "system" ? messages[0].content : "";
-    const markerIndex = currentSystemContent.indexOf(summaryMarker);
+    const markerIndex = currentSystemContent.indexOf(COMPACTED_SUMMARY_MARKER);
     const compactedSuffix = markerIndex >= 0 ? currentSystemContent.slice(markerIndex) : "";
     systemPrompt = refreshedPrompt;
     messages[0] = { role: "system", content: `${refreshedPrompt}${compactedSuffix}` };
@@ -1295,6 +1311,8 @@ async function main() {
       costRecords: costTracker.getRecords(),
       compactionCount: ui.getSessionMetrics().compactionCount,
       lastTurnMs: ui.getSessionMetrics().lastTurnMs,
+      // 最近一次压缩记录跟着用量一起落盘：/resume 后才能回放压缩提示。
+      ...(lastCompaction ? { lastCompaction } : {}),
     });
   };
   for (const warning of [...mcpStartupWarnings, ...aliasSkillWarnings]) {
@@ -1848,6 +1866,9 @@ async function main() {
     const thresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
     const branch = readGitBranch(gitHeadPath);
     const current = sessionManager.getCurrentSession();
+    // 压缩记录读会话持久化字段（usage.lastCompaction）：/resume 后仍然有效，
+    // /clear 换会话时自然归零，不会串到上一个会话。
+    const persistedCompaction = current.usage?.lastCompaction;
     const roots = [
       { path: process.cwd(), source: "cwd" as const },
       ...workspaceRoots.map((root) => ({
@@ -1872,7 +1893,7 @@ async function main() {
         triggerTokens: thresholds.triggerTokens,
         emergencyTokens: thresholds.emergencyTokens,
         armed: autoCompactionArmed,
-        ...(lastCompaction ? { lastCompaction } : {}),
+        ...(persistedCompaction ? { lastCompaction: persistedCompaction } : {}),
       },
       session: {
         id: current.id,
@@ -2910,9 +2931,11 @@ async function main() {
     isThinkingVisible: () => showThinking,
     saveSession: () => sessionManager.saveCurrentSession(messages),
     updateStatusUI,
-    // 会话用量跟随会话走：/resume 还原历史会话自己的记账，/clear 归零。
+    // 会话用量跟随会话走：/resume 还原历史会话自己的记账与压缩记录，/clear 归零。
     applySessionUsage: (usage) => {
       costTracker.loadRecords(usage?.costRecords);
+      // 压缩记录也是会话级状态：切会话时必须跟着换，不能沿用上一个会话的（selfstate 会读它）。
+      lastCompaction = usage?.lastCompaction;
       publishCostInfo();
       ui.setSessionMetrics({
         compactionCount: usage?.compactionCount,
@@ -4087,14 +4110,10 @@ async function main() {
           sessionManager.saveCurrentSession(messages);
           if (result.layersApplied.length > 0) {
             ui.noteCompaction();
+            recordCompaction(result);
+            // 顺序要紧：先把压缩记录写进 usage，再 sync（setUsage）并落盘。
             syncSessionUsage();
             sessionManager.saveCurrentSession(messages);
-            lastCompaction = {
-              at: new Date().toISOString(),
-              beforeTokens: result.originalTokens,
-              afterTokens: result.compactedTokens,
-              layers: [...result.layersApplied],
-            };
           }
           updateStatusUI();
           const layersStr =

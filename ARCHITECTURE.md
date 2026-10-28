@@ -98,6 +98,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - token 估算：`estimateMessagesTokens` / `estimateTextTokens`（core）。
 - 自动压缩：UserPromptSubmit Hook 内检测用量越过触发阈值 → `runCompactionPipeline` 四层管线（`context-compact.ts`，模型摘要失败降级本地摘要），带 rearm 防抖；`splitPendingUserTurn` 保证最新一条用户消息不被压缩。
 - 手动 `/compact` 强制全管线。压缩摘要以 `[Compacted Context Summary]` 后缀保留在系统提示词尾部，刷新提示词时原样带过。
+- 压缩记录随会话落盘：`SessionUsage.lastCompaction`（时间 / 前后 token 与字符 / 层级 / `transcriptPath` / 摘要来源）与消息一起写进会话文件；`/resume` 显式回放「压缩完成、字符与 Token 估算、压缩前完整记录、摘要」——摘要只存在于 system 消息里，普通历史渲染会跳过它。老会话没有该字段时按系统提示词里的标记与轨迹行兜底。`selfstate` 的 `context.lastCompaction` 也读这个持久化字段，`/resume`、`/clear` 跟着会话重置。
 
 ## 会话、快照与 Rewind
 

@@ -12,6 +12,7 @@ import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   estimateMessagesTokens,
   getContextCompactionThresholds,
+  readCompactedContext,
   repairToolCallPairs,
   runCompactionPipeline,
   shouldTriggerAutoCompaction,
@@ -400,4 +401,59 @@ test("model context windows come from the shared provider registry", () => {
   assert.equal(MODEL_CONTEXT_WINDOWS["deepseek-v4-flash"], 1_000_000);
   assert.equal(MODEL_CONTEXT_WINDOWS["doubao-pro-32k"], 32_768);
   assert.equal(getModelContextWindowTokens("glm-5.2", {}), MODEL_CONTEXT_WINDOWS["glm-5.2"]);
+});
+
+test("readCompactedContext splits the summary and pre-compaction transcript path", () => {
+  const content = [
+    "system rules",
+    "",
+    "[Compacted Context Summary]",
+    "",
+    "## 当前目标",
+    "整理分支",
+    "",
+    "完整压缩前记录：/tmp/transcript_1.jsonl",
+    "",
+    "[HAJI_ACTIVE_SKILLS_START]",
+    "skill-line",
+    "[HAJI_ACTIVE_SKILLS_END]",
+    "",
+    AGENT_VERIFICATION_CONTEXT_START,
+    "agent-line",
+    AGENT_VERIFICATION_CONTEXT_END,
+  ].join("\n");
+
+  const record = readCompactedContext(content);
+  assert.ok(record);
+  // 摘要止于第一个附加分片；技能激活与 Agent 验证上下文不算摘要正文。
+  assert.equal(record.summary, "## 当前目标\n整理分支");
+  assert.equal(record.transcriptPath, "/tmp/transcript_1.jsonl");
+  assert.equal(readCompactedContext("system rules"), undefined);
+});
+
+test("pipeline 输出的 system 消息能被 readCompactedContext 还原出摘要与轨迹路径", async () => {
+  const previousCwd = process.cwd();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-compact-record-"));
+  process.chdir(cwd);
+  try {
+    const history = [
+      { role: "system", content: "system rules" },
+      { role: "user", content: "first request" },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "latest request" },
+    ];
+    const result = await runCompactionPipeline(history, {
+      forceL4: true,
+      summaryProvider: async () => "## 目标\n继续整理分支",
+    });
+
+    const record = readCompactedContext(result.messages[0].content);
+    assert.ok(record);
+    assert.match(record.summary, /## 目标\n继续整理分支/);
+    assert.ok(record.transcriptPath, "压缩前轨迹路径要能从 system 尾部解析出来");
+    assert.ok(fs.existsSync(record.transcriptPath), "轨迹文件应已真实落盘");
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

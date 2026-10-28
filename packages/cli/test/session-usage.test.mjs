@@ -49,6 +49,41 @@ test("会话用量随会话文件落盘，loadSession 后能还原", async () =>
   assert.deepEqual(loaded.usage, USAGE);
 });
 
+const COMPACTION = {
+  at: "2026-10-27T10:00:00.000Z",
+  beforeTokens: 120_000,
+  afterTokens: 8_000,
+  beforeChars: 300_000,
+  afterChars: 20_000,
+  layers: ["L1:大结果落盘", "L4:模型结构化摘要"],
+  transcriptPath: "/tmp/transcript_1.jsonl",
+  summaryMode: "fallback",
+};
+
+test("压缩记录随会话落盘：只有 lastCompaction 变化也要写盘，loadSession 后原样还原", async () => {
+  const dir = makeTempDir();
+  const writer = new SessionManager(dir);
+  const id = writer.getCurrentSession().id;
+
+  // 消息与其它用量字段都不再变化，只有 lastCompaction 是新的（/compact 后的第二次保存）。
+  writer.saveCurrentSession(MESSAGES);
+  writer.setUsage({ ...USAGE, lastCompaction: COMPACTION });
+  assert.notEqual(
+    writer.getCurrentSession().usage.lastCompaction.layers,
+    COMPACTION.layers,
+    "layers 要深拷贝，不能与调用方共享数组",
+  );
+  writer.saveCurrentSession(MESSAGES);
+  await writer.flush();
+
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, `session_${id}.json`), "utf8"));
+  assert.deepEqual(raw.usage.lastCompaction, COMPACTION);
+
+  const loaded = new SessionManager(dir).loadSession(id);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.usage.lastCompaction, COMPACTION);
+});
+
 test("老会话文件没有 usage 字段时按缺省处理，不报错", async () => {
   const dir = makeTempDir();
   const writer = new SessionManager(dir);
