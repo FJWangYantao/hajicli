@@ -361,7 +361,7 @@ function renderPatch(patch: string, width: number, maxLines: number): DiffBody {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (row.type === "hunk") {
-      if (hunkCount > 1) rendered.push({ row: colors.cyan(row.text), kind: "head" });
+      if (hunkCount > 1) rendered.push({ row: colors.muted(row.text), kind: "head" });
       continue;
     }
     if (row.type === "note") {

@@ -192,7 +192,7 @@ export function buildFoldHeader(stats: FoldGroupStats, width: number, hovered = 
   );
   const bulletPaint =
     stats.failed > 0 ? colors.boldRed : hovered ? colors.boldAccent : colors.muted;
-  const textPaint = hovered ? colors.cyan : colors.muted;
+  const textPaint = hovered ? colors.accent : colors.muted;
 
   const build = (
     categoryTexts: readonly string[],

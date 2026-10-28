@@ -737,8 +737,10 @@ export const TOOL_CELL_INDENT = "  ";
  *       # fail 0
  * 运行中用静止的 ●（动画只在活动行），下方显示输出尾部；完成后结果说明下面带几行预览。
  *
- * 配色分工：工具侧（工具名、摘要、参数/命令展开行）一律用青色，结果侧（└ 说明、
- * 输出预览）用灰色，让「调用了什么」和「拿回了什么」在视觉上分得开。
+ * 配色分工：工具名加粗正文色、**摘要用强调色**（与工具名区分开，摘要才是要看清的部分，
+ * 所以彩色给它；两者的区别靠色相而不是亮度）、参数展开行次要文字色、
+ * 结果侧（└ 说明、输出预览）再淡一档；状态标记（✓/✕/⊘/●）与增删行数各自语义色。
+ * 工具块里仍然不出现青色（用户明确否过）。
  */
 export function formatToolCell(options: ToolCellOptions): string[] {
   const width = Math.max(10, options.width);
@@ -758,7 +760,7 @@ export function formatToolCell(options: ToolCellOptions): string[] {
   const verdict = options.verdict || "";
   const statsPlain = options.stats ? `+${options.stats.added} −${options.stats.removed}` : "";
   const stats = options.stats
-    ? `${colors.green(`+${options.stats.added}`)} ${colors.red(`−${options.stats.removed}`)}`
+    ? `${colors.boldGreen(`+${options.stats.added}`)} ${colors.boldRed(`−${options.stats.removed}`)}`
     : "";
   const fixedWidth =
     terminalWidth(TOOL_CELL_INDENT) +
@@ -777,8 +779,8 @@ export function formatToolCell(options: ToolCellOptions): string[] {
     mark,
     " ",
     source ? colors.faint(source) : "",
-    colors.cyan(options.toolName),
-    summary ? `  ${colors.cyan(summary)}` : "",
+    colors.boldText(options.toolName),
+    summary ? `  ${colors.accent(summary)}` : "",
     stats ? `  ${stats}` : "",
     timing ? `  ${colors.faint(timing)}` : "",
     verdict ? `  ${colors.faint(verdict)}` : "",
@@ -786,9 +788,11 @@ export function formatToolCell(options: ToolCellOptions): string[] {
   const rows = [options.hover ? `\x1b[4m${header}\x1b[24m` : header];
   const bodyWidth = Math.max(1, width - terminalWidth(TOOL_CELL_INDENT) - 4);
   // 参数展开行紧跟在头行下面：多行命令在原位置按原样分行，而不是压成一行摘要。
-  // 这些是「交给工具执行的东西」，与下方结果同色会分不清，统一用工具侧青色。
+  // 这些是「交给工具执行的东西」，与下方结果同色会分不清，统一用次要文字色（结果侧再淡一档）。
   for (const line of options.argLines || []) {
-    rows.push(`${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.cyan(fitText(line, bodyWidth))}`);
+    rows.push(
+      `${TOOL_CELL_INDENT}  ${colors.faint("│")} ${colors.muted(fitText(line, bodyWidth))}`,
+    );
   }
   if (options.status === "running") {
     for (const line of options.outputTail || []) {

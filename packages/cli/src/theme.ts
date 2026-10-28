@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureContrast } from "./contrast.js";
-import { hexGradient, mixHexOklab } from "./oklab.js";
+import { hexGradient, mixHexOklab, rgbToOklab } from "./oklab.js";
 
 /**
  * TUI 主题模块。
@@ -252,22 +252,101 @@ function isTerminalDefaultValue(key: keyof Theme, value: string): boolean {
   return key === "background" && value === "";
 }
 
-function rgbToAnsi256(r: number, g: number, b: number): number {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  // 近中性色走 24 级灰阶：6×6×6 色立方没有真正的灰，略偏冷的灰会被量化成
-  // (175,215,215) 这类明显偏色的格子——实测 muted #aab3c0 在 256 色终端里发青。
-  // 阈值与 ansi16 的中性分流保持一致（0.18），保住强调色/语义色的色相。
-  if (max === 0 || (max - min) / max <= 0.18) {
-    const value = Math.round((r + g + b) / 3);
-    if (value < 8) return 16;
-    if (value > 248) return 231;
-    return 232 + Math.min(23, Math.round((value - 8) / 10));
+/**
+ * xterm-256 调色板条目：16–231 是 6×6×6 色立方，232–255 是 24 级灰阶。
+ * 预计算 Oklab、彩度与色相，量化时按感知距离直接查表。
+ */
+interface Ansi256Entry {
+  readonly index: number;
+  readonly lab: { l: number; a: number; b: number };
+  readonly chroma: number;
+  readonly hue: number;
+}
+
+function buildAnsi256Entries(): Ansi256Entry[] {
+  const entries: Ansi256Entry[] = [];
+  const add = (index: number, rgb: [number, number, number]) => {
+    const lab = rgbToOklab(rgb);
+    entries.push({
+      index,
+      lab,
+      chroma: Math.hypot(lab.a, lab.b),
+      hue: ((Math.atan2(lab.b, lab.a) * 180) / Math.PI + 360) % 360,
+    });
+  };
+  for (let index = 16; index < 232; index += 1) {
+    const offset = index - 16;
+    const steps = [Math.floor(offset / 36), Math.floor((offset % 36) / 6), offset % 6];
+    add(index, steps.map((step) => (step === 0 ? 0 : 55 + 40 * step)) as [number, number, number]);
   }
-  const red = Math.round((r / 255) * 5);
-  const green = Math.round((g / 255) * 5);
-  const blue = Math.round((b / 255) * 5);
-  return 16 + 36 * red + 6 * green + blue;
+  for (let index = 232; index < 256; index += 1) {
+    const value = 8 + 10 * (index - 232);
+    add(index, [value, value, value]);
+  }
+  return entries;
+}
+
+const ANSI256_ENTRIES: readonly Ansi256Entry[] = buildAnsi256Entries();
+
+/** 彩度低于该值即当作灰：只允许落到 24 级灰阶，避免灰字被染上邻近色相。 */
+const NEUTRAL_CHROMA = 0.03;
+
+/** 色相环上两个色相的最短夹角（度）。 */
+function hueDistance(a: number, b: number): number {
+  const raw = Math.abs(a - b) % 360;
+  return raw > 180 ? 360 - raw : raw;
+}
+
+/**
+ * 在 256 色调色板里找最接近的索引。
+ *
+ * 旧实现是逐通道四舍五入进 6×6×6 色立方（外加「近中性走灰阶」的例外），
+ * 色相实际没有参与比较：浅色板的绿 `#1d7a4d` 被量化成青灰 (95,135,135)、
+ * 洋红被量化成粉红、深色板的蓝与紫撞成同一格。现在按 Oklab 距离取最近色，
+ * 并给彩度轴加权——色相与饱和度优先于「亮度差一点点」，主题色不再发灰走调。
+ */
+function rgbToAnsi256(r: number, g: number, b: number): number {
+  const target = rgbToOklab([r, g, b]);
+  const chroma = Math.hypot(target.a, target.b);
+  let best = 16;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const entry of ANSI256_ENTRIES) {
+    if (chroma <= NEUTRAL_CHROMA && entry.chroma > NEUTRAL_CHROMA) continue;
+    const dl = target.l - entry.lab.l;
+    const da = target.a - entry.lab.a;
+    const db = target.b - entry.lab.b;
+    const score = dl * dl + (da * da + db * db) * 1.8;
+    if (score < bestScore) {
+      bestScore = score;
+      best = entry.index;
+    }
+  }
+  return best;
+}
+
+/**
+ * diff 铺底用的 256 色近似：只在**该语义色的色相窗口**里挑（增=绿区、删=红区），
+ * 再取亮度/彩度最接近的一格。纯按距离取最近色会把浅底淡粉/淡绿又压回灰阶
+ * （红绿分不开）；用主题色自身的色相当锚又会挑到隔壁色族——浅色板绿 `#1d7a4d`
+ * 的色相 151° 正好夹在色块的绿 120° 与青 180° 之间，淡绿条纹会变成淡青。
+ * 色条只需要交代「这片是增还是删」，所以语义色族比精确色相更重要。
+ */
+function ansi256TintIndex(tone: "red" | "green", target: { l: number; a: number; b: number }) {
+  const familyHue = tone === "red" ? 0 : 120;
+  const tolerance = tone === "red" ? 30 : 45;
+  const targetChroma = Math.hypot(target.a, target.b);
+  let best: number | undefined;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const entry of ANSI256_ENTRIES) {
+    if (entry.chroma < 0.04) continue;
+    if (hueDistance(entry.hue, familyHue) > tolerance) continue;
+    const score = Math.abs(entry.lab.l - target.l) + Math.abs(entry.chroma - targetChroma) * 0.5;
+    if (score < bestScore) {
+      bestScore = score;
+      best = entry.index;
+    }
+  }
+  return best;
 }
 
 /**
@@ -710,9 +789,19 @@ export function diffToneBg(tone: "red" | "green"): string {
   const light = getThemeAppearance() === "light";
   if (light && getColorLevel() === "ansi16") return "";
   const anchor = vividDiffAnchor(tone === "red" ? theme.red : theme.green, light);
-  return bgSeq(
-    blendOver(anchor, referenceBackgroundFor(theme, getThemeAppearance()), light ? 0.2 : 0.22),
+  const tint = blendOver(
+    anchor,
+    referenceBackgroundFor(theme, getThemeAppearance()),
+    light ? 0.2 : 0.22,
   );
+  if (getColorLevel() === "ansi256") {
+    const tintRgb = hexToRgb(tint);
+    if (tintRgb) {
+      const index = ansi256TintIndex(tone, rgbToOklab(tintRgb));
+      if (index !== undefined) return `\x1b[48;5;${index}m`;
+    }
+  }
+  return bgSeq(tint);
 }
 
 /**
@@ -787,6 +876,8 @@ function paintBgText(text: string, color: string): string {
  * 便于直接替换。所有方法均在收尾调用 {@link themeReset} 恢复主题背景。
  */
 export const paint = {
+  text: (text: string): string => paintText(text, getTheme().foreground),
+  boldText: (text: string): string => paintText(text, getTheme().foreground, true),
   accent: (text: string): string => paintText(text, getTheme().accent),
   boldAccent: (text: string): string => paintText(text, getTheme().accent, true),
   green: (text: string): string => paintText(text, getTheme().green),

@@ -4,7 +4,7 @@ import test from "node:test";
 import { ToolRunView } from "../dist/activity-indicator.js";
 import { FoldStatsCollector } from "../dist/process-fold.js";
 import { TerminalUI } from "../dist/terminal-input.js";
-import { resetActiveColorLevel, setActiveColorLevel } from "../dist/theme.js";
+import { fgSeq, getTheme, resetActiveColorLevel, setActiveColorLevel } from "../dist/theme.js";
 import {
   isToolBlockExpandable,
   renderToolBlockRows,
@@ -192,6 +192,34 @@ test("hover paints the header with an underline and the indicator with accent co
   assert.ok(
     stripAnsi(hovered.rows[hovered.indicatorRow]) === stripAnsi(plain.rows[plain.indicatorRow]),
   );
+  resetColors();
+});
+
+test("tool header keeps the tool name vivid and the summary at full contrast", () => {
+  setActiveColorLevel("truecolor");
+  const theme = getTheme();
+  const [header] = renderToolBlockRows(
+    {
+      status: "success",
+      toolName: "edit",
+      summary: "src/theme.ts",
+      timing: "1.2s",
+      stats: { added: 12, removed: 3 },
+      keep: "head",
+    },
+    80,
+    { expanded: false },
+  ).rows;
+
+  // 工具名：加粗正文色，靠字重抢眼。
+  assert.ok(header.includes(`\x1b[1m${fgSeq(theme.foreground)}edit`), "工具名加粗正文色");
+  // 摘要（路径/命令）：强调色、不加粗——与工具名靠色相区分，而不是一起刷成同一种颜色。
+  assert.ok(header.includes(`${fgSeq(theme.accent)}src/theme.ts`), "摘要用强调色");
+  assert.ok(!header.includes(`\x1b[1m${fgSeq(theme.accent)}src/theme.ts`), "摘要不加粗");
+  assert.ok(!header.includes(`${fgSeq(theme.cyan)}src/theme.ts`), "摘要不用青色");
+  // 改动行数：加粗红绿，把饱和度留给增删语义。
+  assert.ok(header.includes(`\x1b[1m${fgSeq(theme.green)}+12`), "+行数加粗绿");
+  assert.ok(header.includes(`\x1b[1m${fgSeq(theme.red)}−3`), "−行数加粗红");
   resetColors();
 });
 

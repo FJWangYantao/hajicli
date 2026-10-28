@@ -7,6 +7,7 @@ import {
   bgSeq,
   buildAnsiStyles,
   detectColorLevel,
+  diffToneBg,
   faintHex,
   fgSeq,
   getColorLevel,
@@ -16,10 +17,12 @@ import {
   paint,
   resetActiveColorLevel,
   resetActiveTheme,
+  resetThemeAppearance,
   resetThemePreset,
   setActiveColorLevel,
   setActiveTheme,
   setColorLevel,
+  setThemeAppearance,
   setThemePreset,
   softAccentHex,
   THEME_PRESET_NAMES,
@@ -53,6 +56,7 @@ afterEach(() => {
   resetActiveColorLevel();
   resetActiveTheme();
   resetThemePreset();
+  resetThemeAppearance();
 });
 
 test("detectColorLevel honors explicit mono conditions before color capabilities", () => {
@@ -87,11 +91,36 @@ test("ansi256 sequences map RGB values to the xterm palette", () => {
 
   assert.equal(fgSeq("#ff0000"), "\x1b[38;5;196m");
   assert.equal(bgSeq("#000000"), "\x1b[48;5;16m");
-  assert.equal(fgSeq("#f8f8f8"), "\x1b[38;5;255m");
+  assert.equal(fgSeq("#f8f8f8"), "\x1b[38;5;231m");
   // 近中性灰走 24 级灰阶，不进色立方（否则 #aab3c0 会量化成 175,215,215 的青灰）
   assert.equal(fgSeq("#aab3c0"), "\x1b[38;5;249m");
-  assert.equal(fgSeq("#d9dee7"), "\x1b[38;5;254m");
+  assert.equal(fgSeq("#d9dee7"), "\x1b[38;5;253m");
   assert.match(paint.accent("HAJI"), /^\x1b\[38;5;201mHAJI/);
+});
+
+test("ansi256 keeps hue and chroma instead of rounding each channel into the cube", () => {
+  setActiveColorLevel("ansi256");
+
+  // 浅色板的绿不能量化成青灰（逐通道取整给 66 = 95,135,135），洋红不能变粉。
+  assert.equal(fgSeq("#1d7a4d"), "\x1b[38;5;29m");
+  assert.equal(fgSeq("#8a3aa5"), "\x1b[38;5;91m");
+  // 深色板的蓝与强调紫不能再撞成同一格（旧实现都是 146）。
+  assert.equal(fgSeq("#82aadd"), "\x1b[38;5;110m");
+  assert.equal(fgSeq("#a995d6"), "\x1b[38;5;140m");
+});
+
+test("ansi256 diff tints stay inside their semantic hue family", () => {
+  setActiveColorLevel("ansi256");
+
+  setThemeAppearance("light");
+  // 浅底：淡红/淡绿，而不是两边都被压回灰阶（254/255）。
+  assert.equal(diffToneBg("red"), "\x1b[48;5;224m");
+  // 浅色板绿的色相夹在色块的绿与青之间，色条必须留在绿区而不是淡青。
+  assert.equal(diffToneBg("green"), "\x1b[48;5;194m");
+
+  setThemeAppearance("dark");
+  assert.equal(diffToneBg("red"), "\x1b[48;5;52m");
+  assert.equal(diffToneBg("green"), "\x1b[48;5;22m");
 });
 
 test("ansi16 sequences use standard and bright SGR colors", () => {

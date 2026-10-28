@@ -317,6 +317,18 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 
 ## 工具块二级折叠与鼠标交互（tool-block-fold）
 
+- 头行配色（`formatToolCell`）：**工具名加粗正文色**（`colors.boldText`）、**摘要（路径/命令）强调色**
+  （`colors.accent`，不加粗）、参数展开行次要文字色、`+a −r` 加粗红绿、耗时/来源 `faint`，
+  `└` 说明与输出预览仍是灰色。工具名与摘要靠**色相**区分（加粗近白/近黑 vs 紫），
+  颜色只留给状态标记（✓/✕/⊘/●）、增删行数与摘要；参数与结果侧保持中性。
+  历史上这里刷过青（工具名 + 摘要一片蓝，最该看清的摘要对比度反而最低），用户明确表示不要青色，
+  所以别再把青色加回来（`theme.test.mjs`/`tool-block-fold.test.mjs` 有断言）；
+  过程段摘要的悬停高亮也一并改成强调色（`process-fold.ts` 的 `textPaint`）。
+  摘要配色候选实测：深色下 accent `#a995d6` 与 magenta `#b8a1df` 肉眼无差别，
+  blue `#82aadd` 偏蓝、与当初被否的「一片蓝」同族，因此定 accent。
+  测试：`tool-block-fold.test.mjs`「tool header keeps the tool name vivid and the summary at
+  full contrast」。
+
 - 两级折叠：一级是过程段收敛成 `● 摘要行`（process-fold.ts，点击/Ctrl+O 展开整段）；
   二级是**单个工具块**的按行数收口，但默认态是**全展开**——段展开（或 `/fold off`）后
   每块直接铺开预览全量 + 输出正文至 `TOOL_BLOCK_EXPAND_LINES`（20）行（bash 保尾、其余保头），
@@ -390,6 +402,19 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   `contrast.test.mjs`（浅色板近黑与对比度下限）、`immediate-command.test.mjs`（立即通道口径）、
   `hub-commands.test.mjs`（config 菜单项）、`markdown-responsive.test.mjs`
   （深色→浅色切换后 Markdown 不残留深色板颜色）。
+
+### 256 色量化（ansi256）
+
+- **不再逐通道取整进色立方**：`rgbToAnsi256` 在整张 xterm-256 表（216 色立方 + 24 级灰阶）里按
+  **Oklab 距离**取最近色，彩度轴权重 1.8；近中性（Oklab 彩度 ≤ 0.03）只允许落到灰阶，
+  免得灰字被染上邻近色相。旧实现（每通道 `round(v/255*5)` + 近中性走灰阶）色相根本不参与比较：
+  浅色板绿 `#1d7a4d` 量化成青灰 `66`（95,135,135）、洋红 `#8a3aa5` 变粉、深色板蓝 `#82aadd`
+  与强调紫 `#a995d6` 同落 `146`——「工具调用那块颜色怪怪的」有一半来自这里。
+- diff 铺底单独走 `ansi256TintIndex`：**先按语义色相窗口筛**（增 = 绿区 120°±45、删 = 红区 0°±30），
+  再在窗口内比亮度与彩度。理由：浅色板绿的色相 151° 正好夹在色块绿 120° 与青 180° 之间，
+  按最近色挑会给淡绿条纹挑出淡青；纯亮度最近又会把浅底淡粉/淡绿压回灰阶（旧实现 254/255 两条都灰）。
+- 测试：`theme.test.mjs`「ansi256 keeps hue and chroma…」「ansi256 diff tints stay inside their
+  semantic hue family」。
 
 ## 选区与复制（行号必须与屏幕逐行一致）
 
@@ -527,7 +552,6 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   （命中章节本来就在开头则不重复），无结构文本退回原字符窗口语义，未命中返回全文。
 - 测试：`web-fetch-markdown.test.mjs`（结构映射、嵌套列表、表格表头、噪声整块丢弃、非 HTML 透传、
   信封、预算截断、focus 章节挑选/窗口回退、错误与中止）。
-
 
 ## 代码风格与提交
 
