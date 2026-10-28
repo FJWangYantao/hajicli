@@ -45,20 +45,11 @@ import {
   REQUEST_DETAIL_MIN_ROWS,
   type RequestDetailFrame,
 } from "./request-detail-page.js";
-import {
-  buildStartupExitScene,
-  composeStartupExit,
-  findStartupExitAnchor,
-  STARTUP_EXIT_MS,
-  type StartupExitScene,
-  startupExitNeedle,
-} from "./startup-exit.js";
 import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
 import {
   buildStartupLauncher,
   STARTUP_MOTION_MS,
   STARTUP_PLACEHOLDERS,
-  type StartupLauncherOptions,
   startupLauncherGeometry,
 } from "./startup-launcher.js";
 import {
@@ -230,7 +221,7 @@ export interface TerminalUIOptions {
   /** 首屏选中历史会话，由主循环安全接管并恢复。 */
   onResumeSession?: (id: string) => void;
   /**
-   * 首屏启动动效（标语解码 / Logo 高光 / 星点闪烁，约 1.8 秒后静止）与离开首页时的退场过渡。
+   * 首屏启动动效（标语解码 / Logo 高光 / 星点闪烁，约 1.8 秒后静止）。
    * 默认关闭，由入口按交互模式开启；`HAJI_REDUCED_MOTION=1` 时强制关闭。
    */
   startupMotion?: boolean;
@@ -818,17 +809,6 @@ export class TerminalUI {
   private startupHovered = -1;
   private startupMotionStartedAt?: number;
   private startupMotionTimer: NodeJS.Timeout | null = null;
-  /** 首页最后一帧的排版参数：离开首页时据此生成退场过渡。 */
-  private startupExitSource?: {
-    options: StartupLauncherOptions;
-    chips: number;
-    inputRows: string[];
-    inputLeft: number;
-    draft: string;
-  };
-  /** 进行中的退场过渡（首页 → 对话）。 */
-  private startupExit?: { scene: StartupExitScene; startedAt: number; needle: string };
-  private startupExitTimer: NodeJS.Timeout | null = null;
   private startupHits: Array<{ row: number; index: number; left: number; right: number }> = [];
   private pendingStartupClick?: { row: number; index: number };
 
@@ -4254,13 +4234,9 @@ export class TerminalUI {
     }
   }
 
-  private startupMotionAllowed(): boolean {
-    return Boolean(this.options.startupMotion) && process.env.HAJI_REDUCED_MOTION !== "1";
-  }
-
   /** 启动动效已播放的毫秒数：首次画首屏时起算；关闭动效时返回 undefined（静止画面）。 */
   private startupMotionElapsed(): number | undefined {
-    if (!this.startupMotionAllowed()) return undefined;
+    if (!this.options.startupMotion || process.env.HAJI_REDUCED_MOTION === "1") return undefined;
     this.startupMotionStartedAt ??= Date.now();
     const elapsed = Date.now() - this.startupMotionStartedAt;
     return elapsed < STARTUP_MOTION_MS ? elapsed : undefined;
@@ -4274,55 +4250,6 @@ export class TerminalUI {
       if (this.startupHomeAvailable()) this.scheduleRender(true);
     }, 50);
     this.startupMotionTimer.unref?.();
-  }
-
-  /**
-   * 刚离开首页时决定要不要播退场过渡：只在提交输入 / 对话区出现内容时播，
-   * 选择器、详情页、拖选这类离开方式直接切换；尺寸变了或开了减弱动效也直接切换。
-   */
-  private beginStartupExit(width: number, height: number, minimal: boolean): void {
-    const source = this.startupExitSource;
-    if (!source) return;
-    this.startupExitSource = undefined;
-    if (!this.startupMotionAllowed() || minimal) return;
-    if (source.options.width !== width || source.options.height !== height) return;
-    if (this.contextInspector || this.costLog) return;
-    const content =
-      this.sealedSegments.length > 0 ||
-      Boolean(this.chatContent.trim()) ||
-      Boolean(this.activityFrame) ||
-      Boolean(this.liveTail);
-    if (this.activeInput && !content) return;
-    this.startupExit = {
-      scene: buildStartupExitScene(source.options, source),
-      startedAt: Date.now(),
-      needle: startupExitNeedle(source.draft),
-    };
-  }
-
-  /** 退场过渡期间用合成帧替换真实画面；播完、尺寸变化时返回 undefined。 */
-  private composeStartupExitFrame(
-    rows: readonly string[],
-    width: number,
-    input: { top: number; height: number; left: number; width: number },
-    chatTop: number,
-  ): string[] | undefined {
-    const exit = this.startupExit;
-    if (!exit) return undefined;
-    const progress = (Date.now() - exit.startedAt) / STARTUP_EXIT_MS;
-    if (progress >= 1 || exit.scene.width !== width || exit.scene.height !== rows.length) {
-      this.startupExit = undefined;
-      return undefined;
-    }
-    if (!this.startupExitTimer) {
-      this.startupExitTimer = setTimeout(() => {
-        this.startupExitTimer = null;
-        this.scheduleRender(true);
-      }, 30);
-      this.startupExitTimer.unref?.();
-    }
-    const anchor = findStartupExitAnchor(rows, exit.needle, chatTop);
-    return composeStartupExit(exit.scene, { rows, input, anchor }, progress);
   }
 
   private renderStartupLauncher(width: number, height: number): void {
@@ -4352,7 +4279,7 @@ export class TerminalUI {
     }
     const cardRows = [...chips, ...inputRows];
     this.highlightInputRows(cardRows, chips.length);
-    const launcherOptions: StartupLauncherOptions = {
+    const frame = buildStartupLauncher({
       width,
       height,
       leading,
@@ -4371,17 +4298,8 @@ export class TerminalUI {
       notice: this.transientHintText || this.copiedNotice,
       hasDraft: Boolean(this.activeInput?.graphemes.length),
       motionElapsed: this.startupMotionElapsed(),
-    };
-    const frame = buildStartupLauncher(launcherOptions);
+    });
     if (frame.animating) this.scheduleStartupMotionFrame();
-    const draft = this.activeInput?.graphemes.join("") ?? "";
-    this.startupExitSource = {
-      options: launcherOptions,
-      chips: chips.length,
-      inputRows: draft ? [...inputLayout.rows] : [],
-      inputLeft: geometry.inputLeft,
-      draft,
-    };
     this.inputSelectionTop = frame.inputTop + chips.length;
     this.inputSelectionHeight = inputLayout.rows.length;
     this.startupHits = frame.hits.map((hit) => ({
@@ -4448,8 +4366,6 @@ export class TerminalUI {
 
     // 图片查看是独立整屏视图：有它就只画图，返回时旧帧已失效，自然回到全量重绘。
     if (this.imageOverlay) {
-      this.startupExitSource = undefined;
-      this.startupExit = undefined;
       this.renderImageOverlay();
       return;
     }
@@ -4462,11 +4378,9 @@ export class TerminalUI {
     const height = Math.max(1, layout.safeHeight);
     this.inputSelectionLeft = 0;
     if (this.startupHomeAvailable() && width >= 24 && height >= 10) {
-      this.startupExit = undefined;
       this.renderStartupLauncher(width, height);
       return;
     }
-    this.beginStartupExit(width, height, layout.mode === "minimal");
     // 右侧会话信息栏：只占对话区高度，顶框、输入框与状态栏都收窄到左区宽度，
     // 让整块左侧内容的右边界对齐；侧栏下方的右侧留背景空白，不再横跨整行。
     // 整页视图（上下文详情 / 费用日志）打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
@@ -5001,20 +4915,6 @@ export class TerminalUI {
       // 补齐的空行也要带上竖线，否则屏幕底部会缺一段分隔线、右边界错位。
       screenRows.push(sidebarVisible ? composeSidebarRow("", leftAreaWidth, "", sidebarWidth) : "");
     }
-    // 首页退场过渡：卡片落到输入行，草稿飞向刚写下的用户消息。
-    const inputBlockTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
-    const exitRows = this.composeStartupExitFrame(
-      screenRows,
-      width,
-      {
-        top: inputBlockTop + (inputLayout ? inputCursorOffset : 1),
-        height: inputLayout?.rows.length ?? 1,
-        left: 0,
-        width: leftAreaWidth,
-      },
-      emergencyMinimal ? 0 : topRows.length + 1,
-    );
-    const frameRows = exitRows ?? screenRows;
     const fullRefresh =
       width !== this.renderedScreenWidth ||
       height !== this.renderedScreenHeight ||
@@ -5024,22 +4924,21 @@ export class TerminalUI {
     const canScrollViewport =
       chatHeight > 0 &&
       !fullRefresh &&
-      !exitRows &&
       !contextCard &&
       chatRegionStart === this.renderedChatRegionStart &&
       chatHeight === this.renderedChatRegionHeight;
     const screenUpdate = canScrollViewport
       ? (buildViewportScrollUpdate(
           this.renderedScreenRows,
-          frameRows,
+          screenRows,
           chatRegionStart,
           chatHeight,
           viewportScrollRows,
-        ) ?? buildScreenUpdate(this.renderedScreenRows, frameRows))
-      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, frameRows);
+        ) ?? buildScreenUpdate(this.renderedScreenRows, screenRows))
+      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
     let cursorState = "";
-    if (this.activeInput && inputLayout && !exitRows) {
-      const inputTop = inputBlockTop;
+    if (this.activeInput && inputLayout) {
+      const inputTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
       const cursorColumn = Math.min(inputLayout.cursor.column, leftAreaWidth) + 1;
       const cursorRow = inputTop + inputCursorOffset + inputLayout.cursor.row + 1;
       cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
@@ -5078,7 +4977,7 @@ export class TerminalUI {
     frame += cursorState;
     frame += "\x1b[?2026l";
     const accepted = stdout.write(frame);
-    this.renderedScreenRows = frameRows;
+    this.renderedScreenRows = screenRows;
     this.renderedScreenWidth = width;
     this.renderedScreenHeight = height;
     this.renderedCursorState = cursorState;

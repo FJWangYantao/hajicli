@@ -5,8 +5,6 @@
  * 所以这里先把所有内容落成格子（字符 / 前景 / 背景 / 属性），最后按行串成 ANSI。
  * 颜色一律存「已按当前色彩档位生成的 SGR 序列」（fgSeq / bgSeq 的输出），画布本身不关心档位。
  */
-
-import { mixHexOklab } from "./oklab.js";
 import { splitGraphemes, terminalWidth } from "./terminal-text.js";
 import { bgSeq, fgSeq, getColorLevel, getTheme } from "./theme.js";
 
@@ -155,48 +153,6 @@ export class CellCanvas {
     return column + width;
   }
 
-  /**
-   * 把另一张画布已写过的格子叠上来（透明格不覆盖）。`alpha` < 1 时：能混色（见 canBlendCells）
-   * 就把前景 / 背景朝底色混（淡入淡出）；否则按格子位置伪随机整格丢弃（溶解），任何色彩档位都成立。
-   * `dx` / `dy` 是源画布左上角落在本画布上的位置，小画布（一张卡片、一行文字）不必铺满整屏。
-   */
-  overlay(source: CellCanvas, alpha: number, toward?: string, dx = 0, dy = 0): void {
-    if (alpha <= 0) return;
-    const fade = alpha < 1 && canBlendCells(toward) ? 1 - alpha : 0;
-    const baseFg = getTheme().foreground;
-    for (let sy = 0; sy < source.rows; sy++) {
-      const y = sy + dy;
-      const to = this.cells[y];
-      if (!to) continue;
-      const from = source.cells[sy];
-      for (let sx = 0; sx < source.cols; sx++) {
-        const x = sx + dx;
-        if (x < 0 || x >= this.cols) continue;
-        const cell = from[sx];
-        if (cell.width === 0) continue;
-        if (cell.ch === " " && cell.bg === undefined && cell.attrs.length === 0) continue;
-        if (cell.width === 2 && x + 1 >= this.cols) continue;
-        let fg = cell.fg;
-        let bg = cell.bg;
-        if (fade > 0) {
-          const fgHex = sgrHex(fg) ?? (fg === "" ? baseFg : undefined);
-          const bgHex = bg === undefined ? undefined : sgrHex(bg);
-          if (fgHex && (bg === undefined || bgHex)) {
-            fg = fadedSeq(fgHex, toward as string, fade, false);
-            if (bgHex) bg = fadedSeq(bgHex, toward as string, fade, true);
-          } else if (dissolveHash(x, y) >= alpha) continue;
-        } else if (alpha < 1 && dissolveHash(x, y) >= alpha) continue;
-        // 覆盖宽字符的后半格时连前半格一起清掉，和 put() 同一口径。
-        if (to[x].width === 0 && x > 0) to[x - 1] = { ...blank(), bg: to[x - 1].bg };
-        to[x] = { ...cell, fg, bg, attrs: [...cell.attrs] };
-        if (cell.width === 2) {
-          to[x + 1] = { ch: "", width: 0, fg, bg, attrs: [] };
-          if (to[x + 2]?.width === 0) to[x + 2] = { ...blank(), bg: to[x + 2].bg };
-        }
-      }
-    }
-  }
-
   /** 串成 ANSI 行：同样式的相邻格合并；行尾透明空白裁掉，最后补主题重置。 */
   toRows(): string[] {
     const mono = getColorLevel() === "mono";
@@ -239,64 +195,6 @@ export class CellCanvas {
       return out;
     });
   }
-}
-
-/** 叠层能否按颜色淡入淡出：要知道底色，且是真彩色或 256 色（16 色 / 无色只能溶解）。 */
-export function canBlendCells(toward: string | undefined): toward is string {
-  const level = getColorLevel();
-  return Boolean(toward) && (level === "truecolor" || level === "ansi256");
-}
-
-const CUBE_LEVELS = [0, 95, 135, 175, 215, 255];
-const fadeCache = new Map<string, string>();
-const hexCache = new Map<string, string | undefined>();
-
-/** 淡出后的颜色序列：混合比例按 1/32 取整后缓存，整屏几千格只算几十次 Oklab。 */
-function fadedSeq(hex: string, toward: string, fade: number, background: boolean): string {
-  const step = Math.round(fade * 32);
-  const key = `${background ? "b" : "f"}${getColorLevel()}${hex}${toward}${step}`;
-  let sequence = fadeCache.get(key);
-  if (sequence === undefined) {
-    const mixed = mixHexOklab(hex, toward, step / 32);
-    sequence = background ? bgSeq(mixed) : fgSeq(mixed);
-    if (fadeCache.size > 4096) fadeCache.clear();
-    fadeCache.set(key, sequence);
-  }
-  return sequence;
-}
-
-/** SGR 颜色还原成 #rrggbb：真彩色直接取值，256 色查色立方 / 灰阶；16 色返回 undefined。 */
-function sgrHex(sequence: string): string | undefined {
-  if (hexCache.has(sequence)) return hexCache.get(sequence);
-  const hex = parseSgrHex(sequence);
-  if (hexCache.size > 4096) hexCache.clear();
-  hexCache.set(sequence, hex);
-  return hex;
-}
-
-function parseSgrHex(sequence: string): string | undefined {
-  const truecolor = /^\x1b\[[34]8;2;(\d+);(\d+);(\d+)m$/.exec(sequence);
-  let rgb: number[] | undefined;
-  if (truecolor) rgb = truecolor.slice(1, 4).map(Number);
-  else {
-    const indexed = /^\x1b\[[34]8;5;(\d+)m$/.exec(sequence);
-    const index = indexed ? Number(indexed[1]) : -1;
-    if (index >= 232 && index <= 255) rgb = new Array(3).fill(8 + (index - 232) * 10);
-    else if (index >= 16 && index < 232) {
-      const offset = index - 16;
-      rgb = [Math.floor(offset / 36), Math.floor(offset / 6) % 6, offset % 6].map(
-        (level) => CUBE_LEVELS[level],
-      );
-    }
-  }
-  return rgb ? `#${rgb.map((value) => value.toString(16).padStart(2, "0")).join("")}` : undefined;
-}
-
-/** 溶解用的格子阈值：同一位置每帧相同，画面是逐格散开而不是闪烁。 */
-function dissolveHash(column: number, row: number): number {
-  let value = (column * 374761393 + row * 668265263) | 0;
-  value = Math.imul(value ^ (value >>> 13), 1274126177);
-  return ((value ^ (value >>> 16)) >>> 0) / 0x100000000;
 }
 
 function applySgr(

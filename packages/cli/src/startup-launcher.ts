@@ -98,7 +98,7 @@ function clean(text: string): string {
   return sanitizeTerminalText(text).replace(/\s+/g, " ").trim();
 }
 
-export interface StartupLauncherOptions {
+interface LauncherOptions {
   width: number;
   height: number;
   /** 卡片上方的排队提示（已截到 inputWidth）。 */
@@ -124,8 +124,6 @@ export interface StartupLauncherOptions {
   /** 启动动效已播放的毫秒数；undefined 表示静止画面。 */
   motionElapsed?: number;
   now?: number;
-  /** 只画退场用的背景层：不画输入卡片 / 补全 / 光晕，也不播动效（卡片与光晕由过渡单独合成）。 */
-  exitScene?: boolean;
 }
 
 interface LayoutPlan {
@@ -159,21 +157,13 @@ type Block =
  * 整块在状态行上方垂直居中、略偏上；空间不够时按固定顺序逐级让步，输入卡片与状态行永远保留。
  * 光晕只在真彩色且知道真实底色时画；星点不进 16 色 / 无色终端。
  */
-export function buildStartupLauncher(options: StartupLauncherOptions): {
+export function buildStartupLauncher(options: LauncherOptions): {
   rows: string[];
-  canvas: CellCanvas;
   inputTop: number;
   hits: LauncherHit[];
   footerTop: number;
   contextRow: number;
   animating: boolean;
-  /** 输入卡片占的行（含上下留白与模型行），过渡动画从这里起飞。 */
-  card: { top: number; height: number; left: number; width: number; hex: string };
-  heroCenter: number;
-  /** 光晕混色用的真实底色；不画光晕时为 undefined。 */
-  glowBase?: string;
-  /** 终端真实底色（主题显式背景或 OSC 11 探测值），过渡淡入淡出朝它混色；未知时为 undefined。 */
-  surfaceBase?: string;
 } {
   const { width, height, state } = options;
   const geometry = startupLauncherGeometry(width, height);
@@ -184,8 +174,7 @@ export function buildStartupLauncher(options: StartupLauncherOptions): {
   const glowBase = theme.background || getDetectedTerminalBackground();
   const glowing = level === "truecolor" && Boolean(glowBase);
   const now = options.now ?? Date.now();
-  const exitScene = Boolean(options.exitScene);
-  const motion = exitScene ? undefined : options.motionElapsed;
+  const motion = options.motionElapsed;
   const animating = motion !== undefined && motion < STARTUP_MOTION_MS;
 
   const sessions = options.sessions.slice(0, 3);
@@ -330,7 +319,7 @@ export function buildStartupLauncher(options: StartupLauncherOptions): {
     L + Math.max(0, Math.floor((W - terminalWidth(text)) / 2));
   const heroIndex = blocks.findIndex((block) => block.kind === "logo" || block.kind === "wordmark");
   const heroCenter = top + Math.max(0, heroIndex) + Math.floor(layout.heroRows / 2);
-  if (glowing && !exitScene) {
+  if (glowing) {
     canvas.backdrop = glowLayer(width, height, heroCenter, glowBase as string, theme.accent);
   }
   const cardBlocks = blocks.filter((block) => block.kind === "card");
@@ -378,7 +367,6 @@ export function buildStartupLauncher(options: StartupLauncherOptions): {
 
   blocks.forEach((block, offset) => {
     const row = top + offset;
-    if (exitScene && (block.kind === "card" || block.kind === "suggestion")) return;
     switch (block.kind) {
       case "blank":
         return;
@@ -594,25 +582,13 @@ export function buildStartupLauncher(options: StartupLauncherOptions): {
   }
   drawFooter(canvas, { left: L, contentWidth: W, row: footerTop, state, notice: options.notice });
 
-  const cardOffset = blocks.findIndex((block) => block.kind === "card");
   return {
     rows: canvas.toRows(),
-    canvas,
     inputTop: top + layout.inputTop,
     hits,
     footerTop,
     contextRow: footerTop,
     animating,
-    card: {
-      top: top + Math.max(0, cardOffset),
-      height: cardBlocks.length,
-      left: L,
-      width: W,
-      hex: cardHex,
-    },
-    heroCenter,
-    glowBase: glowing ? (glowBase as string) : undefined,
-    surfaceBase: glowBase || undefined,
   };
 }
 
@@ -732,41 +708,27 @@ function drawFooter(
  * 到屏幕边缘时混色比例已低于 0.25%，与真实底色肉眼不可分，不会露出边界。
  */
 const glowCache = new Map<string, (string | undefined)[][]>();
-/** `scale` 同时缩强度与半径（退场时光晕向中心收拢）；按 1/20 取整，缓存不会随帧数膨胀。 */
-export function glowLayer(
+function glowLayer(
   width: number,
   height: number,
   centerRow: number,
   base: string,
   accent: string,
-  scale = 1,
 ): (column: number, row: number) => string | undefined {
-  const level = Math.round(Math.max(0, Math.min(1, scale)) * 20) / 20;
-  if (level === 0) return () => undefined;
-  const key = `${width}x${height}@${centerRow}|${base}|${accent}|${level}`;
+  const key = `${width}x${height}@${centerRow}|${base}|${accent}`;
   let grid = glowCache.get(key);
   if (!grid) {
-    const spread = 0.55 + 0.45 * level;
-    const rx = width * 0.36 * spread;
-    const ry = Math.max(6, height * 0.3) * spread;
+    const rx = width * 0.36;
+    const ry = Math.max(6, height * 0.3);
     const cx = width / 2;
-    // 混色比例按 1/2000 取整：肉眼不可分，整屏只需算几百次 Oklab（退场时每帧都要换一张）。
-    const tones = new Map<number, string>();
     grid = Array.from({ length: height }, (_, row) =>
       Array.from({ length: width }, (_, column) => {
         const distance = ((column - cx) / rx) ** 2 + ((row - centerRow) / ry) ** 2;
-        const strength = 0.15 * level * Math.exp(-2.2 * distance);
-        if (strength <= 0.004) return undefined;
-        const step = Math.round(strength * 2000);
-        let tone = tones.get(step);
-        if (tone === undefined) {
-          tone = bgSeq(mixHexOklab(base, accent, step / 2000));
-          tones.set(step, tone);
-        }
-        return tone;
+        const strength = 0.15 * Math.exp(-2.2 * distance);
+        return strength > 0.004 ? bgSeq(mixHexOklab(base, accent, strength)) : undefined;
       }),
     );
-    if (glowCache.size > 32) glowCache.clear();
+    if (glowCache.size > 8) glowCache.clear();
     glowCache.set(key, grid);
   }
   const cells = grid;

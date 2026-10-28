@@ -6,18 +6,8 @@ import test from "node:test";
 import { SessionManager } from "@hajicli/core";
 import { CellCanvas } from "../dist/cell-canvas.js";
 import { resumeSessionById } from "../dist/session-commands.js";
-import {
-  buildStartupExitScene,
-  composeStartupExit,
-  findStartupExitAnchor,
-  startupExitNeedle,
-} from "../dist/startup-exit.js";
 import { buildStartupHome, startupActions } from "../dist/startup-home.js";
-import {
-  buildStartupLauncher,
-  STARTUP_TAGLINE,
-  startupLauncherGeometry,
-} from "../dist/startup-launcher.js";
+import { buildStartupLauncher, STARTUP_TAGLINE } from "../dist/startup-launcher.js";
 import { parseOsc11Reply } from "../dist/terminal-appearance.js";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
@@ -613,10 +603,7 @@ test("recent session recovers the exact stored conversation, usage, task scope a
 });
 
 function launcherFrame(overrides = {}) {
-  return buildStartupLauncher(launcherOptions(overrides));
-}
-function launcherOptions(overrides = {}) {
-  return {
+  return buildStartupLauncher({
     width: 140,
     height: 40,
     cardRows: ["> "],
@@ -630,7 +617,7 @@ function launcherOptions(overrides = {}) {
       reasoningEffort: "high",
     },
     ...overrides,
-  };
+  });
 }
 const backgrounds = (rows) => new Set(rows.join("").match(/\x1b\[48;2;[\d;]+m/g) ?? []);
 
@@ -730,101 +717,4 @@ test("cell canvas keeps surface backgrounds through theme resets and handles wid
   const mono = new CellCanvas(6, 1);
   mono.ansi(0, 0, "\x1b[7mab\x1b[27mc");
   assert.equal(mono.toRows()[0], "\x1b[0;7mab\x1b[0mc\x1b[0m");
-});
-
-const hasBigLogo = (rows) => rows.some((row) => strip(row).includes("██"));
-
-test("exit transition sinks the card to the input row and flies the draft to its message", (t) => {
-  const previous = getColorLevel();
-  t.after(() => setColorLevel(previous));
-  const draft = "帮我加一段退场过渡";
-  const target = Array.from({ length: 40 }, (_, row) =>
-    row === 3 ? `    › ${draft}` : row === 36 ? "› " : "",
-  );
-  const input = { top: 36, height: 1, left: 0, width: 140 };
-  const anchor = findStartupExitAnchor(target, startupExitNeedle(`  ${draft}\n第二行`));
-  assert.deepEqual(anchor, { row: 3, column: 6 });
-  const sceneFor = () => {
-    const options = launcherOptions({ cardRows: [`> ${draft}`], hasDraft: true });
-    const layout = {
-      chips: 0,
-      inputRows: [`> ${draft}`],
-      inputLeft: startupLauncherGeometry(140, 40).inputLeft,
-      draft,
-    };
-    return { home: buildStartupLauncher(options), scene: buildStartupExitScene(options, layout) };
-  };
-
-  setColorLevel("truecolor");
-  parseOsc11Reply("\x1b]11;rgb:1515/1414/1b1b\x07");
-  const { home, scene } = sceneFor();
-  const frame = (progress) => composeStartupExit(scene, { rows: target, input, anchor }, progress);
-  const barRow = (rows) => rows.findIndex((row) => strip(row).includes("▌"));
-  const draftRow = (rows) => rows.findIndex((row) => strip(row).includes(draft));
-  const early = frame(0.05);
-  const middle = frame(0.5);
-  const late = frame(0.9);
-  assert.ok(hasBigLogo(early), "起步时 Logo 仍在");
-  assert.equal(draftRow(early), home.inputTop);
-  // 卡片一路下沉到输入行，草稿一路上飞到用户消息那一行。
-  assert.ok(barRow(early) >= home.card.top && barRow(early) < barRow(middle));
-  assert.ok(barRow(middle) < barRow(late) && barRow(late) <= input.top);
-  assert.equal(draftRow(late), 3);
-  assert.ok(!hasBigLogo(late), "后段 Logo 已经淡出");
-  assert.deepEqual(frame(1), target);
-  assert.ok(early.every((row) => terminalWidth(row) <= 140));
-
-  // 16 色不能混色：先溶掉首页，再溶入对话，中段两层都不出现。
-  setColorLevel("ansi16");
-  const dissolve = sceneFor().scene;
-  const midway = composeStartupExit(dissolve, { rows: target, input, anchor }, 0.5);
-  assert.ok(!hasBigLogo(midway));
-  assert.equal(midway.filter((row) => strip(row).includes(draft)).length, 1);
-  assert.ok(!midway.some((row) => strip(row).startsWith("› ")), "对话画面还没溶入");
-});
-
-test("submitting from home plays the exit transition once; other exits switch directly", (t) => {
-  t.after(() => {
-    delete process.env.HAJI_REDUCED_MOTION;
-  });
-  const submit = (ui) => {
-    ui.options.startupMotion = true;
-    ui.startupMotionStartedAt = Date.now() - 10_000;
-    ui.activeInput.graphemes = [..."检查工作区"];
-    ui.activeInput.cursorIndex = 5;
-    ui.renderFrame();
-    ui.activeInput = null;
-    ui.dismissStartupHeader();
-    ui.writeLine("检查工作区");
-    ui.renderFrame();
-  };
-  withUI(140, 40, (ui) => {
-    submit(ui);
-    assert.ok(ui.startupExit, "提交后进入退场过渡");
-    assert.ok(ui.startupExitTimer);
-    assert.ok(hasBigLogo(ui.renderedScreenRows), "过渡首帧仍是首页");
-    clearTimeout(ui.startupExitTimer);
-    ui.startupExitTimer = null;
-    ui.startupExit.startedAt = Date.now() - 1_000;
-    ui.renderFrame();
-    assert.equal(ui.startupExit, undefined);
-    assert.equal(ui.startupExitTimer, null);
-    assert.ok(!hasBigLogo(ui.renderedScreenRows));
-    assert.ok(ui.renderedScreenRows.some((row) => strip(row).includes("检查工作区")));
-  });
-  process.env.HAJI_REDUCED_MOTION = "1";
-  withUI(140, 40, (ui) => {
-    submit(ui);
-    assert.equal(ui.startupExit, undefined);
-    assert.ok(!hasBigLogo(ui.renderedScreenRows));
-  });
-  delete process.env.HAJI_REDUCED_MOTION;
-  // 选择器接管输入行这类离开方式（还有输入、对话区没内容）不播过渡。
-  withUI(140, 40, (ui) => {
-    ui.options.startupMotion = true;
-    ui.renderFrame();
-    ui.activeInput.prompt = "选择：";
-    ui.renderFrame();
-    assert.equal(ui.startupExit, undefined);
-  });
 });
