@@ -54,6 +54,7 @@ function createContext(sessionManager, lines) {
       for (const piece of pieces) lines.push(piece.raw);
     },
     clearChat: noop,
+    dismissStartupHeader: () => lines.push("<<HEADER_DISMISSED>>"),
   };
   return {
     ui,
@@ -103,6 +104,7 @@ async function renderResume(dir) {
   reader.startNewSession();
   const ok = await resumeLatestSession(createContext(reader, lines));
   assert.equal(ok, true);
+  assert.ok(lines.includes("<<HEADER_DISMISSED>>"));
   return lines.join("\n");
 }
 

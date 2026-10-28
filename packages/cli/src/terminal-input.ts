@@ -45,6 +45,8 @@ import {
   REQUEST_DETAIL_MIN_ROWS,
   type RequestDetailFrame,
 } from "./request-detail-page.js";
+import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
+import { buildStartupLauncher, startupLauncherGeometry } from "./startup-launcher.js";
 import {
   buildInlineImage,
   clipInlinePlacement,
@@ -123,6 +125,7 @@ import {
   TURN_DETAIL_MIN_ROWS,
   type TurnDetailFrame,
 } from "./turn-detail-page.js";
+import type { WorkspaceStatus } from "./workspace-status.js";
 
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
 // 保持既有 dist/terminal-input.js 导出面的兼容：拆分后的符号在此统一转发。
@@ -203,6 +206,8 @@ export interface TerminalUIOptions {
   muteNonInteractiveOutput?: boolean;
   /** 点击侧栏里某个可交互区域：id 见 tui-sidebar.ts 的 SidebarRegionId，映射由调用方负责。 */
   onSidebarAction?: (id: string) => void;
+  /** 首屏选中历史会话，由主循环安全接管并恢复。 */
+  onResumeSession?: (id: string) => void;
 }
 
 export interface ReadInputOptions {
@@ -750,6 +755,9 @@ export class TerminalUI {
   /** 输入框正文首行在屏幕上的 0-based 行号与行数（鼠标命中判定用）。 */
   private inputSelectionTop?: number;
   private inputSelectionHeight = 0;
+  /** 输入组件局部坐标到屏幕的水平偏移；对话输入为 0，居中首屏为左留白。 */
+  private inputSelectionLeft = 0;
+  private renderedInputWidth?: number;
   /** 按下但还没移动：单击输入框不产生选区，拖动才算选中。 */
   private pendingInputSelection?: { column: number; row: number };
   private selectionPointer?: { column: number; row: number };
@@ -777,6 +785,54 @@ export class TerminalUI {
   private startupHeaderVisible = true;
   /** Logo 下方附加的启动信息行（provider/model/effort + 引导提示）。 */
   private headerInfo: string[] = [];
+  private recentSessions: RecentSessionEntry[] = [];
+  private workspaceStatus?: WorkspaceStatus;
+  private startupSelected = -1;
+  private startupHits: Array<{ row: number; index: number; left: number; right: number }> = [];
+  private pendingStartupClick?: { row: number; index: number };
+
+  setRecentSessions(sessions: readonly RecentSessionEntry[]): void {
+    this.recentSessions = sessions.slice(0, 3).map((session) => ({ ...session }));
+    this.startupSelected = -1;
+    this.scheduleRender();
+  }
+
+  setWorkspaceStatus(status: WorkspaceStatus): void {
+    this.workspaceStatus = { ...status };
+    this.scheduleRender();
+  }
+
+  private startupHomeAvailable(): boolean {
+    return (
+      this.startupHeaderVisible &&
+      !this.contextInspector &&
+      !this.costLog &&
+      !this.activeSelection &&
+      Boolean(this.activeInput) &&
+      !this.activeInput?.sensitive &&
+      this.activeInput?.prompt === this.options.inputPrompt &&
+      !this.liveTail &&
+      !this.activityFrame &&
+      this.sealedSegments.length === 0 &&
+      !this.chatContent.trim()
+    );
+  }
+
+  private activateStartupAction(index: number): void {
+    if (!this.startupHomeAvailable() || !this.activeInput) return;
+    const action = startupActions(this.recentSessions)[index];
+    if (!action) return;
+    this.startupSelected = -1;
+    if (action.kind === "resume") {
+      this.options.onResumeSession?.(action.value);
+    } else {
+      this.activeInput.graphemes = splitGraphemes(action.value);
+      this.activeInput.cursorIndex = this.activeInput.graphemes.length;
+      this.activeInput.preferredColumn = undefined;
+      this.activeInput.historyNavigationActive = false;
+      this.scheduleRender(true);
+    }
+  }
   private renderedScreenRows: string[] = [];
   private renderedScreenWidth = 0;
   private renderedScreenHeight = 0;
@@ -2848,7 +2904,7 @@ export class TerminalUI {
     if (!geometry || !this.inputSelection.dragging) return;
     const top = this.inputSelectionTop ?? 0;
     const targetRow = Math.max(0, Math.min(geometry.rowCount - 1, row - 1 - top));
-    const cell = inputCellFromPoint(geometry, targetRow, column);
+    const cell = inputCellFromPoint(geometry, targetRow, column - this.inputSelectionLeft);
     if (cell) this.inputSelection.update(cell);
     this.scheduleRender();
   }
@@ -3070,6 +3126,25 @@ export class TerminalUI {
     }
 
     const isLeftButton = (event.button & 3) === 0;
+    const startupHit = this.startupHomeAvailable()
+      ? this.startupHits.find(
+          (hit) => hit.row === event.row && event.column >= hit.left && event.column <= hit.right,
+        )
+      : undefined;
+    if (event.action === "down" && isLeftButton && startupHit) {
+      this.pendingStartupClick = { row: startupHit.row, index: startupHit.index };
+      this.startupSelected = startupHit.index;
+      this.scheduleRender();
+      return;
+    }
+    if (event.action === "up" && this.pendingStartupClick) {
+      const pending = this.pendingStartupClick;
+      this.pendingStartupClick = undefined;
+      if (isLeftButton && startupHit?.index === pending.index && startupHit.row === pending.row) {
+        this.activateStartupAction(pending.index);
+      }
+      return;
+    }
     if (event.action === "down" && isLeftButton) {
       this.pendingChatHintClick = undefined;
       // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
@@ -3167,7 +3242,7 @@ export class TerminalUI {
       const anchorRow = this.inputRowIndexAt(pending.row);
       const anchor =
         geometry && anchorRow !== undefined
-          ? inputCellFromPoint(geometry, anchorRow, pending.column)
+          ? inputCellFromPoint(geometry, anchorRow, pending.column - this.inputSelectionLeft)
           : undefined;
       if (anchor) {
         this.inputSelection.begin(anchor);
@@ -3212,7 +3287,9 @@ export class TerminalUI {
       const geometry = this.inputSelectionGeometry;
       const row = this.inputRowIndexAt(event.row);
       const cell =
-        geometry && row !== undefined ? inputCellFromPoint(geometry, row, event.column) : undefined;
+        geometry && row !== undefined
+          ? inputCellFromPoint(geometry, row, event.column - this.inputSelectionLeft)
+          : undefined;
       this.inputSelection.finish(cell);
       // 与对话区一致：松开即自动复制，高亮保留，方便继续调整选区。
       this.copyInputSelection(false);
@@ -3850,6 +3927,7 @@ export class TerminalUI {
     return {
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
+      workspace: this.workspaceStatus,
       ...(this.contextBreakdown ? { breakdown: this.contextBreakdown } : {}),
       ...(this.sidebarGoal ? { goal: this.sidebarGoal } : {}),
       costCny: this.costCny,
@@ -4101,6 +4179,86 @@ export class TerminalUI {
     }
   }
 
+  private renderStartupLauncher(width: number, height: number): void {
+    const geometry = startupLauncherGeometry(width, height);
+    const inputWidth = geometry.contentWidth;
+    this.renderedInputWidth = inputWidth;
+    this.inputSelectionLeft = geometry.left;
+    const leading = this.queueText ? [truncateAnsiText(this.queueText, inputWidth)] : [];
+    const chips = this.buildPastedImageRows(inputWidth).slice(0, 2);
+    const available = height - geometry.footerRows - leading.length - chips.length - 4;
+    const suggestions = this.getCommandSuggestionRows(
+      inputWidth,
+      Math.min(geometry.maxSuggestionRows, Math.max(0, available - 1)),
+    );
+    const inputLayout = this.getInputLayout(
+      inputWidth,
+      Math.max(1, Math.min(geometry.maxInputRows, available - suggestions.length)),
+    );
+    const divider = this.options.renderBorder(inputWidth);
+    const inputOffset = leading.length + 1 + chips.length;
+    const inputRows = [...leading, divider, ...chips, ...inputLayout.rows, divider, ...suggestions];
+    this.highlightInputRows(inputRows, inputOffset);
+    const frame = buildStartupLauncher({
+      width,
+      height,
+      header: this.options.header.trim().split("\n"),
+      compactHeader: this.options.compactHeader,
+      inputRows,
+      sessions: this.recentSessions,
+      selected: this.startupSelected,
+      state: this.buildSidebarState(),
+      status: this.buildStatusBar(inputWidth, inputWidth < 60 ? "minimal" : "compact"),
+      notice: this.transientHintText || this.copiedNotice || this.status,
+    });
+    this.inputSelectionTop = frame.inputTop + inputOffset;
+    this.inputSelectionHeight = inputLayout.rows.length;
+    this.startupHits = frame.hits.map((hit) => ({
+      ...hit,
+      row: hit.row + 1,
+      left: hit.left + 1,
+      right: hit.right + 1,
+    }));
+    if (!this.startupHits.some((hit) => hit.index === this.startupSelected))
+      this.startupSelected = -1;
+    this.sidebarHits.clear();
+    this.sidebarHits.set("context.usage", {
+      columnStart: geometry.left + 1,
+      columnEnd: geometry.left + inputWidth,
+      rowStart: frame.contextRow + 1,
+      rowEnd: frame.contextRow + 1,
+    });
+    this.sidebarHoverId = undefined;
+    this.chatAreaRightEdgeColumn = 0;
+    this.chatViewport = undefined;
+    this.chatHintHit = undefined;
+    this.maxChatScrollOffset = 0;
+    this.chatScrollOffset = 0;
+    this.pendingWheelRows = 0;
+    this.contextInspectorHit = undefined;
+    this.costLogHit = undefined;
+    this.setMouseMotionEnabled(true);
+    const fullRefresh =
+      width !== this.renderedScreenWidth ||
+      height !== this.renderedScreenHeight ||
+      this.renderedScreenRows.length !== height;
+    const update = buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, frame.rows);
+    const cursorState = `\x1b[${this.inputSelectionTop + inputLayout.cursor.row + 1};${geometry.left + inputLayout.cursor.column + 1}H\x1b[?25h`;
+    if (fullRefresh || update || cursorState !== this.renderedCursorState) {
+      const accepted = stdout.write(
+        `\x1b[?2026h\x1b[?25l${fullRefresh ? `${themeEnter()}\x1b[2J` : ""}${update}${cursorState}\x1b[?2026l`,
+      );
+      if (!accepted) this.stdoutBackpressured = true;
+    }
+    this.renderedScreenRows = frame.rows;
+    this.renderedScreenWidth = width;
+    this.renderedScreenHeight = height;
+    this.renderedCursorState = cursorState;
+    this.renderedChatRegionHeight = 0;
+    this.renderedChatRegionStart = 0;
+    this.renderedChatVisibleStart = 0;
+  }
+
   private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
@@ -4129,6 +4287,11 @@ export class TerminalUI {
     );
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
+    this.inputSelectionLeft = 0;
+    if (this.startupHomeAvailable() && width >= 24 && height >= 10) {
+      this.renderStartupLauncher(width, height);
+      return;
+    }
     // 右侧会话信息栏：只占对话区高度，顶框、输入框与状态栏都收窄到左区宽度，
     // 让整块左侧内容的右边界对齐；侧栏下方的右侧留背景空白，不再横跨整行。
     // 整页视图（上下文详情 / 费用日志）打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
@@ -4151,7 +4314,7 @@ export class TerminalUI {
           ? layout.headerMode === "full"
             ? this.options.header
             : persistentHeader
-          : persistentHeader;
+          : `${" ".repeat(layout.chatPadding)}${persistentHeader}`;
     const headerInfo =
       this.startupHeaderVisible && layout.headerMode === "full" ? this.headerInfo : [];
     const headerRows = header
@@ -4250,7 +4413,12 @@ export class TerminalUI {
               suggestionRows.length -
               (minimal ? 3 : 5),
           );
-      inputLayout = this.getInputLayout(leftAreaWidth, maxInputRows);
+      // 长输入在框内跟随光标滚动，保留对话与侧栏的垂直空间。
+      const visibleInputRows = emergencyMinimal
+        ? maxInputRows
+        : Math.min(maxInputRows, Math.max(1, Math.min(6, Math.floor(height / 4))));
+      this.renderedInputWidth = leftAreaWidth;
+      inputLayout = this.getInputLayout(leftAreaWidth, visibleInputRows);
       if (emergencyMinimal) {
         inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
         inputBlock = [
@@ -4382,11 +4550,12 @@ export class TerminalUI {
         (row, index) =>
           chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index),
       );
+    const sidebarScreenTop = this.workspaceStatus ? 0 : emergencyMinimal ? 0 : topRows.length + 1;
     const sidebarFrame = sidebarVisible
       ? buildSidebarFrame(
           this.buildSidebarState(),
           sidebarWidth,
-          chatHeight,
+          this.workspaceStatus ? height : chatHeight,
           Date.now(),
           this.sidebarHoverId,
         )
@@ -4398,7 +4567,7 @@ export class TerminalUI {
     this.sidebarHits.clear();
     if (sidebarVisible) {
       const columnBase = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1;
-      const rowBase = (emergencyMinimal ? 0 : topRows.length + 1) + 1;
+      const rowBase = sidebarScreenTop + 1;
       for (const region of sidebarFrame.regions) {
         const columnStart = columnBase + region.hit.left;
         const rowStart = rowBase + region.hit.top;
@@ -4430,7 +4599,16 @@ export class TerminalUI {
         ? buildContextCard(this.contextBreakdown, this.usedTokens, this.maxTokens, leftAreaWidth)
         : undefined;
     const cardTop = contextCard
-      ? Math.max(0, Math.min(chatHeight - contextCard.length, (sidebarFrame.ring?.top ?? 0) - 1))
+      ? Math.max(
+          0,
+          Math.min(
+            chatHeight - contextCard.length,
+            sidebarScreenTop +
+              (sidebarFrame.ring?.top ?? 0) -
+              (emergencyMinimal ? 0 : topRows.length + 1) -
+              1,
+          ),
+        )
       : 0;
     const paintContextCard = (row: string, index: number): string => {
       const cardRow = contextCard?.[index - cardTop];
@@ -4522,6 +4700,21 @@ export class TerminalUI {
       (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
         (leftAreaWidth < pageMinColumns || chatHeight < pageMinRows),
     );
+    const home = this.startupHomeAvailable()
+      ? buildStartupHome(this.recentSessions, chatWidth, chatHeight, this.startupSelected)
+      : undefined;
+    this.startupHits = (home?.hits ?? []).map((hit) => ({
+      ...hit,
+      row: (emergencyMinimal ? 1 : topRows.length + 2) + hit.row,
+      left: chatPadding + 1,
+      right: leftAreaWidth - chatPadding,
+    }));
+    if (
+      this.startupSelected >= 0 &&
+      !this.startupHits.some((hit) => hit.index === this.startupSelected)
+    ) {
+      this.startupSelected = -1;
+    }
     const chatColumn = pageTooSmall
       ? [`${SEQ.muted}终端太小，放不下${pageName}（Esc 返回）${SEQ.reset}`]
       : inspectorFrame
@@ -4532,7 +4725,9 @@ export class TerminalUI {
             ? turnFrame.rows
             : costLogFrame
               ? costLogFrame.rows
-              : [...visibleChat, ...activityRows];
+              : home?.rows.length
+                ? home.rows.map((row) => chatPrefix + row)
+                : [...visibleChat, ...activityRows];
     // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
     const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
     if (inspectorFrame && !pageTooSmall) {
@@ -4613,10 +4808,9 @@ export class TerminalUI {
     if (topRows.length > 0) this.overlayCopiedNotice(leftRows, leftAreaWidth);
     // 侧栏竖线贯穿整个高度：左侧每一行都补到左区宽度后接一条竖线，
     // 顶部/底部没有侧栏内容的行只留竖线与背景，保证右边界处处对齐。
-    const chatStartIndex = emergencyMinimal ? 0 : topRows.length + 1;
     const screenRows = leftRows.slice(0, height).map((row, index) => {
       if (!sidebarVisible) return row;
-      const chatIndex = index - chatStartIndex;
+      const chatIndex = index - sidebarScreenTop;
       const sidebarRow =
         chatIndex >= 0 && chatIndex < sidebarRows.length ? sidebarRows[chatIndex] : "";
       // 非对话行也走同一个拼接函数，保证宽度和三列间距不重复计算。
@@ -4779,7 +4973,7 @@ export class TerminalUI {
       return false;
     }
 
-    const width = Math.max(20, (stdout.columns || 80) - 1);
+    const width = this.renderedInputWidth ?? Math.max(20, (stdout.columns || 80) - 1);
     const layout = layoutInput(
       activeInput.prompt,
       activeInput.graphemes,
@@ -4934,6 +5128,31 @@ export class TerminalUI {
     const activeInput = this.activeInput;
     if (!activeInput) {
       return;
+    }
+    if (this.startupHomeAvailable() && this.startupHits.length > 0) {
+      if (
+        key.name === "tab" &&
+        !key.shift &&
+        !key.ctrl &&
+        !key.meta &&
+        activeInput.graphemes.length === 0
+      ) {
+        const indices = this.startupHits.map((hit) => hit.index);
+        const current = indices.indexOf(this.startupSelected);
+        this.startupSelected = indices[(current + 1) % indices.length];
+        this.scheduleRender(true);
+        return;
+      }
+      if (
+        (key.name === "return" || key.name === "enter") &&
+        !key.shift &&
+        !key.meta &&
+        this.startupSelected >= 0
+      ) {
+        this.activateStartupAction(this.startupSelected);
+        return;
+      }
+      this.startupSelected = -1;
     }
     // Ctrl+V / Alt+V：剪贴板位图落盘并作为本轮图片附件挂在输入框上方，Enter 提交时交给模型 read。
     if (key.name === "v" && ((key.ctrl && !key.shift) || (key.meta && !key.ctrl))) {

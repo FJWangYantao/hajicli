@@ -49,11 +49,12 @@ test("3.2/3.3 输入区不再显示占位/参数提示行 + 上下文提醒阈�
   assert.match(indexSource, /接近自动压缩阈值 · 可 \/compact 手动压缩/);
 });
 
-test("3.4 启动页信息化：provider·模型·强度·权限·工作区 + 上次会话", () => {
+test("3.4 启动页信息化：provider·模型·强度·权限·工作区 + 最近会话入口", () => {
   assert.doesNotMatch(indexSource, /正在初始化大模型提供商/);
-  assert.match(indexSource, /上次会话：/);
-  assert.match(indexSource, /\/resume 继续/);
-  assert.match(indexSource, /formatRelativeTime/);
+  assert.match(indexSource, /ui\.setHeaderInfo\(/);
+  assert.match(indexSource, /ui\.setRecentSessions\(recentSessions\)/);
+  assert.match(indexSource, /session\.messages\.some\(\(message\) => message\.role === "user"\)/);
+  assert.match(indexSource, /await resumeSessionById\(sessionCommandContext, id\)/);
 });
 
 test("4.1 haji -c / -r：启动即恢复会话", () => {

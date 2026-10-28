@@ -27,7 +27,7 @@ interface TuiLayoutProfile {
 
 const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
   wide: {
-    chatPadding: 3,
+    chatPadding: 2,
     headerMode: "full",
     statusDetail: "full",
     panelRows: 8,

@@ -62,6 +62,27 @@ function withFakeStdout(columns, rows, callback) {
   }
 }
 
+test("long input scrolls within six rows and leaves sidebar resources visible", () => {
+  withFakeStdout(120, 24, () => {
+    const ui = createTerminalUI();
+    const text = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join("\n");
+    ui.activeInput.graphemes = [...text];
+    ui.activeInput.cursorIndex = text.length;
+    ui.sidebarGoal = { text: "Current work", status: "active" };
+    ui.chatContent = "CHAT baseline";
+    ui.renderFrame();
+    const rows = ui.renderedScreenRows.map(stripAnsi);
+    assert.ok(rows.some((row) => row.includes("line 15")));
+    assert.ok(!rows.some((row) => row.includes("line 1 ")));
+    assert.ok(rows.some((row) => row.includes("费用")));
+    assert.equal(rows.find((row) => row.includes("CHAT baseline")).indexOf("CHAT"), 2);
+    assert.equal(rows.find((row) => row.includes("HAJI")).indexOf("HAJI"), 2);
+    assert.ok(ui.inputSelectionHeight <= 6);
+    ui.started = false;
+    ui.interactive = false;
+  });
+});
+
 function createTerminalUI() {
   const ui = new TerminalUI({
     header: "HAJI TERMINAL",

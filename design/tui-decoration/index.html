@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HAJI · 首屏装饰提案</title>
+<style>
+:root{color-scheme:light;--page:#eae8e2;--ink:#34352f;--accent:#63744b;--surface:#f7f5ef;--edge:#cfcdc4;--cw:8.4px;--lh:22px}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif}button,select{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.page{max-width:1440px;margin:auto;padding:28px 36px}.eyebrow{font:11px/1.4 Consolas,monospace;letter-spacing:2px;color:#74776b}h1{font-size:26px;letter-spacing:-.6px;margin:5px 0 6px;font-weight:600}.intro{margin:0;color:#676a61}.top{display:flex;justify-content:space-between;align-items:center;gap:24px}.stamp{font:12px/1.8 Consolas,monospace;color:#73776b;text-align:right}.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin:23px 0 16px}.schemes{display:flex;gap:3px;border:1px solid var(--edge);padding:3px;background:#f4f2ed}.schemes button{border:0;background:transparent;color:#676b60;padding:7px 17px}.schemes button[aria-pressed=true]{background:var(--ink);color:#fff}.tools{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto;align-items:center}.tools button,.tools select{border:1px solid var(--edge);padding:6px 10px;background:#f4f2ed;color:#4e5549}.note{font-size:12px;color:#74786d}.frame-head{background:#dedfd6;color:#5b6253;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;font:12px/1.5 Consolas,"Microsoft YaHei",monospace;border:1px solid #cacdc0;border-bottom:0}.viewport{overflow:auto;border:1px solid #cacdc0;background:var(--surface)}#terminal{position:relative;width:calc(var(--cols)*var(--cw));height:calc(var(--rows)*var(--lh));font:14px/var(--lh) Consolas,"Microsoft YaHei",monospace;cursor:default;isolation:isolate}#terminal:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.line{height:var(--lh);white-space:nowrap;overflow:hidden}.cell{display:inline-block;vertical-align:top;height:var(--lh);width:var(--cw);text-align:left;white-space:pre}#draft{position:absolute;height:var(--lh);font:inherit;line-height:var(--lh);padding:0;margin:0;border:0;border-radius:0;background:transparent;color:var(--fg);outline:none;caret-color:var(--accent)}#draft::placeholder{color:var(--muted);opacity:1}.summary{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:32px;margin-top:20px;padding:17px 0 8px;border-top:1px solid var(--edge)}.summary h2{font-size:14px;margin:0 0 5px;font-weight:600}.summary p{font-size:13px;color:#676d60;margin:0}.summary code{font:12px Consolas,monospace;color:#4e5d44}.footer{display:flex;justify-content:space-between;font-size:12px;color:#73796d;margin-top:15px}#announce{min-height:20px;color:#596b46}.capture .page{padding:18px 24px;max-width:none}.capture .top,.capture .toolbar,.capture .summary,.capture .footer{display:none}.capture .frame-head{padding:10px 14px}.capture .viewport{width:max-content}.capture .frame-head{width:calc(var(--cols)*var(--cw) + 2px)}.capture{background:#eae8e2}.capture #terminal{outline:none}
+@media(max-width:760px){.page{padding:18px 14px}.stamp{display:none}.tools{margin-left:0}.summary{grid-template-columns:1fr;gap:14px}.schemes button{padding:7px 10px}.footer{display:block}.intro{font-size:13px}}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="top"><div><div class="eyebrow">HAJI / TERMINAL STUDIES / 01—03</div><h1>给首屏一点性格。</h1><p class="intro">同一份信息，三种装饰语言。先选气质，再决定落地。</p></div><div class="stamp">字符网格 · 静态装饰 · 可降级<br>交互原型 / 所有工作区与会话数据均为示例</div></header>
+<nav class="toolbar" aria-label="原型控制"><div class="schemes"><button data-scheme="paper" aria-pressed="true">01 纸上手记</button><button data-scheme="orbit" aria-pressed="false">02 星轨工作台</button><button data-scheme="amber" aria-pressed="false">03 琥珀仪表台</button></div><div class="tools"><label class="note" for="size">窗口</label><select id="size"><option value="wide">140 × 36</option><option value="medium">104 × 30</option><option value="narrow">76 × 30</option><option value="short">104 × 24</option></select><button id="theme">切换深色</button><button id="ascii" aria-pressed="false">ASCII 降级</button><button id="reset">回到首屏</button></div></nav>
+<div class="frame-head"><span id="caption">01 / 纸上手记</span><span id="dimensions">140 COL × 36 ROW · LIGHT · 示例数据</span></div>
+<div class="viewport"><div id="terminal" tabindex="0" role="group" aria-label="HAJI 终端交互原型"><div id="screen" aria-hidden="true"></div><input id="draft" aria-label="需求输入；空输入时 Tab 选择入口，Enter 打开" autocomplete="off" spellcheck="false"></div></div>
+<section class="summary"><div><h2 id="concept-title">纸上手记 · 推荐</h2><p id="concept"></p></div><div><h2>试一试</h2><p>点击入口填入草稿；空输入时 <code>Tab</code> 选择、<code>Enter</code> 打开。点击最近会话演示恢复，发送后装饰收起。</p></div><div><h2>终端落地</h2><p>等宽字格、字符线框、ANSI 前景与背景色。无阴影、图片、模糊或持续动画；窄屏先收插画与侧栏。</p></div></section>
+<footer class="footer"><span id="announce" aria-live="polite">原型只演示交互，不调用模型，也不读取本地会话。</span><span>Esc 回首屏 · 所有方案可切换深色与 ASCII</span></footer>
+</div>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const params = new URLSearchParams(location.search);
+const palettes = {
+ paper:{title:'纸上手记',subtitle:'PAPER / FIELD NOTES',desc:'延续现在的纸色与橄榄绿：页签、细章节线、编号入口，配一枚字符折页。像一页打开的工作手记，温和且有秩序。',light:['#f6f4ee','#464b40','#6a784e','#848b78','#d8dbcb','#eeeee4','#e4e8d7','#557756'],dark:['#20231f','#dee1d3','#b1c28c','#919d86','#424b3b','#292e26','#35402c','#a2bf8c']},
+ orbit:{title:'星轨工作台',subtitle:'ORBIT / A PLACE TO BEGIN',desc:'用淡紫与点阵轨迹建立辨识度：开放式轨道串起入口，右侧像一张观测记录。字符星图只在欢迎页出现，进入对话就让出空间。',light:['#f5f3fa','#474453','#8872b3','#8b829e','#d9d2e7','#eeebf5','#e5dff1','#667957'],dark:['#201e29','#e2ddec','#ba9fdf','#9d90ae','#494054','#292533','#3b314d','#adc39a']},
+ amber:{title:'琥珀仪表台',subtitle:'AMBER / SYSTEM READY',desc:'深色琥珀强调终端感：切角框、三位编号、仪表刻度与小型信号图。装饰更有力度，工作区和会话像两块清晰的仪表。',light:['#f5f1e7','#514838','#9a6c23','#93836b','#ded1b7','#eee7d7','#e7d6b4','#66754e'],dark:['#222019','#e6ddca','#d6ac62','#a6997c','#514734','#2c281f','#473921','#a6ba7e']}
+};
+let scheme=palettes[params.get('scheme')]?params.get('scheme'):'paper';
+let dark=params.get('dark')==='1'||(scheme==='amber'&&!params.has('dark'));
+let size=params.get('size')||'wide',ascii=params.get('ascii')==='1',selected=0,mode='home',restored='',messages=[];
+const sizes={wide:[140,36],medium:[104,30],narrow:[76,30],short:[104,24]};
+if(!sizes[size])size='wide';
+let cols,rows,mainW,grid,hits=[];
+const prompts=['请梳理当前项目的结构、主要入口和运行方式。','请检查当前工作区的代码改动，找出潜在问题和回归风险。','我想实现一个功能：'];
+const sessions=['图片自然度调整','完善侧栏布局','修复会话恢复'];
+const times=['刚刚','1 小时前','昨天'];
+const terminal=$('#terminal'),input=$('#draft');
+const keys=['bg','fg','accent','muted','edge','panel','selected','success'];
+let colors={};
+const mapAscii={'─':'-','━':'=','│':'|','┌':'+','┐':'+','└':'+','┘':'+','├':'+','┤':'+','┬':'+','┴':'+','╭':'+','╮':'+','╰':'+','╯':'+','╱':'/','╲':'\\','┆':':','┊':':','·':'.','●':'*','○':'o','◦':'.','◆':'*','◇':'o','▸':'>','›':'>','✓':'+','█':'#','░':'.','▁':'_','▂':'_','▃':'-','▄':'=','▅':'=','▆':'#','▇':'#','╴':'-','╶':'-','┈':'-','✦':'*','┼':'+','…':'.','↳':'>'};
+function width(ch){return ch.codePointAt(0)>0x2e7f&&ch.codePointAt(0)<0xffef?2:1;}
+function put(x,y,text,fg='fg',bg='bg',bold=false){if(y<0||y>=rows)return;for(let ch of text){if(ascii)ch=mapAscii[ch]||ch;const w=width(ch);if(x>=0&&x+w<=cols){grid[y][x]={ch,w,fg,bg,bold};if(w===2)grid[y][x+1]=null;}x+=w;}}
+function fill(x,y,w,h,bg){for(let yy=y;yy<Math.min(y+h,rows);yy++)for(let xx=x;xx<Math.min(x+w,cols);xx++)if(xx>=0&&yy>=0)grid[yy][xx]={ch:' ',w:1,fg:'fg',bg,bold:false};}
+function line(x,y,w,fg='edge',char='─'){put(x,y,char.repeat(Math.max(0,w)),fg);}
+function crop(text,w){let out='',used=0;for(const ch of text){const c=width(ch);if(used+c>w)return out;out+=ch;used+=c;}return out;}
+function label(x,y,text,w,bg='bg'){put(x,y,crop(text,w),'muted',bg);}
+function box(x,y,w,h,title){line(x+1,y,w-2);line(x+1,y+h-1,w-2);put(x,y,'╭','edge');put(x+w-1,y,'╮','edge');put(x,y+h-1,'╰','edge');put(x+w-1,y+h-1,'╯','edge');for(let i=1;i<h-1;i++){put(x,y+i,'│','edge');put(x+w-1,y+i,'│','edge');}if(title)put(x+3,y,' '+title+' ','accent');}
+function heading(x,y,title,w){put(x,y,title,'accent', 'bg',true);const tw=[...title].reduce((a,c)=>a+width(c),0);line(x+tw+2,y,w-tw-2);}
+function logo(){
+ const small=mode!=='home'||rows<=24;
+ if(small){put(3,1,'HAJI','accent','bg',true);put(10,1,palettes[scheme].subtitle,'muted');return 3;}
+ const art=['█  █  █▀▀█     █  ▀█▀','█▀▀█  █▄▄█     █   █ ','█  █  █  █  █▄▄█  ▄█▄'];
+ art.forEach((r,i)=>put(3,2+i,r,'accent','bg',true));
+ put(29,2,scheme==='paper'?'工作手记 / 01':scheme==='orbit'?'与你一起，从这里开始。':'LOCAL WORKSTATION','fg');
+ put(29,4,scheme==='paper'?'把想法，写成下一步。':scheme==='orbit'?'A LITTLE SPACE FOR BIG IDEAS.':'[ READY ]  等待你的下一条指令','muted');
+ return 7;
+}
+function motif(top){if(mainW<88||rows<=24)return;
+ const xx=mainW-30;
+ const art=scheme==='paper'?[
+ '     ┌─────────────┐',
+ '     │  ──  ─────  │',
+ '     │  ─────  ──  │',
+ '     │             │',
+ '     │      ┌──────┤',
+ '     └──────┤  ╱   │',
+ '            └──────┘',
+ '       NOTES / IDEAS'
+ ]:scheme==='orbit'?[
+ '           ·',
+ '     ·    ╱ ╲    ·',
+ '        ╱  ◇  ╲',
+ '   ────(   ●   )────',
+ '        ╲     ╱',
+ '     ·    ╲ ╱    ·',
+ '           ·',
+ '     ROOM TO EXPLORE'
+ ]:[
+ '    ┌──────────────┐',
+ '    │  ▁ ▂ ▃ ▅ ▃   │',
+ '    │  ▂ ▄ ▆ █ ▅   │',
+ '    │  ──────────  │',
+ '    │  01 / LOCAL  │',
+ '    └──────────────┘',
+ '      ┆  ┆  ┆  ┆',
+ '      SIGNAL: READY'
+ ];
+ (scheme==='amber'?art.slice(0,6):art).forEach((l,i)=>put(xx,top+i,l,i===3?'accent':'edge'));
+}
+function action(y,index,text,detail){const active=selected===index;const w=mainW>=88?mainW-37:mainW-8;const x=4;
+ if(active)fill(x,y,w,1,'selected');
+ const bg=active?'selected':'bg';
+ const mark=scheme==='paper'?(active?'▸':'·'):scheme==='orbit'?(active?'●':'○'):(active?'▸':' ');
+ const prefix=scheme==='amber'?`${mark} 00${index+1}  `:`${mark}  0${index+1}  `;
+ put(x+1,y,prefix,active?'accent':'muted',bg,active);
+ put(x+prefix.length+1,y,crop(text,w-prefix.length-2),active?'accent':'fg',bg,active);
+ if(detail&&w>60)put(x+w-19,y,detail,'muted',bg);
+ hits.push({x,y,w,h:1,index});
+}
+function home(top){
+ const compact=rows<=24;const recentY=top+(compact?7:10);
+ if(scheme==='amber'&&!compact)box(2,top-1,mainW-4,9,'01 / QUICK START');
+ else heading(4,top,scheme==='paper'?'01 / 从这里开始':scheme==='orbit'?'○  开始一段新的探索':'01 / 快速开始',mainW-8);
+ const first=top+(scheme==='amber'&&!compact?1:2);
+ ['了解当前项目','检查工作区','描述一个需求'].forEach((text,i)=>action(first+i*(compact?1:2),i,text,['结构 · 入口','变更 · 风险','把想法说出来'][i]));
+ motif(top+1);
+ heading(4,recentY,scheme==='paper'?'02 / 接着上次的思路':scheme==='orbit'?'·  最近经过的轨迹':'02 / RECENT SESSIONS',mainW-8);
+ sessions.forEach((title,i)=>{const yy=recentY+2+i;const bg=selected===i+3?'selected':'bg';if(bg==='selected')fill(4,yy,mainW-8,1,bg);put(5,yy,selected===i+3?'▸':'·',selected===i+3?'accent':'muted',bg);put(8,yy,title,selected===i+3?'accent':'fg',bg);put(mainW-18,yy,times[i],'muted',bg);hits.push({x:4,y:yy,w:mainW-8,h:1,index:i+3});});
+ if(!compact&&recentY+7<rows-5)label(5,recentY+7,'Tab 选择  ·  Enter 打开  ·  点击继续',mainW-10);
+}
+function sidebar(){if(cols<100)return;const x=mainW+1,w=cols-x;
+ fill(x,0,w,rows,'panel');for(let y=0;y<rows;y++)put(x,y,'│','edge','panel');
+ const sx=x+3,sw=w-5;
+ const side=(y,text,fg='fg',bold=false)=>put(sx,y,crop(text,sw),fg,'panel',bold);
+ const rule=y=>put(sx,y,'─'.repeat(sw),'edge','panel');
+ side(2,scheme==='paper'?'WORKSPACE / 工作区':scheme==='orbit'?'◇  WORKSPACE':'[ 01 / WORKSPACE ]','accent',true);
+ side(4,'hajicli','fg',true);side(5,'master  ·  本地分支','muted');
+ side(7,'~ 3 修改   + 1 新增','accent');side(8,'? 2 未跟踪','muted');rule(10);
+ if(mode==='home'){side(12,'当前任务','muted');side(14,'尚未开始','fg');side(15,'选择入口或写下需求','muted');}
+ else{side(12,'当前任务  ·  演示','accent');side(14,'✓ 了解需求','success');side(15,'› 确认实现范围','fg');}
+ const cy=rows<=24?18:21;
+ if(rows>24)rule(cy-2);
+ side(cy,'CONTEXT / 上下文','accent');side(cy+2,'█░░░░░░░░░░░░░░░  1%','muted');side(cy+3,'2.9k / 500k','muted');
+ if(rows>24){rule(cy+5);side(cy+7,'费用           ¥0.0000','fg');side(cy+8,'Ctrl+E 查看明细','muted');}
+ else side(rows-1,'¥0.0000 · Ctrl+E','muted');
+}
+function conversation(top){put(4,top,restored?'↳ '+restored:'新对话 / 交互演示','accent','bg',true);let y=top+3;
+ const items=restored?[{role:'你',text:'继续上次关于「'+restored+'」的工作。'},{role:'HAJI',text:'已切换到会话演示。这里会接着显示历史消息。'},...messages]:messages;
+ for(const m of items.slice(-3)){if(y>rows-10)break;put(4,y,m.role==='你'?'› 你':'● HAJI',m.role==='你'?'accent':'success','bg',true);y++;let txt=m.text;while(txt&&y<rows-7){const part=crop(txt,mainW-10);put(6,y++,part,'fg');txt=txt.slice(part.length);}y++;}
+ label(4,rows-8,'原型演示：已收起欢迎装饰，将空间交还对话。',mainW-8);
+}
+function render(){
+ [cols,rows]=sizes[size];mainW=cols>=100?cols-33:cols;
+ const pal=palettes[scheme][dark?'dark':'light'];colors=Object.fromEntries(keys.map((key,i)=>[key,pal[i]]));
+ for(const key of keys)terminal.style.setProperty('--'+key,colors[key]);terminal.style.background=colors.bg;terminal.style.color=colors.fg;
+ document.documentElement.style.setProperty('--cols',cols);document.documentElement.style.setProperty('--rows',rows);
+ grid=Array.from({length:rows},()=>Array.from({length:cols},()=>({ch:' ',w:1,fg:'fg',bg:'bg',bold:false})));hits=[];
+ const top=logo();
+ label(3,top-1,cols<100?'magpie · codex/gpt-6.1-sol · high':'magpie · codex/gpt-6.1-sol · high · 自动',mainW-6);
+ if(mode==='home')home(top+2);else conversation(top+2);
+ const iy=rows-4;
+ line(3,iy-1,mainW-6);put(3,iy,'›','accent','bg',true);line(3,iy+1,mainW-6);
+ label(3,rows-1,cols<100?'自动 · high · hajicli / master':'自动 · high   hajicli / master',mainW-6);
+ if(cols<100)label(mainW-29,rows-1,'1%  ·  ¥0.0000',26);
+ sidebar();
+ $('#screen').replaceChildren(...grid.map((row,i)=>{const el=document.createElement('div');el.className='line';el.dataset.row=i;for(const c of row){if(!c)continue;const span=document.createElement('span');span.className='cell';span.textContent=c.ch;span.style.width=`calc(var(--cw)*${c.w})`;span.style.color=colors[c.fg];span.style.backgroundColor=colors[c.bg];if(c.bold)span.style.fontWeight='700';el.append(span);}return el;}));
+ input.style.left='calc(var(--cw)*6)';input.style.top=`calc(var(--lh)*${iy})`;input.style.width=`calc(var(--cw)*${mainW-10})`;input.placeholder=mode==='home'?'告诉我，你想完成什么？':'继续描述你的需求…';
+ document.querySelectorAll('[data-scheme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scheme===scheme)));
+ $('#size').value=size;$('#theme').textContent=dark?'切换浅色':'切换深色';$('#ascii').setAttribute('aria-pressed',String(ascii));
+ const n={paper:'01',orbit:'02',amber:'03'}[scheme];$('#caption').textContent=n+' / '+palettes[scheme].title+' · '+palettes[scheme].subtitle;
+ $('#dimensions').textContent=`${cols} COL × ${rows} ROW · ${dark?'DARK':'LIGHT'} · 示例数据`;
+ $('#concept-title').textContent=palettes[scheme].title+(scheme==='paper'?' · 推荐':'');$('#concept').textContent=palettes[scheme].desc;
+ terminal.setAttribute('aria-label',`${palettes[scheme].title}，${mode==='home'?'首屏，当前选择'+(['了解当前项目','检查工作区','描述一个需求',...sessions][selected]):'对话演示'}`);
+}
+function announce(text){$('#announce').textContent=text;}
+function activate(index){if(index<3){input.value=prompts[index];announce('已填入草稿，按 Enter 演示发送。');input.focus();}else{mode='chat';restored=sessions[index-3];messages=[];input.value='';render();announce('已打开「'+restored+'」的恢复演示；示例历史不读取真实会话。');input.focus();}}
+function reset(){mode='home';restored='';messages=[];selected=0;input.value='';render();announce('已回到首屏。');}
+function send(){const text=input.value.trim();if(!text)return activate(selected);mode='chat';messages.push({role:'你',text},{role:'HAJI',text:'收到。这个原型展示进入对话后的版式，实际分析会由模型完成。'});input.value='';render();announce('已发送演示消息，首屏装饰已收起。');input.focus();}
+terminal.addEventListener('click',e=>{if(e.target===input)return;const rect=terminal.getBoundingClientRect();const x=Math.floor((e.clientX-rect.left)/8.4),y=Math.floor((e.clientY-rect.top)/22);const hit=hits.find(h=>x>=h.x&&x<h.x+h.w&&y===h.y);if(hit){selected=hit.index;render();activate(selected);}else input.focus();});
+terminal.addEventListener('mousemove',e=>{const rect=terminal.getBoundingClientRect();const x=Math.floor((e.clientX-rect.left)/8.4),y=Math.floor((e.clientY-rect.top)/22);terminal.style.cursor=hits.some(h=>x>=h.x&&x<h.x+h.w&&y===h.y)?'pointer':'default';});
+terminal.addEventListener('keydown',e=>{if(e.isComposing)return;if(e.key==='Escape'){e.preventDefault();reset();input.focus();return;}if(mode==='home'&&!input.value&&['Tab','ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();selected=(selected+(e.key==='ArrowUp'||e.shiftKey?-1:1)+6)%6;render();announce('选择：'+['了解当前项目','检查工作区','描述一个需求',...sessions][selected]);}else if(e.key==='Enter'){e.preventDefault();send();}});
+for(const b of document.querySelectorAll('[data-scheme]'))b.addEventListener('click',()=>{scheme=b.dataset.scheme;dark=scheme==='amber';render();});
+$('#theme').addEventListener('click',()=>{dark=!dark;render();});$('#ascii').addEventListener('click',()=>{ascii=!ascii;render();});$('#size').addEventListener('change',e=>{size=e.target.value;render();});$('#reset').addEventListener('click',reset);
+if(params.get('capture')==='1')document.body.classList.add('capture');
+render();
+// 只读快照供浏览器验证脚本检查网格预算；不访问真实工作区。
+window.prototypeSnapshot=()=>({scheme,dark,size,cols,rows,mainW,mode,selected,restored,hits:structuredClone(hits),lines:grid.map(row=>row.filter(Boolean).map(c=>c.ch).join('')),draft:input.value});
+</script>
+</body>
+</html>

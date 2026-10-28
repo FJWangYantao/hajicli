@@ -54,7 +54,7 @@ test("buildScreenUpdate only rewrites changed rows and clears them to the termin
 
 test("frames are wrapped in synchronized output (DECSET 2026)", () => {
   const source = fs.readFileSync(new URL("../src/terminal-input.ts", import.meta.url), "utf8");
-  const opens = source.match(/"\\x1b\[\?2026h/g) ?? [];
+  const opens = source.match(/\\x1b\[\?2026h/g) ?? [];
   const closes = source.match(/\\x1b\[\?2026l/g) ?? [];
   assert.ok(opens.length >= 2, "init and per-frame writes both open synchronized output");
   assert.equal(opens.length, closes.length, "every synchronized-output block is closed");

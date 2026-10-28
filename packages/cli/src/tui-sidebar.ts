@@ -4,10 +4,8 @@
  * 与 terminal-panels.ts 同一模式：只读入标量状态并输出 ANSI 行，
  * 不做 I/O 与定时器，方便用固定宽度做单元测试。
  *
- * 分工约定：会话标题、provider/model、推理档、权限档与 git 分支已经由顶部
- * header 和底部状态行负责，侧栏不再重复，只保留它们讲不了的“量”：上下文占用、
- * 费用构成、耗时，以及进行中的任务与子代理。进行中的活动（思考/运行工具）
- * 属于对话区，不搬进侧栏。
+ * 分工约定：工作区摘要、进行中的目标/任务/子代理在前，上下文与费用在后。
+ * provider/model、推理档与权限档由顶部与底栏负责；思考/运行工具留在对话区。
  */
 import { type AgentPanelItem, buildAgentPanelRows, formatAgentTokens } from "./agent-panel.js";
 import {
@@ -20,10 +18,11 @@ import {
   paperHoverBg,
   paperSidebarBg,
   paperSidebarEnabled,
-  paperSidebarSpace,
+  paperSidebarTransition,
   paperWorkBg,
 } from "./paper-sidebar.js";
 import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
+import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import {
   SEQ,
   splitGraphemes,
@@ -31,9 +30,11 @@ import {
   truncateAnsiText,
   truncateText,
 } from "./terminal-text.js";
+import type { WorkspaceStatus } from "./workspace-status.js";
 
 /** 右侧信息栏显示所需状态（TerminalUI 持有，渲染时快照传入）。 */
 export interface SidebarState {
+  workspace?: WorkspaceStatus;
   usedTokens: number;
   maxTokens: number;
   /** 上下文按类别的估算占用（系统/工具/记忆/文件/结果/对话）；缺省时只画圆环与总量。 */
@@ -168,7 +169,7 @@ export const SIDEBAR_MIN_ROWS = 18;
 /** 对话区与侧栏之间的分隔带（空格 + 竖线 + 空格）。 */
 export const SIDEBAR_GAP_WIDTH = 3;
 /** 侧栏出现时必须给对话区留下的最小宽度。 */
-export const SIDEBAR_MIN_CHAT_WIDTH = 48;
+export const SIDEBAR_MIN_CHAT_WIDTH = 72;
 /** 侧栏右侧留白：文字不贴到终端最后一列（左侧的 1 列已由分隔带提供）。 */
 const SIDEBAR_RIGHT_MARGIN = 1;
 /**
@@ -214,7 +215,8 @@ export function resolveSidebarWidth(columns: number, rows: number, enabled: bool
   const target = paperSidebarEnabled()
     ? Math.min(36, Math.max(32, Math.round(columns * 0.28)))
     : Math.min(34, Math.max(24, Math.round(columns * 0.26)));
-  if (columns - target - SIDEBAR_GAP_WIDTH < SIDEBAR_MIN_CHAT_WIDTH) return 0;
+  // 正文两侧最多各有三列内边距，预留后仍须满足阅读宽度。
+  if (columns - target - SIDEBAR_GAP_WIDTH - 6 < SIDEBAR_MIN_CHAT_WIDTH) return 0;
   return target;
 }
 
@@ -502,11 +504,12 @@ export function buildSidebarFrame(
   if (width <= 0 || maxRows <= 0) return { rows: [], regions: [] };
   const w = Math.max(1, Math.floor(width));
   const paper = paperSidebarEnabled();
-  /** 纸面两侧各留两列；对话与纸面之间的三列间距由 composeSidebarRow 统一添加。 */
-  const contentW = Math.max(1, w - (paper ? 4 : SIDEBAR_RIGHT_MARGIN));
+  /** 纸面内容使用统一宽度，整组居中，组内标签左对齐、数值右对齐。 */
+  const contentW = Math.max(1, paper ? Math.min(26, w - 4) : w - SIDEBAR_RIGHT_MARGIN);
+  const paperInset = paper ? Math.max(0, Math.floor((w - contentW) / 2)) : 0;
   const rows: string[] = [];
   const surfaces: Array<string | undefined> = [];
-  const paperPadding = paper ? "  " : "";
+  const paperPadding = " ".repeat(paperInset);
   const pulse = (at: number | undefined): boolean =>
     paper && at !== undefined && now >= at && now - at < 800;
   // 交互区域：先登记再统一按 depth 排序，命中时从深到浅找。
@@ -527,8 +530,8 @@ export function buildSidebarFrame(
       hit: {
         top,
         height: clipped,
-        left: options.left ?? 0,
-        width: options.width ?? contentW + (paper ? 4 : 0),
+        left: (options.left ?? 0) + paperInset,
+        width: options.width ?? contentW,
       },
       hover,
       depth: options.depth ?? 0,
@@ -573,6 +576,25 @@ export function buildSidebarFrame(
     );
   };
 
+  /** 整组在可用视口中居中；空行、表面色与交互命中使用同一偏移。 */
+  const finish = (ring?: SidebarRingGeometry): SidebarFrame => {
+    const top =
+      paper && !state.workspace ? Math.max(0, Math.floor((maxRows - rows.length) / 2)) : 0;
+    if (top > 0) {
+      rows.unshift(...new Array<string>(top).fill(""));
+      surfaces.unshift(...new Array<undefined>(top).fill(undefined));
+      for (const region of regions) region.hit.top += top;
+      if (ring) ring.top += top;
+    }
+    regions.sort((a, b) => a.depth - b.depth);
+    return {
+      rows: rows.slice(0, maxRows),
+      ring,
+      regions,
+      surfaces: paper ? surfaces.slice(0, maxRows) : undefined,
+    };
+  };
+
   // 侧栏只放“量”与进度（目标、任务、代理、上下文、费用）：
   // 进行中的活动行留在对话区一侧，避免同一件事在屏幕上出现两次。
   // 顺序即优先级：当前在做什么（目标/任务/代理）在前，资源与账单在后；
@@ -585,6 +607,40 @@ export function buildSidebarFrame(
   const density = sidebarDensity(maxRows);
   /** 目标/任务/代理区块是否值得展开（minimal 档只要标题行就够）。 */
   const upperMinRows = density === "minimal" ? 2 : 3;
+
+  // 工作区是实时快照；小窗口优先让位给任务与会话用量。
+  const workReserve =
+    (state.goal ? 4 : 0) + (state.taskPlan?.items.length ? 4 : 0) + (state.agents?.length ? 2 : 0);
+  if (state.workspace && upperBudget() >= workReserve + 7) {
+    const workspace = state.workspace;
+    const clean = (text: string): string => sanitizeTerminalText(text).replace(/\s+/g, " ").trim();
+    section("工作区");
+    push(`${SEQ.bold}${truncateText(clean(workspace.name), contentW)}${SEQ.reset}`);
+    if (workspace.branch && upperBudget() > workReserve + 1) {
+      push(`${SEQ.muted}${truncateText(clean(workspace.branch), contentW)}${SEQ.reset}`);
+    }
+    const changes = [
+      workspace.modified ? `修改 ${workspace.modified}` : "",
+      workspace.added ? `新增 ${workspace.added}` : "",
+      workspace.deleted ? `删除 ${workspace.deleted}` : "",
+      workspace.untracked ? `未跟踪 ${workspace.untracked}` : "",
+      workspace.conflicted ? `冲突 ${workspace.conflicted}` : "",
+    ].filter(Boolean);
+    const summary =
+      workspace.gitStatus === "ready"
+        ? changes.join(" · ") || "工作区干净"
+        : workspace.gitStatus === "not-repository"
+          ? "非 Git 仓库"
+          : "Git 状态暂不可用";
+    for (const line of wrapSidebarText(
+      summary,
+      contentW,
+      Math.min(2, Math.max(1, upperBudget() - workReserve)),
+    )) {
+      push(`${workspace.conflicted ? SEQ.accent : SEQ.muted}${line}${SEQ.reset}`);
+    }
+    blank(paper);
+  }
 
   // ── 空会话：收敛成「上下文 / 费用」两段一行摘要，不画圆环、不铺费用表 ──
   // 判定「空会话」：还没有任何请求、没有上下文分类、没有目标/任务/代理。
@@ -630,8 +686,7 @@ export function buildSidebarFrame(
     push(`${SEQ.faint}${truncateText("有请求后显示明细 · Ctrl+E", contentW)}${SEQ.reset}`);
     register("cost.summary", costTopC, rows.length - costTopC, "text", { depth: 1 });
 
-    regions.sort((a, b) => a.depth - b.depth);
-    return { rows: rows.slice(0, maxRows), ring: undefined, regions };
+    return finish();
   }
 
   // ── 目标：setgoal 记录的会话目标摘要，最多两行（完整原文与完成审计由 selfstate 查询）──
@@ -743,7 +798,7 @@ export function buildSidebarFrame(
     const empty = Math.max(0, barCapacity - filled);
     const ratioColor = ratio >= 0.85 ? SEQ.boldRed : ratio >= 0.6 ? SEQ.yellow : SEQ.softAccent;
     if (paper) {
-      const paperBar = Math.max(4, Math.min(14, contentW - 1));
+      const paperBar = contentW;
       const paperFilled = Math.min(paperBar, Math.round(ratio * paperBar));
       const metricSurface = pulse(state.contextPulseAt) ? paperHoverBg() : undefined;
       push(
@@ -751,7 +806,7 @@ export function buildSidebarFrame(
         metricSurface,
       );
       push(
-        `${SEQ.accent}${"━".repeat(paperFilled)}${SEQ.reset}${SEQ.muted}${"─".repeat(paperBar - paperFilled)}${SEQ.reset}`,
+        `${ratioColor}${"━".repeat(paperFilled)}${SEQ.reset}${SEQ.muted}${"─".repeat(paperBar - paperFilled)}${SEQ.reset}`,
         metricSurface,
       );
     } else {
@@ -907,13 +962,7 @@ export function buildSidebarFrame(
 
   // 按 depth 升序返回：命中时从后往前找，深层（定价 agent 行、配置单价行）
   // 自然压过外层费用区块。
-  regions.sort((a, b) => a.depth - b.depth);
-  return {
-    rows: rows.slice(0, maxRows),
-    ring,
-    regions,
-    surfaces: paper ? surfaces.slice(0, maxRows) : undefined,
-  };
+  return finish(ring);
 }
 
 /** 仅需要行内容时的便捷入口（测试与不关心圆环位置的调用方使用）。 */
@@ -951,10 +1000,14 @@ export function composeSidebarRow(
   )}`;
   if (paperSidebarEnabled()) {
     const background = surface ?? paperSidebarBg();
-    const paperRow = `${background}${safeSidebar}${background}${" ".repeat(
+    // 行内完整重置会恢复主题背景；紧接着重新铺回当前表面。
+    const onSurface = SEQ.reset
+      ? safeSidebar.split(SEQ.reset).join(`${SEQ.reset}${background}`)
+      : safeSidebar;
+    const paperRow = `${background}${onSurface}${background}${" ".repeat(
       Math.max(0, sidebarWidth - terminalWidth(safeSidebar)),
     )}${SEQ.reset}`;
-    return `${leftPadded}${paperSidebarSpace(3)}${paperRow}`;
+    return `${leftPadded}${paperSidebarTransition()}${paperRow}`;
   }
   return `${leftPadded} ${SEQ.faint}│${SEQ.reset} ${sidebarPadded}`;
 }

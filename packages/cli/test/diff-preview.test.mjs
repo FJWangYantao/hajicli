@@ -106,12 +106,12 @@ test("buildEditDiff marks truncated remainder", () => {
 });
 
 test("preferredDiffWidth mirrors the TUI chat width, and ANSI rows truncate cleanly", () => {
-  // 宽终端（120 列）：wide 布局 chatPadding=3，safeWidth=119 → 对话区 113 → 内容宽 105。
+  // 宽终端（120 列）：wide 布局 chatPadding=2，safeWidth=119 → 对话区 115 → 内容宽 107。
   // 偏宽哪怕 1 列都会让补白到满宽的分栏行整行被截断（右栏消失）。
   Object.defineProperty(process.stdout, "columns", { value: 120, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
   try {
-    assert.equal(preferredDiffWidth(), 105);
+    assert.equal(preferredDiffWidth(), 107);
     // 舒适档（80 列）：chatPadding=2 → safeWidth=79 → 75 − 8 = 67。
     Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
     assert.equal(preferredDiffWidth(), 67);

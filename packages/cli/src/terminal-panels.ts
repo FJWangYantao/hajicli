@@ -135,19 +135,7 @@ export function buildDecodedText(text: string, color: string, elapsedMs?: number
 function activityDetailColor(frame: ActivityFrame): string {
   if (frame.tone === "stalled") return SEQ.boldYellow;
   if (frame.tone === "waiting" || frame.phase === "permission") return SEQ.yellow;
-  switch (frame.phase) {
-    case "thinking":
-      return SEQ.magenta;
-    case "responding":
-      return SEQ.green;
-    case "tool":
-    case "batch":
-      return SEQ.blue;
-    case "stopping":
-      return SEQ.red;
-    default:
-      return SEQ.accent;
-  }
+  return frame.phase === "stopping" ? SEQ.red : SEQ.muted;
 }
 
 /** 构建活动状态行：图标 + 阶段标签 + 耗时/细节；宽屏右侧显示权限/ctx 徽标或 Esc 提示。 */
@@ -176,17 +164,9 @@ export function buildActivityRow(
   // 等待与停滞已由颜色区分；只有停滞时补一个文字提示，避免同一状态重复描述。
   const toneText = frame.tone === "stalled" ? "等待较久" : "";
   const meta = [toneText, frame.idleText].filter(Boolean).join(" · ");
-  // 细节（当前目标）以解码动效循环还原；停滞、等授权、终止时保持静止——
-  // 动画停下本身就是「没有新进展」的信号。
-  const decodeElapsedMs =
-    frame.startedAt !== undefined &&
-    frame.tone !== "stalled" &&
-    frame.phase !== "permission" &&
-    frame.phase !== "stopping"
-      ? now - frame.startedAt
-      : undefined;
+  // 详情保持稳定，活动图标承担动态提示。
   const decodedDetail = frame.detail
-    ? buildDecodedText(frame.detail, activityDetailColor(frame), decodeElapsedMs)
+    ? buildDecodedText(frame.detail, activityDetailColor(frame))
     : "";
   const primary = `${color}${frame.icon}${SEQ.reset} ${SEQ.bold}${frame.label}${SEQ.reset}`;
   const suffix = `${SEQ.muted}${frame.elapsed}${meta ? ` · ${meta}` : ""}${frame.detail ? " · " : ""}${SEQ.reset}${decodedDetail}`;

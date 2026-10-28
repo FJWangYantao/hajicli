@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TerminalUI } from "../dist/terminal-input.js";
-import { terminalWidth } from "../dist/terminal-text.js";
+import { SEQ, terminalWidth } from "../dist/terminal-text.js";
 import {
   resetThemeAppearance,
   setActiveColorLevel,
@@ -60,6 +60,37 @@ test("sidebar only resolves on wide terminals and can be disabled", () => {
   assert.equal(resolveSidebarWidth(120, 30, false), 0);
   assert.equal(resolveSidebarWidth(80, 24, true), 0, "narrow terminals keep the chat full width");
   assert.equal(resolveSidebarWidth(120, 10, true), 0, "short terminals hide the sidebar");
+});
+
+test("sidebar preserves at least 72 columns of reading space", () => {
+  for (const preset of ["default", "paper"]) {
+    setThemePreset(preset);
+    for (let columns = 96; columns <= 160; columns++) {
+      const width = resolveSidebarWidth(columns, 24, true);
+      if (width) assert.ok(columns - width - 3 - 6 >= 72, `${preset}: ${columns}`);
+    }
+    assert.equal(resolveSidebarWidth(96, 24, true), 0);
+  }
+  setThemePreset("default");
+});
+
+test("paper sidebar restores its background after styled text resets", () => {
+  setActiveColorLevel("truecolor");
+  setThemeAppearance("light");
+  setThemePreset("paper");
+  try {
+    const frame = buildSidebarFrame(sidebarState(), 32, 24);
+    const row = frame.rows.find((line) => stripAnsi(line).includes("上下文"));
+    const rendered = composeSidebarRow("", 0, row, 32);
+    assert.match(rendered, /\x1b\[0m\x1b\[38;2;[^m]+m\x1b\[48;2;[^m]+m\x1b\[48;2;238;236;229m/);
+    const high = buildSidebarFrame(sidebarState({ usedTokens: 950 }), 32, 24);
+    const bar = high.rows.find((line) => line.includes("━"));
+    assert.ok(bar.includes(`${SEQ.boldRed}━`), "high usage uses the warning color");
+  } finally {
+    setActiveColorLevel("mono");
+    setThemePreset("default");
+    resetThemeAppearance();
+  }
 });
 
 test("sidebar rows show context, cost, task and agent info", () => {
@@ -156,7 +187,11 @@ test("paper sidebar paints a seamless warm surface without the divider", () => {
     const row = composeSidebarRow("对话内容", 50, "上下文", 30);
     assert.equal(terminalWidth(row), 83);
     assert.doesNotMatch(stripAnsi(row), /│/);
-    assert.ok(row.includes("\x1b[48;2;233;230;220m"));
+    assert.ok(row.includes("\x1b[48;2;238;236;229m"));
+    assert.ok(
+      row.includes("\x1b[48;2;243;241;236m \x1b[48;2;242;240;234m \x1b[48;2;240;238;231m "),
+      "交界处逐列过渡",
+    );
     const frame = buildSidebarFrame(sidebarState(), 30, 30, 5000);
     assert.equal(frame.ring, undefined, "paper uses the prototype bar instead of a ring");
     const text = frame.rows.map(stripAnsi).join("\n");
@@ -193,6 +228,66 @@ test("paper sidebar keeps stable work groups and compact resource groups", () =>
     assert.equal(rows[cost - 1].trim(), "", "资源与费用之间留一行");
     assert.equal(rows[cost + 1].trim(), "¥0.0100");
     assert.equal(rows[cost + 2].includes("› 查看明细"), true);
+  } finally {
+    setThemePreset("default");
+  }
+});
+
+test("paper content is centered with aligned metrics and matching hit areas", () => {
+  setActiveColorLevel("mono");
+  setThemePreset("paper");
+  try {
+    for (const width of [30, 34, 36]) {
+      for (const maxRows of [14, 24, 40]) {
+        for (const costRequests of [0, 3]) {
+          const frame = buildSidebarFrame(
+            sidebarState({
+              taskPlan: undefined,
+              agents: undefined,
+              costRequests,
+            }),
+            width,
+            maxRows,
+            5000,
+          );
+          const rows = frame.rows.map(stripAnsi);
+          const first = rows.findIndex((row) => row.trim());
+          const last = rows.findLastIndex((row) => row.trim());
+          assert.ok(Math.abs(first - (maxRows - last - 1)) <= 1, "上下留白均衡");
+          const inset = rows[first].search(/\S/);
+          const usage = frame.regions.find((region) => region.id === "context.usage");
+          assert.equal(usage.hit.left, inset);
+          assert.ok(rows[usage.hit.top].trim(), "居中后命中区仍覆盖数值行");
+          assert.ok(
+            Math.abs(inset - (width - usage.hit.left - usage.hit.width)) <= 1,
+            "左右留白均衡",
+          );
+          for (const region of frame.regions) {
+            assert.ok(region.hit.top >= first && region.hit.top + region.hit.height <= maxRows);
+            assert.ok(region.hit.left + region.hit.width <= width);
+          }
+          const bar = rows.find((row) => /[━─]/.test(row));
+          if (bar) {
+            const title = rows.find((row) => row.includes("上下文"));
+            assert.equal(bar.search(/\S/), inset);
+            assert.equal(terminalWidth(bar), terminalWidth(title), "进度与数值共享右边界");
+          }
+          const hovered = buildSidebarFrame(
+            sidebarState({
+              taskPlan: undefined,
+              agents: undefined,
+              costRequests,
+            }),
+            width,
+            maxRows,
+            5000,
+            "cost.summary",
+          );
+          assert.deepEqual(hovered.regions, frame.regions, "悬停不移动命中区");
+          assert.ok(frame.rows.every((row) => terminalWidth(row) <= width));
+        }
+      }
+    }
   } finally {
     setThemePreset("default");
   }

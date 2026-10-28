@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HAJI · 三种布局</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e7e7df;color:#3f493b;font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1420px;margin:auto;padding:24px}h1{font-size:25px;margin:0 0 4px}p{margin:0;color:#72796b}nav{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 14px;align-items:center}button,select{font:inherit;padding:7px 14px;background:#f5f4ed;color:#46523d;border:1px solid #cbd0be;cursor:pointer}button[aria-pressed=true]{background:#63744b;color:white}button:focus-visible,select:focus-visible{outline:2px solid #63744b;outline-offset:2px}select{margin-left:auto}.caption{display:flex;justify-content:space-between;padding:9px 14px;background:#dce0d2;font:12px Consolas,"Microsoft YaHei",monospace}.viewport{overflow:auto;border:1px solid #cbd0be;background:#f6f4ee}#terminal{position:relative;background:#f6f4ee;isolation:isolate;--cw:8.4px;--lh:22px;width:calc(var(--cols)*var(--cw));height:calc(var(--rows)*var(--lh));font:14px/22px Consolas,"Microsoft YaHei",monospace}.line{height:22px;white-space:nowrap}.cell{display:inline-block;vertical-align:top;height:22px;white-space:pre}#draft{position:absolute;z-index:1;font:inherit;color:#464b40;background:transparent;outline:none;border:0;padding:0;height:22px;caret-color:#63744b}#draft::placeholder{color:#7f8874;opacity:1}.detail{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:18px;padding-top:16px;border-top:1px solid #cbd0be}.detail h2{font-size:15px;margin:0 0 4px}.detail p{font-size:13px}#announce{margin-top:14px;font-size:12px;min-height:20px}.capture main{padding:18px 24px;max-width:none}.capture header,.capture nav,.capture .detail,.capture #announce{display:none}.capture .caption{width:calc(var(--cols)*8.4px + 2px)}.capture .viewport{width:max-content}@media(max-width:700px){main{padding:14px}select{margin-left:0}.detail{grid-template-columns:1fr;gap:16px}}
+</style></head><body><main>
+<header><h1>布局对比：同样内容，三种空间组织</h1><p>统一纸白与橄榄绿，只比较 Logo、输入框、入口、会话和工作区的位置。</p></header>
+<nav aria-label="布局选择"><button data-layout="center" aria-pressed="true">A 居中启动台</button><button data-layout="split" aria-pressed="false">B 左右双栏</button><button data-layout="desk" aria-pressed="false">C 横向工作台</button><select id="size" aria-label="窗口大小"><option value="wide">140 × 36</option><option value="medium">104 × 30</option><option value="narrow">76 × 30</option><option value="short">104 × 24</option></select><button id="reset">回到首屏</button></nav>
+<div class="caption"><span id="caption"></span><span id="dimensions"></span></div><div class="viewport"><div id="terminal" tabindex="0" role="group" aria-label="交互终端布局原型"><div id="screen" aria-hidden="true"></div><input id="draft" aria-label="需求输入框" autocomplete="off" spellcheck="false"></div></div>
+<div class="detail"><section><h2 id="title"></h2><p id="description"></p></section><section><h2>试用方式</h2><p>点击入口填入草稿，Enter 发送；空输入时 Tab 切换六个入口。点击最近会话演示恢复，Esc 回首屏。所有数据均为相同示例，不调用模型。</p></section></div><p id="announce" aria-live="polite">布局原型，尚未接入正式 TUI。</p>
+</main><script>
+'use strict';
+const $=s=>document.querySelector(s),params=new URLSearchParams(location.search);
+const layouts={center:{name:'A / 居中启动台',desc:'取消常驻侧栏。Logo、需求输入和快捷入口组成中央焦点，最近会话紧随其后；工作区、任务与资源压到下方横条。适合从一个新需求开始，视觉重心最集中。'},split:{name:'B / 左右双栏',desc:'左侧固定为导航：项目、最近会话和任务；右侧留给新需求、输入和快捷入口。资源摘要放在左栏底部。更适合在多个会话之间切换，也便于进入对话后保持导航稳定。'},desk:{name:'C / 横向工作台',desc:'顶部是项目与资源状态，中间并列三块操作入口，下层左右分放会话与任务，输入框固定底部。信息像一张工作台铺开，宽屏利用率最高，适合经常先检查项目状态。'}};
+let layout=layouts[params.get('layout')]?params.get('layout'):'center',size=params.get('size')||'wide';
+const sizes={wide:[140,36],medium:[104,30],narrow:[76,30],short:[104,24]};if(!sizes[size])size='wide';
+const titles=['了解当前项目','检查工作区','描述一个需求'],details=['梳理结构、入口和运行方式','查看改动与潜在回归风险','把想法变成具体实现'],sessions=['图片自然度调整','完善侧栏布局','修复会话恢复'],times=['刚刚','1 小时前','昨天'];
+const prompts=['请梳理当前项目的结构、主要入口和运行方式。','请检查当前工作区的代码改动，找出潜在问题和回归风险。','我想实现一个功能：'];
+const colors={bg:'#f6f4ee',fg:'#464b40',accent:'#63744b',muted:'#7b8470',edge:'#ccd2be',panel:'#eceee3',selected:'#e0e7d2'};
+let cols,rows,grid,hits,regions,inputRect,mode='home',selected=0,restored='',sent='';const input=$('#draft'),terminal=$('#terminal');
+const width=ch=>ch.codePointAt(0)>0x2e7f&&ch.codePointAt(0)<0xffef?2:1;
+function textWidth(s){return [...s].reduce((n,c)=>n+width(c),0)}
+function crop(s,w){let r='',n=0;for(const c of s){if(n+width(c)>w)break;r+=c;n+=width(c)}return r}
+function put(x,y,s,fg='fg',bg='bg',bold=false){if(y<0||y>=rows)return;for(const ch of s){const w=width(ch);if(x>=0&&x+w<=cols){grid[y][x]={ch,w,fg,bg,bold};if(w===2)grid[y][x+1]=null}x+=w}}
+function fill(x,y,w,h,bg){for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++)if(grid[yy]?.[xx]!==undefined)grid[yy][xx]={ch:' ',w:1,fg:'fg',bg,bold:false}}
+function rule(x,y,w,bg='bg'){put(x,y,'─'.repeat(Math.max(0,w)),'edge',bg)}
+function region(name,x,y,w,h){regions.push({name,x,y,w,h})}
+function centered(y,s,fg='fg',bold=false){put(Math.floor((cols-textWidth(s))/2),y,s,fg,'bg',bold)}
+function logo(x,y,compact=false){if(compact){put(x,y,'HAJI','accent','bg',true);return}['█  █  █▀▀█     █  ▀█▀','█▀▀█  █▄▄█     █   █ ','█  █  █  █  █▄▄█  ▄█▄'].forEach((s,i)=>put(x,y+i,s,'accent','bg',true))}
+function model(x,y,w,bg='bg'){put(x,y,crop(w<40?'codex/gpt-6.1-sol · high · 自动':'magpie · codex/gpt-6.1-sol · high · 自动',w),'muted',bg)}
+function frame(x,y,w,h,title){rule(x+1,y,w-2);rule(x+1,y+h-1,w-2);put(x,y,'┌','edge');put(x+w-1,y,'┐','edge');put(x,y+h-1,'└','edge');put(x+w-1,y+h-1,'┘','edge');for(let i=1;i<h-1;i++){put(x,y+i,'│','edge');put(x+w-1,y+i,'│','edge')}if(title)put(x+2,y,' '+title+' ','accent','bg',true)}
+function draft(x,y,w){region('input',x,y-1,w,3);rule(x,y-1,w);rule(x,y+1,w);put(x,y,'›','accent','bg',true);inputRect={x:x+3,y,w:w-4,h:1}}
+function action(x,y,w,index,card=false){const h=card?5:1;region('action'+index,x,y,w,h);const bg=selected===index?'selected':'bg';fill(x,y,w,h,bg);if(card){put(x+2,y+1,`0${index+1} / ${titles[index]}`,'accent',bg,true);put(x+2,y+3,crop(details[index],w-4),'muted',bg)}else{put(x+1,y,(selected===index?'▸':'·')+' '+titles[index],selected===index?'accent':'fg',bg,selected===index)}hits.push({x,y,w,h,index})}
+function recents(x,y,w,bg='bg',step=2){region('recent',x,y,w,2+2*step+1);put(x,y,'最近会话','accent',bg,true);for(let i=0;i<3;i++){const yy=y+2+i*step,b=selected===i+3?'selected':bg;fill(x,yy,w,1,b);put(x+1,yy,selected===i+3?'▸':'·','accent',b);put(x+4,yy,crop(sessions[i],w>=30?w-17:w-4),'fg',b);if(w>=30)put(x+w-10,yy,times[i],'muted',b);hits.push({x,y:yy,w,h:1,index:i+3})}}
+function workspace(x,y,w,bg='bg',compact=false){region('workspace',x,y,w,compact?3:5);put(x,y,'工作区  /  hajicli','accent',bg,true);put(x,y+1,'master','fg',bg);put(x,y+(compact?2:3),crop(w<27?'改 3 · 新 1 · 未跟踪 2':'修改 3 · 新增 1 · 未跟踪 2',w),'muted',bg)}
+function task(x,y,w,bg='bg'){region('task',x,y,w,3);put(x,y,'当前任务','accent',bg,true);put(x,y+2,crop(w<31?'尚未开始':'尚未开始 · 选择入口或写下需求',w),'muted',bg)}
+function resource(x,y,w,bg='bg',one=false){region('resources',x,y,w,one?1:3);put(x,y,crop(w<27?'1% · 2.9k / 500k':'上下文 1% · 2.9k / 500k',w),'fg',bg);put(x,one?y:y+2,crop(one?'上下文 1% · 2.9k / 500k   费用 ¥0.0000':'费用 ¥0.0000 · Ctrl+E',w),'muted',bg)}
+function centerLayout(){const short=rows<=30,w=Math.min(80,cols-10),x=Math.floor((cols-w)/2),top=short?1:3;
+ region('brand',x,top,w,short?2:5);if(short)centered(top,'HAJI  /  你想完成什么？','accent',true);else{logo(Math.floor((cols-22)/2),top);centered(top+4,'你想完成什么？','accent',true)}
+ draft(x,short?5:11,w);
+ if(short){for(let i=0;i<3;i++)action(x,8+i,w,i)}else{const cw=Math.floor((w-4)/3);for(let i=0;i<3;i++)action(x+i*(cw+2),14,cw,i);centered(17,'先选入口，也可以直接描述需求。','muted')}
+ recents(x,short?11:20,w,'bg',short?1:2);
+ const by=rows-7;rule(3,by-1,cols-6);fill(0,by,cols,7,'panel');const half=Math.floor(cols/2);
+ workspace(3,by+1,half-6,'panel',true);task(half+2,by+1,half-5,'panel');resource(3,rows-2,cols-6,'panel',true);
+ model(3,rows-1,cols-6,'panel')}
+function splitLayout(){const narrow=cols<100,rail=narrow?28:38,mx=rail+5,mw=cols-mx-4,short=rows<=24;
+ fill(0,0,rail,rows,'panel');for(let y=0;y<rows;y++)put(rail,y,'│','edge');
+ put(3,1,'HAJI / hajicli','accent','panel',true);workspace(3,3,rail-6,'panel',true);recents(3,8,rail-6,'panel',short?1:2);task(3,short?15:18,rail-6,'panel');resource(3,rows-5,rail-6,'panel');
+ region('brand',mx,3,mw,short?2:5);if(short)put(mx,3,'开始一项新工作','accent','bg',true);else{logo(mx,3);put(mx,8,'开始一项新工作','accent','bg',true)}
+ draft(mx,short?7:12,mw);put(mx,short?10:16,'快捷开始','accent','bg',true);for(let i=0;i<3;i++)action(mx,(short?12:18)+i*2,mw,i);
+ model(mx,rows-2,mw)}
+function deskLayout(){const narrow=cols<100,short=rows<=30;
+ region('brand',3,1,cols-6,1);logo(3,1,true);model(12,1,cols-15);rule(3,3,cols-6);
+ if(narrow){workspace(3,4,cols-37,'bg',true);resource(cols-31,4,28);put(3,8,'你想完成什么？','accent','bg',true);for(let i=0;i<3;i++)action(3,10+i,cols-6,i);rule(3,14,cols-6);recents(3,16,cols-6,'bg',1);task(3,23,cols-6);draft(3,rows-2,cols-6)}
+ else{const a=Math.floor(cols*.45),b=Math.floor(cols*.73);workspace(3,5,a-6,'bg',true);resource(b,5,cols-b-3);rule(3,9,cols-6);
+ put(3,short?10:12,'你想完成什么？','accent','bg',true);const cw=Math.floor((cols-10)/3),cy=short?11:15;for(let i=0;i<3;i++)action(3+i*(cw+2),cy,cw,i,true);
+ const ry=short?16:23;recents(3,ry,a-6,'bg',1);task(a+3,ry,cols-a-6);draft(3,rows-2,cols-6)}
+}
+function chat(){region('brand',3,1,cols-6,1);put(3,1,'HAJI / '+(restored||'新对话'),'accent','bg',true);model(3,3,cols-6);rule(3,5,cols-6);put(4,7,'› 你','accent','bg',true);put(6,9,crop(restored?'继续上次关于「'+restored+'」的工作。':sent,cols-12));put(4,12,'● HAJI','accent','bg',true);put(6,14,crop('这是对话布局演示。欢迎入口已经收起，可以继续输入。',cols-12));draft(3,rows-4,cols-6);resource(3,rows-1,cols-6,'bg',true)}
+function render(){[cols,rows]=sizes[size];grid=Array.from({length:rows},()=>Array.from({length:cols},()=>({ch:' ',w:1,fg:'fg',bg:'bg',bold:false})));hits=[];regions=[];if(mode==='chat')chat();else({center:centerLayout,split:splitLayout,desk:deskLayout}[layout])();
+ document.documentElement.style.setProperty('--cols',cols);document.documentElement.style.setProperty('--rows',rows);
+ $('#screen').replaceChildren(...grid.map(row=>{const line=document.createElement('div');line.className='line';for(const c of row){if(!c)continue;const span=document.createElement('span');span.className='cell';span.textContent=c.ch;span.style.width=c.w*8.4+'px';span.style.color=colors[c.fg];span.style.background=colors[c.bg];if(c.bold)span.style.fontWeight='700';line.append(span)}return line}));
+ Object.assign(input.style,{left:inputRect.x*8.4+'px',top:inputRect.y*22+'px',width:inputRect.w*8.4+'px'});input.placeholder='告诉我，你想完成什么？';
+ $('[id=caption]').textContent=layouts[layout].name;$('#dimensions').textContent=`${cols} × ${rows} / 同配色 · 同内容 / 示例数据`;$('#title').textContent=layouts[layout].name+(layout==='center'?' · 推荐':'');$('#description').textContent=layouts[layout].desc;$('#size').value=size;document.querySelectorAll('[data-layout]').forEach(b=>b.setAttribute('aria-pressed',String(layout===b.dataset.layout)));
+ terminal.setAttribute('aria-label',layouts[layout].name+'，'+(mode==='home'?'首屏':'对话演示'))}
+function reset(){mode='home';selected=0;restored='';sent='';input.value='';render()}
+function activate(i){if(i<3){input.value=prompts[i];$('#announce').textContent='已填入草稿，Enter 演示发送。'}else{mode='chat';restored=sessions[i-3];input.value='';render();$('#announce').textContent='已打开「'+restored+'」的恢复演示。'}input.focus()}
+terminal.addEventListener('keydown',e=>{if(e.isComposing)return;if(e.key==='Escape'){e.preventDefault();reset();input.focus()}else if(mode==='home'&&!input.value&&['Tab','ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();selected=(selected+(e.shiftKey||e.key==='ArrowUp'?-1:1)+6)%6;render()}else if(e.key==='Enter'){e.preventDefault();if(!input.value.trim()&&mode==='home')activate(selected);else if(input.value.trim()){sent=input.value;mode='chat';input.value='';render();input.focus()}}});
+terminal.addEventListener('click',e=>{if(e.target===input)return;const r=terminal.getBoundingClientRect(),x=(e.clientX-r.left)/8.4,y=(e.clientY-r.top)/22,h=hits.find(h=>x>=h.x&&x<h.x+h.w&&y>=h.y&&y<h.y+h.h);if(h){selected=h.index;render();activate(selected)}else input.focus()});
+terminal.addEventListener('mousemove',e=>{const r=terminal.getBoundingClientRect(),x=(e.clientX-r.left)/8.4,y=(e.clientY-r.top)/22;terminal.style.cursor=hits.some(h=>x>=h.x&&x<h.x+h.w&&y>=h.y&&y<h.y+h.h)?'pointer':'default'});
+for(const b of document.querySelectorAll('[data-layout]'))b.addEventListener('click',()=>{layout=b.dataset.layout;reset()});$('#size').addEventListener('change',e=>{size=e.target.value;render()});$('#reset').addEventListener('click',reset);
+if(params.get('capture')==='1')document.body.classList.add('capture');render();
+window.prototypeSnapshot=()=>({layout,size,cols,rows,mode,selected,restored,draft:input.value,inputRect,regions:structuredClone(regions),hits:structuredClone(hits),lines:grid.map(r=>r.filter(Boolean).map(c=>c.ch).join(''))});
+</script></body></html>

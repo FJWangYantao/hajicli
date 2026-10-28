@@ -343,7 +343,16 @@ async function loadAndRenderSession(
   abandonGroup();
   flushPlain();
   ui.replaceChatSegments(pieces);
+  ui.dismissStartupHeader();
   return true;
+}
+
+/** 首屏按稳定 ID 恢复，标题相同的会话也不会串选。 */
+export async function resumeSessionById(
+  ctx: SessionCommandContext,
+  sessionId: string,
+): Promise<boolean> {
+  return loadAndRenderSession(ctx, sessionId);
 }
 
 /** haji -c：恢复最近一个历史会话（不含当前空会话）。 */

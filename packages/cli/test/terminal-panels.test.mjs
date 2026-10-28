@@ -89,7 +89,7 @@ test("decoded text resolves left to right and keeps its column width", () => {
   assert.notEqual(stripAnsi(buildDecodedText(target, "", 2700)), target, "下一轮重新打乱");
 });
 
-test("activity detail decodes while active and freezes when stalled", () => {
+test("activity detail remains readable while active and stalled", () => {
   const now = 10_000;
   const frame = {
     phase: "tool",
@@ -100,7 +100,10 @@ test("activity detail decodes while active and freezes when stalled", () => {
     detail: "pnpm test --filter provider",
     startedAt: now - 900,
   };
-  assert.doesNotMatch(stripAnsi(buildActivityRow(frame, 80, undefined, now)), /--filter provider/);
+  assert.match(
+    stripAnsi(buildActivityRow(frame, 100, undefined, now)),
+    /pnpm test --filter provider/,
+  );
   const stalled = { ...frame, tone: "stalled", idleText: "34s 无新进展" };
   assert.match(
     stripAnsi(buildActivityRow(stalled, 100, undefined, now)),

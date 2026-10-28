@@ -213,6 +213,7 @@ import {
   handleUndoCommand,
   resumeByKeyword,
   resumeLatestSession,
+  resumeSessionById,
   type SessionCommandContext,
 } from "./session-commands.js";
 import {
@@ -261,6 +262,7 @@ import {
   normalizeWorkspaceRoot,
   removeWorkspaceRoot,
 } from "./workspace-roots.js";
+import { readWorkspaceStatus } from "./workspace-status.js";
 import {
   loadWorktreeSetting,
   parseWorktreeArgs,
@@ -1242,7 +1244,9 @@ async function main() {
   /** 侧栏各指标行点击 → 按轮次展开（metric 决定排序视角）。 */
   let openTurnReportRef: (metric: TurnMetric) => void = () => {};
 
+  let resumeStartupSession: (id: string) => void = () => {};
   const ui = new TerminalUI({
+    onResumeSession: (id) => resumeStartupSession(id),
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: buildLogo().trim(),
     // 无头模式下 compactHeader 会被 ui.start() 直写 stdout，置空以保持输出纯净。
@@ -1349,31 +1353,41 @@ async function main() {
     if (headlessRequest) console.error(colors.warnLine(warning));
     else ui.writeLine(colors.warnLine(warning));
   }
-  // 状态栏展示当前工作目录与 git 分支（模型名称右侧）。git HEAD 位置只查找一次，
-  // 分支名在每次刷新状态时重新读取（会话中分支可能被切换）。
-  const gitHeadPath = findGitHeadPath(process.cwd());
+  // 状态栏展示当前工作目录与分支；恢复其他工作树后同步重新定位 HEAD。
+  let gitHeadPath = findGitHeadPath(process.cwd());
   ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
-  // Logo 下方的启动信息行：provider · model · effort + 权限档 + 工作区，与上次会话提示。
-  // 随 Logo 一起在用户发送首条消息后消失（见 dismissStartupHeader）。
-  const formatRelativeTime = (iso: string): string => {
-    const elapsed = Date.now() - new Date(iso).getTime();
-    if (!Number.isFinite(elapsed) || elapsed < 60_000) return "刚刚";
-    if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
-    if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
-    return `${Math.floor(elapsed / 86_400_000)} 天前`;
-  };
-  const recentSession = sessionManager
-    .listSessions()
-    .find((session) => session.id !== sessionManager.getCurrentSession().id);
+  const recentSessions = headlessRequest
+    ? []
+    : sessionManager
+        .listSessions()
+        .filter(
+          (session) =>
+            session.id !== sessionManager.getCurrentSession().id &&
+            session.messages.some((message) => message.role === "user"),
+        )
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+        .slice(0, 3);
+  ui.setRecentSessions(recentSessions);
   const startupModeLabel = formatPermissionModeLabel(permissionMode);
   ui.setHeaderInfo([
     `${colors.muted(providerLabel(currentProviderName))} ${colors.gray("·")} ${colors.boldAccent(selectedModel)} ${colors.gray("·")} ${colors.muted(reasoningEffort)}  ${colors.gray(`[${startupModeLabel}]`)}   ${colors.gray(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)))}`,
-    recentSession
-      ? colors.gray(
-          `上次会话：${sanitizeTerminalText(recentSession.title)}（${formatRelativeTime(recentSession.updatedAt)}） · /resume 继续`,
-        )
-      : colors.gray("输入 /help 查看命令，或直接开始对话"),
   ]);
+  let workspaceRequest = 0;
+  let workspacePendingCwd: string | undefined;
+  const refreshWorkspaceStatus = (): void => {
+    if (headlessRequest) return;
+    const cwd = process.cwd();
+    if (workspacePendingCwd === cwd) return;
+    workspacePendingCwd = cwd;
+    const request = ++workspaceRequest;
+    void readWorkspaceStatus(cwd).then((status) => {
+      if (request === workspaceRequest) {
+        workspacePendingCwd = undefined;
+        if (process.cwd() === cwd) ui.setWorkspaceStatus(status);
+      }
+    });
+  };
+  refreshWorkspaceStatus();
   const showRuntimeWarning = (warning: string): void => {
     ui.writeLine(colors.warnLine(warning));
   };
@@ -1945,6 +1959,8 @@ async function main() {
   }
 
   const updateStatusUI = () => {
+    gitHeadPath = findGitHeadPath(process.cwd());
+    refreshWorkspaceStatus();
     ui.setModelInfo(selectedModel, reasoningEffort, providerPlainLabel(currentProviderName));
     ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
@@ -2909,6 +2925,7 @@ async function main() {
    */
   const readMainInput = async (initialValue?: string): Promise<string | undefined> => {
     mainLoopAwaitingInput = true;
+    refreshWorkspaceStatus();
     try {
       const value = await ui.readInput({ slashCommands, initialValue });
       busyInputRetries = 0;
@@ -3032,6 +3049,15 @@ async function main() {
       snapshotEngine.retarget(worktreeCwd);
       syncPathScope();
     },
+  };
+
+  resumeStartupSession = (id) => {
+    if (!mainLoopAwaitingInput || pendingUiAction) return;
+    const draft = ui.takeOverInput();
+    if (draft?.trim()) deferredInputDrafts.unshift(draft);
+    pendingUiAction = async () => {
+      await resumeSessionById(sessionCommandContext, id);
+    };
   };
 
   // 目标工具组的落地：目标存在会话记录上，改动统一走 setGoal + 保存 + 提示词刷新。
@@ -3740,6 +3766,7 @@ async function main() {
       }
       // 侧栏“上一轮 12.4s”：耗时本来就由 turn-runner 回调，顺手落到侧栏。
       ui.setLastTurnDuration(durationMs);
+      refreshWorkspaceStatus();
       syncSessionUsage();
       // 回合已经收尾：此刻的消息是完整状态，把用量和消息一起落盘，
       // 退出后 /resume 才能看到本会话真实的费用、压缩次数与上轮耗时。
