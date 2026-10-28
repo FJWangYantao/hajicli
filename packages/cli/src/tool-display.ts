@@ -335,3 +335,26 @@ export function formatToolCallDraftCell(
     argLines: lines,
   });
 }
+
+/**
+ * 参数还没生成完就被中止的工具块：`⊘ bash` + 已收到的参数原文 + `└ 已中止，未执行`。
+ *
+ * 这一格上一帧还在实时区域里显示为「正在拼指令」，凭空擦掉会让人以为工具消失；
+ * 但它确实从未执行，所以不报耗时、不报进度，只交代结果。
+ */
+export function formatToolCallAbortedCell(
+  draft: ToolCallDraft,
+  width = 100,
+  maxLines = DRAFT_MAX_LINES,
+  resultText = "已中止，未执行",
+): string[] {
+  const toolName = draft.name?.trim() || "工具调用";
+  return formatToolCell({
+    status: "rejected",
+    toolName,
+    summary: "",
+    width,
+    argLines: buildArgLines(draftBodyText(draft), width, maxLines),
+    resultText,
+  });
+}

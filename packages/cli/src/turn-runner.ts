@@ -68,6 +68,7 @@ import {
 import {
   buildToolDisplay,
   formatToolArgLines,
+  formatToolCallAbortedCell,
   formatToolCallDraftCell,
   type ToolCallDraft,
 } from "./tool-display.js";
@@ -168,6 +169,15 @@ export interface TurnInput {
   promptAttachments?: Array<{ mimeType: string; base64: string }>;
 }
 
+/**
+ * 被中止/取消的工具格结果说明。
+ *
+ * 中止时工具不会再回调 finish()，条目会停在 pending / running，而 commitWithBlocks()
+ * 只提交已结束的条目——格子会被连同实时区域一起丢掉，屏幕上就是「正在跑的工具凭空消失」。
+ * 因此中止路径必须自己收口，让它以 ⊘ 留在对话区里交代「没执行」。
+ */
+const ABORTED_TOOL_TEXT = "已中止，未执行";
+
 /** 执行一个对话回合。main() 的主循环在分发完斜杠命令后调用。 */
 export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<void> {
   const {
@@ -237,6 +247,31 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   // keepToolCallDraft：流正常结束后，工具调用的草稿块继续留在实时区域，由随后出现的
   // 正式工具格原地接管，避免「参数生成完 → 工具开跑」之间屏幕上空一段。
   let stopActiveTurnVisuals: (options?: { keepToolCallDraft?: boolean }) => void = () => {};
+  /** 草稿块是否已被 ToolRunView 接管（参数生成完、工具开跑）：接管后由那边负责收口。 */
+  let toolCallDraftHandedOver = false;
+  /** 中止时被擦掉的草稿格：稍后在对话区补一张 ⊘ 卡片，避免工具格凭空消失。 */
+  let abortedDraftSnapshot: ToolCallDraft | undefined;
+
+  /**
+   * 参数还在生成时被中止：把刚擦掉的那一格换成 ⊘ 写回对话区。
+   *
+   * 参数不完整，所以这张卡只交代「没执行」，不报耗时进度；已经交给 ToolRunView
+   * 接管的情况不会留下快照，不会和工具格重复。
+   */
+  const flushAbortedDraftCard = () => {
+    const draft = abortedDraftSnapshot;
+    if (!draft) return;
+    abortedDraftSnapshot = undefined;
+    ui.writeLine();
+    for (const row of formatToolCallAbortedCell(
+      draft,
+      ui.getContentWidth(),
+      undefined,
+      ABORTED_TOOL_TEXT,
+    )) {
+      ui.writeLine(row);
+    }
+  };
 
   const commitPromptForRequest = () => {
     requestStarted = true;
@@ -286,6 +321,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     ui.setStatus();
     if (abortNoticeShown) return;
     abortNoticeShown = true;
+    flushAbortedDraftCard();
     ui.writeLine();
     ui.writeLine(colors.failLine(colors.muted("已中止本轮")));
   };
@@ -428,6 +464,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     };
     // 参数生成中的工具块占用同一个实时区域；工具开始执行前必须让位给 ToolRunView。
     let toolCallDraftShown = false;
+    // 每次请求重新计：上一轮把草稿交给 ToolRunView 了，不影响这一轮的中止收尾。
+    toolCallDraftHandedOver = false;
     // 草稿块从出现那一刻起就开始计时（0 起），让「拼指令 / 等执行」有个时间参照。
     let toolCallDraftStartedAt = 0;
     let toolCallDraftLast: ToolCallDraft | undefined;
@@ -446,6 +484,11 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     };
     const clearToolCallDraft = () => {
       stopToolCallDraftTicker();
+      // 中止时记下被擦掉的那一格：参数没生成完、工具从未执行，但屏幕上刚出现过的
+      // 工具格不能凭空消失，稍后由 flushAbortedDraftCard 补一张 ⊘ 卡片。
+      if (isTurnAborted && !toolCallDraftHandedOver && toolCallDraftShown && toolCallDraftLast) {
+        abortedDraftSnapshot = toolCallDraftLast;
+      }
       toolCallDraftLast = undefined;
       toolCallDraftStartedAt = 0;
       if (!toolCallDraftShown) return;
@@ -743,6 +786,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       // 马上要跑工具了：ToolRunView 会用同一个实时区域接管草稿块，停掉草稿计时器，
       // 否则每 250ms 的刷新会把工具格覆盖掉；草稿块本身留着，由首个工具格原地盖上。
       stopToolCallDraftTicker();
+      // 接管之后草稿格由 ToolRunView 负责收口（中止时它自己会补 ⊘），不再另补卡片。
+      toolCallDraftHandedOver = true;
 
       for (const batch of batches) {
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
@@ -778,9 +823,17 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           if (!firstBatchTitle) firstBatchTitle = title;
           toolRunView.register(tc.id, tc.function.name, title, undefined, argLines);
         }
+        /**
+         * 中止/取消导致的跳过：格子照样收口成 ⊘，否则 commit 时会被丢掉。
+         * 三条中止路径（进入时已中止 / 执行中被 abort / 授权卡片被 Esc 取消）共用它。
+         */
+        const skipAborted = (tc: ToolCall, args: Record<string, unknown> = {}): BatchItemResult => {
+          toolRunView.finish(tc.id, { status: "rejected", text: ABORTED_TOOL_TEXT }, 0);
+          return { tc, toolName: tc.function.name, args, duration: 0, skipped: true };
+        };
         const executeCall = async (tc: ToolCall, batchIndex: number): Promise<BatchItemResult> => {
           if (isTurnAborted) {
-            return { tc, toolName: tc.function.name, args: {}, duration: 0, skipped: true };
+            return skipAborted(tc);
           }
           const toolName = tc.function.name;
           const targetTool = toolsMap.get(toolName);
@@ -811,7 +864,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             });
             const execution = await raceWithAbort(executionPromise, requestAbortController.signal);
             if (!execution) {
-              return { tc, toolName, args, duration: 0, skipped: true };
+              return skipAborted(tc, args);
             }
             const summary = summarizeToolResult(
               toolName,
@@ -834,7 +887,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             };
           } catch (error) {
             if (!isTurnAborted || !(error instanceof TerminalInputCancelledError)) throw error;
-            return { tc, toolName, args, duration: 0, skipped: true };
+            return skipAborted(tc, args);
           }
         };
 
@@ -861,6 +914,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           });
         } finally {
           activityIndicator.stop();
+          // 兜底：任何没走到 finish() 的退出路径（异常等）也要先把格子收口，
+          // 否则下面的 commitWithBlocks() 会把它连同实时区域一起丢掉。
+          toolRunView.closeOpen(isTurnAborted ? ABORTED_TOOL_TEXT : "未执行完成");
           // 整批结束后按调用顺序把工具块写入正文，实时区域随之清空。
           // 块元数据随文本一起交给界面：回合中完整可见，封口后收口成数行、点击展开。
           const committed = toolRunView.commitWithBlocks();

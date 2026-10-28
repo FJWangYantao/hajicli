@@ -383,6 +383,29 @@ export class ToolRunView {
     return this.entries.length > 0;
   }
 
+  /**
+   * 把还停在 pending / running / judging 的条目统一收口成 ⊘（附一句说明）。
+   *
+   * commitWithBlocks() 只提交已结束的条目：中止、取消授权、执行器抛错这些没走到
+   * finish() 的退出路径如果不先调这里，格子会连同实时区域一起被丢掉，
+   * 屏幕上的观感就是「正在跑的工具凭空消失」。
+   */
+  closeOpen(text: string): void {
+    let closed = false;
+    for (const entry of this.entries) {
+      if (entry.status !== "pending" && entry.status !== "running" && entry.status !== "judging") {
+        continue;
+      }
+      entry.status = "rejected";
+      entry.resultText = text;
+      entry.durationMs = Math.max(0, this.now() - entry.startedAt);
+      closed = true;
+    }
+    if (!closed) return;
+    this.clearTimer();
+    this.flush();
+  }
+
   /** 返回已结束条目的最终文本（按登记顺序）并清空实时区域。 */
   commit(): string {
     return this.commitWithBlocks().text;
