@@ -176,3 +176,29 @@ test("自定义 baseUrl 生效（中转或自建端点）", async () => {
   await tool.execute({ query: "x" });
   assert.match(calls[0].url, /^https:\/\/relay\.example\/v1\/tools\/search$/);
 });
+
+test("onOfficialSearch 只在官方源成功返回时回调（计费口径），空结果回退时不回调", async () => {
+  let billed = 0;
+  const ok = router([
+    [
+      /api\.deepseek\.com/,
+      async () =>
+        new Response(officialBody([{ title: "t", url: "https://e.com/a", summary: "s" }])),
+    ],
+  ]);
+  await new WebSearchTool(ok.fetchPage, {
+    deepseekApiKey: () => "sk-test",
+    onOfficialSearch: () => billed++,
+  }).execute({ query: "q" });
+  assert.equal(billed, 1);
+
+  const empty = router([
+    [/api\.deepseek\.com/, async () => new Response(officialBody([]))],
+    [/duckduckgo/, async () => new Response(ddgHtml())],
+  ]);
+  await new WebSearchTool(empty.fetchPage, {
+    deepseekApiKey: () => "sk-test",
+    onOfficialSearch: () => billed++,
+  }).execute({ query: "q" });
+  assert.equal(billed, 1);
+});

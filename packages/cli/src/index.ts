@@ -1121,6 +1121,12 @@ async function main() {
                 process.env.DEEPSEEK_BASE_URL,
                 "https://api.deepseek.com/v1",
               ),
+            // 官方检索按次计费：成功一次记一笔，侧栏与 /cost 跟着刷新、随会话落盘。
+            onOfficialSearch: () => {
+              costTracker.recordFlatFee("websearch");
+              publishCostInfo();
+              syncSessionUsage();
+            },
           }),
     }),
     new WebFetchTool(),

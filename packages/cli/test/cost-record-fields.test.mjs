@@ -120,3 +120,51 @@ test("truncateTurnPrompt 压单行并截断，空串不产生问题文本", () =
   assert.ok(cut.endsWith("…"));
   assert.equal(truncateTurnPrompt("   "), "");
 });
+
+test("官方检索按次计费：11 月 1 日起每次 ¥0.005，计入总额但不算模型请求，并随会话往返", () => {
+  const tracker = new CostTracker(() => ({ inputPerMTokens: 2, outputPerMTokens: 8 }));
+  const billed = Date.parse("2026-11-02T03:00:00Z");
+  const free = Date.parse("2026-10-31T15:59:00Z");
+  tracker.beginTurn();
+  tracker.record("m", usage(1_000_000, 0), "主线回合", billed);
+  tracker.recordFlatFee("websearch", billed);
+  tracker.recordFlatFee("websearch", billed + 1000);
+  tracker.recordFlatFee("websearch", free);
+
+  const summary = tracker.getSummary();
+  assert.equal(summary.requests, 1);
+  assert.equal(summary.searchCalls, 3);
+  assert.ok(Math.abs(summary.searchCostCny - 0.01) < 1e-9);
+  assert.ok(Math.abs(summary.totalCostCny - 2.01) < 1e-9);
+  assert.equal(summary.byModel.length, 1);
+  assert.equal(summary.promptTokens, 1_000_000);
+
+  const [turn] = tracker.getTurnSummaries();
+  assert.equal(turn.requests, 1);
+  assert.ok(Math.abs(turn.costCny - 2.01) < 1e-9);
+
+  const details = tracker.getRequestDetails();
+  assert.equal(details.length, 4);
+  assert.equal(details[1].model, "DeepSeek Search");
+  assert.equal(details[1].purpose, "网页检索");
+  assert.equal(details[1].flatFee, "websearch");
+  assert.equal(details[1].costCny, 0.005);
+  assert.equal(details[3].costCny, 0);
+  assert.equal(details[1].turn, 1);
+
+  const report = tracker.formatCostReport().join("\n");
+  assert.match(report, /网页检索（DeepSeek Search）\s+3 次 · ¥0\.0100/);
+
+  const restored = new CostTracker(() => ({ inputPerMTokens: 2, outputPerMTokens: 8 }));
+  restored.loadRecords(JSON.parse(JSON.stringify(tracker.getRecords())));
+  assert.equal(restored.getSummary().searchCalls, 3);
+  assert.ok(Math.abs(restored.getSummary().totalCostCny - 2.01) < 1e-9);
+});
+
+test("只有检索费用时 /cost 也给出明细而不是「暂无」", () => {
+  const tracker = new CostTracker(() => undefined);
+  tracker.recordFlatFee("websearch", Date.parse("2026-11-05T00:00:00Z"));
+  const report = tracker.formatCostReport();
+  assert.doesNotMatch(report[0], /暂无/);
+  assert.match(report.join("\n"), /网页检索/);
+});

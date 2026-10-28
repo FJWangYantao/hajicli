@@ -31,6 +31,8 @@ export interface SessionCostRecord {
   reasoningTokens?: number;
   /** 该轮用户问题摘要，只记在每轮第一条记录上。 */
   turnPrompt?: string;
+  /** 按次收费项（官方网页检索）；存在时 token 恒为 0。 */
+  flatFee?: "websearch";
 }
 
 /**

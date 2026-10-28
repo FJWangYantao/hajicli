@@ -294,6 +294,8 @@ function detailLine(detail: RequestCostDetail, width: number): string {
   }
   if (detail.costCny === null) {
     parts.push("未定价（补上单价后自动重算）");
+  } else if (detail.flatFee) {
+    parts.push("按次计费 · 5 元/千次成功请求（2026-11-01 起）");
   } else {
     if (detail.offPeak) parts.push("谷时价");
     if (detail.pricing) {

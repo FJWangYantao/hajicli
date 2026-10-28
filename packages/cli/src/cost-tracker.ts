@@ -33,6 +33,31 @@ export interface CostRecord {
    * 回合详情页用它说明「这轮是在干什么」；老会话为 undefined。
    */
   turnPrompt?: string;
+  /**
+   * 按次收费的非 token 记账（例如官方网页检索）；存在时 token 三项恒为 0，
+   * 金额按调用时刻由 flatFeeCny 现算，不走模型单价。
+   */
+  flatFee?: FlatFeeKind;
+}
+
+/** 按次收费的项目；目前只有官方 DeepSeek 网页检索。 */
+export type FlatFeeKind = "websearch";
+
+/** 官方检索 2026-11-01 00:00（北京时间）起按 5 元 / 千次成功请求计费，之前免费。 */
+const WEB_SEARCH_BILLING_START = Date.UTC(2026, 9, 31, 16);
+const WEB_SEARCH_FEE_CNY = 5 / 1000;
+
+/** 按次收费项的展示名（费用日志的「模型」列、/cost 明细行）。 */
+export const FLAT_FEE_LABELS: Record<FlatFeeKind, { model: string; purpose: string }> = {
+  websearch: { model: "DeepSeek Search", purpose: "网页检索" },
+};
+
+/** 单次按次收费的金额（元）：按调用时刻判定是否已开始计费。 */
+export function flatFeeCny(kind: FlatFeeKind, atMs: number): number {
+  switch (kind) {
+    case "websearch":
+      return atMs >= WEB_SEARCH_BILLING_START ? WEB_SEARCH_FEE_CNY : 0;
+  }
 }
 
 export interface ModelCostSummary {
@@ -61,6 +86,9 @@ export interface CostSummary {
   /** 未定价的模型名（去重）；用于提示用户补单价。 */
   unpricedModels: string[];
   byModel: ModelCostSummary[];
+  /** 按次收费的官方检索次数与金额（已计入 totalCostCny，不计入 requests）。 */
+  searchCalls: number;
+  searchCostCny: number;
 }
 
 /** 定价解析器：内置注册表 + 本地覆盖表（由 CLI 注入，便于测试与热更新）。 */
@@ -126,6 +154,8 @@ export interface RequestCostDetail {
   reasoningTokens?: number;
   /** 所属轮次的用户问题摘要（只在该轮首条记录上有）。 */
   turnPrompt?: string;
+  /** 按次收费项（官方检索）；存在时 token 为 0、无单价档位。 */
+  flatFee?: FlatFeeKind;
 }
 
 /** 用户问题摘要：压成单行并截断，避免把整段 prompt 存进记账。 */
@@ -204,6 +234,22 @@ export function estimateRequestCostCny(
   );
 }
 
+/** 一条记账的金额：按次收费项走固定价，其余按模型单价现算。 */
+function recordCostCny(record: CostRecord, resolvePricing: PricingResolver): number | null {
+  if (record.flatFee) return flatFeeCny(record.flatFee, record.at);
+  return estimateRequestCostCny(
+    record.model,
+    {
+      prompt_tokens: record.promptTokens,
+      completion_tokens: record.completionTokens,
+      total_tokens: record.promptTokens + record.completionTokens,
+      prompt_cache_hit_tokens: record.cachedPromptTokens,
+    },
+    resolvePricing,
+    record.at,
+  );
+}
+
 /**
  * 会话级费用记账：只累计 onUsage 上报的真实 token 消耗，
  * 按注册表单价估算金额（估算值，不含缓存命中折扣等细节）。
@@ -277,6 +323,24 @@ export class CostTracker {
     });
   }
 
+  /**
+   * 记一笔按次收费（官方检索成功一次）。归到当前轮次，不开新轮：
+   * 检索总是发生在本轮模型请求之后，轮次编号此时已经落定。
+   */
+  recordFlatFee(kind: FlatFeeKind, at: number = Date.now()): void {
+    const label = FLAT_FEE_LABELS[kind];
+    this.records.push({
+      model: label.model,
+      purpose: label.purpose,
+      ...(this.currentTurn > 0 ? { turn: this.currentTurn } : {}),
+      at: Number.isFinite(at) ? at : Date.now(),
+      promptTokens: 0,
+      cachedPromptTokens: 0,
+      completionTokens: 0,
+      flatFee: kind,
+    });
+  }
+
   /** 记账明细快照：用于写进会话文件（/resume 后能还原本会话的费用）。 */
   getRecords(): CostRecord[] {
     return this.records.map((record) => ({ ...record }));
@@ -317,6 +381,7 @@ export class CostTracker {
         ...(typeof record.turnPrompt === "string" && record.turnPrompt.trim().length > 0
           ? { turnPrompt: truncateTurnPrompt(record.turnPrompt) }
           : {}),
+        ...(record.flatFee === "websearch" ? { flatFee: record.flatFee } : {}),
       });
     }
     // 续接历史会话：新记账要接在已恢复的轮次之后，而不是从 1 重新数。
@@ -332,19 +397,9 @@ export class CostTracker {
    */
   getRequestDetails(): RequestCostDetail[] {
     return this.records.map((recordItem, index) => {
-      const pricing = this.resolvePricing(recordItem.model);
+      const pricing = recordItem.flatFee ? undefined : this.resolvePricing(recordItem.model);
       const tier = pricing ? effectiveModelPricing(pricing, recordItem.at) : undefined;
-      const cost = estimateRequestCostCny(
-        recordItem.model,
-        {
-          prompt_tokens: recordItem.promptTokens,
-          completion_tokens: recordItem.completionTokens,
-          total_tokens: recordItem.promptTokens + recordItem.completionTokens,
-          prompt_cache_hit_tokens: recordItem.cachedPromptTokens,
-        },
-        this.resolvePricing,
-        recordItem.at,
-      );
+      const cost = recordCostCny(recordItem, this.resolvePricing);
       return {
         seq: index + 1,
         turn: recordItem.turn && recordItem.turn > 0 ? recordItem.turn : 0,
@@ -364,6 +419,7 @@ export class CostTracker {
           ? { reasoningTokens: recordItem.reasoningTokens }
           : {}),
         ...(recordItem.turnPrompt !== undefined ? { turnPrompt: recordItem.turnPrompt } : {}),
+        ...(recordItem.flatFee ? { flatFee: recordItem.flatFee } : {}),
         ...(tier
           ? {
               pricing: {
@@ -388,7 +444,19 @@ export class CostTracker {
     let totalCostCny = 0;
     let hasUnpriced = false;
     const unpricedModels: string[] = [];
+    let requests = 0;
+    let searchCalls = 0;
+    let searchCostCny = 0;
     for (const recordItem of this.records) {
+      // 按次收费项只进金额，不算「模型请求」，也不进按模型分组。
+      if (recordItem.flatFee) {
+        const fee = flatFeeCny(recordItem.flatFee, recordItem.at);
+        searchCalls += 1;
+        searchCostCny += fee;
+        totalCostCny += fee;
+        continue;
+      }
+      requests += 1;
       promptTokens += recordItem.promptTokens;
       cachedPromptTokens += recordItem.cachedPromptTokens;
       completionTokens += recordItem.completionTokens;
@@ -410,17 +478,7 @@ export class CostTracker {
         current.offPeakRequests += 1;
         offPeakRequests += 1;
       }
-      const cost = estimateRequestCostCny(
-        recordItem.model,
-        {
-          prompt_tokens: recordItem.promptTokens,
-          completion_tokens: recordItem.completionTokens,
-          total_tokens: recordItem.promptTokens + recordItem.completionTokens,
-          prompt_cache_hit_tokens: recordItem.cachedPromptTokens,
-        },
-        this.resolvePricing,
-        recordItem.at,
-      );
+      const cost = recordCostCny(recordItem, this.resolvePricing);
       if (cost !== null) {
         current.costCny = (current.costCny ?? 0) + cost;
         totalCostCny += cost;
@@ -431,7 +489,7 @@ export class CostTracker {
       byModelMap.set(recordItem.model, current);
     }
     return {
-      requests: this.records.length,
+      requests,
       promptTokens,
       completionTokens,
       totalCostCny,
@@ -440,13 +498,15 @@ export class CostTracker {
       offPeakRequests,
       unpricedModels,
       byModel: [...byModelMap.values()].sort((left, right) => right.requests - left.requests),
+      searchCalls,
+      searchCostCny,
     };
   }
 
   /** /cost 展示行（中文，无 ANSI——着色由调用方决定）。 */
   formatCostReport(): string[] {
     const summary = this.getSummary();
-    if (summary.requests === 0) {
+    if (summary.requests === 0 && summary.searchCalls === 0) {
       return ["本会话暂无已计费的模型调用。"];
     }
     const lines = [
@@ -461,6 +521,11 @@ export class CostTracker {
       const offPeakNote = model.offPeakRequests > 0 ? ` · 谷时 ${model.offPeakRequests} 次` : "";
       lines.push(
         `  ${model.model}  ${model.requests} 次 · ${cost} · 输入 ${model.promptTokens.toLocaleString("en-US")} / 输出 ${model.completionTokens.toLocaleString("en-US")}${cacheNote}${offPeakNote}`,
+      );
+    }
+    if (summary.searchCalls > 0) {
+      lines.push(
+        `  网页检索（DeepSeek Search）  ${summary.searchCalls} 次 · ${formatCostCny(summary.searchCostCny)} · 5 元/千次成功请求，2026-11-01 起计费`,
       );
     }
     if (summary.hasUnpriced) {
@@ -490,22 +555,17 @@ export class CostTracker {
         models: [],
       };
       if (recordItem.at < current.at) current.at = recordItem.at;
+      if (recordItem.flatFee) {
+        current.costCny += flatFeeCny(recordItem.flatFee, recordItem.at);
+        byTurn.set(turn, current);
+        continue;
+      }
       current.requests += 1;
       current.promptTokens += recordItem.promptTokens;
       current.cachedPromptTokens += recordItem.cachedPromptTokens;
       current.completionTokens += recordItem.completionTokens;
       if (!current.models.includes(recordItem.model)) current.models.push(recordItem.model);
-      const cost = estimateRequestCostCny(
-        recordItem.model,
-        {
-          prompt_tokens: recordItem.promptTokens,
-          completion_tokens: recordItem.completionTokens,
-          total_tokens: recordItem.promptTokens + recordItem.completionTokens,
-          prompt_cache_hit_tokens: recordItem.cachedPromptTokens,
-        },
-        this.resolvePricing,
-        recordItem.at,
-      );
+      const cost = recordCostCny(recordItem, this.resolvePricing);
       if (cost !== null) current.costCny += cost;
       else current.hasUnpriced = true;
       byTurn.set(turn, current);

@@ -141,6 +141,8 @@ export interface WebSearchSourceOptions {
   deepseekApiKey?: () => string | undefined;
   /** 官方端点根地址（含 /v1），缺省 `https://api.deepseek.com/v1`。 */
   deepseekBaseUrl?: () => string | undefined;
+  /** 官方源成功返回结果（即一次计费请求）时回调，用于把按次费用记进 /cost。 */
+  onOfficialSearch?: () => void;
 }
 
 /**
@@ -189,7 +191,10 @@ export class WebSearchTool implements BaseTool {
     const deepseekKey = this.options.deepseekApiKey?.()?.trim();
     if (deepseekKey) {
       const official = await this.searchDeepSeek(query, deepseekKey, context);
-      if (official.text) return official.text;
+      if (official.text) {
+        this.options.onOfficialSearch?.();
+        return official.text;
+      }
       if (context?.abortSignal?.aborted) return "[网络搜索已中止]";
       failures.push(official.error ?? "DeepSeek Search: 无可用结果");
     }

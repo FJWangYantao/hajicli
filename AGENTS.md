@@ -564,8 +564,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   正文交给 `webfetch`。**summary 优先于 snippet**——官方文档说 summary 600～800 字符，
   实测 600～3800，所以逐条截 1200、总量仍由 `formatSearchOutput` 收在 8000。
 - 计费 **5 元/千次成功请求**（只有 HTTP 200 且结果非空才计费），2026-11-01 起生效；
-  `HAJI_WEBSEARCH_OFFICIAL=0` 可强制只用免费公开源。**/cost 目前不统计这类按次费用**
-  （cost-tracker 只认 token），属于已知缺口，别在费用面板上找它。
+  `HAJI_WEBSEARCH_OFFICIAL=0` 可强制只用免费公开源。官方源成功一次经 `onOfficialSearch` 回调
+  记一笔 `CostTracker.recordFlatFee("websearch")`（`flatFee` 记录，token 恒 0，金额按调用时刻
+  现算：11-01 前 0、之后 ¥0.005），计入总花费与轮次花费、**不算模型请求数**，`/cost` 单列一行，
+  费用日志页显示为 `DeepSeek Search · 网页检索`；记录随 `costRecords` 落盘。
 - **webfetch 刻意不接官方 `/v1/tools/fetch`**：实测返回的 Markdown 被转义（`\#`、`\-`、`\/`，
   标题/列表/代码块语法全失效）、GitHub 页面 10.8s（本地 1.3s）、知乎/HN 等反爬场景双方都拿不到。
   所以本地 `webfetch` 自己把 HTML 转成 Markdown（见下节），而不是买接口。
