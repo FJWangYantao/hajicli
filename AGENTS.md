@@ -374,6 +374,20 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   否则 `#aab3c0` 会被量化成 `175,215,215` 的青灰。测试：`terminal-frame.test.mjs`
   （位置/居中/点击）、`contrast.test.mjs`（调色板底线）、`theme.test.mjs`（ansi256 灰阶）。
 
+## 斜杠补全的高度预算
+
+- 候选列表不再吃满输入区上方的剩余高度：`resolveHintRowBudget(rows)`（tui-layout.ts）按终端高度分档
+  （<16 行 3、<24 行 5、<32 行 7、其余 8），`renderFrame` 取 `min(预算, 剩余高度)` 作为候选行上限；
+  输入 `/` 时不再用 15 行顶层指令把对话区挤没。
+- 超出一屏时窗口跟随选中项滚动（↑↓ 循环），并留最后一行 `⋯ 还有 N 条 · ↑↓ 浏览`；
+  `windowMenuRows` 统一处理斜杠指令与 @ 文件补全，预算只剩 1 行时不给提示行，避免挤掉唯一候选。
+- 候选行数仍按 `suggestionRows.length` 从 `maxInputRows` 里扣减，所以输入框永远不会被列表顶出屏幕。
+- **候选画在输入框外面**：`renderFrame` 的 inputBlock 顺序是「顶部分隔线 / 粘贴 chip / 输入行 /
+  底部分隔线 / 候选 / 状态栏」。列表是临时浮层，进了框内会把输入框撑高、光标顶到框中间；
+  放到底部分隔线之下，框始终只包住输入行。
+- 测试：`tui-layout.test.mjs`（分档）、`terminal-frame.test.mjs`（候选在底部分隔线之下、
+  24 行终端最多 6 条候选 + 1 行提示）。
+
 ## 终端外观（dark / light）与 `/appearance`
 
 - **浅色板刻意是黑色系**：`LIGHT_THEME` 正文 `#111111`、`muted` `#3a3a3a`、`userMsgFg`

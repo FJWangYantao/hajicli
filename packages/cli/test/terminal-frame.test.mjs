@@ -741,6 +741,41 @@ test("slash suggestions align descriptions and mark the selection with ▸", () 
   assert.match(screen, /▸ \/help {5}显示帮助手册\n {2}\/compact {2}多层上下文压缩/);
 });
 
+test("slash suggestions render below the input box instead of inside it", () => {
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.activeInput.graphemes = ["/"];
+    ui.activeInput.cursorIndex = 1;
+    ui.activeInput.slashCommands = [
+      { command: "/help", description: "显示帮助手册" },
+      { command: "/compact", description: "多层上下文压缩" },
+    ];
+  });
+  const helpRow = frame.plainRows.findIndex((row) => row.includes("▸ /help"));
+  assert.ok(helpRow > 1, `候选行存在: ${JSON.stringify(frame.plainRows)}`);
+  assert.match(frame.plainRows[helpRow - 1], /^-+$/, "候选上方就是输入框的底部实体线");
+  assert.ok(frame.plainRows[helpRow - 2].includes("> /"), "输入行仍在框内、贴顶部分隔线");
+  assert.match(frame.plainRows[helpRow + 1], /\/compact/, "第二条候选紧随其后");
+  assert.ok(frame.plainRows[helpRow + 2].includes("[默认]"), "状态栏仍在候选之后");
+});
+
+test("slash suggestions cap at the hint budget and count the hidden entries", () => {
+  const commands = Array.from({ length: 10 }, (_, index) => ({
+    command: `/cmd${index}`,
+    description: `说明${index}`,
+  }));
+  const frame = renderFrame(80, 24, (ui) => {
+    ui.activeInput.graphemes = ["/"];
+    ui.activeInput.cursorIndex = 1;
+    ui.activeInput.slashCommands = commands;
+    ui.activeInput.selectedCommandIndex = 9;
+  });
+  const itemRows = frame.plainRows.filter((row) => row.includes("/cmd"));
+  // 24 行终端预算 6 行候选 + 1 行「还有 N 条」，选中项在窗口内。
+  assert.equal(itemRows.length, 6);
+  assert.match(frame.plainRows.join("\n"), /▸ \/cmd9\b/);
+  assert.match(frame.plainRows.join("\n"), /⋯ 还有 4 条 · ↑↓ 浏览/);
+});
+
 test("selector items are truncated with an ellipsis", () => {
   const frame = renderFrame(40, 24, (ui) => {
     ui.activeInput = undefined;

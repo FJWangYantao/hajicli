@@ -104,7 +104,7 @@ import {
   type ToolBlockRenderInfo,
   type ToolBlockWrite,
 } from "./tool-block-fold.js";
-import { resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
+import { resolveHintRowBudget, resolveTuiLayout, type TuiStatusDetail } from "./tui-layout.js";
 import {
   buildContextCard,
   buildSidebarFrame,
@@ -501,6 +501,37 @@ function formatMenuRows(items: readonly MenuRow[], selectedIndex: number, width:
     const descriptionStyle = selected ? "" : SEQ.muted;
     return `${marker}${labelStyle}${label}${SEQ.reset}${description ? `${padding}  ${descriptionStyle}${description}${SEQ.reset}` : ""}`;
   });
+}
+
+/**
+ * 候选窗口：超出 maxRows 时按选中项滚动（菜单行数恒 ≤ maxRows），
+ * 并在末尾留一行「还有 N 条」提示——只有一行预算时不给提示，免得挤掉唯一候选。
+ */
+function windowMenuRows(
+  items: readonly MenuRow[],
+  selectedIndex: number,
+  width: number,
+  maxRows: number,
+): string[] {
+  if (items.length === 0 || maxRows <= 0) return [];
+  const showHint = items.length > maxRows && maxRows >= 2;
+  const visibleCount = Math.min(Math.max(1, maxRows - (showHint ? 1 : 0)), items.length);
+  const windowStart = Math.min(
+    Math.max(0, selectedIndex - visibleCount + 1),
+    items.length - visibleCount,
+  );
+  const rows = formatMenuRows(
+    items.slice(windowStart, windowStart + visibleCount),
+    selectedIndex - windowStart,
+    width,
+  );
+  if (showHint && items.length > visibleCount) {
+    const remaining = items.length - visibleCount;
+    rows.push(
+      `${SEQ.muted}${truncateText(`  ⋯ 还有 ${remaining} 条 · ↑↓ 浏览`, width)}${SEQ.reset}`,
+    );
+  }
+  return rows;
 }
 
 export class TerminalUI {
@@ -3562,13 +3593,14 @@ export class TerminalUI {
         this.fileMentionSelectedIndex,
         this.fileMentionCandidates.length - 1,
       );
-      return formatMenuRows(
+      return windowMenuRows(
         this.fileMentionCandidates.map((candidate) => ({
           label: candidate,
           description: "@ 引用文件",
         })),
         this.fileMentionSelectedIndex,
         width,
+        maxRows,
       );
     }
 
@@ -3579,21 +3611,14 @@ export class TerminalUI {
       activeInput.selectedCommandIndex,
       suggestions.length - 1,
     );
-    // 候选多于可见行数时，窗口跟随选中项滚动。
-    const visibleCount = Math.min(maxRows, suggestions.length);
-    const windowStart = Math.min(
-      Math.max(0, activeInput.selectedCommandIndex - visibleCount + 1),
-      suggestions.length - visibleCount,
-    );
-    const visible = suggestions.slice(windowStart, windowStart + visibleCount);
-
-    return formatMenuRows(
-      visible.map((item) => ({
+    return windowMenuRows(
+      suggestions.map((item) => ({
         label: item.argHint ? `${item.command} ${item.argHint}` : item.command,
         description: item.group ? `${item.description} · ${item.group}` : item.description,
       })),
-      activeInput.selectedCommandIndex - windowStart,
+      activeInput.selectedCommandIndex,
       width,
+      maxRows,
     );
   }
 
@@ -4148,9 +4173,12 @@ export class TerminalUI {
       }
     } else {
       const maxSuggestionRows = layout.showHints
-        ? Math.max(
-            0,
-            height - topRows.length - visibleLeadingInputRows.length - pastedRows.length - 5,
+        ? Math.min(
+            resolveHintRowBudget(height),
+            Math.max(
+              0,
+              height - topRows.length - visibleLeadingInputRows.length - pastedRows.length - 5,
+            ),
           )
         : 0;
       const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
@@ -4185,15 +4213,17 @@ export class TerminalUI {
         inputBlock = [...visibleLeadingInputRows, ...pastedRows, ...inputLayout.rows, statusBar];
       } else {
         inputCursorOffset = visibleLeadingInputRows.length + 1 + pastedRows.length;
-        // 输入区上下各一条分隔线：中间是输入行与补全候选，底行由状态栏承担；
+        // 输入区上下各一条分隔线：中间只放输入行（与粘贴 chip），底行由状态栏承担；
         // 有活动时活动状态顶替状态栏，不再单独占行。
+        // 斜杠 / @ 补全候选画在下方分隔线之外——列表属于临时浮层，不该撑高输入框，
+        // 也不该把光标顶到框中间。
         inputBlock = [
           ...visibleLeadingInputRows,
           divider,
           ...pastedRows,
           ...inputLayout.rows,
-          ...suggestionRows,
           divider,
+          ...suggestionRows,
           statusBar,
         ];
       }

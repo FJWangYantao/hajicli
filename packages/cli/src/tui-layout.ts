@@ -97,6 +97,18 @@ export function resolvePanelRowBudget(rows: number): number {
   return 8;
 }
 
+/**
+ * 斜杠补全 / @ 引用的候选行预算：候选再多也只占这么高，其余靠 ↑↓ 滚动。
+ * 与 panelRows 同理按终端高度分档——候选列表一屏铺满会把对话区挤没，输入 `/` 时尤其明显。
+ */
+export function resolveHintRowBudget(rows: number): number {
+  const safeRows = normalizeDimension(rows, "rows");
+  if (safeRows < 16) return 3;
+  if (safeRows < 24) return 5;
+  if (safeRows < 32) return 7;
+  return 8;
+}
+
 export function resolveTuiLayout(columns: number, rows: number): TuiLayout {
   const safeColumns = normalizeDimension(columns, "columns");
   const safeRows = normalizeDimension(rows, "rows");

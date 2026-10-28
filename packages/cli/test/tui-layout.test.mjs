@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  resolveHintRowBudget,
   resolvePanelRowBudget,
   resolveTuiLayout,
   resolveTuiLayoutMode,
@@ -102,4 +103,15 @@ test("reduces vertical detail before changing the width mode", () => {
 test("rejects invalid terminal dimensions", () => {
   assert.throws(() => resolveTuiLayout(0, 24), RangeError);
   assert.throws(() => resolveTuiLayout(80, Number.NaN), RangeError);
+});
+
+test("hint rows stay bounded and grow with the terminal", () => {
+  // 斜杠补全铺满一屏会把对话区挤没：24 行终端最多 6 行候选，高终端才放宽。
+  assert.equal(resolveHintRowBudget(12), 3);
+  assert.equal(resolveHintRowBudget(20), 5);
+  assert.equal(resolveHintRowBudget(24), 7);
+  assert.equal(resolveHintRowBudget(30), 7);
+  assert.equal(resolveHintRowBudget(40), 8);
+  assert.equal(resolveHintRowBudget(80), 8);
+  assert.throws(() => resolveHintRowBudget(0), RangeError);
 });
