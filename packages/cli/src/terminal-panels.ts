@@ -8,6 +8,7 @@
 import type { ActivityFrame } from "./activity-indicator.js";
 import { formatAgentTokens } from "./agent-panel.js";
 import {
+  fitHint,
   fitText,
   SEQ,
   splitGraphemes,
@@ -264,20 +265,38 @@ function formatElapsedSince(startedAt: number | undefined, now: number): string 
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
 }
 
+/** 任务面板渲染选项。 */
+export interface TaskPanelRenderOptions {
+  /**
+   * 紧凑模式（侧栏用）：已完成项收成一行计数，把行数让给进行中与待处理项。
+   * 用户按 Ctrl+T 展开后恢复逐条显示——那是主动要求看全量，不该再压缩。
+   */
+  compact?: boolean;
+}
+
 /** 构建任务面板行：标题（含整体进度）+ 状态符号行（✓/●/○）+ 可选 Agent 子行 + 折叠脚注。 */
 export function buildTaskPanelRows(
   state: TaskPanelState,
   width: number,
   maxRows = 8,
   now = Date.now(),
+  options: TaskPanelRenderOptions = {},
 ): string[] {
   if (!state.title || maxRows <= 0) return [];
   const total = state.items.length;
   const done = state.items.filter((task) => task.status === "completed").length;
   const panelTitle = `任务 · ${state.title}${total > 0 ? `  ${done}/${total}` : ""}`;
   const rows = [`${SEQ.bold}${truncateText(panelTitle, width)}${SEQ.reset}`];
-  const visibleTasks = state.expanded ? state.items : state.items.slice(0, 5);
-  const needsFooter = state.expanded || state.items.length > visibleTasks.length;
+  const compact = options.compact === true && !state.expanded;
+  // 紧凑模式下逐条已完成的让位给计数行：标题里的 done/total 已经说明数量。
+  const completedTasks = compact ? state.items.filter((task) => task.status === "completed") : [];
+  const visibleTasks = compact
+    ? state.items.filter((task) => task.status !== "completed")
+    : state.expanded
+      ? state.items
+      : state.items.slice(0, 5);
+  const needsFooter =
+    completedTasks.length > 0 || state.expanded || state.items.length > visibleTasks.length;
   const taskRowLimit = Math.max(1, maxRows - (needsFooter ? 1 : 0));
   let renderedTaskCount = 0;
 
@@ -332,7 +351,11 @@ export function buildTaskPanelRows(
   }
 
   if (needsFooter && rows.length < maxRows) {
-    const hiddenTasks = state.items.slice(renderedTaskCount);
+    // 紧凑模式下被收起来的是「已完成」项，它们排在其它隐藏项之前；
+    // 逐条计数仍然准确，用户看到的数量与标题里的 done/total 对得上。
+    const hiddenTasks = compact
+      ? [...completedTasks, ...visibleTasks.slice(renderedTaskCount)]
+      : state.items.slice(renderedTaskCount);
     if (hiddenTasks.length > 0) {
       const doneCount = hiddenTasks.filter((task) => task.status === "completed").length;
       const activeCount = hiddenTasks.filter((task) => task.status === "in_progress").length;
@@ -345,11 +368,20 @@ export function buildTaskPanelRows(
         .filter(Boolean)
         .join(" · ");
       const counts = statusSummary ? ` (${statusSummary})` : "";
+      const head = `… 另有 ${hiddenTasks.length} 项${counts}`;
       rows.push(
-        `${SEQ.muted}${truncateText(`… 另有 ${hiddenTasks.length} 项${counts} · Ctrl+T ${state.expanded ? "收起" : "展开"}`, width)}${SEQ.reset}`,
+        `${SEQ.muted}${fitHint(
+          [
+            `${head} · Ctrl+T ${state.expanded ? "收起" : "展开"}`,
+            `${head} · Ctrl+T`,
+            head,
+            `… 另有 ${hiddenTasks.length} 项`,
+          ],
+          width,
+        )}${SEQ.reset}`,
       );
     } else {
-      rows.push(`${SEQ.muted}${truncateText("… Ctrl+T 收起", width)}${SEQ.reset}`);
+      rows.push(`${SEQ.muted}${fitHint(["… Ctrl+T 收起"], width)}${SEQ.reset}`);
     }
   }
   return rows;

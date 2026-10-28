@@ -251,7 +251,7 @@ test("定价 agent 循环先检索再结论，拒绝非 websearch 工具，超�
             {
               id: "call-1",
               type: "function",
-              function: { name: "websearch", arguments: '{"query":"custom model pricing"}' },
+              function: { name: "webfetch", arguments: '{"url":"https://x"}' },
             },
             {
               id: "call-2",
@@ -266,13 +266,13 @@ test("定价 agent 循环先检索再结论，拒绝非 websearch 工具，超�
       return { text: '{"inputPerMTokens": 1, "outputPerMTokens": 3, "source": "https://x"}' };
     },
     runTool: async (name, args) => {
-      usedTools.push([name, args.query]);
-      return "搜索结果：官方定价页 ¥1 / ¥3";
+      usedTools.push([name, args.url]);
+      return "custom-model 官方定价页 ¥1 / ¥3";
     },
   });
   assert.equal(outcome.ok, true);
   assert.equal(outcome.inputPerMTokens, 1);
-  assert.deepEqual(usedTools, [["websearch", "custom model pricing"]], "只执行允许的工具");
+  assert.deepEqual(usedTools, [["webfetch", "https://x"]], "只执行允许的工具");
 
   const stuck = await runPricingAgent({
     query: { model: "cn:stuck" },
@@ -394,11 +394,13 @@ test("定价 agent 允许 webfetch，并把工具结果回灌给模型", async (
       }
       const toolMessage = messages.find((message) => message.role === "tool");
       assert.match(toolMessage.content, /定价/);
-      return { text: '{"inputPerMTokens": 0.5, "outputPerMTokens": 2}' };
+      return {
+        text: '{"inputPerMTokens": 0.5, "outputPerMTokens": 2, "source":"https://api-docs.deepseek.com/quick_start/pricing"}',
+      };
     },
     runTool: async (name, args) => {
       used.push([name, args.url]);
-      return "官方定价：输入 0.5 元/百万，输出 2 元/百万";
+      return "x 官方定价：输入 0.5 元/百万，输出 2 元/百万";
     },
   });
   assert.equal(outcome.ok, true);
@@ -409,6 +411,7 @@ test("定价 agent 逐事件上报过程，详情页据此还原查询步骤", a
   const events = [];
   const outcome = await runPricingAgent({
     query: { model: "cn:custom-model" },
+    maxSteps: 2,
     callModel: async (_messages, step) =>
       step === 1
         ? {
@@ -425,7 +428,7 @@ test("定价 agent 逐事件上报过程，详情页据此还原查询步骤", a
     runTool: async () => "网络搜索失败: fetch failed",
     onEvent: (event) => events.push(event),
   });
-  assert.equal(outcome.ok, true);
+  assert.equal(outcome.ok, false, "搜索失败后不能仅凭模型给出的数字写入");
   assert.deepEqual(
     events.map((event) => event.type),
     ["step", "tool", "tool_result", "step", "reply", "done"],
@@ -435,7 +438,7 @@ test("定价 agent 逐事件上报过程，详情页据此还原查询步骤", a
   assert.equal(tool.args.query, "deepseek pricing");
   // 工具返回的错误文本会被标成失败，详情页据此一眼看出「被拦截/不通」。
   assert.equal(events.find((event) => event.type === "tool_result").ok, false);
-  assert.equal(events.at(-1).outcome.ok, true);
+  assert.equal(events.at(-1).outcome.ok, false);
 });
 
 test("过程摘要压成单行并限长", () => {
@@ -605,6 +608,7 @@ test("侧栏展示缓存命中占比", () => {
       promptTokens: 100_000,
       cachedPromptTokens: 80_000,
       completionTokens: 5_000,
+      costDetailsExpanded: true,
     },
     30,
     30,
@@ -882,6 +886,7 @@ test("侧栏显示谷时请求数", () => {
       offPeakRequests: 1,
       promptTokens: 2_000,
       completionTokens: 100,
+      costDetailsExpanded: true,
     },
     30,
     30,

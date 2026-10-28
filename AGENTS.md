@@ -276,6 +276,45 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 测试：`packages/cli/test/goal-tool.test.mjs`（工具行为与校验、权限口径、提示词分片、
   持久化、侧栏与 selfstate）。
 
+## 右侧栏的信息优先级与折叠（sidebar-priority）
+
+- 顺序即优先级：**目标 → 任务 → 代理 → 上下文 → 费用**（`buildSidebarFrame`）。当前在做什么
+  排在最前，资源与账单在后；分工仍守着「进行中的活动行只在对话区出现一次」。
+- 上下两块是常驻状态，按 `CONTEXT_MIN_ROWS`（4）/ `COST_MIN_ROWS`（3）预留行数，
+  **预留值含各自章节前的呼吸空行**（空行 + 标题 + 进度条/花费）。上部区块用
+  `upperBudget() = maxRows − 已用 − 预留`，放不下就先收摘要，而不是把上下文/费用顶出去。
+  圆环高度也按 `maxRows − 已用 − COST_MIN_ROWS` 分档，`ringFits` 不满足时退回进度条；
+  压缩徽标是可选行，空间只够预留额度时先让它。回归测试：
+  `tui-sidebar.test.mjs`「long goals, tasks and agents never push context or cost out of view」。
+- 面板紧凑化：`buildTaskPanelRows(..., { compact: true })` 把已完成项收成计数行（标题里的
+  done/total 仍准确，Ctrl+T 展开后恢复逐条）；`buildAgentPanelRows(..., { compact: true })`
+  只列 running/queued/awaiting_verification，已结束收成「… N 个已结束 · /agents 查看」。
+  两个 compact 只由侧栏传入，对话区底部面板维持全量。
+- 费用默认**摘要优先**：常驻「花费 + 未定价入口 + 定价 agent 状态」，token 构成与耗时收在
+  `SidebarState.costDetailsExpanded`（默认 false）后面的「▸ 明细」开关里。开关的点击由
+  `TerminalUI.dispatchSidebarAction` 就地处理（`cost.detail` → `toggleCostDetailRows()`），
+  不走 `onSidebarAction`——它只改侧栏密度、不开浮层；完整逐条明细仍在费用日志页。
+- 颜色口径：目标原文用正文色（强调色留给选中态与可操作入口）；悬停只换颜色、绝不改行数
+  （否则命中区会从鼠标下滑走）。
+- 密度三档：`sidebarDensity(maxRows)` → `full`(≥24) / `compact`(15–23) / `minimal`(≤14)。
+  `minimal` 不画圆环（只剩单行进度条）、任务与代理只留标题行（done/total 与运行中数量照旧
+  准确）、压缩徽标一起收掉——`minimal` 档每一行都要么是主指标，要么是可操作入口。
+  `compact` 把圆环压到最高 5 行。回归测试：
+  `tui-sidebar.test.mjs`「sidebar density steps down with the height budget」「the minimal tier
+  keeps every number and drops only decoration」。
+- 窄宽度：所有行都过 `push()` 里的宽度闸（`truncateAnsiText` 到 `contentW`），面板自身产出的
+  行也必须走 `push` 而不是 `rows.push`；`tableRow` 在极窄时先缩标签保住数值。提示类文本用
+  `fitHint([长, …, 短], width)` 逐级降级，**不截断成「… · Ctrl+T」这种半截提示**。
+  中文折行不让标点挂行首（`NO_LINE_START` 带走上一行末字）。
+- 键盘入口：`Ctrl+E` 与点「▸ 明细」等价（`toggleCostDetailRows()` 返回是否真的切换了；
+  没有已计费调用时什么都不做）。宽 ≥16 列时开关上带「· Ctrl+E」，窄栏只留「▸ 明细」。
+  最低高度下「配置单价」（需处理）优先于「明细」占行，键盘 / `/cost` 仍是兜底。
+- 视觉对照：`node scripts/sidebar-gallery.mjs` 生成 HTML（`--text` 直接在终端打印），
+  再 `node scripts/shot.mjs "$(node scripts/sidebar-gallery.mjs)" --full` 出图；
+  四种宽高 × 折叠/展开两态，用来核对档位切换与窄宽度排版。
+- 测试：`tui-sidebar.test.mjs`（顺序、档位、宽度不溢出、Ctrl+E、点击命中）、
+  `terminal-panels.test.mjs` / `agent-manager.test.mjs`（紧凑与降级）。
+
 ## 工具块二级折叠与鼠标交互（tool-block-fold）
 
 - 两级折叠：一级是过程段收敛成 `● 摘要行`（process-fold.ts，点击/Ctrl+O 展开整段）；

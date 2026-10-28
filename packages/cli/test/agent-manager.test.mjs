@@ -680,6 +680,26 @@ test("agent panel includes per-agent runtime configuration when provided", () =>
   assert.match(rows[1], /review · 排队中 · glm-5\.2 · volcengine · high/);
 });
 
+test("compact agent panel keeps live agents and folds finished ones into a count", () => {
+  const strip = (row) => row.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  const items = [
+    { id: "sub-live", role: "research", status: "running", startedAt: 1000, totalTokens: 1800 },
+    { id: "sub-wait", role: "review", status: "awaiting_verification", totalTokens: 900 },
+    { id: "sub-done", role: "implement", status: "verified", totalTokens: 5000 },
+    { id: "sub-bad", role: "review", status: "failed", totalTokens: 100 },
+  ];
+  const rows = buildAgentPanelRows(items, 40, 6, 13_500, { compact: true }).map(strip);
+  const text = rows.join("\n");
+  assert.match(text, /sub-live/);
+  assert.match(text, /sub-wait/, "待验证仍需要人处理，必须留下");
+  assert.doesNotMatch(text, /sub-done/, "已结束的不逐条占行");
+  assert.match(text, /2 个已结束 · \/agents/);
+  // 计数行不能被进行中的条目挤掉：有已结束项时始终留一行。
+  const tight = buildAgentPanelRows(items, 40, 2, 13_500, { compact: true }).map(strip);
+  assert.equal(tight.length, 2);
+  assert.match(tight[1], /2 个已结束/);
+});
+
 test("CLI registers deterministic subagent and agent management commands", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   const surface = fs.readFileSync(new URL("../src/cli-help.ts", import.meta.url), "utf8");

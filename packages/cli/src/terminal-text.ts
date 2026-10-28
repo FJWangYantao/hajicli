@@ -374,6 +374,19 @@ export function truncateText(value: string, width: number): string {
   return result;
 }
 
+/**
+ * 从长到短挑一个放得下的写法（提示文本专用）。
+ *
+ * 直接截断会留下「… · Ctrl+」这种半截提示：既占了行，又读不出该按什么键。
+ * 所以提示类文本一律给几档长度，取第一档放得下的；都放不下才退回截断。
+ */
+export function fitHint(variants: readonly string[], width: number): string {
+  for (const variant of variants) {
+    if (terminalWidth(variant) <= width) return variant;
+  }
+  return truncateText(variants[variants.length - 1] ?? "", width);
+}
+
 /** 按终端显示宽度截断纯文本，超出时以省略号收尾。 */
 export function fitText(value: string, width: number): string {
   if (width <= 0) return "";

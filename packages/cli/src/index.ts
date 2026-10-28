@@ -180,7 +180,6 @@ import {
   shouldPushVerificationNotice,
 } from "./post-edit-verify.js";
 import {
-  deriveUpstreamModel,
   PRICING_AGENT_TOOLS,
   resolveOfficialPricingUrls,
   runPricingAgent,
@@ -198,6 +197,7 @@ import {
   DEEPSEEK_MODELS,
   detectProviderForModel,
   EFFORT_OPTIONS,
+  findProviderForModel,
   normalizeReasoningEffort,
   providerHasApiKey,
   providerLabel,
@@ -3207,14 +3207,9 @@ async function main() {
   };
   openPricingAgentDetailsRef = () => showPricingAgentDetails();
 
-  /** 官方定价页候选：provider 自己的，加上按上游模型名反推到它上游 provider 的。 */
-  const pricingLookupUrls = (model: string): string[] => {
-    const owners = [
-      detectProviderForModel(model, providerConfig),
-      detectProviderForModel(deriveUpstreamModel(model), providerConfig),
-    ];
-    return [...new Set(owners.flatMap((provider) => resolveOfficialPricingUrls(provider)))];
-  };
+  /** 定价检索只用已登记的归属；未知型号不能使用请求路由的默认 provider。 */
+  const pricingLookupProvider = (model: string): string | undefined =>
+    findProviderForModel(model, providerConfig, currentProviderName);
   /**
    * 后台定价 agent：用杂活模型跑一个有界工具循环（只读检索：websearch / webfetch），
    * 结论写回定价覆盖表。不占用输入行，进度显示在侧栏「费用」区。
@@ -3244,7 +3239,8 @@ async function main() {
     }
     pricingAgentRunning = true;
     pricingAgentLog = { model, startedAt: Date.now(), lines: [] };
-    logPricing(`模型 ${model}（provider ${detectProviderForModel(model, providerConfig)}）`);
+    const pricingProvider = pricingLookupProvider(model);
+    logPricing(`模型 ${model}（provider ${pricingProvider ?? "未知"}）`);
     ui.setPricingAgentState({ status: "running", model });
     ui.writeLine(colors.gray(`  ↳ 后台查询 ${model} 的官方定价（只读网页检索，不打断当前会话）。`));
     void (async () => {
@@ -3256,8 +3252,8 @@ async function main() {
         const outcome = await runPricingAgent({
           query: {
             model,
-            provider: detectProviderForModel(model, providerConfig),
-            officialUrls: pricingLookupUrls(model),
+            provider: pricingProvider,
+            officialUrls: resolveOfficialPricingUrls(pricingProvider, model),
           },
           abortSignal: controller.signal,
           onEvent: (event) => {

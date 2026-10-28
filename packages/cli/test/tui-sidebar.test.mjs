@@ -9,6 +9,7 @@ import {
   composeSidebarRow,
   formatTurnDuration,
   resolveSidebarWidth,
+  sidebarDensity,
 } from "../dist/tui-sidebar.js";
 
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -59,9 +60,20 @@ test("sidebar rows show context, cost, task and agent info", () => {
   assert.match(text, /250 \/ 1\.0k tokens/);
   assert.match(text, /费用/);
   assert.match(text, /¥0\.0100/);
-  assert.match(text, /请求 +3 次/);
+  assert.match(text, /▸ 明细/, "费用明细默认折叠成一个开关");
   assert.match(text, /任务 · 渲染/);
   assert.match(text, /代理 1 运行中/);
+});
+
+test("the sidebar puts current work above resources and the bill", () => {
+  const rows = buildSidebarRows(sidebarState(), 30, 30, 5000).map(stripAnsi);
+  const indexOf = (pattern) => rows.findIndex((row) => pattern.test(row));
+  const task = indexOf(/^任务 · /);
+  const context = indexOf(/^上下文/);
+  const cost = indexOf(/^费用/);
+  assert.ok(task >= 0 && context >= 0 && cost >= 0, "三块都在");
+  assert.ok(task < context, "正在做什么排在资源之前");
+  assert.ok(context < cost, "费用排在最后");
 });
 
 test("context ring geometry is exposed and shows the percentage inside", () => {
@@ -128,20 +140,33 @@ test("composed row keeps the exact terminal width", () => {
 
 test("cost section explains the bill with an input/output token split", () => {
   const text = buildSidebarRows(
-    sidebarState({ promptTokens: 1200, completionTokens: 340 }),
+    sidebarState({ promptTokens: 1200, completionTokens: 340, costDetailsExpanded: true }),
     30,
     30,
     5000,
   )
     .map(stripAnsi)
     .join("\n");
+  assert.match(text, /请求 +3 次/);
   assert.match(text, /输入 +↑1\.2k/);
   assert.match(text, /输出 +↓340/);
 });
 
+test("cost details stay folded until the 明细 row is clicked", () => {
+  const state = sidebarState({ promptTokens: 1200, completionTokens: 340 });
+  const folded = buildSidebarRows(state, 30, 30, 5000).map(stripAnsi).join("\n");
+  assert.match(folded, /▸ 明细/);
+  assert.doesNotMatch(folded, /输入 +↑1\.2k/, "默认不占行");
+  const expanded = buildSidebarRows({ ...state, costDetailsExpanded: true }, 30, 30, 5000)
+    .map(stripAnsi)
+    .join("\n");
+  assert.match(expanded, /▾ 明细/);
+  assert.match(expanded, /输入 +↑1\.2k/);
+});
+
 test("sidebar reports the last turn duration and compaction count", () => {
   const text = buildSidebarRows(
-    sidebarState({ lastTurnMs: 12_400, compactionCount: 2 }),
+    sidebarState({ lastTurnMs: 12_400, compactionCount: 2, costDetailsExpanded: true }),
     30,
     30,
     5000,
@@ -318,6 +343,8 @@ test("terminal ui setters feed the sidebar stat lines", () => {
     ui.setLastTurnDuration(12_400);
     ui.noteCompaction();
     ui.noteCompaction();
+    // 明细默认折叠：展开后这些行才出现（与「点 ▸ 明细」同一入口）。
+    ui.toggleCostDetailRows();
     const text = renderPlain(ui).join("\n");
     assert.match(text, /输入 +↑1\.2k/);
     assert.match(text, /输出 +↓340/);
@@ -596,6 +623,169 @@ test("nested regions win both the hover and the click", () => {
     clickSidebarRegion(ui, "context.usage");
     assert.equal(ui.isContextInspectorOpen(), true, "点用量行打开上下文详情页");
     assert.deepEqual(handled, ["cost.config", "cost.turn.cost", "cost.summary"]);
+  } finally {
+    cleanupTerminalUI(ui);
+  }
+});
+
+test("clicking the 明细 row expands cost details in place", () => {
+  const ui = createTerminalUI();
+  try {
+    const handled = [];
+    ui.options.onSidebarAction = (id) => handled.push(id);
+    ui.setCostInfo(0.02, 2, false, 1200, 340);
+    renderPlain(ui);
+    assert.ok(!renderPlain(ui).some((row) => /输入 +↑1\.2k/.test(row)), "默认不显示 token 明细");
+
+    clickSidebarRegion(ui, "cost.detail");
+    let rows = renderPlain(ui);
+    assert.ok(
+      rows.some((row) => /输入 +↑1\.2k/.test(row)),
+      "展开后就地出现明细行",
+    );
+    assert.ok(rows.some((row) => row.includes("▾ 明细")));
+    assert.deepEqual(handled, [], "明细开关不改宿主动作");
+
+    clickSidebarRegion(ui, "cost.detail");
+    rows = renderPlain(ui);
+    assert.ok(!rows.some((row) => /输入 +↑1\.2k/.test(row)), "再点一次收回去");
+  } finally {
+    cleanupTerminalUI(ui);
+  }
+});
+
+test("long goals, tasks and agents never push context or cost out of view", () => {
+  const state = sidebarState({
+    goal: {
+      status: "active",
+      text: "把侧栏的信息层级重做一遍，让当前任务永远优先于账单与统计信息",
+    },
+    compactionCount: 3,
+    taskPlan: {
+      title: "重构",
+      expanded: false,
+      items: Array.from({ length: 9 }, (_, index) => ({
+        id: `t${index}`,
+        content: `第 ${index} 个任务，内容写得足够长以占据整行`,
+        status: index < 4 ? "completed" : index === 5 ? "in_progress" : "pending",
+      })),
+    },
+    agents: Array.from({ length: 6 }, (_, index) => ({
+      id: `a${index}`,
+      role: "research",
+      status: index < 3 ? "running" : "verified",
+      totalTokens: 1200,
+      startedAt: 0,
+    })),
+  });
+  for (const maxRows of [10, 12, 16, 20, 30]) {
+    const rows = buildSidebarRows(state, 30, maxRows, 5000).map(stripAnsi);
+    assert.ok(rows.length <= maxRows, `height ${maxRows} 不越界`);
+    const text = rows.join("\n");
+    assert.match(text, /上下文/, `height ${maxRows} 仍看得到上下文`);
+    assert.match(text, /25%/, `height ${maxRows} 仍看得到上下文用量`);
+    assert.match(text, /费用/, `height ${maxRows} 仍看得到费用`);
+    assert.match(text, /¥0\.0100/, `height ${maxRows} 仍看得到花费`);
+  }
+});
+
+test("sidebar density steps down with the height budget", () => {
+  assert.equal(sidebarDensity(30), "full");
+  assert.equal(sidebarDensity(24), "full", "24 行起是满档");
+  assert.equal(sidebarDensity(23), "compact");
+  assert.equal(sidebarDensity(15), "compact");
+  assert.equal(sidebarDensity(14), "minimal", "14 行及以下是最省的一档");
+  assert.equal(sidebarDensity(0), "minimal");
+});
+
+test("the minimal tier keeps every number and drops only decoration", () => {
+  const state = sidebarState({ compactionCount: 2 });
+  assert.ok(buildSidebarFrame(state, 30, 30, 5000).ring, "满档画圆环");
+
+  const minimal = buildSidebarFrame(state, 30, 14, 5000);
+  assert.equal(minimal.ring, undefined, "最省的一档不画圆环");
+  const rows = minimal.rows.map(stripAnsi);
+  const text = rows.join("\n");
+  assert.match(text, /^上下文$/m);
+  assert.ok(
+    rows.some((row) => /█|░/.test(row)),
+    "退回单行进度条",
+  );
+  assert.match(text, /250 \/ 1\.0k tokens/, "用量里程数不丢");
+  assert.match(text, /任务 · 渲染 {2}1\/2/, "任务标题保留 done/total");
+  assert.match(text, /代理 1 运行中/, "代理标题保留运行中计数");
+  assert.match(text, /¥0\.0100/, "花费照旧");
+  assert.ok(!rows.some((row) => row.includes("⟳ 已压缩")), "圆环都不画了，压缩徽标也不再占行");
+  assert.ok(!rows.some((row) => row.includes("拆分侧栏")), "逐条任务让位给标题行");
+});
+
+test("the 明细 toggle drops its shortcut hint in a narrow sidebar", () => {
+  const wide = buildSidebarRows(sidebarState(), 30, 30, 5000).map(stripAnsi);
+  assert.ok(
+    wide.some((row) => row.trim() === "▸ 明细 · Ctrl+E"),
+    "宽栏把键盘入口写在开关上",
+  );
+  const narrow = buildSidebarRows(sidebarState(), 16, 30, 5000).map(stripAnsi);
+  assert.ok(
+    narrow.some((row) => row.trim() === "▸ 明细"),
+    "窄栏只留可点的开关本身",
+  );
+  assert.ok(!narrow.some((row) => row.includes("Ctrl+E")), "提示被整段省掉，而不是截成半截");
+});
+
+test("no sidebar row overflows its column at any width", () => {
+  const state = sidebarState({
+    hasUnpricedCost: true,
+    unpricedModels: ["mystery-model"],
+    compactionCount: 1,
+    goal: { status: "active", text: "把侧栏的信息层级重做一遍，让当前任务优先于账单" },
+  });
+  for (const width of [12, 14, 16, 18, 20, 24, 30, 34]) {
+    const frame = buildSidebarFrame(state, width, 30, 5000);
+    for (const row of frame.rows) {
+      assert.ok(
+        terminalWidth(row) <= width - 1,
+        `width ${width}: 「${stripAnsi(row)}」溢出了 ${width - 1} 列的内容宽度`,
+      );
+    }
+    for (const region of frame.regions) {
+      assert.ok(
+        region.hit.left + region.hit.width <= width,
+        `width ${width}: ${region.id} 的命中区超出栏宽`,
+      );
+    }
+  }
+});
+
+test("Ctrl+E toggles the cost details from the keyboard", () => {
+  const ui = createTerminalUI();
+  try {
+    ui.setCostInfo(0.02, 2, false, 1200, 340);
+    renderPlain(ui);
+    assert.ok(!renderPlain(ui).some((row) => /输入 +↑1\.2k/.test(row)), "默认折叠");
+
+    ui.dispatchKeypress("\x05", { ctrl: true, name: "e" });
+    let rows = renderPlain(ui);
+    assert.ok(
+      rows.some((row) => /输入 +↑1\.2k/.test(row)),
+      "Ctrl+E 展开明细",
+    );
+    assert.ok(rows.some((row) => row.includes("▾ 明细 · Ctrl+E")));
+
+    ui.dispatchKeypress("\x05", { ctrl: true, name: "e" });
+    rows = renderPlain(ui);
+    assert.ok(!rows.some((row) => /输入 +↑1\.2k/.test(row)), "再按一次收回去");
+  } finally {
+    cleanupTerminalUI(ui);
+  }
+});
+
+test("Ctrl+E is a no-op before any priced call", () => {
+  const ui = createTerminalUI();
+  try {
+    renderPlain(ui);
+    ui.dispatchKeypress("\x05", { ctrl: true, name: "e" });
+    assert.equal(ui.costDetailRowsExpanded, false, "没有费用就没有明细可摊开");
   } finally {
     cleanupTerminalUI(ui);
   }

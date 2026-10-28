@@ -22,3 +22,8 @@ tools/code-viewer/ai.config.local.json
 
 # 本机临时工作目录（调试日志、截图、一次性脚本），不入库
 .haji_tmp/
+
+# 视频分析临时产物（下载视频、关键帧和解码依赖）
+/.tmp/video-reader/
+/.tmp/video-reader-deps/
+/video-thumbnail.jpg

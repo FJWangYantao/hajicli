@@ -177,6 +177,44 @@ test("task panel shows overall progress, elapsed time and agent tokens", () => {
   assert.match(rows[3], /↳ explorer · 运行中 · 12k/);
 });
 
+test("compact task panel trades finished rows for the active one", () => {
+  const strip = (row) => row.replace(/\x1b\[[0-9;]*m/g, "");
+  const state = {
+    title: "重构 provider 层",
+    expanded: false,
+    items: [
+      { id: "1", content: "调研现状", status: "completed" },
+      { id: "2", content: "归档旧接口", status: "completed" },
+      { id: "3", content: "抽取配置模块", status: "in_progress" },
+      { id: "4", content: "补测试", status: "pending" },
+    ],
+  };
+  const rows = buildTaskPanelRows(state, 40, 8, Date.now(), { compact: true }).map(strip);
+  assert.match(rows[0], /任务 · 重构 provider 层 {2}2\/4/, "标题仍给整体进度");
+  assert.ok(
+    rows.some((row) => row.includes("● 抽取配置模块")),
+    "进行中的一项必须逐条显示",
+  );
+  assert.ok(
+    rows.some((row) => row.includes("○ 补测试")),
+    "待处理项保留",
+  );
+  assert.ok(!rows.some((row) => row.includes("调研现状")), "已完成项收成计数，不再逐条占行");
+  assert.ok(
+    rows.some((row) => /另有 2 项 .*2 已完成/.test(row)),
+    "被收起的已完成项仍有数量说明",
+  );
+
+  // 展开是用户主动要看全量：紧凑模式不再生效。
+  const expanded = buildTaskPanelRows({ ...state, expanded: true }, 40, 8, Date.now(), {
+    compact: true,
+  }).map(strip);
+  assert.ok(
+    expanded.some((row) => row.includes("调研现状")),
+    "展开后逐条恢复",
+  );
+});
+
 test("buildTurnSummary assembles one line and drops segments by width", () => {
   const full = {
     durationMs: 12_300,

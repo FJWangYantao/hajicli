@@ -1,6 +1,27 @@
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
 import { fetchWithNetworkPolicy } from "./network.js";
 
+/** 长定价表保留页首说明与命中上下文，避免只截到导航和其他型号。 */
+export function selectFocusedWebText(text: string, focus?: string): string {
+  const needle = focus?.trim().toLowerCase().replace(/-/g, " ");
+  if (!needle || text.length <= 7000) return text;
+  const lower = text.toLowerCase().replace(/-/g, " ");
+  const ranges: Array<[number, number]> = [[0, 600]];
+  let offset = 0;
+  for (let count = 0; count < 4; count += 1) {
+    const index = lower.indexOf(needle, offset);
+    if (index < 0) break;
+    const start = Math.max(0, index - 500);
+    const end = Math.min(text.length, index + needle.length + 1000);
+    const previous = ranges[ranges.length - 1];
+    if (start <= previous[1]) previous[1] = Math.max(previous[1], end);
+    else ranges.push([start, end]);
+    offset = end;
+  }
+  if (offset === 0) return text;
+  return `[已按关键词提取相关片段，省略处以 … 标记]\n${ranges.map(([start, end]) => text.slice(start, end)).join("\n…\n")}`;
+}
+
 /**
  * 网页抓取工具（类似 webfetch）。
  */
@@ -18,6 +39,10 @@ export class WebFetchTool implements BaseTool {
           url: {
             type: "string",
             description: '要抓取内容的网页 URL（例如 "https://news.ycombinator.com"）。',
+          },
+          focus: {
+            type: "string",
+            description: "可选：优先保留包含该关键词的正文片段，适合长文档中的准确型号或条目。",
           },
         },
         required: ["url"],
@@ -62,7 +87,7 @@ export class WebFetchTool implements BaseTool {
         .trim();
 
       let result = `[网页抓取成功 - 目标地址: ${url}]\n\n`;
-      result += text;
+      result += selectFocusedWebText(text, typeof args.focus === "string" ? args.focus : undefined);
 
       // 截断超长结果以防止上下文溢出（限制 8000 字符）
       const maxOutputLength = 8000;

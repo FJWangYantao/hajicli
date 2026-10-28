@@ -809,6 +809,7 @@ export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: strin
     description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 或点击 Jump to End 回到底部",
   },
   { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
+  { keys: "Ctrl+E", description: "展开 / 收起侧栏费用明细" },
   { keys: "Ctrl+O", description: "展开 / 收起最近一段过程（工具调用与思考）" },
   { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行）" },
   {

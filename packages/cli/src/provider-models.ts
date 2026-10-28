@@ -40,6 +40,15 @@ export function detectProviderForModel(
   config?: ProviderConfig,
   preferProvider?: string,
 ): string {
+  return findProviderForModel(modelValue, config, preferProvider) ?? "deepseek";
+}
+
+/** 只返回有登记依据的归属；检索定价等场景不能把路由默认值当成真实厂商。 */
+export function findProviderForModel(
+  modelValue: string,
+  config?: ProviderConfig,
+  preferProvider?: string,
+): string | undefined {
   // 同名模型可能同时被内置与自定义 provider 声明（例如 opencode 也提供 deepseek-v4-flash）。
   // 此时若已知用户当前/上次使用的 provider，应优先尊重它，避免静默回退到内置 provider，
   // 导致请求发往官方端点而扣费。
@@ -60,8 +69,7 @@ export function detectProviderForModel(
   }
   // 用户模型表（~/.haji/models.json）：内置 provider 的新模型无需发版即可正确路由。
   const userModel = loadUserModels().find((entry) => entry.model === modelValue);
-  if (userModel) return userModel.provider;
-  return "deepseek";
+  return userModel?.provider;
 }
 
 /** 提供商显示名：内置带图标，自定义显示名称。 */

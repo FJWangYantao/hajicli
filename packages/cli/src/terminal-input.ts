@@ -469,6 +469,11 @@ function isRealCtrlT(value: string, key: readline.Key): boolean {
   return value === "\x14" && key.ctrl === true && key.name === "t";
 }
 
+/** Ctrl+E：折叠/展开侧栏费用明细（与鼠标点「▸ 明细」等价）。 */
+function isRealCtrlE(value: string, key: readline.Key): boolean {
+  return value === "\x05" && key.ctrl === true && key.name === "e";
+}
+
 interface MenuRow {
   label: string;
   description?: string;
@@ -657,6 +662,11 @@ export class TerminalUI {
   private costUnpricedModels: string[] = [];
   /** 后台定价 agent 的状态行；undefined 表示没有在跑也没有结果。 */
   private pricingAgentState?: SidebarPricingAgentState;
+  /**
+   * 侧栏费用明细（请求/输入/缓存/谷时/输出/上一轮）是否展开。
+   * 默认折叠：常驻只留「花费 + 需处理项」，逐条明细本就在费用日志页里。
+   */
+  private costDetailRowsExpanded = false;
   /** 会话目标（/goal 设定）；undefined 表示未设定，侧栏不渲染目标区块。 */
   private sidebarGoal?: SidebarGoalState;
   /** 上一轮回合耗时（ms）；undefined 表示本会话还没跑完一轮。 */
@@ -1253,6 +1263,18 @@ export class TerminalUI {
   setPricingAgentState(state: SidebarPricingAgentState | null): void {
     this.pricingAgentState = state ?? undefined;
     this.scheduleRender();
+  }
+
+  /**
+   * 折叠/展开侧栏费用明细（「▸ 明细」那一行）。
+   * 只改侧栏的展示密度，不动任何数据；逐条明细另在费用日志页可查。
+   * 还没有任何已计费调用时没有明细可摊开，直接返回 false（调用方据此判断是否真的切了）。
+   */
+  toggleCostDetailRows(): boolean {
+    if (this.costCny === undefined) return false;
+    this.costDetailRowsExpanded = !this.costDetailRowsExpanded;
+    this.scheduleRender(true);
+    return true;
   }
 
   /** 会话目标（侧栏目标区块）；传 undefined 清掉，/clear 与 /resume 后同步刷新。 */
@@ -3249,6 +3271,12 @@ export class TerminalUI {
       this.openContextInspector();
       return;
     }
+    // 费用明细开关也由 TerminalUI 自己处理：它只改侧栏密度，不开浮层，
+    // 让宿主去实现反而会多一层无意义的回调。
+    if (id === "cost.detail") {
+      this.toggleCostDetailRows();
+      return;
+    }
     this.options.onSidebarAction?.(id);
   }
 
@@ -3282,6 +3310,9 @@ export class TerminalUI {
       return;
     }
     if (this.toggleTaskPanel(value, key)) return;
+    // Ctrl+E：侧栏费用明细的键盘入口。与鼠标点「▸ 明细」走同一条路径，
+    // 没有已计费调用时什么都不做（不白刷一帧）。
+    if (isRealCtrlE(value, key) && !this.activeSelection && this.toggleCostDetailRows()) return;
     if (isRealCtrlO(value, key) && !this.activeSelection) {
       this.toggleLatestFoldSegment();
       return;
@@ -3759,6 +3790,7 @@ export class TerminalUI {
       ...(this.sidebarGoal ? { goal: this.sidebarGoal } : {}),
       costCny: this.costCny,
       costRequests: this.costRequests,
+      costDetailsExpanded: this.costDetailRowsExpanded,
       hasUnpricedCost: this.costHasUnpriced,
       ...(this.costUnpricedModels.length > 0 ? { unpricedModels: this.costUnpricedModels } : {}),
       ...(this.pricingAgentState ? { pricingAgent: this.pricingAgentState } : {}),
