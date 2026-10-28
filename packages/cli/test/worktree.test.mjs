@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { normalizePathKey } from "@hajicli/core";
 import {
+  archivedSessionStoreDirs,
   detectGitRepo,
   listHajiWorktrees,
   loadWorktreeSetting,
@@ -250,6 +251,10 @@ test("removeWorktree 只清理 haji 分支，并拒绝主工作树", () =>
       fs.existsSync(path.join(removed.archivePath, "sessions", "session_demo.json")),
       "会话记录应归档到主仓库 .haji/worktree-archive",
     );
+    // 归档目录随即进入 /resume 的检索范围。
+    const archived = archivedSessionStoreDirs(repo);
+    assert.equal(archived.length, 1);
+    assertSamePath(archived[0], path.join(removed.archivePath, "sessions"));
   }));
 
 test("/worktree on|off 写主仓库配置，list 展示 haji 工作树", () =>

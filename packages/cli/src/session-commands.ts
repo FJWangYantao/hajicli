@@ -124,7 +124,14 @@ async function loadAndRenderSession(
     ui.writeLine(colors.warnLine("会话文件已不存在或无法读取。"));
     return false;
   }
-  if (path.resolve(storeDir) !== path.resolve(sessionManager.getSessionsDir())) {
+  if (sessionManager.isArchivedSession(sessionId)) {
+    // 原工作树已移除：会话复制回当前目录续写（loadSession 负责复制），归档副本不动。
+    ui.writeLine(
+      colors.gray(
+        `已从归档取回会话（原工作树 ${path.basename(path.dirname(storeDir))}），在当前目录继续。`,
+      ),
+    );
+  } else if (path.resolve(storeDir) !== path.resolve(sessionManager.getSessionsDir())) {
     const worktreeRoot = path.resolve(storeDir, "..", "..");
     if (ctx.enterSessionWorktree && fs.existsSync(path.join(worktreeRoot, ".git"))) {
       ctx.enterSessionWorktree(worktreeRoot);
@@ -442,9 +449,10 @@ export async function handleResumeCommand(ctx: SessionCommandContext, keyword = 
     const msgCount = s.messages.filter((m) => m.role === "user").length;
     // 跨工作树的会话标注所属树名，恢复时会切换过去。
     const storeDir = sessionManager.locateSessionDir(s.id);
+    // 归档会话（工作树已移除）同样标出原树名，恢复时取回到当前目录继续。
     const worktreeTag =
       storeDir && path.resolve(storeDir) !== primaryStoreDir
-        ? ` · 工作树 ${path.basename(path.dirname(path.dirname(storeDir)))}`
+        ? ` · ${sessionManager.isArchivedSession(s.id) ? "已归档 · " : ""}工作树 ${path.basename(path.dirname(path.dirname(storeDir)))}`
         : "";
     return {
       value: s.id,

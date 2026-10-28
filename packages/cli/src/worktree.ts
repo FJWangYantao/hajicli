@@ -514,6 +514,25 @@ export function siblingSessionStoreDirs(cwd: string = process.cwd()): string[] {
 }
 
 /**
+ * `/worktree remove` 归档下来的会话目录（主仓库 `.haji/worktree-archive/<名称>/sessions`）。
+ * 工作树已经删掉，这些会话只能「取回到当前目录继续」，所以与 siblingSessionStoreDirs 分开给。
+ */
+export function archivedSessionStoreDirs(cwd: string = process.cwd()): string[] {
+  const repo = detectGitRepo(cwd);
+  if (!repo) return [];
+  const archiveRoot = path.join(repo.mainRoot, ".haji", "worktree-archive");
+  let names: string[];
+  try {
+    names = fs.readdirSync(archiveRoot);
+  } catch {
+    return [];
+  }
+  return names
+    .map((name) => path.join(archiveRoot, name, "sessions"))
+    .filter((dir) => fs.existsSync(dir));
+}
+
+/**
  * 移除一个 haji 工作树。`force` 用于丢弃未提交改动（与 `git worktree remove --force` 一致）。
  * 移除前先把会话记录与快照复制到主仓库 `.haji/worktree-archive/<名称>/`，
  * 避免工作树一删、里面的对话历史和 /rewind 数据跟着消失。

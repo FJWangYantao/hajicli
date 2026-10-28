@@ -131,7 +131,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - SIGINT（第二次 Ctrl+C 强退）也要 `sessionManager.flush()`（经 `sigintSessionFlush` 晚绑定注入，
   因为处理函数注册早于 manager 创建）；正常退出路径在 `finally` 里 flush，无需处理。
 - 测试：`worktree.test.mjs`（siblingSessionStoreDirs）、`session-usage.test.mjs`（跨目录发现/去重/重定向）。
-  `/worktree remove` 会把会话与快照归档到主仓库 `.haji/worktree-archive/<名称>/`（归档暂不进 resume 列表）。
+  `/worktree remove` 会把会话与快照归档到主仓库 `.haji/worktree-archive/<名称>/`；归档会话经
+  `archivedSessionStoreDirs()` + `sessionManager.setArchiveDirs()` 进 `/resume`、`-c`、`-r`
+  （列表标「已归档 · 工作树 <名称>」）。原树已删，所以 `loadSession` 命中归档时**把文件复制回
+  当前主目录续写、不切目录**，归档副本保持原样（测试：`session-usage.test.mjs`、`worktree.test.mjs`）。
 
 ## 斜杠指令：立即执行通道（回合进行中）
 

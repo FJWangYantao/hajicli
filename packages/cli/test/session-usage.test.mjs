@@ -185,6 +185,40 @@ test("setSearchDirs 跨目录发现会话，loadSession 命中后主目录跟着
   assert.deepEqual(forked, [], "不应在旧主目录分叉出新会话文件");
 });
 
+test("归档目录的会话进列表，加载时复制回主目录续写，归档副本不动", async () => {
+  const archive = makeTempDir();
+  const primary = makeTempDir();
+  const writer = new SessionManager(archive);
+  const id = writer.getCurrentSession().id;
+  writer.saveCurrentSession(MESSAGES, "归档会话");
+  await writer.flush();
+  const archivedFile = path.join(archive, `session_${id}.json`);
+  const before = fs.readFileSync(archivedFile, "utf8");
+
+  const mgr = new SessionManager(primary);
+  mgr.setArchiveDirs([archive]);
+  assert.deepEqual(
+    mgr.listSessions().map((s) => s.title),
+    ["归档会话"],
+  );
+  assert.equal(mgr.isArchivedSession(id), true);
+
+  const loaded = mgr.loadSession(id);
+  assert.ok(loaded);
+  // 主目录不切到归档：续写落在当前目录，归档保持原样。
+  assert.equal(path.resolve(mgr.getSessionsDir()), path.resolve(primary));
+  assert.ok(fs.existsSync(path.join(primary, `session_${id}.json`)));
+  assert.equal(mgr.isArchivedSession(id), false, "取回后主目录副本优先");
+  mgr.saveCurrentSession([...MESSAGES, { role: "user", content: "继续" }]);
+  await mgr.flush();
+  assert.equal(fs.readFileSync(archivedFile, "utf8"), before);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(primary, `session_${id}.json`), "utf8")).messages.length,
+    MESSAGES.length + 1,
+  );
+  assert.equal(mgr.listSessions().length, 1, "同一 id 不会在列表里出现两次");
+});
+
 test("同一会话 id 出现在多个目录时按 updatedAt 取最新", () => {
   const dirA = makeTempDir();
   const dirB = makeTempDir();

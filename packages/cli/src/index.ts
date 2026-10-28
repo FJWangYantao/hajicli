@@ -265,6 +265,7 @@ import {
 } from "./workspace-roots.js";
 import { readWorkspaceStatus } from "./workspace-status.js";
 import {
+  archivedSessionStoreDirs,
   loadWorktreeSetting,
   parseWorktreeArgs,
   prepareSessionWorktree,
@@ -1238,6 +1239,8 @@ async function main() {
   // worktree 并行会话各存自己那棵树的 .haji/sessions：并进检索范围，
   // /resume、-c/-r 才能发现它们（选中后进程切到对应树，见 enterSessionWorktree）。
   sessionManager.setSearchDirs(siblingSessionStoreDirs(process.cwd()));
+  // /worktree remove 归档的会话也进 /resume 列表：原树已删，选中后复制回当前目录继续。
+  sessionManager.setArchiveDirs(archivedSessionStoreDirs(process.cwd()));
   sigintSessionFlush = (): Promise<void> => sessionManager.flush();
   // 会话目标分片：/goal 设定的目标随会话记录走，激活时注入系统提示词。
   // 注册晚于上方首帧提示词生成没关系——新会话此刻必然没有目标，分片内容为空。

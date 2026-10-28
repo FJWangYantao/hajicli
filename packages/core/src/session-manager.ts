@@ -166,6 +166,8 @@ export class SessionManager {
    * loadSession 命中后把主目录切过去。写盘永远只走主目录。
    */
   private searchDirs: string[] = [];
+  /** 已移除工作树的归档会话目录：只读，选中后复制回主目录继续。 */
+  private archiveDirs: string[] = [];
   private currentSession: StoredSession;
   private lastQueuedMessages: ChatMessage[] = [];
   private lastQueuedTitle = "";
@@ -239,6 +241,25 @@ export class SessionManager {
   }
 
   /**
+   * 设置归档会话目录（`/worktree remove` 留下的 `.haji/worktree-archive/<名称>/sessions`）。
+   * 与 setSearchDirs 的区别：原工作树已不存在，加载时把会话文件复制回主目录续写，
+   * 而不是把主目录切过去（否则后续写盘会落进归档里）。
+   */
+  public setArchiveDirs(dirs: string[]): void {
+    const primary = path.resolve(this.sessionsDir);
+    this.archiveDirs = dirs.filter((dir) => path.resolve(dir) !== primary);
+  }
+
+  /** 会话是否只存在于归档目录（/resume 列表据此标注「已归档」）。 */
+  public isArchivedSession(id: string): boolean {
+    const dir = this.locateSessionDir(id);
+    return (
+      dir !== null &&
+      this.archiveDirs.some((candidate) => path.resolve(candidate) === path.resolve(dir))
+    );
+  }
+
+  /**
    * 把主会话目录切到别处：恢复其他 worktree 的会话后跟着会话走，
    * 后续保存写回会话原来的目录，避免同一会话在两棵树里各存一份。
    */
@@ -251,7 +272,7 @@ export class SessionManager {
 
   /** 找出会话文件所在目录（主目录优先，其次附加目录）；找不到返回 null。 */
   public locateSessionDir(id: string): string | null {
-    for (const dir of [this.sessionsDir, ...this.searchDirs]) {
+    for (const dir of [this.sessionsDir, ...this.searchDirs, ...this.archiveDirs]) {
       if (fs.existsSync(this.getSessionPathFor(dir, id))) return dir;
     }
     return null;
@@ -416,8 +437,17 @@ export class SessionManager {
       const session = JSON.parse(
         fs.readFileSync(this.getSessionPathFor(dir, id), "utf8"),
       ) as StoredSession;
-      // 命中附加目录（其他 worktree 的会话）：主目录跟着切过去，后续保存写回原处。
-      if (path.resolve(dir) !== path.resolve(this.sessionsDir)) this.setSessionsDir(dir);
+      const archived = this.archiveDirs.some(
+        (candidate) => path.resolve(candidate) === path.resolve(dir),
+      );
+      if (archived) {
+        // 归档会话：原工作树已删，复制回主目录继续写；归档副本保持原样。
+        this.ensureDir();
+        fs.copyFileSync(this.getSessionPathFor(dir, id), this.getSessionPath(id));
+      } else if (path.resolve(dir) !== path.resolve(this.sessionsDir)) {
+        // 命中附加目录（其他 worktree 的会话）：主目录跟着切过去，后续保存写回原处。
+        this.setSessionsDir(dir);
+      }
       this.currentSession = session;
       this.lastQueuedMessages = session.messages.map(cloneMessage);
       this.lastQueuedTitle = session.title;
@@ -437,7 +467,7 @@ export class SessionManager {
     }
     const collected: StoredSession[] = [];
     // 主目录里没有有效消息的会话文件按原语义清掉；附加目录（别的 worktree）只读不删。
-    for (const dir of [this.sessionsDir, ...this.searchDirs]) {
+    for (const dir of [this.sessionsDir, ...this.searchDirs, ...this.archiveDirs]) {
       const isPrimary = path.resolve(dir) === path.resolve(this.sessionsDir);
       collected.push(...this.readSessionsFrom(dir, isPrimary));
     }
