@@ -114,6 +114,52 @@ export class MarkdownRenderThrottle {
   }
 }
 
+/**
+ * 除 `\t` / `\n` 以外的 C0/C1 控制字符与 `\r`。
+ *
+ * `sanitizeTerminalText` 是逐字符扫描的 O(n) 实现，而正常模型输出里几乎不含控制字符。
+ * 不含这些字符时 sanitize 是恒等映射（可打印字符原样保留），因此可以先做一次正则扫描
+ * 跳过整趟扫描——这是纯优化，输出与慢路径完全一致。
+ */
+const UNSAFE_CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+/** 行首为 ``` 的行数（等价于 `text.match(/^```/gm)` 的计数）。 */
+function countFenceLines(text: string): number {
+  let count = 0;
+  let atLineStart = true;
+  for (let i = 0; i < text.length; i++) {
+    if (atLineStart && text.charCodeAt(i) === 0x60 && text.startsWith("```", i)) {
+      count += 1;
+      atLineStart = false;
+      continue;
+    }
+    atLineStart = text.charCodeAt(i) === 0x0a;
+  }
+  return count;
+}
+
+/** 双星号成对出现的非重叠次数（与全局 match 计数一致）。 */
+function countDoubleStars(text: string): number {
+  let count = 0;
+  let index = text.indexOf("**");
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf("**", index + 2);
+  }
+  return count;
+}
+
+/** 单行内反引号的出现次数。 */
+function countBackticks(text: string): number {
+  let count = 0;
+  let index = text.indexOf("`");
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf("`", index + 1);
+  }
+  return count;
+}
+
 /** Only show the fallback thinking summary when a tool call has no visible assistant text. */
 export function shouldShowToolThinkingSummary(textContent: string, toolCallCount: number): boolean {
   return toolCallCount > 0 && textContent.trim().length === 0;
@@ -126,6 +172,40 @@ export class MarkdownStreamRenderer {
   /** 累积接收到的原始 Markdown 全量文本 */
   private rawContent = "";
 
+  /**
+   * 流式增量解析的前缀缓存。
+   *
+   * 只缓存落在"空闲态"（不在代码块、表格、ASCII 卡片内）行尾之前的已渲染行——
+   * 这些行的渲染彼此独立（行分类只看本行内容），后续追加的文本不会回头改写它们。
+   * 命中后只解析尾部，单帧成本与新增内容成正比，而不是与全文长度成正比。
+   *
+   * 宽度或主题（含颜色能力）变化会让已渲染行的 ANSI 失效，因此一并记进键里。
+   */
+  private prefixCache:
+    | {
+        source: string;
+        rows: string[];
+        width: number;
+        theme: ReturnType<typeof getTheme>;
+        colorLevel: ReturnType<typeof getColorLevel>;
+        /** 前缀内的代码围栏行数（autoCloseMarkdown 的奇偶判断只需增量统计）。 */
+        fenceCount: number;
+        /** 前缀内 `**` 的非重叠出现次数。 */
+        boldCount: number;
+      }
+    | undefined;
+
+  /**
+   * 代码行高亮的行级缓存。
+   *
+   * `highlightCodeLine` 只依赖行内容与当前 ANSI 字典（纯函数），而流式期间同一个
+   * 代码块里已输出的行会被每帧重新高亮一次，长代码块下这是实打实的重复正则运算。
+   * 主题或颜色能力变化会让已缓存的 ANSI 失效，用身份比对整表作废。
+   */
+  private codeLineCache = new Map<string, string>();
+  private codeLineCacheTheme: ReturnType<typeof getTheme> | undefined = undefined;
+  private codeLineCacheColorLevel: ReturnType<typeof getColorLevel> | undefined = undefined;
+
   constructor(
     private readonly widthProvider: () => number = () =>
       Math.max(20, (process.stdout?.columns || 80) - 2),
@@ -136,6 +216,7 @@ export class MarkdownStreamRenderer {
    */
   reset(): void {
     this.rawContent = "";
+    this.prefixCache = undefined;
   }
 
   /**
@@ -157,19 +238,52 @@ export class MarkdownStreamRenderer {
     // 主题/颜色能力可能在 import 之后才确定（启动探测外观、/appearance 切换），
     // 每次渲染前对齐一次，否则 Markdown 会一直用启动那一刻的调色板。
     refreshAnsiStyles();
-    const safeContent = sanitizeTerminalText(content);
     return performanceMonitor.measureSync("markdown.render", () =>
-      this.renderContent(safeContent, isFinal),
+      this.renderContent(content, isFinal),
     );
   }
 
   private renderContent(content: string, isFinal: boolean): string {
-    // 1. 流式中间态时补充未闭合语法标签
-    const processedContent = isFinal ? content : this.autoCloseMarkdown(content);
+    // 1. 控制序列消毒。含控制字符时 sanitize 会删改字符，sanitize 前后的偏移不再
+    //    一一对应，前缀缓存的边界就会错位——这种情况直接走全量。
+    const needsSanitize = UNSAFE_CONTROL_RE.test(content);
+    const safeContent = needsSanitize ? sanitizeTerminalText(content) : content;
 
-    // 2. 按行拆解并分析元素
-    const lines = processedContent.split(/\r?\n/);
-    const renderedLines: string[] = [];
+    // 2. 命中前缀缓存时只解析尾部。缓存边界落在"空闲态"行尾，已渲染行与后续追加的
+    //    文本互不影响，所以复用它们是安全的；任一键不符（宽度/主题/颜色能力/前缀不匹配）
+    //    就退回全量解析。先判断复用再补全未闭合语法：补全只动尾部，不影响前缀。
+    const width = this.getMaxWidth();
+    const cached = this.prefixCache;
+    const reuse =
+      !needsSanitize &&
+      cached !== undefined &&
+      cached.width === width &&
+      cached.theme === ansiTheme &&
+      cached.colorLevel === ansiColorLevel &&
+      safeContent.startsWith(cached.source);
+    const baseLength = reuse && cached ? cached.source.length : 0;
+
+    // 3. 流式中间态时补充未闭合语法标签。围栏/粗体只统计尾部，前缀计数走缓存。
+    const processedContent = isFinal
+      ? safeContent
+      : this.autoCloseMarkdown(
+          safeContent,
+          baseLength,
+          reuse && cached ? cached.fenceCount : 0,
+          reuse && cached ? cached.boldCount : 0,
+        );
+
+    const renderedLines: string[] = reuse && cached ? cached.rows.slice() : [];
+    const tail = reuse && cached ? processedContent.slice(baseLength) : processedContent;
+
+    // 4. 按行拆解并分析元素
+    const lines = tail.split(/\r?\n/);
+    // 每行在 tail 中的起始偏移。用换行符位置而不是行长累加：\r\n 里 \r 被 split 吃掉，
+    // 按行长 +1 累加会少算一个字符，缓存边界就会切错。
+    const lineStarts: number[] = [0];
+    for (let p = 0; p < tail.length; p++) {
+      if (tail[p] === "\n") lineStarts.push(p + 1);
+    }
 
     let inCodeBlock = false;
     let codeLanguage = "";
@@ -179,8 +293,28 @@ export class MarkdownStreamRenderer {
     let asciiCardHeader = "";
     let asciiCardBuffer: string[] = [];
 
+    // 5. 记录最后一个"空闲态行尾"作为下次可复用的边界。行分类只看本行内容，
+    //    因此空闲态的行渲染完就不会再被后续文本改写；要求该行之后仍有换行，
+    //    否则边界落在半行上，切片语义会错。同时累计围栏/粗体计数供下次增量统计。
+    let safeRowCount = -1;
+    let safeTailOffset = -1;
+    let safeFenceCount = 0;
+    let safeBoldCount = 0;
+    let fenceSeen = 0;
+    let boldSeen = 0;
+    const recordSafe = (index: number): void => {
+      if (inCodeBlock || tableBuffer.length > 0 || inAsciiCard) return;
+      if (index >= lines.length - 1) return;
+      safeRowCount = renderedLines.length;
+      safeTailOffset = lineStarts[index + 1];
+      safeFenceCount = fenceSeen;
+      safeBoldCount = boldSeen;
+    };
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      if (line.startsWith("```")) fenceSeen += 1;
+      boldSeen += countDoubleStars(line);
 
       // 检测代码块边界 (``` 或 ````)
       const codeBlockMatch = line.match(/^(`{3,})([a-zA-Z0-9_-]*)/);
@@ -200,6 +334,7 @@ export class MarkdownStreamRenderer {
           codeLanguage = "";
           codeBlockBuffer = [];
         }
+        recordSafe(i);
         continue;
       }
 
@@ -243,6 +378,7 @@ export class MarkdownStreamRenderer {
         renderedLines.push(...this.renderAsciiCard(asciiCardHeader, asciiCardBuffer));
         inAsciiCard = false;
         asciiCardBuffer = [];
+        recordSafe(i);
         continue;
       }
 
@@ -260,6 +396,7 @@ export class MarkdownStreamRenderer {
 
       // 渲染普通 Markdown 行
       renderedLines.push(this.renderNormalLine(line));
+      recordSafe(i);
     }
 
     // 针对流式未闭合代码块的兜底渲染
@@ -277,6 +414,23 @@ export class MarkdownStreamRenderer {
       renderedLines.push(...this.renderAsciiCard(asciiCardHeader, asciiCardBuffer));
       inAsciiCard = false;
       asciiCardBuffer = [];
+    }
+
+    // 5. 更新前缀缓存。只有真的出现空闲态行尾才延长边界；本次没找到边界但旧缓存
+    //    依然有效（新文本仍以它为前缀）时保持原样，避免把已复用的前缀丢掉。
+    if (safeRowCount >= 0) {
+      const prefix = reuse && cached ? cached.source : "";
+      this.prefixCache = {
+        source: prefix + tail.slice(0, safeTailOffset),
+        rows: renderedLines.slice(0, safeRowCount),
+        width,
+        theme: ansiTheme,
+        colorLevel: ansiColorLevel,
+        fenceCount: (reuse && cached ? cached.fenceCount : 0) + safeFenceCount,
+        boldCount: (reuse && cached ? cached.boldCount : 0) + safeBoldCount,
+      };
+    } else if (!reuse) {
+      this.prefixCache = undefined;
     }
 
     return renderedLines.join("\n");
@@ -299,9 +453,9 @@ export class MarkdownStreamRenderer {
       ];
     }
 
-    // 测量卡片内部最长文本的可视宽度
-    const maxContentLen =
-      lines.length > 0 ? Math.max(...lines.map((l) => this.getTextWidth(l)), 10) : 10;
+    // 测量卡片内部最长文本的可视宽度（同样循环求最大值）
+    let maxContentLen = 10;
+    for (const line of lines) maxContentLen = Math.max(maxContentLen, this.getTextWidth(line));
 
     const innerWidth = Math.min(maxWidth - 4, maxContentLen);
     const cardWidth = innerWidth + 4;
@@ -330,29 +484,36 @@ export class MarkdownStreamRenderer {
 
   /**
    * 自动闭合流式片段中的未完结语法结构。
+   *
+   * 围栏与粗体的计数只需看尾部：前缀（`tailStart` 之前）的计数由调用方从缓存传入，
+   * 因为前缀总在完整行尾结束，跨行不会产生新的 `**` 或围栏行。这样每次只扫描新增
+   * 内容，成本与全文长度无关。
    */
-  private autoCloseMarkdown(text: string): string {
+  private autoCloseMarkdown(
+    text: string,
+    tailStart: number,
+    prefixFenceCount: number,
+    prefixBoldCount: number,
+  ): string {
+    const tail = tailStart > 0 ? text.slice(tailStart) : text;
     let closed = text;
 
     // 补全代码块 ```
-    const codeBlockCount = (text.match(/^```/gm) || []).length;
+    const codeBlockCount = prefixFenceCount + countFenceLines(tail);
     if (codeBlockCount % 2 !== 0) {
       closed += "\n```";
     }
 
-    // 补全粗体 **
-    const boldCount = (closed.match(/\*\*/g) || []).length;
+    // 补全粗体 **（追加的围栏行不含 **，所以这里不必重扫全文）
+    const boldCount = prefixBoldCount + countDoubleStars(tail);
     if (boldCount % 2 !== 0) {
       closed += "**";
     }
 
-    // 补齐末行未闭合的单反引号 `
-    const lines = closed.split("\n");
-    const lastIdx = lines.length - 1;
-    const backtickCount = (lines[lastIdx].match(/`/g) || []).length;
-    if (backtickCount % 2 !== 0) {
-      lines[lastIdx] += "`";
-      closed = lines.join("\n");
+    // 补齐末行未闭合的单反引号 `：末行就是文本结尾，直接追加即可
+    const lastLine = closed.slice(closed.lastIndexOf("\n") + 1);
+    if (countBackticks(lastLine) % 2 !== 0) {
+      closed += "`";
     }
 
     return closed;
@@ -549,9 +710,9 @@ export class MarkdownStreamRenderer {
       return output;
     }
 
-    // 测量代码块内部最长行的可视宽度
-    const maxContentLen =
-      lines.length > 0 ? Math.max(...lines.map((l) => this.getTextWidth(l)), 10) : 10;
+    // 测量代码块内部最长行的可视宽度（循环求最大值：长代码块用 spread 会爆参数栈）
+    let maxContentLen = 10;
+    for (const line of lines) maxContentLen = Math.max(maxContentLen, this.getTextWidth(line));
 
     // 计算包含两侧边框 (│  ...  │) 的适配列宽
     const innerWidth = Math.min(maxWidth - 4, maxContentLen);
@@ -597,9 +758,27 @@ export class MarkdownStreamRenderer {
   }
 
   /**
-   * 单行代码语法高亮处理。
+   * 单行代码语法高亮处理（带行级缓存）。
    */
   private highlightCodeLine(line: string): string {
+    if (this.codeLineCacheTheme !== ansiTheme || this.codeLineCacheColorLevel !== ansiColorLevel) {
+      this.codeLineCache.clear();
+      this.codeLineCacheTheme = ansiTheme;
+      this.codeLineCacheColorLevel = ansiColorLevel;
+    }
+    const cached = this.codeLineCache.get(line);
+    if (cached !== undefined) return cached;
+    const styled = this.styleCodeLine(line);
+    // 长会话里代码行文本几乎不重复，攒满就整表清空，避免缓存无限膨胀。
+    if (this.codeLineCache.size >= 4096) this.codeLineCache.clear();
+    this.codeLineCache.set(line, styled);
+    return styled;
+  }
+
+  /**
+   * 单行代码语法高亮的实际计算（纯函数，结果只取决于行内容与当前 ANSI 字典）。
+   */
+  private styleCodeLine(line: string): string {
     if (line.trim().startsWith("//") || line.trim().startsWith("#")) {
       return `${ANSI.gray}${line}${ANSI.reset}`;
     }
