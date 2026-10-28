@@ -1105,7 +1105,22 @@ async function main() {
       }),
     }),
     new GrepSearchTool({ batchParams }),
-    new WebSearchTool(),
+    new WebSearchTool(undefined, {
+      // 官方 Search 按请求计费（5 元/千次），HAJI_WEBSEARCH_OFFICIAL=0 可强制只用免费公开源。
+      ...(process.env.HAJI_WEBSEARCH_OFFICIAL === "0"
+        ? {}
+        : {
+            deepseekApiKey: () => deepseekApiKey,
+            // Base URL 现场解析：/provider set 改端点后无需重启。
+            deepseekBaseUrl: () =>
+              resolveProviderSetting(
+                "deepseek",
+                "baseUrl",
+                process.env.DEEPSEEK_BASE_URL,
+                "https://api.deepseek.com/v1",
+              ),
+          }),
+    }),
     new WebFetchTool(),
     new LoadSkillTool(skillRegistry),
     new ListSkillResourcesTool(skillRegistry),

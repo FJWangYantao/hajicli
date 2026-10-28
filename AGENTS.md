@@ -482,6 +482,53 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   控制字符过滤、开关与去重、turn-runner / index 挂点）、
   `packages/cli/test/terminal-title.test.mjs`（标题形态 / 清洗 / 宽度截断 / OSC 2 报文 / 开关与去重）。
 
+## 联网检索来源（websearch）
+
+- 顺序：**官方 DeepSeek `/v1/tools/search`（仅在解析到 key 时）→ DuckDuckGo Lite → Bing RSS → Bing CN RSS**。
+  官方源任何一步失败（网络、非 2xx、空结果）都静默落回公开源，所以零 key 用户的行为与之前完全一致。
+- Key 复用 chat 那把：`DEEPSEEK_API_KEY` > `~/.haji/config.json` 的 `providers.deepseek.apiKey`。
+  `deepseekApiKey` 传的是 **getter**（`/provider set` 改 key 后立即生效），baseUrl 每调用现场
+  `resolveProviderSetting` 解析（改端点也不用重启），而不是启动时快照。
+- 请求参数刻意固定 `count:5` / `need_content:false`：条数不影响单价但会成倍放大上下文，
+  正文交给 `webfetch`。**summary 优先于 snippet**——官方文档说 summary 600～800 字符，
+  实测 600～3800，所以逐条截 1200、总量仍由 `formatSearchOutput` 收在 8000。
+- 计费 **5 元/千次成功请求**（只有 HTTP 200 且结果非空才计费），2026-11-01 起生效；
+  `HAJI_WEBSEARCH_OFFICIAL=0` 可强制只用免费公开源。**/cost 目前不统计这类按次费用**
+  （cost-tracker 只认 token），属于已知缺口，别在费用面板上找它。
+- **webfetch 刻意不接官方 `/v1/tools/fetch`**：实测返回的 Markdown 被转义（`\#`、`\-`、`\/`，
+  标题/列表/代码块语法全失效）、GitHub 页面 10.8s（本地 1.3s）、知乎/HN 等反爬场景双方都拿不到。
+  所以本地 `webfetch` 自己把 HTML 转成 Markdown（见下节），而不是买接口。
+- 测试：`web-search-deepseek.test.mjs`（官方优先/回退/空结果/零 key/中止/key 抹除/summary 封顶/自定义 baseUrl），
+  `web-search-fallback.test.mjs`（三源降级未回归）。
+
+### webfetch：HTML → Markdown（零依赖）
+
+- 转换器在 `packages/plugins/src/web-fetch-tool.ts`，**不引 turndown / jsdom**：`tokenizeHtml` 逐标签扫描
+  （引号内的 `>` 不会截断），`MarkdownStream` 维护行内缓冲 + 块缓冲 + 列表栈输出 Markdown。
+  块级：h1-h6、ul/ol（嵌套用缩进）、`pre` → 围栏代码块（内部空白/缩进**原样保留**）、
+  `table` → 管道表（无 thead 时首行当表头，单元格里的 `|` 转义）、blockquote；行内：a/strong/em/del/code/img。
+  相对链接与图片按页面 URL 补全。
+- 正文容器 `pickContentRoot`：`main` 优先，但最大 `<article>` 可见文本 ≥ main 的 50% 时改用该 article
+  （单篇文章页 vs 卡片流页）；两者都没有且 article ≥400 字符才用它，否则整页。
+- 噪声两段式：预处理删 `script/style/head/noscript/template/svg/canvas/iframe/nav/footer/aside/form/
+  button/select/textarea` 与 `link/meta/base/input`；渲染时按 `role=navigation|banner|contentinfo|search|
+  complementary` 与 id/class（`nav/sidebar/toc/breadcrumb/menu/skip-to-content/sr-only/visually-hidden`…）
+  **整块跳过并按同名标签配平**。另有兜底：≥40 条且 ≥80% 是「单个链接」的列表整块丢弃（站点索引/巨型菜单），
+  页面内目录通常只有几条，不受影响。
+- 行内杂讯：零宽字符过滤；纯锚点链接（标题后的 `#`）整段丢弃；图片只保留有 alt 且非 svg/ico/badge/logo、
+  src ≤200 字符的。
+- **非 HTML 原样透传**：content-type 不含 `html`（或缺失且内容不像 HTML）时直接返回原文，
+  `.md`/`.json`/`.txt` 不会被清洗。首行信封 `[网页抓取成功 - 目标地址: …]` 保持不变
+  （`tool-output.ts` 剥壳、`pricing-agent.ts` 校验前缀都依赖它）。
+- 截断 `truncateWebMarkdown`：按 `\n\n` 块边界裁到 `8000 − 信封长度`，不切进代码块/表格；
+  末尾只剩孤立标题时连标题一起退回；收尾提示「后面还有《X》《Y》等 N 个小节，可用 focus 参数定位」。
+  单个巨型块（整页一个大表格）按行裁。
+- focus `selectFocusedWebText`：先按「标题 + 其正文」小节匹配（最多 4 节），页首 600 字符保留
+  （命中章节本来就在开头则不重复），无结构文本退回原字符窗口语义，未命中返回全文。
+- 测试：`web-fetch-markdown.test.mjs`（结构映射、嵌套列表、表格表头、噪声整块丢弃、非 HTML 透传、
+  信封、预算截断、focus 章节挑选/窗口回退、错误与中止）。
+
+
 ## 代码风格与提交
 
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。
