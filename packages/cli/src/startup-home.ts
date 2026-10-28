@@ -1,10 +1,84 @@
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
-import { SEQ, truncateText } from "./terminal-text.js";
+import { SEQ, terminalWidth, truncateText } from "./terminal-text.js";
 
 export interface RecentSessionEntry {
   id: string;
   title: string;
   updatedAt: string;
+  /** 会话停在哪：进行中的目标与任务计划进度（只给「继续上次」那条读）。 */
+  progress?: SessionProgress;
+}
+
+export interface SessionProgress {
+  /** 进行中的会话目标原文（已达成的不给）。 */
+  goal?: string;
+  /** 任务计划进度；没有计划时缺省。 */
+  done?: number;
+  total?: number;
+  /** 正在做（或下一项待做）的任务。 */
+  current?: string;
+}
+
+/**
+ * 从会话目标与任务计划提炼「停在哪」：目标只取进行中的，任务数把已归档的完成项也算上。
+ * 两者都没有返回 undefined（首页就不出这行）。
+ */
+export function buildSessionProgress(
+  goal: { text: string; status: string } | undefined,
+  plan:
+    | {
+        tasks: ReadonlyArray<{ content: string; status: string }>;
+        completedTasks: ReadonlyArray<unknown>;
+      }
+    | null
+    | undefined,
+): SessionProgress | undefined {
+  const progress: SessionProgress = {};
+  if (goal?.status === "active" && goal.text.trim()) progress.goal = goal.text;
+  if (plan) {
+    const total = plan.tasks.length + plan.completedTasks.length;
+    if (total > 0) {
+      progress.total = total;
+      progress.done =
+        plan.completedTasks.length +
+        plan.tasks.filter((task) => task.status === "completed").length;
+      const current =
+        plan.tasks.find((task) => task.status === "in_progress") ??
+        plan.tasks.find((task) => task.status === "pending");
+      if (current) progress.current = current.content;
+    }
+  }
+  return progress.goal || progress.total ? progress : undefined;
+}
+
+/**
+ * 「继续上次」下面那行：目标 · 任务 3/7 · 进行中 xxx。
+ * 放不下时逐级去掉「进行中」与目标，只留进度，不截成半句；什么都没有返回空串。
+ */
+export function formatResumeDetail(progress: SessionProgress | undefined, width: number): string {
+  if (!progress || width <= 0) return "";
+  const clean = (text: string): string => sanitizeTerminalText(text).replace(/\s+/g, " ").trim();
+  const goal = progress.goal ? clean(progress.goal) : "";
+  const tasks =
+    progress.total && progress.total > 0 ? `任务 ${progress.done ?? 0}/${progress.total}` : "";
+  const current = progress.current && tasks ? clean(progress.current) : "";
+  const candidates = [
+    [goal && `目标 ${goal}`, tasks, current && `进行中 ${current}`],
+    [goal && `目标 ${goal}`, tasks],
+    [tasks, current && `进行中 ${current}`],
+    [tasks],
+    [goal && `目标 ${goal}`],
+  ];
+  for (const parts of candidates) {
+    const text = parts.filter(Boolean).join(" · ");
+    if (text && terminalWidth(text) <= width) return text;
+  }
+  // 只剩目标且很长：目标本身允许截断（它是用户原话，留个开头就能认出来）。
+  return goal
+    ? truncateText(`目标 ${goal}`, width)
+    : tasks && terminalWidth(tasks) <= width
+      ? tasks
+      : "";
 }
 
 export interface StartupAction {

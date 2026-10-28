@@ -49,11 +49,13 @@ import {
   SessionTracker,
   SkillRegistry,
   SnapshotEngine,
+  type StoredSession,
   type SubagentRequest,
   SubagentRunner,
   SystemPromptManager,
   shouldTriggerAutoCompaction,
   startTraceServer,
+  type TaskPlan,
   TaskStore,
   type ToolCall,
   type ToolExecutionContext,
@@ -188,6 +190,7 @@ import {
   resumeSessionById,
   type SessionCommandContext,
 } from "./session-commands.js";
+import { buildSessionProgress } from "./startup-home.js";
 import {
   handleAgentsCommand,
   handlePresetCommand,
@@ -1293,6 +1296,20 @@ async function main() {
   // 状态栏展示当前工作目录与分支；恢复其他工作树后同步重新定位 HEAD。
   let gitHeadPath = findGitHeadPath(process.cwd());
   ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
+  const readStartupSessionProgress = (session: StoredSession) => {
+    let plan: TaskPlan | null = null;
+    const storeDir = sessionManager.locateSessionDir(session.id);
+    try {
+      const store = new TaskStore(
+        path.join(path.dirname(storeDir ?? sessionManager.getSessionsDir()), "tasks"),
+      );
+      store.setTaskScope(session.id);
+      plan = store.getPlan();
+    } catch {
+      plan = null;
+    }
+    return buildSessionProgress(session.goal, plan);
+  };
   const recentSessions = headlessRequest
     ? []
     : sessionManager
@@ -1303,7 +1320,14 @@ async function main() {
             session.messages.some((message) => message.role === "user"),
         )
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-        .slice(0, 3);
+        .slice(0, 3)
+        .map((session, index) => ({
+          id: session.id,
+          title: session.title,
+          updatedAt: session.updatedAt,
+          // 只有「继续上次」那条要说明停在哪：读它的目标与任务计划（计划在会话所在树的 .haji/tasks）。
+          ...(index === 0 ? { progress: readStartupSessionProgress(session) } : {}),
+        }));
   ui.setRecentSessions(recentSessions);
   const startupModeLabel = formatPermissionModeLabel(permissionMode);
   ui.setHeaderInfo([

@@ -6,7 +6,12 @@ import test from "node:test";
 import { SessionManager } from "@hajicli/core";
 import { CellCanvas } from "../dist/cell-canvas.js";
 import { resumeSessionById } from "../dist/session-commands.js";
-import { buildStartupHome, startupActions } from "../dist/startup-home.js";
+import {
+  buildSessionProgress,
+  buildStartupHome,
+  formatResumeDetail,
+  startupActions,
+} from "../dist/startup-home.js";
 import { buildStartupLauncher, STARTUP_TAGLINE } from "../dist/startup-launcher.js";
 import { parseOsc11Reply } from "../dist/terminal-appearance.js";
 import { TerminalUI } from "../dist/terminal-input.js";
@@ -638,6 +643,68 @@ test("a session from the last 24 hours becomes a resume row above the card", () 
   const stale = launcherFrame().rows.map(strip);
   assert.ok(!stale.some((row) => row.includes("继续上次")));
   assert.ok(stale.some((row) => /●\s+会话 0/.test(row)));
+});
+
+test("继续上次下面给出停在哪：目标 · 任务进度 · 进行中，点这行同样是继续", () => {
+  const fresh = sessions.map((session, index) => ({
+    ...session,
+    updatedAt: new Date(Date.now() - (index + 1) * 4 * 60_000).toISOString(),
+    ...(index === 0
+      ? { progress: { goal: "首页加上下文", done: 2, total: 5, current: "写测试" } }
+      : {}),
+  }));
+  const frame = launcherFrame({ sessions: fresh });
+  const plain = frame.rows.map(strip);
+  const resumeRow = plain.findIndex((row) => row.includes("继续上次"));
+  assert.match(plain[resumeRow + 1], /└ 目标 首页加上下文 · 任务 2\/5 · 进行中 写测试/);
+  assert.ok(resumeRow + 1 < frame.inputTop);
+  const rowsForResume = frame.hits.filter((hit) => hit.index === 3).map((hit) => hit.row);
+  assert.deepEqual(rowsForResume, [resumeRow, resumeRow + 1]);
+
+  // 变矮时进度行先于「继续上次」让掉：进度行只会紧跟在继续上次下面出现，
+  // 且存在「继续上次还在、进度行已让掉」的高度。
+  let droppedFirst = false;
+  for (let height = 12; height <= 40; height++) {
+    const rows = launcherFrame({ sessions: fresh, height }).rows.map(strip);
+    const resume = rows.findIndex((row) => row.includes("继续上次"));
+    const detail = rows.findIndex((row) => row.includes("└ 目标"));
+    if (detail >= 0) assert.equal(detail, resume + 1, `height ${height}`);
+    if (resume >= 0 && detail < 0) droppedFirst = true;
+  }
+  assert.ok(droppedFirst);
+
+  // 没有进度信息就不出这行。
+  const bare = launcherFrame({
+    sessions: fresh.map(({ progress, ...rest }) => rest),
+  }).rows.map(strip);
+  assert.ok(!bare.some((row) => row.includes("└")));
+});
+
+test("buildSessionProgress / formatResumeDetail：只取进行中的目标，窄宽度逐级降级", () => {
+  const plan = {
+    tasks: [
+      { content: "a", status: "completed" },
+      { content: "b", status: "in_progress" },
+      { content: "c", status: "pending" },
+    ],
+    completedTasks: [{}, {}],
+  };
+  assert.deepEqual(buildSessionProgress({ text: "目标", status: "active" }, plan), {
+    goal: "目标",
+    total: 5,
+    done: 3,
+    current: "b",
+  });
+  assert.deepEqual(buildSessionProgress({ text: "目标", status: "achieved" }, null), undefined);
+  assert.equal(buildSessionProgress(undefined, { tasks: [], completedTasks: [] }), undefined);
+
+  const progress = { goal: "把首页做得有用", done: 3, total: 5, current: "补测试" };
+  assert.equal(formatResumeDetail(progress, 80), "目标 把首页做得有用 · 任务 3/5 · 进行中 补测试");
+  assert.equal(formatResumeDetail(progress, 30), "目标 把首页做得有用 · 任务 3/5");
+  assert.equal(formatResumeDetail(progress, 12), "任务 3/5");
+  const clipped = formatResumeDetail({ goal: "很长很长的目标原文" }, 10);
+  assert.ok(clipped.startsWith("目标 很长") && clipped.length < "目标 很长很长的目标原文".length);
+  assert.equal(formatResumeDetail(undefined, 80), "");
 });
 
 test("glow paints only on truecolor with a known background; motion settles into the static frame", (t) => {

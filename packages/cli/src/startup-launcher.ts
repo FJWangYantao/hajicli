@@ -1,6 +1,11 @@
 import { CellCanvas } from "./cell-canvas.js";
 import { mixHexOklab } from "./oklab.js";
-import { type RecentSessionEntry, relativeTime, startupActions } from "./startup-home.js";
+import {
+  formatResumeDetail,
+  type RecentSessionEntry,
+  relativeTime,
+  startupActions,
+} from "./startup-home.js";
 import { getDetectedTerminalBackground } from "./terminal-appearance.js";
 import { formatPermissionModeLabel } from "./terminal-panels.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
@@ -129,6 +134,8 @@ interface LauncherOptions {
 interface LayoutPlan {
   hero: "big" | "half" | "wordmark" | "none";
   resume: boolean;
+  /** 「继续上次」下面的进度行（目标 / 任务进度）。 */
+  resumeDetail: boolean;
   cardPadding: boolean;
   meta: boolean;
   gaps: boolean;
@@ -144,6 +151,7 @@ type Block =
   | { kind: "wordmark" }
   | { kind: "leading"; text: string }
   | { kind: "resume" }
+  | { kind: "resume-detail" }
   | { kind: "card"; text: string; edge?: "meta" }
   | { kind: "suggestion"; text: string }
   | { kind: "label"; text: string; aside?: string }
@@ -207,6 +215,7 @@ export function buildStartupLauncher(options: LauncherOptions): {
     gap();
     if (plan.resume) {
       blocks.push({ kind: "resume" });
+      if (plan.resumeDetail) blocks.push({ kind: "resume-detail" });
       if (plan.gaps) blocks.push({ kind: "blank" });
     }
     for (const text of leading) blocks.push({ kind: "leading", text });
@@ -255,6 +264,7 @@ export function buildStartupLauncher(options: LauncherOptions): {
           ? "half"
           : "wordmark",
     resume: recentEnough,
+    resumeDetail: recentEnough && formatResumeDetail(sessions[0]?.progress, W - 6).length > 0,
     cardPadding: true,
     meta: true,
     gaps: true,
@@ -268,16 +278,17 @@ export function buildStartupLauncher(options: LauncherOptions): {
     plan.hero = plan.hero === "big" && W >= terminalWidth(halfLogo[0]) ? "half" : "wordmark";
     layout = compose(plan);
   }
-  // 让步顺序：会话条数 → 卡片留白 → 入口卡片改列表 → 段间空行 → 会话 → 继续上次 → 模型行 →
-  // 小标题 → 入口改一行三格 → 字标 → 入口。
+  // 让步顺序：会话条数 → 进度行 → 卡片留白 → 入口卡片改列表 → 段间空行 → 会话 → 继续上次 →
+  // 模型行 → 小标题 → 入口改一行三格 → 字标 → 入口。
   const steps: Array<(current: LayoutPlan) => Partial<LayoutPlan>> = [
     (current) => ({ sessions: Math.min(current.sessions, current.resume ? 3 : 2) }),
     (current) => ({ sessions: Math.min(current.sessions, current.resume ? 2 : 1) }),
+    () => ({ resumeDetail: false }),
     () => ({ cardPadding: false }),
     (current) => ({ actions: current.actions === "tiles" ? "list" : current.actions }),
     () => ({ gaps: false }),
     (current) => ({ sessions: current.resume ? Math.min(current.sessions, 1) : 0 }),
-    () => ({ resume: false, sessions: 0 }),
+    () => ({ resume: false, resumeDetail: false, sessions: 0 }),
     () => ({ meta: false }),
     () => ({ labels: false }),
     (current) => ({ actions: current.actions === "list" && W >= 42 ? "inline" : "none" }),
@@ -457,6 +468,17 @@ export function buildStartupLauncher(options: LauncherOptions): {
         );
         if (stamp) canvas.text(x + 1, row, `· ${stamp}`, { fg: faint });
         if (aside) canvas.text(L + W - terminalWidth(aside), row, aside, { fg: faint });
+        hits.push({ row, left: L, right: L + W - 1, index });
+        return;
+      }
+      case "resume-detail": {
+        // 与「继续上次」同一个入口：点这行也是继续；文字对齐到标题下面。
+        const index = 3;
+        const active = options.selected === index;
+        if (active) canvas.fill(L, row, W, 1, activeBg);
+        const x = canvas.text(L + 3, row, "└", { fg: faint });
+        const detail = formatResumeDetail(sessions[0]?.progress, W - (x - L) - 2);
+        canvas.text(x + 1, row, detail, { fg: index === options.hovered ? accent : muted });
         hits.push({ row, left: L, right: L + W - 1, index });
         return;
       }

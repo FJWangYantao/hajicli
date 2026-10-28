@@ -396,10 +396,14 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   - 输入卡片：左侧 `▌` 竖条沿高度渐变 + 铺底，正文宽 `contentWidth − 4`（`inputLeft = left + 2`）；
     卡片底部权限药丸 + 模型 · 强度 + `↵ 发送` 键帽（有草稿时点亮）。
   - 「继续上次」：最近会话在 24 小时内才出现（入口序号 3），时间线随之只列其余会话。
+    下面一行 `└ 目标 … · 任务 3/7 · 进行中 …` 说明停在哪（`RecentSessionEntry.progress`，
+    index.ts 用 `buildSessionProgress` 从会话 goal + 会话所在树 `.haji/tasks/<id>.json` 提炼；
+    `formatResumeDetail` 放不下先去「进行中」再去目标，不截半句）。点这行同样是继续；
+    空间不够时它在「会话条数」之后、「卡片留白」之前让掉。
 - **启动动效**（约 1.8 秒，之后完全静止）：标语逐字解码、高光扫过 Logo、星点闪烁。
   `TerminalUIOptions.startupMotion` 打开（index.ts 交互模式开启，测试默认关），
   `HAJI_REDUCED_MOTION=1` 强制关；帧定时器 50ms 且 unref。动效帧 7–14ms（140×40 ~ 240×70）。
-- 空间不够时按固定顺序让步：Logo 大→小→字标（先判）→ 会话条数 → 卡片上下留白 → 入口卡片改列表 →
+- 空间不够时按固定顺序让步：Logo 大→小→字标（先判）→ 会话条数 → 进度行 → 卡片上下留白 → 入口卡片改列表 →
   段间空行 → 会话 → 继续上次 → 模型行 → 小标题 → 入口改一行三格 → 字标 → 入口；
   卡片与状态行永远保留。字标、占位提示都是「放不下就换短的」，不截成半句。
 - 交互：空输入 Tab / Shift+Tab 循环入口，已选中时 ↑↓ 移动、Esc 取消；入口卡片三行都可点，
