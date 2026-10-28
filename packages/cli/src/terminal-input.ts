@@ -4116,6 +4116,160 @@ export class TerminalUI {
     this.renderedChatVisibleStart = 0;
   }
 
+  /**
+   * 整页视图（上下文详情 / 费用日志三层）：排出替换对话区的行，并按本帧几何重建命中表、
+   * 把渲染时夹紧的选中下标回写进状态。没有打开的页面返回 undefined。
+   * screenTop 是对话区首行的屏幕行号（1 基）。
+   */
+  private renderOverlayPage(
+    width: number,
+    height: number,
+    screenTop: number,
+  ): string[] | undefined {
+    // 整页视图（上下文详情 / 费用日志）：整块替换对话区
+    // （活动行、折叠段、悬停卡片都不参与本帧）。
+    const inspectorFrame: ContextInspectorFrame | undefined = this.contextInspector
+      ? buildContextInspectorFrame(
+          {
+            groups: this.contextInspector.groups,
+            categoryIndex: this.contextInspector.categoryIndex,
+            selectedIndex: this.contextInspector.selectedIndex,
+            scroll: this.contextInspector.scroll,
+          },
+          width,
+          height,
+        )
+      : undefined;
+    // 费用页有两个层次：列表，以及按 Enter 进去的回合详情。详情页盖在列表之上，
+    // 同一时刻只排一帧，命中表也随当前这一帧重建。
+    const turnDetailView = this.costLog?.turnDetail;
+    const requestFrame: RequestDetailFrame | undefined =
+      this.costLog && turnDetailView?.openDetail
+        ? buildRequestDetailFrame(
+            {
+              details: this.costLog.details,
+              turn: turnDetailView.turn,
+              selectedIndex: turnDetailView.selectedIndex,
+              sort: this.costLog.sort,
+            },
+            width,
+            height,
+          )
+        : undefined;
+    const turnFrame: TurnDetailFrame | undefined =
+      this.costLog && turnDetailView && !requestFrame
+        ? buildTurnDetailFrame(
+            {
+              details: this.costLog.details,
+              turn: turnDetailView.turn,
+              selectedIndex: turnDetailView.selectedIndex,
+            },
+            width,
+            height,
+          )
+        : undefined;
+    const costLogFrame: CostLogFrame | undefined =
+      this.costLog && !turnFrame
+        ? buildCostLogFrame(
+            {
+              details: this.costLog.details,
+              sort: this.costLog.sort,
+              selectedIndex: this.costLog.selectedIndex,
+            },
+            width,
+            height,
+          )
+        : undefined;
+    const pageMinColumns = requestFrame
+      ? REQUEST_DETAIL_MIN_COLUMNS
+      : turnFrame
+        ? TURN_DETAIL_MIN_COLUMNS
+        : costLogFrame
+          ? COST_LOG_MIN_COLUMNS
+          : CONTEXT_INSPECTOR_MIN_COLUMNS;
+    const pageMinRows = requestFrame
+      ? REQUEST_DETAIL_MIN_ROWS
+      : turnFrame
+        ? TURN_DETAIL_MIN_ROWS
+        : costLogFrame
+          ? COST_LOG_MIN_ROWS
+          : CONTEXT_INSPECTOR_MIN_ROWS;
+    const pageName = requestFrame
+      ? "请求详情页"
+      : turnFrame
+        ? "回合详情页"
+        : costLogFrame
+          ? "费用日志页"
+          : "上下文详情页";
+    // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
+    const pageTooSmall = Boolean(
+      (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
+        (width < pageMinColumns || height < pageMinRows),
+    );
+    // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
+    if (inspectorFrame && !pageTooSmall) {
+      this.inspectorMaxScroll = inspectorFrame.maxScroll;
+      this.contextInspectorHit = {
+        listTop: screenTop + inspectorFrame.listTop,
+        listHeight: inspectorFrame.listHeight,
+        listLeft: inspectorFrame.listLeft + 1,
+        listWidth: inspectorFrame.listWidth,
+        listOffset: inspectorFrame.listOffset,
+        backRow: screenTop + inspectorFrame.back.row,
+        backLeft: inspectorFrame.back.left + 1,
+        backWidth: inspectorFrame.back.width,
+      };
+      if (this.contextInspector) {
+        // 内容变短（换分类/换条目）时把滚动位置夹回有效范围，避免“滚过头”卡住。
+        this.contextInspector.scroll = Math.min(
+          this.contextInspector.scroll,
+          inspectorFrame.maxScroll,
+        );
+      }
+    } else {
+      this.contextInspectorHit = undefined;
+    }
+    // 请求详情页没有列表：只登记返回按钮，列表区域留空（点击一律落到空）。
+    if (requestFrame && !pageTooSmall && turnDetailView) {
+      this.costLogHit = {
+        listTop: 0,
+        listHeight: 0,
+        listLeft: 0,
+        listWidth: 0,
+        listOffset: 0,
+        itemHeight: 1,
+        backRow: screenTop + requestFrame.back.row,
+        backLeft: requestFrame.back.left + 1,
+        backWidth: requestFrame.back.width,
+      };
+      // 渲染时夹紧的下标回写，保证 ←→ 换页时和回合页光标一致。
+      turnDetailView.selectedIndex = requestFrame.selectedIndex;
+    }
+    // 列表页与回合详情页共用一张命中表结构：谁在画就用谁的几何。
+    const activeCostFrame = requestFrame ? undefined : (turnFrame ?? costLogFrame);
+    if (activeCostFrame && !pageTooSmall && this.costLog) {
+      this.costLogHit = {
+        listTop: screenTop + activeCostFrame.listTop,
+        listHeight: activeCostFrame.listHeight,
+        listLeft: activeCostFrame.listLeft + 1,
+        listWidth: activeCostFrame.listWidth,
+        listOffset: activeCostFrame.listOffset,
+        itemHeight: activeCostFrame.itemHeight,
+        backRow: screenTop + activeCostFrame.back.row,
+        backLeft: activeCostFrame.back.left + 1,
+        backWidth: activeCostFrame.back.width,
+      };
+      // 渲染时会把超出范围的下标夹紧（比如详情页打开期间记录被清空），这里回写。
+      if (turnFrame && turnDetailView) turnDetailView.selectedIndex = turnFrame.selectedIndex;
+      else if (costLogFrame) this.costLog.selectedIndex = costLogFrame.selectedIndex;
+    } else if (!requestFrame) {
+      // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
+      this.costLogHit = undefined;
+    }
+    if (pageTooSmall) return [`${SEQ.muted}终端太小，放不下${pageName}（Esc 返回）${SEQ.reset}`];
+    return inspectorFrame?.rows ?? requestFrame?.rows ?? turnFrame?.rows ?? costLogFrame?.rows;
+  }
+
   private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
@@ -4478,85 +4632,9 @@ export class TerminalUI {
       return `${head}${pad}${truncateAnsiText(cardRow, cardWidth)}${tail}`;
     };
     // 整页视图（上下文详情 / 费用日志）：整块替换对话区
-    // （活动行、折叠段、悬停卡片都不参与本帧）。
-    const inspectorFrame: ContextInspectorFrame | undefined = this.contextInspector
-      ? buildContextInspectorFrame(
-          {
-            groups: this.contextInspector.groups,
-            categoryIndex: this.contextInspector.categoryIndex,
-            selectedIndex: this.contextInspector.selectedIndex,
-            scroll: this.contextInspector.scroll,
-          },
-          leftAreaWidth,
-          chatHeight,
-        )
-      : undefined;
-    // 费用页有两个层次：列表，以及按 Enter 进去的回合详情。详情页盖在列表之上，
-    // 同一时刻只排一帧，命中表也随当前这一帧重建。
-    const turnDetailView = this.costLog?.turnDetail;
-    const requestFrame: RequestDetailFrame | undefined =
-      this.costLog && turnDetailView?.openDetail
-        ? buildRequestDetailFrame(
-            {
-              details: this.costLog.details,
-              turn: turnDetailView.turn,
-              selectedIndex: turnDetailView.selectedIndex,
-              sort: this.costLog.sort,
-            },
-            leftAreaWidth,
-            chatHeight,
-          )
-        : undefined;
-    const turnFrame: TurnDetailFrame | undefined =
-      this.costLog && turnDetailView && !requestFrame
-        ? buildTurnDetailFrame(
-            {
-              details: this.costLog.details,
-              turn: turnDetailView.turn,
-              selectedIndex: turnDetailView.selectedIndex,
-            },
-            leftAreaWidth,
-            chatHeight,
-          )
-        : undefined;
-    const costLogFrame: CostLogFrame | undefined =
-      this.costLog && !turnFrame
-        ? buildCostLogFrame(
-            {
-              details: this.costLog.details,
-              sort: this.costLog.sort,
-              selectedIndex: this.costLog.selectedIndex,
-            },
-            leftAreaWidth,
-            chatHeight,
-          )
-        : undefined;
-    const pageMinColumns = requestFrame
-      ? REQUEST_DETAIL_MIN_COLUMNS
-      : turnFrame
-        ? TURN_DETAIL_MIN_COLUMNS
-        : costLogFrame
-          ? COST_LOG_MIN_COLUMNS
-          : CONTEXT_INSPECTOR_MIN_COLUMNS;
-    const pageMinRows = requestFrame
-      ? REQUEST_DETAIL_MIN_ROWS
-      : turnFrame
-        ? TURN_DETAIL_MIN_ROWS
-        : costLogFrame
-          ? COST_LOG_MIN_ROWS
-          : CONTEXT_INSPECTOR_MIN_ROWS;
-    const pageName = requestFrame
-      ? "请求详情页"
-      : turnFrame
-        ? "回合详情页"
-        : costLogFrame
-          ? "费用日志页"
-          : "上下文详情页";
-    // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
-    const pageTooSmall = Boolean(
-      (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
-        (leftAreaWidth < pageMinColumns || chatHeight < pageMinRows),
-    );
+    // （活动行、折叠段、悬停卡片都不参与本帧）。命中区域按屏幕坐标（1 基）换算。
+    const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
+    const pageRows = this.renderOverlayPage(leftAreaWidth, chatHeight, chatScreenTop);
     const home = this.startupHomeAvailable()
       ? buildStartupHome(this.recentSessions, chatWidth, chatHeight, this.startupSelected)
       : undefined;
@@ -4572,80 +4650,11 @@ export class TerminalUI {
     ) {
       this.startupSelected = -1;
     }
-    const chatColumn = pageTooSmall
-      ? [`${SEQ.muted}终端太小，放不下${pageName}（Esc 返回）${SEQ.reset}`]
-      : inspectorFrame
-        ? inspectorFrame.rows
-        : requestFrame
-          ? requestFrame.rows
-          : turnFrame
-            ? turnFrame.rows
-            : costLogFrame
-              ? costLogFrame.rows
-              : home?.rows.length
-                ? home.rows.map((row) => chatPrefix + row)
-                : [...visibleChat, ...activityRows];
-    // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
-    const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
-    if (inspectorFrame && !pageTooSmall) {
-      this.inspectorMaxScroll = inspectorFrame.maxScroll;
-      this.contextInspectorHit = {
-        listTop: chatScreenTop + inspectorFrame.listTop,
-        listHeight: inspectorFrame.listHeight,
-        listLeft: inspectorFrame.listLeft + 1,
-        listWidth: inspectorFrame.listWidth,
-        listOffset: inspectorFrame.listOffset,
-        backRow: chatScreenTop + inspectorFrame.back.row,
-        backLeft: inspectorFrame.back.left + 1,
-        backWidth: inspectorFrame.back.width,
-      };
-      if (this.contextInspector) {
-        // 内容变短（换分类/换条目）时把滚动位置夹回有效范围，避免“滚过头”卡住。
-        this.contextInspector.scroll = Math.min(
-          this.contextInspector.scroll,
-          inspectorFrame.maxScroll,
-        );
-      }
-    } else {
-      this.contextInspectorHit = undefined;
-    }
-    // 请求详情页没有列表：只登记返回按钮，列表区域留空（点击一律落到空）。
-    if (requestFrame && !pageTooSmall && turnDetailView) {
-      this.costLogHit = {
-        listTop: 0,
-        listHeight: 0,
-        listLeft: 0,
-        listWidth: 0,
-        listOffset: 0,
-        itemHeight: 1,
-        backRow: chatScreenTop + requestFrame.back.row,
-        backLeft: requestFrame.back.left + 1,
-        backWidth: requestFrame.back.width,
-      };
-      // 渲染时夹紧的下标回写，保证 ←→ 换页时和回合页光标一致。
-      turnDetailView.selectedIndex = requestFrame.selectedIndex;
-    }
-    // 列表页与回合详情页共用一张命中表结构：谁在画就用谁的几何。
-    const activeCostFrame = requestFrame ? undefined : (turnFrame ?? costLogFrame);
-    if (activeCostFrame && !pageTooSmall && this.costLog) {
-      this.costLogHit = {
-        listTop: chatScreenTop + activeCostFrame.listTop,
-        listHeight: activeCostFrame.listHeight,
-        listLeft: activeCostFrame.listLeft + 1,
-        listWidth: activeCostFrame.listWidth,
-        listOffset: activeCostFrame.listOffset,
-        itemHeight: activeCostFrame.itemHeight,
-        backRow: chatScreenTop + activeCostFrame.back.row,
-        backLeft: activeCostFrame.back.left + 1,
-        backWidth: activeCostFrame.back.width,
-      };
-      // 渲染时会把超出范围的下标夹紧（比如详情页打开期间记录被清空），这里回写。
-      if (turnFrame && turnDetailView) turnDetailView.selectedIndex = turnFrame.selectedIndex;
-      else if (costLogFrame) this.costLog.selectedIndex = costLogFrame.selectedIndex;
-    } else if (!requestFrame) {
-      // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
-      this.costLogHit = undefined;
-    }
+    const chatColumn =
+      pageRows ??
+      (home?.rows.length
+        ? home.rows.map((row) => chatPrefix + row)
+        : [...visibleChat, ...activityRows]);
     const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")];
     // 滚动离开底部时，在对话区底部正中画「回到底部」浮标：只覆盖渲染行，
     // 不参与换行/选区布局（复制出来的仍是正文原文）。
@@ -4740,7 +4749,7 @@ export class TerminalUI {
       visibleEnd,
       chatRegionStart,
       chatPadding,
-      suppressed: Boolean(inspectorFrame),
+      suppressed: Boolean(this.contextInspector),
     });
     frame += cursorState;
     frame += "\x1b[?2026l";
