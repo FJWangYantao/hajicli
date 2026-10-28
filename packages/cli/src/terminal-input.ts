@@ -83,6 +83,15 @@ import {
   type InlinePlacementSpec,
 } from "./terminal-image.js";
 import {
+  isRealCtrlC,
+  isRealCtrlD,
+  isRealCtrlE,
+  isRealCtrlO,
+  isRealCtrlT,
+  isRealCtrlU,
+} from "./terminal-keys.js";
+import { formatMenuRows, windowMenuRows } from "./terminal-menu.js";
+import {
   type ActivityBadge,
   buildActivityRow,
   buildStatusBarRow,
@@ -105,7 +114,6 @@ import {
   cellAtColumn,
   concatAnsiLayouts,
   DEFAULT_CHAT_PADDING,
-  fitText,
   getSelectionAutoScrollRows,
   highlightAnsiColumns,
   layoutAnsiDocument,
@@ -149,6 +157,7 @@ import type { WorkspaceStatus } from "./workspace-status.js";
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
 // 保持既有 dist/terminal-input.js 导出面的兼容：拆分后的符号在此统一转发。
 export { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
+export { shouldRestartBackgroundInput } from "./terminal-keys.js";
 export type { TaskPanelItem } from "./terminal-panels.js";
 export {
   buildScreenUpdate,
@@ -480,96 +489,6 @@ export class TerminalInputBusyError extends Error {
     super("已有输入请求正在等待处理");
     this.name = "TerminalInputBusyError";
   }
-}
-
-function isRealCtrlC(value: string, key: readline.Key): boolean {
-  return value === "\x03" && key.ctrl === true && key.name === "c";
-}
-
-function isRealCtrlD(value: string, key: readline.Key): boolean {
-  return value === "\x04" && key.ctrl === true && key.name === "d";
-}
-
-/** 斜杠命令可能切换到选择器，提交后应由主循环接管输入状态。 */
-export function shouldRestartBackgroundInput(value: string): boolean {
-  return !value.trim().startsWith("/");
-}
-
-function isRealCtrlU(value: string, key: readline.Key): boolean {
-  return value === "\x15" && key.ctrl === true && key.name === "u";
-}
-
-function isRealCtrlO(value: string, key: readline.Key): boolean {
-  return value === "\x0f" && key.ctrl === true && key.name === "o";
-}
-
-function isRealCtrlT(value: string, key: readline.Key): boolean {
-  return value === "\x14" && key.ctrl === true && key.name === "t";
-}
-
-/** Ctrl+E：折叠/展开侧栏费用明细（与鼠标点「▸ 明细」等价）。 */
-function isRealCtrlE(value: string, key: readline.Key): boolean {
-  return value === "\x05" && key.ctrl === true && key.name === "e";
-}
-
-interface MenuRow {
-  label: string;
-  description?: string;
-}
-
-/**
- * 菜单行（斜杠补全与选择器共用）：标签列按最宽项对齐，说明灰显并在超宽时以省略号截断；
- * 选中项用 ▸ 标记，与输入提示符 › 区分。
- */
-function formatMenuRows(items: readonly MenuRow[], selectedIndex: number, width: number): string[] {
-  const contentWidth = Math.max(1, width - 2);
-  const labelWidth = Math.min(
-    Math.max(0, ...items.map((item) => terminalWidth(item.label))),
-    Math.max(8, Math.floor(contentWidth * 0.45)),
-  );
-  return items.map((item, index) => {
-    const selected = index === selectedIndex;
-    const label = fitText(item.label, labelWidth);
-    const padding = " ".repeat(Math.max(0, labelWidth - terminalWidth(label)));
-    const descriptionWidth = contentWidth - labelWidth - 2;
-    const description =
-      item.description && descriptionWidth >= 4 ? fitText(item.description, descriptionWidth) : "";
-    const marker = selected ? `${SEQ.boldAccent}▸ ` : "  ";
-    const labelStyle = selected ? SEQ.boldAccent : "";
-    const descriptionStyle = selected ? "" : SEQ.muted;
-    return `${marker}${labelStyle}${label}${SEQ.reset}${description ? `${padding}  ${descriptionStyle}${description}${SEQ.reset}` : ""}`;
-  });
-}
-
-/**
- * 候选窗口：超出 maxRows 时按选中项滚动（菜单行数恒 ≤ maxRows），
- * 并在末尾留一行「还有 N 条」提示——只有一行预算时不给提示，免得挤掉唯一候选。
- */
-function windowMenuRows(
-  items: readonly MenuRow[],
-  selectedIndex: number,
-  width: number,
-  maxRows: number,
-): string[] {
-  if (items.length === 0 || maxRows <= 0) return [];
-  const showHint = items.length > maxRows && maxRows >= 2;
-  const visibleCount = Math.min(Math.max(1, maxRows - (showHint ? 1 : 0)), items.length);
-  const windowStart = Math.min(
-    Math.max(0, selectedIndex - visibleCount + 1),
-    items.length - visibleCount,
-  );
-  const rows = formatMenuRows(
-    items.slice(windowStart, windowStart + visibleCount),
-    selectedIndex - windowStart,
-    width,
-  );
-  if (showHint && items.length > visibleCount) {
-    const remaining = items.length - visibleCount;
-    rows.push(
-      `${SEQ.muted}${truncateText(`  ⋯ 还有 ${remaining} 条 · ↑↓ 浏览`, width)}${SEQ.reset}`,
-    );
-  }
-  return rows;
 }
 
 export class TerminalUI {
