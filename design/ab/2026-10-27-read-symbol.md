@@ -69,7 +69,16 @@
 3. 如果两条都不显著，就把这个参数当作「显式可用能力」保留，不再投入。
 
 > 2026-10-28：第 1 条已实现（symbol 臂下 grep 命中声明行时回执末尾追加
-> `read({ path, symbol })` 提示，见 `buildSymbolReadHint`），待跑第二轮 A/B。
+> `read({ path, symbol })` 提示，见 `buildSymbolReadHint`），待跑第二轮 A/B：
+>
+> ```bash
+> pnpm run build
+> node scripts/ab-run.mjs --experiment read_symbol --arms baseline,symbol --tasks 5,7,10 --rounds 2 \
+>   --out design/ab/data/2026-10-28-read-symbol-hint.json
+> ```
+>
+> 汇总表里的 `symbol 调用` / `symbol 提示` 两行是这轮的关键：提示出现了但调用仍是 0，
+> 就按第 3 条把 symbol 当作显式可用能力保留、不再投入。
 
 ## 复现
 

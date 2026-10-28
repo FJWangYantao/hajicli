@@ -71,6 +71,8 @@
 ## 工具
 
 ```bash
+node scripts/ab-run.mjs --experiment <name> --arms a,b --tasks 5,7,10 --rounds 2 [--out f.json]
+                                                 # 一键跑：固定任务 × 轮次 × arm 交替执行并出汇总表
 pnpm ab:report                                   # arm 级聚合（并行/子代理/调用效率/请求与成本）
 pnpm ab:extract --experiment <name> --since <ISO> [--until <ISO>] [--json]
 ```

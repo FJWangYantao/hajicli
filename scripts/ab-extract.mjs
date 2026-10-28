@@ -179,7 +179,8 @@ async function main() {
         `ptok=${(bucket.avgPromptTokens / 1000).toFixed(0)}k ` +
         `cost=${bucket.avgCostCny === null ? "n/a" : `¥${bucket.avgCostCny.toFixed(3)}`} ` +
         `dup=${bucket.avgRedundantReads.toFixed(2)} batch=${bucket.avgBatchParamCalls.toFixed(2)} ` +
-        `wall=${(bucket.avgWallMs / 1000).toFixed(1)}s sub=${bucket.subagents}`,
+        `wall=${(bucket.avgWallMs / 1000).toFixed(1)}s sub=${bucket.subagents} ` +
+        `symbol=${bucket.symbolReads}/${bucket.symbolHints}`,
     );
   }
 }

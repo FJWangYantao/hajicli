@@ -135,6 +135,9 @@ export function sessionMetrics(events, options = {}) {
   let unpricedRequests = 0;
   let assumedPricingRequests = 0;
   let truncatedReads = 0;
+  // read_symbol：按符号读定义的次数，以及 grep 回执里出现「可按符号读」提示的次数。
+  let symbolReads = 0;
+  let symbolHints = 0;
 
   for (const event of events) {
     if (event.type === "user_input") {
@@ -166,6 +169,14 @@ export function sessionMetrics(events, options = {}) {
       if (event.data.output.includes("nextStartLine=")) truncatedReads += 1;
     }
     const args = event.data?.arguments;
+    if (name === "read" && typeof args?.symbol === "string" && args.symbol.trim()) symbolReads += 1;
+    if (
+      name === "grep" &&
+      typeof event.data?.output === "string" &&
+      event.data.output.includes("symbol: ")
+    ) {
+      symbolHints += 1;
+    }
     if (name === "read" && args && typeof args === "object") {
       const batch = Array.isArray(args.paths);
       if (batch) batchParamCalls += 1;
@@ -211,6 +222,8 @@ export function sessionMetrics(events, options = {}) {
     subagents,
     readCalls: toolCounts.read ?? 0,
     truncatedReads,
+    symbolReads,
+    symbolHints,
   };
 }
 
@@ -234,6 +247,8 @@ export function emptyTotals() {
     subagents: 0,
     readCalls: 0,
     truncatedReads: 0,
+    symbolReads: 0,
+    symbolHints: 0,
   };
 }
 
@@ -255,6 +270,8 @@ export function addSession(totals, session) {
   totals.subagents += session.subagents;
   totals.readCalls += session.readCalls;
   totals.truncatedReads += session.truncatedReads;
+  totals.symbolReads += session.symbolReads ?? 0;
+  totals.symbolHints += session.symbolHints ?? 0;
 }
 
 /** 由累加桶算出每会话均值（报告直接用这些字段）。 */

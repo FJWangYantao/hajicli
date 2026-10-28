@@ -252,6 +252,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   read-outline 的规则；Markdown/Shell 不提示），回执末尾追加一行
   `[提示] 文件:行 是 class X 的定义；要看完整定义可直接 read({ path, symbol })`。
   baseline 臂回执不变；**这一版还没跑 A/B**，默认仍是 baseline。测试：`read-symbol.test.mjs`。
+  一键跑：`node scripts/ab-run.mjs --experiment read_symbol --arms baseline,symbol --tasks 5,7,10
+  --rounds 2`（任务原文取自 `data/2026-10-27-batch-only.json`，arm 每轮交替顺序；汇总里的
+  `symbol 调用/提示` 由 `ab-metrics.mjs` 的 `symbolReads` / `symbolHints` 统计）。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。
