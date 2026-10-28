@@ -621,6 +621,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 纯逻辑优先抽成可测函数放进现有 `*-config.ts` / `*-policy.ts` 一类模块，`index.ts` 的 `main()` 只做编排。
   斜杠命令按家族放 `provider-commands.ts` / `subagent-commands.ts` / `session-commands.ts`，经 `*CommandContext`
   访问器注入会话状态（可变 let 绑定必须走 getter/setter，不能拷贝值）；新增命令族时照此模式新建模块。
+  带内部状态的命令族用工厂（`pricing-commands.ts` 的 `createPricingCommands(ctx)`：查询是否在跑、
+  过程日志、已提醒模型留在模块内）；会话级编排用类（`PostEditVerifier`）。TerminalUI 里的纯状态
+  转移抽成函数模块（`overlay-navigation.ts`、`terminal-keys.ts`、`terminal-menu.ts`），类只留持有
+  状态与重绘；测试会直接读 `ui.costLog` / `ui.startupHits` 这类私有字段，搬字段前先查测试。
 - `dist/` 未入库（`.gitignore` 中 `dist/`），提交时不包含构建产物。
 - 新增交互逻辑尽量配一条 `packages/cli/test/*.test.mjs` 用例；测试通过临时目录 + 覆盖 `HOME`/`USERPROFILE`
   做路径隔离（参考 `provider-config.test.mjs` 的 `withIsolatedPaths`），不要读写真实 `~/.haji`。
