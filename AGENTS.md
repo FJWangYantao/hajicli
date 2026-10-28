@@ -365,8 +365,12 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   bash 的 `[命令执行结果…]` 与 stdout/stderr 分隔行、read/grep/global 的元信息行、
   edit/write 的路径/hash/改后片段回执、以及末尾的 `[verification_evidence_id]`。
   只剥开头连续块与已知分隔行，正文里形如回执的真实输出不受影响；`/output` 仍给原始输出。
-- /resume 回放的历史没有块元数据（session-commands 只重建文本分段），按纯文本渲染，
-  不提供二级折叠；`/output` 仍可看最近一批工具全文。
+- /resume 回放**不需要落盘块元数据**：历史消息里本来就有工具调用与结果，`loadAndRenderSession`
+  重建工具格时用 `buildReplayBlockInfo` 现算渲染配方（口径同 `ToolRunView.buildBlockInfo`，
+  只是没有耗时与参数展开行），区间随 `ChatSegmentPiece.blocks` 交给 `replaceChatSegments`，
+  段内块默认全展开、可单独收起；过程段被弃用并回普通内容时块区间跟着平移。最后一段
+  （尾部 plain → chatContent）与实时回合一样不可点。测试：`resume-compaction.test.mjs`、
+  `tool-block-fold.test.mjs`。
 - 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
   ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
 

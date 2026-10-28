@@ -35,7 +35,13 @@ import {
 } from "./terminal-input.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { colors } from "./theme.js";
+import {
+  TOOL_BLOCK_OUTPUT_MAX_CHARS,
+  type ToolBlockRenderInfo,
+  type ToolBlockWrite,
+} from "./tool-block-fold.js";
 import { buildToolDisplay } from "./tool-display.js";
+import { stripToolOutputEnvelope } from "./tool-output.js";
 
 /** 与 index.ts 的 USER_REJECTED_TOOL_OUTPUT 保持同值：用户拒绝执行时回给模型的输出。 */
 const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
@@ -110,6 +116,36 @@ function formatCompactionStamp(iso: string): string {
   });
 }
 
+/**
+ * 回放时的工具块渲染配方：口径对齐 ToolRunView.buildBlockInfo（edit/write 有 diff 预览时
+ * 不留原始回执、其余工具剥回执外壳、bash 保尾），只是历史里没有耗时与参数展开行。
+ */
+function buildReplayBlockInfo(
+  toolName: string,
+  status: ToolBlockRenderInfo["status"],
+  summary: string,
+  resultText: string,
+  outcome: { stats?: { added: number; removed: number }; preview?: string[] } | undefined,
+  output: string | undefined,
+): ToolBlockRenderInfo {
+  const hideRawReceipt =
+    (toolName === "edit" || toolName === "write") && (outcome?.preview?.length ?? 0) > 0;
+  const fullOutput =
+    hideRawReceipt || output === undefined
+      ? undefined
+      : stripToolOutputEnvelope(toolName, output.slice(0, TOOL_BLOCK_OUTPUT_MAX_CHARS));
+  return {
+    status,
+    toolName,
+    summary,
+    resultText,
+    stats: outcome?.stats,
+    preview: outcome?.preview ? [...outcome.preview] : undefined,
+    fullOutput: fullOutput || undefined,
+    keep: toolName === "bash" ? "tail" : "head",
+  };
+}
+
 /** 加载并回显一个历史会话；/resume 与启动参数 -c/-r 共用。 */
 async function loadAndRenderSession(
   ctx: SessionCommandContext,
@@ -160,12 +196,20 @@ async function loadAndRenderSession(
   const pieces: ChatSegmentPiece[] = [];
   let plain = "";
   let group = "";
+  // 工具块在当前缓冲（group / plain）里的字符区间，随缓冲一起封口成段。
+  let plainBlocks: ToolBlockWrite[] = [];
+  let groupBlocks: ToolBlockWrite[] = [];
   let groupOpen = false;
   let collector = new FoldStatsCollector();
   const flushPlain = () => {
     if (!plain) return;
-    pieces.push({ kind: "plain", raw: plain });
+    pieces.push({
+      kind: "plain",
+      raw: plain,
+      ...(plainBlocks.length ? { blocks: plainBlocks } : {}),
+    });
     plain = "";
+    plainBlocks = [];
   };
   const openGroup = () => {
     if (groupOpen) return;
@@ -174,16 +218,27 @@ async function loadAndRenderSession(
   };
   const sealGroup = () => {
     if (!groupOpen) return;
-    pieces.push({ kind: "fold", raw: group, stats: collector.snapshot() });
+    pieces.push({
+      kind: "fold",
+      raw: group,
+      stats: collector.snapshot(),
+      ...(groupBlocks.length ? { blocks: groupBlocks } : {}),
+    });
     group = "";
+    groupBlocks = [];
     groupOpen = false;
     collector = new FoldStatsCollector();
   };
   // 没等到正文的过程段（回合结束 / 用户插话）：保持展开，直接并回普通内容。
   const abandonGroup = () => {
     if (!groupOpen) return;
+    const offset = plain.length;
+    for (const block of groupBlocks) {
+      plainBlocks.push({ ...block, start: block.start + offset, end: block.end + offset });
+    }
     plain += group;
     group = "";
+    groupBlocks = [];
     groupOpen = false;
     collector = new FoldStatsCollector();
   };
@@ -326,12 +381,16 @@ async function loadAndRenderSession(
                   undefined,
                   ui.getContentWidth(),
                 );
+          const status = outcome?.status ?? "failed";
+          const summary = buildToolDisplay({ toolName: tc.function.name, args: argsObj }).title;
+          const resultText = outcome?.text ?? "无执行结果";
+          const start = groupOpen ? group.length : plain.length;
           for (const row of formatToolCell({
-            status: outcome?.status ?? "failed",
+            status,
             toolName: tc.function.name,
-            summary: buildToolDisplay({ toolName: tc.function.name, args: argsObj }).title,
+            summary,
             width: ui.getContentWidth(),
-            resultText: outcome?.text ?? "无执行结果",
+            resultText,
             stats: outcome?.stats,
             preview: outcome?.preview,
             maxPreviewLines:
@@ -341,6 +400,20 @@ async function loadAndRenderSession(
           })) {
             appendHistoryLine(row);
           }
+          // 回放同样留一份渲染配方：恢复的会话里工具块也能点开/收起，与实时回合一致。
+          const block: ToolBlockWrite = {
+            start,
+            end: groupOpen ? group.length : plain.length,
+            info: buildReplayBlockInfo(
+              tc.function.name,
+              status,
+              summary,
+              resultText,
+              outcome,
+              output,
+            ),
+          };
+          (groupOpen ? groupBlocks : plainBlocks).push(block);
           collector.addTool(tc.function.name, argsObj, outcome?.status ?? "failed");
         }
       }

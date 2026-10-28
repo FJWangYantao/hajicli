@@ -446,3 +446,35 @@ test("normalization-mismatched cells fall back to plain write", () => {
 function resetColors() {
   resetActiveColorLevel();
 }
+
+test("/resume 回放的段带块元数据时，工具块同样可展开/收起", () => {
+  setActiveColorLevel("mono");
+  const info = bashBlockInfo(10, 6);
+  withUI(80, 44, (ui) => {
+    const cell = renderToolBlockPreviewText(info).text;
+    const lead = "思考行\n";
+    ui.replaceChatSegments([
+      { kind: "plain", raw: "› 跑一下测试\n\n" },
+      {
+        kind: "fold",
+        raw: `${lead}${cell}`,
+        stats: runStats(),
+        blocks: [{ start: lead.length, end: lead.length + cell.length, info }],
+      },
+      { kind: "plain", raw: "测试都过了。\n" },
+    ]);
+    assert.match(render(ui).rows.join("\n"), /● 运行 1 条命令/);
+    ui.dispatchKeypress("\x0f", { ctrl: true, name: "o" });
+    const expandedRows = render(ui).rows;
+    assert.match(expandedRows.join("\n"), /点击收起/);
+    assert.ok(expandedRows.join("\n").includes("line-9"));
+    const headerIndex = expandedRows.findIndex((row) => /✓ bash\s+npm test/.test(row));
+    assert.ok(headerIndex >= 0);
+    ui.handleMouseEvent({ action: "down", button: 0, column: 6, row: headerIndex + 1 });
+    ui.handleMouseEvent({ action: "up", button: 0, column: 6, row: headerIndex + 1 });
+    const collapsed = render(ui).rows.join("\n");
+    assert.match(collapsed, /还有 \d+ 行 · 点击展开/);
+    assert.ok(!collapsed.includes("line-9"));
+  });
+  resetColors();
+});

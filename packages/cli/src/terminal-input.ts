@@ -401,6 +401,8 @@ export interface ChatSegmentPiece {
   kind: "plain" | "fold";
   raw: string;
   stats?: FoldGroupStats;
+  /** 段内工具块（区间相对 raw）：/resume 回放据此恢复二级折叠与点击/悬停。 */
+  blocks?: readonly ToolBlockWrite[];
 }
 
 /** 段尾统一补换行：封口片段必须整行结束，拼接时才不会和下一段粘在一起。 */
@@ -1684,6 +1686,18 @@ export class TerminalUI {
         raw: piece.raw,
         stats: piece.stats,
         expanded: false,
+        // 与 sealFoldGroup 同口径：段内块默认全展开，点块头可单独收起。
+        ...(piece.blocks && piece.blocks.length > 0
+          ? {
+              blocks: piece.blocks.map((block) => ({
+                id: this.nextToolBlockId++,
+                start: block.start,
+                end: block.end,
+                info: block.info,
+                expanded: true,
+              })),
+            }
+          : {}),
       });
     }
     this.chatContent = tail ? normalizeTerminalOutput(tail.raw) : "";

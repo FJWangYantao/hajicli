@@ -165,3 +165,51 @@ test("selfstate 读会话持久化的压缩记录，/resume 与 /clear 跟着会
   assert.match(indexSource, /lastCompaction = usage\?\.lastCompaction/);
   assert.match(indexSource, /\.\.\.\(lastCompaction \? \{ lastCompaction \} : \{\}\)/);
 });
+
+test("/resume 回放给工具块留渲染配方：区间落在块头上，全文已剥回执外壳", async () => {
+  const dir = makeTempDir();
+  const writer = new SessionManager(dir);
+  writer.saveCurrentSession(
+    [
+      { role: "user", content: "跑一下测试" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "bash", arguments: JSON.stringify({ command: "npm test" }) },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_1",
+        content:
+          "[命令执行结果 - 退出码 0；耗时 812ms]\n--- 标准输出 (stdout) ---\nok 1 - a\nok 2 - b\n# pass 2",
+      },
+      { role: "assistant", content: "测试都过了。" },
+    ],
+    "跑测试",
+  );
+  await writer.flush();
+
+  const reader = new SessionManager(dir);
+  reader.startNewSession();
+  let captured = [];
+  const ctx = createContext(reader, []);
+  ctx.ui.replaceChatSegments = (pieces) => {
+    captured = pieces;
+  };
+  assert.equal(await resumeLatestSession(ctx), true);
+  const fold = captured.find((piece) => piece.kind === "fold");
+  assert.ok(fold, "工具调用收成过程段");
+  assert.equal(fold.blocks?.length, 1);
+  const [block] = fold.blocks;
+  assert.match(fold.raw.slice(block.start, block.end), /bash/);
+  assert.equal(block.info.toolName, "bash");
+  assert.equal(block.info.keep, "tail");
+  assert.match(block.info.fullOutput, /# pass 2/);
+  assert.doesNotMatch(block.info.fullOutput, /命令执行结果|标准输出/);
+});
