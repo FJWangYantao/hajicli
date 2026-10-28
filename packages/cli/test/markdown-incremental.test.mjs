@@ -64,8 +64,7 @@ const CORPUS = {
   table:
     "表格：\n\n| 列A | 列B | 列C |\n| --- | --- | --- |\n| 1 | 二 | three |\n" +
     "| 3 | 四 | five |\n\n尾行。\n",
-  card:
-    "卡片：\n\n┌── code ──────────\n│ const a = 1\n│ const b = 2\n└──────────────────\n\n尾行。\n",
+  card: "卡片：\n\n┌── code ──────────\n│ const a = 1\n│ const b = 2\n└──────────────────\n\n尾行。\n",
   crlf: "行一\r\n行二\r\n```js\r\nconst a = 1;\r\n```\r\n尾行\r\n",
   unclosedBold: "开始 **加粗但没闭合\n\n下一段继续\n",
   unclosedTick: "文字 `code 未闭合\n\n```js\nconst a = 1;\n",
@@ -210,7 +209,7 @@ test("reset 后不残留缓存", () => {
 test("长文本流式渲染：增量解析显著快于逐帧全量重解析", () => {
   const unit =
     "这是一段普通回复，包含**粗体**、`inline` 和 [链接](https://example.com)。\n\n" +
-    "- 列表项\n\n```ts\nconst value = compute(1, \"s\");\n```\n\n| 列A | 列B |\n| --- | --- |\n| 1 | 2 |\n\n";
+    '- 列表项\n\n```ts\nconst value = compute(1, "s");\n```\n\n| 列A | 列B |\n| --- | --- |\n| 1 | 2 |\n\n';
   let text = "";
   while (text.length < 20_000) text += unit;
   const chunks = sliceByLength(text, 200);
