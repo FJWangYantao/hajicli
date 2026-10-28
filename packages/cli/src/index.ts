@@ -101,6 +101,7 @@ import {
   WriteFileTool,
 } from "@hajicli/plugins";
 import { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
+import { agentStatus } from "./agent-status.js";
 import {
   buildHubMenus,
   buildLogo,
@@ -232,6 +233,7 @@ import {
 } from "./terminal-input.js";
 import { formatPermissionModeLabel } from "./terminal-panels.js";
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
+import { terminalTitle } from "./terminal-title.js";
 import {
   colors,
   getThemePreset,
@@ -1239,6 +1241,12 @@ async function main() {
       }
     },
   });
+  // 无头（-p）不参与侧栏状态：--output-format json 的 stdout 必须保持纯净。
+  // 窗口标题同理：无头模式不该改调用方终端的标题。
+  if (headlessRequest) {
+    agentStatus.setEnabled(false);
+    terminalTitle.setEnabled(false);
+  }
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
   });
@@ -1919,6 +1927,9 @@ async function main() {
     ui.setModelInfo(selectedModel, reasoningEffort, providerPlainLabel(currentProviderName));
     ui.setCurrentPath(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)));
     ui.setSessionTitle(sessionManager.getCurrentSession().title);
+    // 终端窗口标题（Kero 侧栏行名取的就是它）：本地改标题 / 自动生成标题 / /resume
+    // 都经这里，同一条标题会被上报器去重，不会重复写。
+    terminalTitle.set(sessionManager.getCurrentSession().title);
     const sessionGoal = sessionManager.getCurrentSession().goal;
     ui.setGoal(sessionGoal ? { text: sessionGoal.text, status: sessionGoal.status } : undefined);
     const tokens = estimateMessagesTokens(messages, { includeSystem: true });
@@ -2096,6 +2107,7 @@ async function main() {
       return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
     }
     notifyUserAttention();
+    agentStatus.blocked("permission", `等待授权 · ${permissionVerb(toolName)}`);
     const selection = await readSelectionSafely(
       {
         title: hardProtected
@@ -2129,11 +2141,14 @@ async function main() {
       },
       "restore",
     );
+    // 卡片关闭即回到工作态；「拒绝并说明」下面再单独覆盖一次。
+    agentStatus.working("继续执行");
     if (selection.value === "deny") return USER_REJECTED_TOOL_OUTPUT;
     if (selection.value === "deny-reason") {
       // 拒绝并说明：理由回传给模型，避免它换个写法重试同一件事。
       const draft = ui.cancelInput();
       try {
+        agentStatus.blocked("question", "填写拒绝原因");
         const reason = (
           await ui.readInput({ prompt: "拒绝原因（回传给模型，留空则直接拒绝）› " })
         ).trim();
@@ -2143,6 +2158,7 @@ async function main() {
         if (error instanceof TerminalInputCancelledError) return USER_REJECTED_TOOL_OUTPUT;
         throw error;
       } finally {
+        agentStatus.working("继续执行");
         startBackgroundInput(draft);
       }
     }
@@ -2257,6 +2273,7 @@ async function main() {
         : { approved: false, detail: "用户未批准。" };
     }
     notifyUserAttention();
+    agentStatus.blocked("question", `Agent 申请 · ${title}`);
     const selection = await readSelectionSafely(
       {
         title: `Agent 申请 · ${title}`,
@@ -2271,11 +2288,13 @@ async function main() {
       },
       "restore",
     );
+    agentStatus.working("继续执行");
     if (selection.value === "approve") return { approved: true };
     if (selection.value !== "deny-reason") return { approved: false, detail: "用户拒绝。" };
 
     const draft = ui.cancelInput();
     try {
+      agentStatus.blocked("question", "填写拒绝原因");
       const reason = (
         await ui.readInput({ prompt: "拒绝原因（回传给模型，留空则直接拒绝）› " })
       ).trim();
@@ -2285,6 +2304,7 @@ async function main() {
         return { approved: false, detail: "用户拒绝。" };
       throw error;
     } finally {
+      agentStatus.working("继续执行");
       startBackgroundInput(draft);
     }
   };

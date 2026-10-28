@@ -28,6 +28,7 @@ import {
 import { PLAN_READY_MARKER } from "@hajicli/plugins";
 import type { ActivityIndicator, ToolRunView } from "./activity-indicator.js";
 import { formatAgentTokens } from "./agent-commands.js";
+import { agentStatus } from "./agent-status.js";
 import {
   describeModelError,
   formatReasoningPreview,
@@ -357,6 +358,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   // 费用记账开新轮：轮次编号用于侧栏按轮次展开（空轮不记账则不会占号）。
   // 顺带把用户问题带过去，记账时落在本轮第一条记录上（回合详情页要显示它）。
   deps.beginTurn?.(promptInput);
+  // 终端侧栏（Kero）状态：回合开始即 working，收尾时改成 done / error / idle。
+  agentStatus.working("正在思考");
 
   let keepCalling = true;
   let malformedToolRecoveryAttempts = 0;
@@ -758,6 +761,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           continue;
         }
         // 按调用顺序登记；工具块在授权通过、真正开始执行时才出现在对话区。
+        const batchToolNames = [...new Set(batch.calls.map((call) => call.function.name))];
+        agentStatus.working(
+          `执行 ${batchToolNames.slice(0, 3).join("、")}${batchToolNames.length > 3 ? " 等" : ""}`,
+        );
         let firstBatchTitle = "";
         for (const tc of batch.calls) {
           const registeredArgs = (validateToolCall(tc).arguments || {}) as Record<string, unknown>;
@@ -1021,6 +1028,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         } else {
           try {
             deps.notifyUserAttention?.();
+            agentStatus.blocked("question", "计划待审批");
             const review = await deps.readSelectionSafely({
               title: "计划已就绪 · 选择执行方式",
               items: [
@@ -1044,6 +1052,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             });
             deps.setPlanReadyForReview(false);
             deps.setPlanReviewSummaryRequested(false);
+            agentStatus.working("继续执行");
             if (review.value === "auto" || review.value === "manual") {
               await deps.applyPermissionMode(review.value === "auto" ? "auto" : "default");
               messages.push({
@@ -1080,6 +1089,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
             deps.setPlanReadyForReview(false);
             deps.setPlanReviewSummaryRequested(false);
             if (error instanceof TerminalInputCancelledError) {
+              agentStatus.working("继续执行");
               ui.writeLine(colors.gray("计划审批已取消，仍处于 Plan 模式。"));
               keepCalling = false;
             } else {
@@ -1109,6 +1119,14 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     sessionManager.saveCurrentSession(messages);
   }
   stopActiveTurnVisuals();
+  // 终端侧栏状态：正常收尾报 done（Kero 标未读 Done），失败报 error，中止回 idle。
+  if (isTurnAborted) {
+    agentStatus.idle("已中止");
+  } else if (turnFailed) {
+    agentStatus.error("本轮失败");
+  } else {
+    agentStatus.done("本轮完成");
+  }
   if (!isTurnAborted && !turnFailed) {
     const durationMs = Date.now() - turnStartedAt;
     // 改动统计只覆盖本回合（快照日志按时间戳过滤）；类型检查取本回合最近一次验证结果。

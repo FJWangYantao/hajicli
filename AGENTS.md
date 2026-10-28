@@ -371,6 +371,35 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 显式 shell 用 `execFile(file, [...args, command])` 传 argv，命令作为单个参数原样交给 shell，
   多行命令与提交信息不会被 cmd 的引号规则拆坏。
 
+## 终端状态上报（Kero / OSC 7501）
+
+- Kero（kero.sh）侧栏的 working / waiting / idle 来自两路：`internal/detect/manifests/*.toml` 猜屏幕特征，
+  以及**程序自报**的 OSC 7501；自报优先（存在 working / blocked 记录时 `look()` 直接跳过屏幕推断）。
+  haji 不在 Kero 内置 agents 列表里，屏幕特征永远猜不到，所以状态由 `agent-status.ts` 主动上报。
+- 判定为「可能在 Kero 后面」才写，且要求 stdout 是 tty：`$KERO_PANE`（直接跑在 Kero 拉起的 shell 里）
+  或 `$SSH_CONNECTION` / `$SSH_TTY`（KERO_PANE 不跨 ssh 转发，但 OSC 字节会原样回到本机终端，
+  tmux 在中间时可能被吞）；`HAJI_STATUS_REPORT=1|0` 强制开关，
+  `-p` 无头模式在 `index.ts` 里 `setEnabled(false)`，否则 OSC 会混进 `--output-format json` 的输出。
+- 报文：`ESC ] 7501 ; state=…:app=haji[:kind=…][:progress=…][:title=<b64>][:msg=<b64>] ESC \`，
+  msg 解码 ≤2048 字节、title ≤192 字节（按 UTF-8 字符边界截断），控制字符与零宽/双向控制符会被过滤；
+  不合规的报文 Kero 整条丢弃（`internal/daemon/osc.go#parseStatus`），所以别手搓字符串，用 `buildStatusSequence`。
+- 生命周期（`turn-runner.ts` / `index.ts`）：回合开始 `working 正在思考` → 每批工具 `working 执行 <工具名>`；
+  授权卡片 `blocked:permission`，计划审批与「拒绝并说明」`blocked:question`；正常收尾 `done`
+  （Kero 侧是「idle + 未读 Done」）、Provider 失败 `error`、用户中止 `idle`。同一条报文重复上报会自动去重。
+- 语义边界：`done` 不是 detect 状态而是 idle + unread；用户一按键 / 输入，done/error 记录即被丢弃，
+  working/blocked 在进程退出时自动清掉，所以不需要 atexit 收尾。
+- **窗口标题（OSC 2）另走 `terminal-title.ts`**：Kero 的侧栏行名与单窗格标题栏都取
+  `Session.DisplayName`，用户没手动重命名时用的是**前台程序设的标题**（`Pane.Title`，来自 OSC 0/2），
+  没设就退化成目录名。haji 原来一条标题都不发，所以侧栏只显示目录。现在写成 `haji · <会话标题>`
+  （前缀用来标识来源；无标题时只留 `haji`），长度按显示宽度截到 120 列，控制字符与零宽/双向控制符
+  压掉（裸 ESC 会把 OSC 打断）。挂点是 `updateStatusUI()` 里紧跟 `ui.setSessionTitle(...)` 一行，
+  `/resume`、`/clear`、`generateTitleAsync` 完成都经过它，上报器内部去重所以每批工具调用不会重复写。
+  开关与状态上报同一套（`resolveStatusReportEnabled` + tty），静默不写时窗口标题一个字节都不改；
+  别在标题里放 braille/`◐` 这类字符 —— Kero 的 `proto.TitleBusy` 会把它们当成「在忙」。
+- 测试：`packages/cli/test/agent-status.test.mjs`（报文与 Kero 的 key/value 正则、base64 上限、
+  控制字符过滤、开关与去重、turn-runner / index 挂点）、
+  `packages/cli/test/terminal-title.test.mjs`（标题形态 / 清洗 / 宽度截断 / OSC 2 报文 / 开关与去重）。
+
 ## 代码风格与提交
 
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。
