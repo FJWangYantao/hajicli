@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 // 对话区按「块」排版：推理块、助手正文、工具块之间都要有空行。
 // 这些间距写在各自的调用点，用源码断言锁住，避免以后又粘回去。
-const testDir = path.dirname(new URL(import.meta.url).pathname);
+// 用 fileURLToPath 而不是 URL.pathname：后者在 Windows 上给出 /D:/... ，
+// path.resolve 会拼成 D:\D:\... 直接 ENOENT。
+const testDir = path.dirname(fileURLToPath(import.meta.url));
 const turnSource = fs.readFileSync(path.resolve(testDir, "../src/turn-runner.ts"), "utf8");
 const sessionSource = fs.readFileSync(path.resolve(testDir, "../src/session-commands.ts"), "utf8");
 const indexSource = fs.readFileSync(path.resolve(testDir, "../src/index.ts"), "utf8");

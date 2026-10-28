@@ -162,7 +162,12 @@ export class TaskStore {
         `任务必须先更新为 in_progress。请先调用 updatetask({ taskId: "${task.id}", status: "in_progress" })`,
       );
     }
-    if (task.agent && task.agent.status !== "verified") {
+    // 只有「还在跑」和「有结果待验证」才阻塞收尾：failed / aborted / rejected 都没有
+    // 可验证的结果（或被父 Agent 明确否决），再拦下去任务永远关不掉。
+    if (task.agent?.status === "running") {
+      throw new Error(`关联子代理 ${task.agent.id} 仍在运行，等它结束后再收尾`);
+    }
+    if (task.agent?.status === "awaiting_verification") {
       throw new Error(`关联子代理 ${task.agent.id} 尚未通过父 Agent 独立验证`);
     }
     const dependents = plan.tasks.filter((item) => item.blockedBy.includes(taskId));

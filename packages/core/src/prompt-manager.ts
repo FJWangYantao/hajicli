@@ -221,7 +221,7 @@ export class ToolsPromptPart implements SystemPromptPart {
     }
     if (activeTools.includes("verifyagent")) {
       rules.push(
-        "- verifyagent：子代理完成后，其报告仅是未验证线索。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果未验证时禁止 taskfinish。",
+        "- verifyagent：子代理完成后，其报告仅是未验证线索。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果仍在等待验证时禁止 taskfinish；子代理失败、中止或被拒时没有可验证的结果，可带说明收尾。",
       );
     }
     if (activeTools.includes("loadskill")) {

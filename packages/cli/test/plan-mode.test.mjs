@@ -128,6 +128,91 @@ test("task workflow enforces dependencies, verification and removal from active 
   }
 });
 
+test("failed or rejected subagent no longer deadlocks taskfinish", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-plan-failed-agent-"));
+  try {
+    const store = new TaskStore(cwd);
+    store.setTaskScope("session-a");
+    const create = new TaskCreateTool(store);
+    const update = new UpdateTaskTool(store);
+    const finish = new TaskFinishTool(store);
+    await create.execute({
+      title: "子代理收尾",
+      id: "search",
+      content: "search docs",
+      finalize: true,
+    });
+
+    // failed / aborted 没有可验证的结果，rejected 是父 Agent 给出的明确结论，都不该长期阻塞收尾。
+    for (const status of ["failed", "aborted", "rejected"]) {
+      const taskId = `search-${status}`;
+      const agentId = `a-${status}`;
+      await create.execute({ id: taskId, content: "search docs" });
+      store.setTaskAgent(taskId, { id: agentId, role: "research", status });
+      await update.execute({ taskId, status: "in_progress" });
+      assert.match(
+        await finish.execute({
+          taskId,
+          verification: `子代理 ${agentId} ${status}；主 Agent 自查后确认无官方来源`,
+        }),
+        /已验证并从活动列表移除/,
+        status,
+      );
+      const record = store.getPlan().completedTasks.find((task) => task.id === taskId);
+      assert.equal(record.agent.status, status, "已完成任务保留子代理状态供回溯");
+    }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("running and awaiting-verification agents still block taskfinish", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-plan-blocked-agent-"));
+  try {
+    const store = new TaskStore(cwd);
+    store.setTaskScope("session-a");
+    const create = new TaskCreateTool(store);
+    const update = new UpdateTaskTool(store);
+    const finish = new TaskFinishTool(store);
+    await create.execute({
+      title: "子代理阻塞",
+      id: "review",
+      content: "review diff",
+      finalize: true,
+    });
+    await update.execute({ taskId: "review", status: "in_progress" });
+
+    store.setTaskAgent("review", { id: "a-review", role: "review", status: "running" });
+    assert.match(
+      await finish.execute({ taskId: "review", verification: "没等子代理" }),
+      /仍在运行/,
+    );
+
+    store.setTaskAgent("review", {
+      id: "a-review",
+      role: "review",
+      status: "awaiting_verification",
+    });
+    assert.match(
+      await finish.execute({ taskId: "review", verification: "没做独立验证" }),
+      /尚未通过父 Agent 独立验证/,
+    );
+    assert.equal(
+      store.getPlan().tasks.some((task) => task.id === "review"),
+      true,
+      "被拦下的任务必须留在活动列表",
+    );
+
+    store.setTaskAgent("review", { id: "a-review", role: "review", status: "verified" });
+    assert.match(
+      await finish.execute({ taskId: "review", verification: "已用 read 复核关键结论" }),
+      /已验证并从活动列表移除/,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("TaskStore keeps plans isolated by session scope", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-plan-scope-"));
   try {

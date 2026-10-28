@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { normalizePathKey } from "@hajicli/core";
 import {
   detectGitRepo,
   listHajiWorktrees,
@@ -22,6 +23,22 @@ import { handleWorktreeCommand } from "../dist/worktree-commands.js";
 
 function makeDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/**
+ * 目录身份断言：同一目录在 Windows 上可能有不同大小写——TEMP 环境变量常是
+ * `C:\WINDOWS\TEMP`，而 git / 文件系统回读的是真实大小写 `C:\Windows\Temp`。
+ * 复用产品里的 normalizePathKey，按「是否同一个目录」比较而不是字符串字面量。
+ */
+function assertSamePath(actual, expected, message) {
+  assert.equal(typeof actual, "string", `实际路径缺失${message ? `：${message}` : ""}`);
+  assert.equal(normalizePathKey(actual), normalizePathKey(expected), message);
+}
+
+/** 把多行文本里的路径压成与 normalizePathKey 同口径（正斜杠 + Windows 小写）。 */
+function normalizePathText(value) {
+  const text = value.replace(/\\/g, "/");
+  return process.platform === "win32" ? text.toLowerCase() : text;
 }
 
 /** 覆盖 HOME/USERPROFILE，让 ~/.haji 落到临时目录。 */
@@ -71,11 +88,17 @@ test("parseWorktreeArgs 识别 --worktree / --no-worktree，并拒绝冲突", ()
 test("detectGitRepo 区分主工作树、子目录与 linked worktree", () =>
   withIsolatedHome(() => {
     const repo = makeRepo();
-    assert.deepEqual(detectGitRepo(repo), { root: repo, mainRoot: repo, linked: false });
+    const main = detectGitRepo(repo);
+    assert.equal(main?.linked, false);
+    assertSamePath(main?.root, repo);
+    assertSamePath(main?.mainRoot, repo);
 
     const sub = path.join(repo, "src");
     fs.mkdirSync(sub);
-    assert.deepEqual(detectGitRepo(sub), { root: repo, mainRoot: repo, linked: false });
+    const fromSub = detectGitRepo(sub);
+    assert.equal(fromSub?.linked, false);
+    assertSamePath(fromSub?.root, repo);
+    assertSamePath(fromSub?.mainRoot, repo);
 
     const prepared = prepareSessionWorktree({
       cwd: repo,
@@ -85,7 +108,7 @@ test("detectGitRepo 区分主工作树、子目录与 linked worktree", () =>
     assert.equal(prepared.ok, true);
     const detected = detectGitRepo(prepared.info.path);
     assert.equal(detected?.linked, true);
-    assert.equal(detected?.mainRoot, repo);
+    assertSamePath(detected?.mainRoot, repo);
   }));
 
 test("配置默认关闭；saveWorktreeEnabled 写主仓库项目级配置并可回读", () =>
@@ -136,7 +159,7 @@ test("prepareSessionWorktree 建工作树、开 haji 分支并带过项目配置
     const listed = listHajiWorktrees(repo);
     assert.equal(listed.length, 1);
     assert.equal(listed[0].branch, "haji/session-a");
-    assert.equal(fs.realpathSync(listed[0].path), fs.realpathSync(info.path));
+    assertSamePath(listed[0].path, info.path);
   }));
 
 test("已经在 linked worktree 中启动时跳过，避免嵌套", () =>
@@ -253,9 +276,9 @@ test("/worktree on|off 写主仓库配置，list 展示 haji 工作树", () =>
     chats.length = 0;
     handleWorktreeCommand(ctx, ["/worktree", "list"]);
     assert.match(chats.join("\n"), /haji\/listed/);
-    assert.match(
-      chats.join("\n"),
-      new RegExp(prepared.info.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    assert.ok(
+      normalizePathText(chats.join("\n")).includes(normalizePathKey(prepared.info.path)),
+      `list 应展示工作树路径，实际输出：${chats.join("\n")}`,
     );
 
     lines.length = 0;
@@ -292,9 +315,15 @@ test("siblingSessionStoreDirs 列出其他 haji 工作树的会话目录（跨�
     try {
       // 主仓库视角与 w2 视角都只看到 w1 的会话目录；看不到自己。
       process.chdir(repo);
-      assert.deepEqual(siblingSessionStoreDirs(repo), expected);
+      assert.deepEqual(
+        siblingSessionStoreDirs(repo).map(normalizePathKey),
+        expected.map(normalizePathKey),
+      );
       process.chdir(w2.info.path);
-      assert.deepEqual(siblingSessionStoreDirs(w2.info.path), expected);
+      assert.deepEqual(
+        siblingSessionStoreDirs(w2.info.path).map(normalizePathKey),
+        expected.map(normalizePathKey),
+      );
     } finally {
       process.chdir(previousCwd);
     }

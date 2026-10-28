@@ -113,7 +113,7 @@ export class TaskFinishTool extends StoredTaskTool {
     function: {
       name: "taskfinish",
       description:
-        "仅能结束 status=in_progress 且已完成实际验证的任务。严格顺序：updatetask(in_progress) → 实施 → 验证 → taskfinish；即使任务实际上已完成，也不得跳过 in_progress。所有任务完成后必须进行一次总验证。",
+        "仅能结束 status=in_progress 且已完成实际验证的任务。严格顺序：updatetask(in_progress) → 实施 → 验证 → taskfinish；即使任务实际上已完成，也不得跳过 in_progress。关联子代理仍在运行或等待验证时不可结束；子代理失败、中止或被拒时可带说明收尾。所有任务完成后必须进行一次总验证。",
       parameters: {
         type: "object",
         properties: {
