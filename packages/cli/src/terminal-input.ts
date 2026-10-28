@@ -21,7 +21,6 @@ import {
   COST_LOG_MIN_ROWS,
   type CostLogFrame,
   type CostLogSort,
-  sortRequestDetails,
 } from "./cost-log-page.js";
 import type { RequestCostDetail } from "./cost-tracker.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
@@ -31,6 +30,22 @@ import {
   inputCellFromPoint,
   inputRowHighlightSpan,
 } from "./input-selection.js";
+import {
+  type ContextInspectorState,
+  type CostLogPageState,
+  costLogKeyCommand,
+  costLogLayer,
+  enterTurnDetail,
+  inspectorKeyCommand,
+  moveCostLogSelection,
+  moveInspectorCategory,
+  moveInspectorItem,
+  type OverlayHit,
+  overlayClickTarget,
+  scrollInspector,
+  selectCostLogItem,
+  selectInspectorItem,
+} from "./overlay-navigation.js";
 import { paperSidebarEnabled } from "./paper-sidebar.js";
 import {
   buildFoldHeader,
@@ -125,7 +140,6 @@ import {
 } from "./tui-sidebar.js";
 import {
   buildTurnDetailFrame,
-  collectTurnDetails,
   TURN_DETAIL_MIN_COLUMNS,
   TURN_DETAIL_MIN_ROWS,
   type TurnDetailFrame,
@@ -155,7 +169,6 @@ const LONE_ESCAPE_FLUSH_MS = 16;
 /** 对话区尾部活动行占用的行数：与正文之间的空行 + 活动行本身。 */
 const CHAT_ACTIVITY_ROWS = 2;
 /** 详情页里 PgUp/PgDn 与滚轮一次翻多少行原文（按屏高太小、按行太碎）。 */
-const INSPECTOR_PAGE_ROWS = 8;
 /** 滚轮一格对应的原文行数。 */
 const INSPECTOR_WHEEL_ROWS = 3;
 
@@ -647,60 +660,22 @@ export class TerminalUI {
    * 上下文详情页状态；undefined 表示页面关闭。
    * 打开时侧栏临时收起，对话区整块换成「分类 / 条目 / 原文」两栏。
    */
-  private contextInspector?: {
-    groups: ContextItemGroup[];
-    categoryIndex: number;
-    selectedIndex: number;
-    scroll: number;
-  };
+  private contextInspector?: ContextInspectorState;
   /** 详情页的数据来源：打开那一刻取一次快照（页面只读，回合更新不回溯）。 */
   private contextItemsProvider?: () => ContextItemGroup[];
   /** 上一帧的命中区域（屏幕绝对行，1 基）；点击条目与「Esc 返回」用。 */
-  private contextInspectorHit?: {
-    listTop: number;
-    listHeight: number;
-    listLeft: number;
-    listWidth: number;
-    listOffset: number;
-    backRow: number;
-    backLeft: number;
-    backWidth: number;
-  };
+  private contextInspectorHit?: OverlayHit;
   /** 上一帧原文区可滚动上限：PgUp/PgDn 与滚轮据此夹紧。 */
   private inspectorMaxScroll = 0;
   /**
    * 费用日志页状态；undefined 表示页面关闭。
    * 与上下文详情页同构：打开时收起侧栏，对话区整块换成「每次请求一行」的列表。
    */
-  private costLog?: {
-    details: RequestCostDetail[];
-    sort: CostLogSort;
-    selectedIndex: number;
-    /**
-     * 非空表示正停在某一轮的详情页：记下轮次与该轮内的选中下标。
-     * 页面仍是同一个只读快照，Esc 只退回列表（列表的选中与滚动都保着）。
-     */
-    turnDetail?: {
-      turn: number;
-      selectedIndex: number;
-      /** true 表示又往里走了一层：单次请求详情页。 */
-      openDetail?: boolean;
-    };
-  };
+  private costLog?: CostLogPageState;
   /** 费用日志页的数据来源：打开那一刻取一次快照（页面只读，回合更新不回溯）。 */
   private costLogProvider?: (sort: CostLogSort) => RequestCostDetail[];
   /** 上一帧的命中区域（屏幕绝对行列，1 基）；点击行与「Esc 返回」用。 */
-  private costLogHit?: {
-    listTop: number;
-    listHeight: number;
-    listLeft: number;
-    listWidth: number;
-    listOffset: number;
-    itemHeight: number;
-    backRow: number;
-    backLeft: number;
-    backWidth: number;
-  };
+  private costLogHit?: OverlayHit;
   /** 侧栏显示时对话区最右列（1-based）；0 表示侧栏隐藏，鼠标可整行选字。 */
   private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
@@ -1085,24 +1060,11 @@ export class TerminalUI {
    */
   openTurnDetail(): boolean {
     const state = this.costLog;
-    if (!state || state.turnDetail) return false;
-    const sorted = sortRequestDetails(state.details, state.sort);
-    const picked =
-      sorted[Math.min(Math.max(0, state.selectedIndex), Math.max(0, sorted.length - 1))];
-    if (!picked) return false;
-    if (picked.turn <= 0) {
-      this.showTransientHint("这条记录没有轮次信息（老会话未分轮）");
-      return false;
-    }
-    const items = collectTurnDetails(state.details, picked.turn);
-    const index = items.findIndex((item) => item.seq === picked.seq);
-    state.turnDetail = {
-      turn: picked.turn,
-      selectedIndex: index < 0 ? 0 : index,
-      openDetail: false,
-    };
-    this.scheduleRender(true);
-    return true;
+    if (!state) return false;
+    const result = enterTurnDetail(state);
+    if (result.hint) this.showTransientHint(result.hint);
+    if (result.ok) this.scheduleRender(true);
+    return result.ok;
   }
 
   /** 单次请求详情页是否打开（三层结构的最内层）。 */
@@ -1134,34 +1096,18 @@ export class TerminalUI {
     this.scheduleRender(true);
   }
 
-  /** 回合详情页内的选中移动（↑↓/PgUp/PgDn/滚轮/点击共用）。 */
-  private moveTurnDetailSelection(delta: number): void {
-    const state = this.costLog;
-    const view = state?.turnDetail;
-    if (!state || !view || delta === 0) return;
-    const count = collectTurnDetails(state.details, view.turn).length;
-    const next = Math.min(Math.max(0, view.selectedIndex + delta), Math.max(0, count - 1));
-    if (next === view.selectedIndex) return;
-    view.selectedIndex = next;
-    this.scheduleRender(true);
-  }
-
   /** ↑↓/PgUp/PgDn/滚轮：移动选中项；列表随选中项滚动，选中项永远可见。 */
   private moveCostLogSelection(delta: number): void {
-    const state = this.costLog;
-    if (!state || delta === 0) return;
-    // 详情页开着时，方向键移动的是「这一次调用」而不是列表行。
-    if (state.turnDetail) {
-      this.moveTurnDetailSelection(delta);
-      return;
-    }
-    const next = Math.min(
-      Math.max(0, state.selectedIndex + delta),
-      Math.max(0, state.details.length - 1),
-    );
-    if (next === state.selectedIndex) return;
-    state.selectedIndex = next;
-    this.scheduleRender(true);
+    if (this.costLog && moveCostLogSelection(this.costLog, delta)) this.scheduleRender(true);
+  }
+
+  /** 费用日志页逐层退回：请求详情 → 回合详情 → 费用列表 → 关闭。 */
+  private backCostLog(): void {
+    if (!this.costLog) return;
+    const layer = costLogLayer(this.costLog);
+    if (layer === "request") this.closeRequestDetail();
+    else if (layer === "turn") this.closeTurnDetail();
+    else this.closeCostLog();
   }
 
   /**
@@ -1170,135 +1116,32 @@ export class TerminalUI {
    */
   private handleCostLogKey(key: readline.Key): boolean {
     if (!this.costLog) return false;
-    switch (key.name) {
-      case "escape":
-        // 三层结构逐层退回：请求详情 → 回合详情 → 费用列表 → 关闭。
-        if (this.costLog.turnDetail?.openDetail) this.closeRequestDetail();
-        else if (this.costLog.turnDetail) this.closeTurnDetail();
-        else this.closeCostLog();
-        return true;
-      case "return":
-      case "enter": {
-        // 输入框里有字时 Enter 是「发送」，不能被页面抢走；空输入才当成「往里走一层」。
-        const typing = (this.activeInput?.graphemes.length ?? 0) > 0;
-        if (typing) return false;
-        // 列表 → 回合详情；回合详情 → 请求详情；请求详情已是最内层，消费掉即可。
-        if (this.costLog.turnDetail) {
-          this.openRequestDetail();
-          return true;
-        }
-        this.openTurnDetail();
-        return true;
-      }
-      case "left":
-      case "right": {
-        // 详情页里左右切「同一回合内的相邻调用」，列表页仍留给输入框的左右移动。
-        if (!this.costLog.turnDetail) return false;
-        this.moveTurnDetailSelection(key.name === "left" ? -1 : 1);
-        return true;
-      }
-      case "up":
-        this.moveCostLogSelection(-1);
-        return true;
-      case "down":
-        this.moveCostLogSelection(1);
-        return true;
-      case "pageup":
-        this.moveCostLogSelection(-INSPECTOR_PAGE_ROWS);
-        return true;
-      case "pagedown":
-        this.moveCostLogSelection(INSPECTOR_PAGE_ROWS);
-        return true;
-      case "home":
-        if (!key.ctrl) return false;
-        this.moveCostLogSelection(-Number.MAX_SAFE_INTEGER);
-        return true;
-      case "end":
-        if (!key.ctrl) return false;
-        this.moveCostLogSelection(Number.MAX_SAFE_INTEGER);
-        return true;
-      default:
-        return false;
-    }
+    const typing = (this.activeInput?.graphemes.length ?? 0) > 0;
+    const command = costLogKeyCommand(this.costLog, key, typing);
+    if (!command) return false;
+    if (command.type === "back") this.backCostLog();
+    else if (command.type === "enter") {
+      // 列表 → 回合详情；回合详情 → 请求详情。
+      if (this.costLog.turnDetail) this.openRequestDetail();
+      else this.openTurnDetail();
+    } else if (command.type === "move") this.moveCostLogSelection(command.delta);
+    return true;
   }
 
-  /**
-   * 费用日志页内的点击：命中「返回」按钮或某一项；其余位置忽略。
-   *
-   * 命中表是随「当前这一帧」重建的，所以列表页与回合详情页共用同一套坐标换算，
-   * 唯一要分叉的是返回按钮去往哪一层、以及下标属于哪个列表。
-   */
+  /** 费用日志页内的点击：命中「返回」按钮或某一项；其余位置忽略。 */
   private handleCostLogClick(column: number, row: number): void {
     const hit = this.costLogHit;
     const state = this.costLog;
     if (!hit || !state) return;
-    if (row === hit.backRow && column >= hit.backLeft && column < hit.backLeft + hit.backWidth) {
-      if (state.turnDetail?.openDetail) this.closeRequestDetail();
-      else if (state.turnDetail) this.closeTurnDetail();
-      else this.closeCostLog();
-      return;
-    }
-    if (column < hit.listLeft || column >= hit.listLeft + hit.listWidth) return;
-    const offset = Math.floor((row - hit.listTop) / Math.max(1, hit.itemHeight));
-    if (offset < 0 || offset * hit.itemHeight >= hit.listHeight) return;
-    const index = hit.listOffset + offset;
-    if (index < 0) return;
-    const view = state.turnDetail;
-    if (view) {
-      const count = collectTurnDetails(state.details, view.turn).length;
-      if (index >= count || index === view.selectedIndex) return;
-      view.selectedIndex = index;
-      this.scheduleRender(true);
-      return;
-    }
-    if (index >= state.details.length) return;
-    if (index === state.selectedIndex) return;
-    state.selectedIndex = index;
-    this.scheduleRender(true);
-  }
-
-  /** 当前分类；页面关闭时为 undefined。 */
-  private inspectorGroup(): ContextItemGroup | undefined {
-    const state = this.contextInspector;
-    if (!state) return undefined;
-    return state.groups[state.categoryIndex];
-  }
-
-  /** ↑↓：换条目；换到边界不动，并把原文滚动送回顶部。 */
-  private moveInspectorItem(delta: number): void {
-    const state = this.contextInspector;
-    const group = this.inspectorGroup();
-    if (!state || !group) return;
-    const next = Math.min(
-      Math.max(0, state.selectedIndex + delta),
-      Math.max(0, group.items.length - 1),
-    );
-    if (next === state.selectedIndex) return;
-    state.selectedIndex = next;
-    state.scroll = 0;
-    this.scheduleRender(true);
-  }
-
-  /** ←→：换分类；分类变了就把选中项与滚动归零。 */
-  private moveInspectorCategory(delta: number): void {
-    const state = this.contextInspector;
-    if (!state) return;
-    const next = Math.min(Math.max(0, state.categoryIndex + delta), state.groups.length - 1);
-    if (next === state.categoryIndex) return;
-    state.categoryIndex = next;
-    state.selectedIndex = 0;
-    state.scroll = 0;
-    this.scheduleRender(true);
+    const target = overlayClickTarget(hit, column, row);
+    if (target === "back") this.backCostLog();
+    else if (target !== undefined && selectCostLogItem(state, target)) this.scheduleRender(true);
   }
 
   /** PgUp/PgDn 与滚轮：只滚原文；上限取上一帧的实际可滚动行数。 */
   private scrollInspector(delta: number): void {
     const state = this.contextInspector;
-    if (!state || delta === 0) return;
-    const next = Math.min(Math.max(0, state.scroll + delta), Math.max(0, this.inspectorMaxScroll));
-    if (next === state.scroll) return;
-    state.scroll = next;
-    this.scheduleRender(true);
+    if (state && scrollInspector(state, delta, this.inspectorMaxScroll)) this.scheduleRender(true);
   }
 
   /**
@@ -1306,40 +1149,22 @@ export class TerminalUI {
    * 返回 true 表示已消费，调用方不要再走输入框的默认处理。
    */
   private handleInspectorKey(key: readline.Key): boolean {
-    if (!this.contextInspector) return false;
-    switch (key.name) {
-      case "escape":
-        this.closeContextInspector();
-        return true;
-      case "up":
-        this.moveInspectorItem(-1);
-        return true;
-      case "down":
-        this.moveInspectorItem(1);
-        return true;
-      case "left":
-        this.moveInspectorCategory(-1);
-        return true;
-      case "right":
-        this.moveInspectorCategory(1);
-        return true;
-      case "pageup":
-        this.scrollInspector(-INSPECTOR_PAGE_ROWS);
-        return true;
-      case "pagedown":
-        this.scrollInspector(INSPECTOR_PAGE_ROWS);
-        return true;
-      case "home":
-        if (!key.ctrl) return false;
-        this.scrollInspector(-Math.max(0, this.inspectorMaxScroll));
-        return true;
-      case "end":
-        if (!key.ctrl) return false;
-        this.scrollInspector(Math.max(0, this.inspectorMaxScroll));
-        return true;
-      default:
-        return false;
+    const state = this.contextInspector;
+    if (!state) return false;
+    const command = inspectorKeyCommand(key, this.inspectorMaxScroll);
+    if (!command) return false;
+    if (command.type === "close") {
+      this.closeContextInspector();
+      return true;
     }
+    const changed =
+      command.type === "item"
+        ? moveInspectorItem(state, command.delta)
+        : command.type === "category"
+          ? moveInspectorCategory(state, command.delta)
+          : scrollInspector(state, command.delta, this.inspectorMaxScroll);
+    if (changed) this.scheduleRender(true);
+    return true;
   }
 
   /** 详情页内的点击：命中「Esc 返回」或列表行；其余位置忽略。 */
@@ -1347,21 +1172,9 @@ export class TerminalUI {
     const hit = this.contextInspectorHit;
     const state = this.contextInspector;
     if (!hit || !state) return;
-    if (row === hit.backRow && column >= hit.backLeft && column < hit.backLeft + hit.backWidth) {
-      this.closeContextInspector();
-      return;
-    }
-    if (column < hit.listLeft || column >= hit.listLeft + hit.listWidth) return;
-    const offset = row - hit.listTop;
-    if (offset < 0 || offset >= hit.listHeight) return;
-    const group = this.inspectorGroup();
-    if (!group) return;
-    const index = hit.listOffset + offset;
-    if (index < 0 || index >= group.items.length) return;
-    if (index === state.selectedIndex) return;
-    state.selectedIndex = index;
-    state.scroll = 0;
-    this.scheduleRender(true);
+    const target = overlayClickTarget(hit, column, row);
+    if (target === "back") this.closeContextInspector();
+    else if (target !== undefined && selectInspectorItem(state, target)) this.scheduleRender(true);
   }
 
   /** 开关右侧会话信息栏（宽度不足时即使开启也不显示）。 */
