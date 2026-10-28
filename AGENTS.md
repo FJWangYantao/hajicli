@@ -92,7 +92,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 编辑后自动验证（post-edit-verify.ts）：write/edit 成功后跑项目检查，**只在发现问题时**回注诊断
   （成功不回注：实测「验证通过」这条消息换不来模型少自检，只有上下文成本，见
   `design/ab/2026-10-27-verify-notice.md`）；
-  `HAJI_POST_EDIT_VERIFY=0` 关闭。探测顺序是**只认 `typecheck` 脚本** → tsconfig
+  `HAJI_POST_EDIT_VERIFY=0` 关闭。**bash 写源码同样触发**：`detectShellFileWrites` 识别
+  `sed -i` / `perl -i` / `>`·`>>` 重定向 / `tee`，以及 `xargs sed -i`、`find -exec sed -i`
+  （目标来自管道，记为 opaque，诊断一律视为相关）；只认源码扩展名，日志/产物重定向、`2>`、
+  引号里的文本都不算（测试 `shell-write-verify.test.mjs`）。探测顺序是**只认 `typecheck` 脚本** → tsconfig
   （references 结构用 `npx tsc -b`，普通结构用 `npx tsc --noEmit`）；刻意不认 `check`
   这类组合脚本（本仓库的 check = lint + 全套测试，每次编辑都只会跑满超时）。
   超时不回注上下文、只在界面提示一次；cwd 是**正在运行的 haji 自身仓库**时跳过
@@ -184,8 +187,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   且被 gitignore，用 `pnpm ab:extract --experiment <name> --since <ISO>` 重新生成指标快照。
 - **写路径基准**（`design/ab/write-bench/run.sh`）：3 个固定写任务（加函数+测试 / 跨文件重命名 /
   修边界+回归测试）在独立 worktree 里跑，`cp -al` 硬链接 `node_modules` 后先 build 预热。
-  首轮 12 次运行正确性全过，但**重命名任务走 `sed -i` 一条 bash 完成、根本不触发 write/edit
-  钩子**，所以它测的是 sed 不是 edit 路径；改任务时要么强制用 edit，要么给 bash 写操作补验证。
+  首轮 12 次运行正确性全过，但**重命名任务走 `sed -i` 一条 bash 完成、当时不触发 write/edit
+  钩子**，所以它测的是 sed 不是 edit 路径。现在 bash 写源码也会跑编辑后验证（见上节），
+  但任务本身仍测不到 edit 路径，要比较 edit 时得强制用 edit。
 - **调用合并（tool_batching）**：`grep.queries`（≤5）、`global.patterns`（≤5）、`read.paths`（≤10）
   一次调用覆盖多个目标；`baseline` 组不暴露也不接受 `queries`/`patterns`（构造函数
   `{ batchParams: false }`），`read.paths` 一直可用。实测：调用数 −24%、模型请求 −12%、

@@ -123,6 +123,185 @@ export function diagnosticsMentionFile(output: string, editedPath: string): bool
   return base.length > 3 && normalized.includes(base);
 }
 
+/** 会触发编辑后验证的源码扩展名：日志、产物这类重定向不该跑一遍 typecheck。 */
+const SOURCE_FILE_PATTERN =
+  /\.(?:[cm]?[jt]sx?|json|vue|svelte|astro|py|go|rs|java|kt|kts|c|cc|cpp|h|hpp|cs|swift|rb|php)$/i;
+
+/**
+ * 粗切 shell 命令：按引号保留整词，`;` `&&` `||` `|` 换行切成多段，重定向符单独成词。
+ * 只服务于「这条命令写了哪些源码文件」的判断，不追求完整的 shell 语法。
+ */
+function tokenizeShell(command: string): string[][] {
+  const segments: string[][] = [[]];
+  let word = "";
+  let quoted = false;
+  let quote: string | undefined;
+  const pushWord = (): void => {
+    if (word || quoted) segments[segments.length - 1].push(word);
+    word = "";
+    quoted = false;
+  };
+  const split = (): void => {
+    pushWord();
+    if (segments[segments.length - 1].length > 0) segments.push([]);
+  };
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\" && quote === '"' && index + 1 < command.length)
+        word += command[++index];
+      else word += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      quoted = true;
+    } else if (char === "\\" && index + 1 < command.length) {
+      word += command[++index];
+    } else if (char === " " || char === "\t") {
+      pushWord();
+    } else if (char === "\n" || char === ";" || char === "|" || char === "&") {
+      // `2>&1`、`&>` 里的 & 属于重定向，不是分隔符。
+      if (char === "&" && (word.endsWith(">") || command[index + 1] === ">")) {
+        word += char;
+        continue;
+      }
+      split();
+      if ((char === "|" || char === "&") && command[index + 1] === char) index += 1;
+    } else if (char === ">" || char === "<") {
+      // 重定向符（含 `2>`、`>>`、`&>`）单独成词，目标路径是下一个词。
+      const fd = /^(?:\d|&)$/.test(word) ? word : "";
+      if (!fd) pushWord();
+      let op = `${fd}${char}`;
+      while (command[index + 1] === char) op += command[++index];
+      if (command[index + 1] === "&") op += command[++index];
+      word = "";
+      segments[segments.length - 1].push(op);
+    } else {
+      word += char;
+    }
+  }
+  pushWord();
+  return segments.filter((segment) => segment.length > 0);
+}
+
+/** 去掉重定向及其目标，只留命令的位置参数。 */
+function stripRedirects(words: readonly string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < words.length; index++) {
+    if (/^(?:\d|&)?[<>]/.test(words[index])) {
+      index += 1;
+      continue;
+    }
+    result.push(words[index]);
+  }
+  return result;
+}
+
+/** 选项后面跟取值的 xargs 选项（`-n 1`、`-I {}`…），跳过它们才找得到子命令。 */
+const XARGS_VALUE_OPTIONS = new Set(["-n", "-I", "-L", "-P", "-d", "-s", "-E", "-a"]);
+
+interface ShellWriteScan {
+  files: string[];
+  /** 原地改写但目标来自管道/find（`xargs sed -i`、`find -exec sed -i {}`），无从得知具体文件。 */
+  opaque: boolean;
+}
+
+/** 分析一段命令（已去掉环境变量前缀之前的整段词）里的原地改写。 */
+function scanInPlaceEdit(words: readonly string[], scan: ShellWriteScan): void {
+  const programIndex = words.findIndex((word) => !/^\w+=/.test(word));
+  if (programIndex < 0) return;
+  const name = path.basename(words[programIndex]);
+  const args = stripRedirects(words.slice(programIndex + 1));
+  if (name === "xargs") {
+    let index = 0;
+    while (index < args.length && args[index].startsWith("-")) {
+      index += XARGS_VALUE_OPTIONS.has(args[index]) ? 2 : 1;
+    }
+    const inner: ShellWriteScan = { files: [], opaque: false };
+    scanInPlaceEdit(args.slice(index), inner);
+    // xargs 把管道里的路径追加到末尾：子命令自己写明的文件之外，一定还有看不见的目标。
+    if (inner.files.length > 0 || inner.opaque) scan.opaque = true;
+    scan.files.push(...inner.files);
+    return;
+  }
+  if (name === "find") {
+    const execIndex = args.findIndex((arg) => arg === "-exec" || arg === "-execdir");
+    if (execIndex < 0) return;
+    const tail = args.slice(execIndex + 1);
+    const stop = tail.findIndex((arg) => arg === ";" || arg === "+" || arg === "\\;");
+    const inner: ShellWriteScan = { files: [], opaque: false };
+    scanInPlaceEdit(stop < 0 ? tail : tail.slice(0, stop), inner);
+    if (inner.files.length > 0 || inner.opaque) scan.opaque = true;
+    scan.files.push(...inner.files.filter((file) => file !== "{}"));
+    return;
+  }
+  if (name === "sed" || name === "gsed") {
+    if (!args.some((arg) => /^-[a-zA-Z]*i/.test(arg) || arg.startsWith("--in-place"))) return;
+    // 脚本是 -e/-f 的参数，否则是第一个非选项词；其余非选项词是文件。
+    let scriptGiven = false;
+    let files = 0;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (arg === "-e" || arg === "-f" || arg === "--expression" || arg === "--file") {
+        scriptGiven = true;
+        index += 1;
+      } else if (arg.startsWith("-") && arg !== "-") {
+        // `-i ''`（BSD）：空后缀参数紧随 -i。
+        if (arg === "-i" && args[index + 1] === "") index += 1;
+      } else if (!scriptGiven) {
+        scriptGiven = true;
+      } else {
+        scan.files.push(arg);
+        files += 1;
+      }
+    }
+    if (files === 0) scan.opaque = true;
+  } else if (name === "perl") {
+    if (!args.some((arg) => /^-[a-zA-Z]*i/.test(arg))) return;
+    let files = 0;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (arg === "-e" || arg === "-E") index += 1;
+      else if (!arg.startsWith("-")) {
+        scan.files.push(arg);
+        files += 1;
+      }
+    }
+    if (files === 0) scan.opaque = true;
+  } else if (name === "tee") {
+    for (const arg of args) if (!arg.startsWith("-")) scan.files.push(arg);
+  }
+}
+
+/**
+ * 一条 bash 命令改写了哪些源码文件（`sed -i`、`perl -i`、`>`/`>>` 重定向、`tee`，
+ * 以及经 `xargs` / `find -exec` 套一层的原地改写）。
+ *
+ * write/edit 之外，模型常用一条 `sed -i` 完成批量重命名，此时编辑后验证的钩子从不触发
+ * （见 design/ab/2026-10-27-write-baseline.md）。`files` 只含源码扩展名的目标——日志、产物
+ * 重定向不该跑 typecheck；`opaque` 表示确实原地改了文件、但目标来自管道无从得知。
+ * 识别不了的写法两者皆空，宁可漏验也不对只读命令跑 typecheck。
+ */
+export function detectShellFileWrites(command: string): ShellWriteScan {
+  const scan: ShellWriteScan = { files: [], opaque: false };
+  for (const words of tokenizeShell(command)) {
+    for (let index = 0; index < words.length - 1; index++) {
+      // 输出重定向：`>`、`>>`、`1>`、`&>`；`2>`（stderr）与 `>&2` 这类 fd 复制不算写文件。
+      if (/^(?:1|&)?>>?$/.test(words[index])) {
+        const target = words[index + 1];
+        if (target && !target.startsWith("&") && target !== "/dev/null") scan.files.push(target);
+      }
+    }
+    scanInPlaceEdit(words, scan);
+  }
+  return {
+    files: [...new Set(scan.files)].filter((target) => SOURCE_FILE_PATTERN.test(target)),
+    opaque: scan.opaque,
+  };
+}
+
 /**
  * 同一条验证结论在冷却窗口内只注入一次：编辑连发时，重复的
  * 「[编辑后验证] … 发现以下问题」会把上下文塞满，并反复催模型去修同一批既有问题。

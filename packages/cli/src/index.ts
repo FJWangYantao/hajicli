@@ -171,6 +171,7 @@ import {
 } from "./permission-rules.js";
 import {
   detectProjectCheckCommand,
+  detectShellFileWrites,
   diagnosticsMentionFile,
   formatSelfProjectSkipHint,
   formatVerificationNotice,
@@ -875,7 +876,10 @@ async function main() {
     lastPostEditHint = hint;
     ui.writeLine(colors.muted(hint));
   };
-  const maybeRunPostEditVerify = async (editedPath?: string): Promise<string | undefined> => {
+  /** editedPaths 为空表示改了文件但不知道是哪些（例如 `xargs sed -i`）：诊断一律视为相关。 */
+  const maybeRunPostEditVerify = async (
+    editedPaths: readonly string[],
+  ): Promise<string | undefined> => {
     if (postEditVerifyCommand === null) {
       postEditVerifyCommand = detectProjectCheckCommand(process.cwd());
     }
@@ -892,6 +896,9 @@ async function main() {
     if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
     postEditVerifyLastRunAt = now;
     const result = await runProjectCheck(postEditVerifyCommand, process.cwd());
+    // 一条 bash 可能改了多个文件：优先拿诊断里点名的那个去判断相关性。
+    const editedPath =
+      editedPaths.find((file) => diagnosticsMentionFile(result.output, file)) ?? editedPaths[0];
     // 小结里的「类型检查 ✕」只统计与本次编辑相关的诊断，避免被项目既有问题带偏。
     const relevantFailure =
       !result.ok && (!editedPath || diagnosticsMentionFile(result.output, editedPath));
@@ -923,14 +930,23 @@ async function main() {
       agentId: ctx.agentId,
       depth: ctx.depth,
     });
-    if (
-      !ctx.agentId &&
-      (ctx.toolName === "write" || ctx.toolName === "edit") &&
-      ctx.toolOutput &&
-      isApproved
-    ) {
-      const editedPath = typeof ctx.args?.path === "string" ? ctx.args.path : undefined;
-      const notice = await maybeRunPostEditVerify(editedPath);
+    // bash 里的 `sed -i` / 重定向写源码同样要验证：否则模型一条 sed 批量改名，钩子从不触发。
+    const shellWrites =
+      !ctx.agentId && ctx.toolName === "bash" && typeof ctx.args?.command === "string"
+        ? detectShellFileWrites(ctx.args.command)
+        : undefined;
+    const editedPaths =
+      !ctx.agentId && (ctx.toolName === "write" || ctx.toolName === "edit")
+        ? typeof ctx.args?.path === "string"
+          ? [ctx.args.path]
+          : []
+        : shellWrites && (shellWrites.files.length > 0 || shellWrites.opaque)
+          ? shellWrites.opaque
+            ? []
+            : shellWrites.files
+          : undefined;
+    if (editedPaths && ctx.toolOutput && isApproved && !isFailedToolOutput(ctx.toolOutput)) {
+      const notice = await maybeRunPostEditVerify(editedPaths);
       const now = Date.now();
       if (notice && shouldPushVerificationNotice(lastPostEditNotice, notice, now)) {
         lastPostEditNotice = { text: notice, at: now };
