@@ -242,8 +242,11 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   与 `startLine/endLine/aroundLine` 互斥、不能配 `paths`；只在定义块被 limit 截断时给
   `nextStartLine`。`baseline` 臂直接从 schema 里摘掉 `symbol` 属性。
   **首轮 pilot（任务 5/7/10 × 2 轮 × 2 arm）symbol 被使用 0 次**，两臂差异全是噪声；
-  显式要求时一次就成，说明问题在「发现」而不是机制。默认保持 baseline，下一步应在 grep
-  命中定义行时给触发点，而不是再加静态提示词。测试：`read-symbol.test.mjs`。
+  显式要求时一次就成，说明问题在「发现」而不是机制。触发点已补上：symbol 臂下
+  `GrepSearchTool({ symbolHint })` 在返回的命中里找第一条声明行（`buildSymbolReadHint`，复用
+  read-outline 的规则；Markdown/Shell 不提示），回执末尾追加一行
+  `[提示] 文件:行 是 class X 的定义；要看完整定义可直接 read({ path, symbol })`。
+  baseline 臂回执不变；**这一版还没跑 A/B**，默认仍是 baseline。测试：`read-symbol.test.mjs`。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。

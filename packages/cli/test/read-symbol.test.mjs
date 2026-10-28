@@ -178,3 +178,49 @@ test("baseline 组不暴露 symbol 参数，也不接受它", async () => {
     assert.match(text, /5 \| export function pick/);
   });
 });
+
+test("grep 命中定义行时提示 read symbol；调用点、Markdown 与非代码不提示", async () => {
+  const { buildSymbolReadHint } = await import("../../plugins/dist/grep-tool.js");
+  const hint = buildSymbolReadHint([
+    { file: "src/a.ts", line: 3, content: "const x = runTurn(ctx);" },
+    { file: "src/b.ts", line: 12, content: "export async function runTurn(ctx: Ctx) {" },
+  ]);
+  assert.match(hint, /src\/b\.ts:12/);
+  assert.match(hint, /read\(\{ path: "src\/b\.ts", symbol: "runTurn" \}\)/);
+  assert.match(
+    buildSymbolReadHint([{ file: "m.py", line: 1, content: "class Store:" }]),
+    /symbol: "Store"/,
+  );
+  assert.equal(
+    buildSymbolReadHint([{ file: "a.ts", line: 1, content: "runTurn(ctx);" }]),
+    undefined,
+  );
+  assert.equal(
+    buildSymbolReadHint([{ file: "README.md", line: 1, content: "## runTurn" }]),
+    undefined,
+  );
+  assert.equal(
+    buildSymbolReadHint([{ file: "notes.txt", line: 1, content: "function x() {" }]),
+    undefined,
+  );
+});
+
+test("GrepSearchTool 只在 symbolHint 打开时附提示（baseline 臂回执不变）", async () => {
+  const { GrepSearchTool } = await import("../../plugins/dist/grep-tool.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "haji-grep-symbol-"));
+  const previous = process.cwd();
+  try {
+    await fs.writeFile(
+      path.join(dir, "store.ts"),
+      "export class SessionStore {\n  load() {}\n}\nnew SessionStore();\n",
+    );
+    process.chdir(dir);
+    const on = await new GrepSearchTool({ symbolHint: true }).execute({ query: "SessionStore" });
+    assert.match(on, /\[提示\] store\.ts:1 是 class SessionStore 的定义/);
+    const off = await new GrepSearchTool().execute({ query: "SessionStore" });
+    assert.doesNotMatch(off, /\[提示\]/);
+  } finally {
+    process.chdir(previous);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

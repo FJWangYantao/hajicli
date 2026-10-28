@@ -1122,7 +1122,8 @@ async function main() {
         messages,
       }),
     }),
-    new GrepSearchTool({ batchParams }),
+    // read_symbol 的 symbol 臂：grep 命中定义行时在回执里提示按符号读定义。
+    new GrepSearchTool({ batchParams, symbolHint: readSymbol }),
     new WebSearchTool(undefined, {
       // 官方 Search 按请求计费（5 元/千次），HAJI_WEBSEARCH_OFFICIAL=0 可强制只用免费公开源。
       ...(process.env.HAJI_WEBSEARCH_OFFICIAL === "0"

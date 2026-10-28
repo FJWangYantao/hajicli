@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { BaseTool, ToolDefinition, ToolExecutionContext } from "@hajicli/core";
 import { takeWholeRecords } from "./bounded-output.js";
+import { detectOutlineLanguage, extractOutline } from "./read-outline.js";
 import { runRipgrepLines } from "./ripgrep.js";
 import {
   type BatchParamOptions,
@@ -54,6 +55,34 @@ const MAX_OFFSET = 5_000;
 const MAX_RAW_MATCHES = 20_000;
 const MAX_OUTPUT_LENGTH = 8_000;
 const MAX_RENDERED_LINE_LENGTH = 320;
+
+/** grep 回执里「可按符号读定义」提示的触发条件：命中行本身就是一条声明。 */
+export interface GrepToolOptions extends BatchParamOptions {
+  /** 命中定义行时提示 `read({ path, symbol })`（A/B: read_symbol 的 symbol 臂）。 */
+  symbolHint?: boolean;
+}
+
+/**
+ * 在返回的命中里找第一条「声明行」（函数/类/接口/类型…），给出按符号读定义的提示。
+ *
+ * read_symbol 首轮 pilot 里 symbol 参数被使用 0 次：模型不是不会用，而是想不到。
+ * 静态提示词已证明无效，所以改在最相关的时刻（grep 刚命中定义）给上下文提示。
+ * Markdown 标题、Shell 函数不提示——前者用 aroundLine 足够，后者定义块很短。
+ */
+export function buildSymbolReadHint(
+  matches: readonly { file: string; line: number; content: string }[],
+): string | undefined {
+  for (const match of matches) {
+    const language = detectOutlineLanguage(match.file);
+    if (language === "unknown" || language === "markdown" || language === "shell") continue;
+    const [entry] = extractOutline([match.content], 1, language, 1);
+    if (!entry) continue;
+    const name = entry.label.slice(entry.label.indexOf(" ") + 1);
+    if (!/^[\w$.]+$/.test(name)) continue;
+    return `[提示] ${match.file}:${match.line} 是 ${entry.label} 的定义；要看完整定义可直接 read({ path: ${JSON.stringify(match.file)}, symbol: ${JSON.stringify(name)} })，一次取回整块，不必按行翻页。`;
+  }
+  return undefined;
+}
 
 function parseOptions(args: Record<string, unknown>): SearchOptions {
   const query = typeof args.query === "string" ? args.query : "";
@@ -379,9 +408,11 @@ export class GrepSearchTool implements BaseTool {
 
   public readonly definition: ToolDefinition;
   private readonly batchParams: boolean;
+  private readonly symbolHint: boolean;
 
-  public constructor(options: BatchParamOptions = {}) {
+  public constructor(options: GrepToolOptions = {}) {
     this.batchParams = options.batchParams !== false;
+    this.symbolHint = options.symbolHint === true;
     const base = GrepSearchTool.baseDefinition;
     const definition: ToolDefinition = {
       ...base,
@@ -512,7 +543,8 @@ export class GrepSearchTool implements BaseTool {
         if (hasMore) return `${header}\n当前 offset 没有可返回结果，请收窄搜索条件。`;
         return `${header}\n(未找到匹配结果)`;
       }
-      return `${header}\n${renderedMatches.join("\n\n")}`;
+      const hint = this.symbolHint ? buildSymbolReadHint(candidates.slice(0, returned)) : undefined;
+      return `${header}\n${renderedMatches.join("\n\n")}${hint ? `\n\n${hint}` : ""}`;
     } catch (error) {
       if (
         context?.abortSignal?.aborted ||
