@@ -18,8 +18,13 @@ HAJI CLI 是一个面向本地代码工作的终端 AI 助手，支持流式对�
 启动时会按以下顺序确定用深色还是浅色调色板：
 
 1. 环境变量 `HAJI_THEME_APPEARANCE=dark|light`（显式覆盖，优先级最高）
-2. `COLORFGBG`（部分终端会设置）
-3. OSC 11 查询终端默认背景色，并按相对亮度判定（最多等 120ms，超时回退深色）
+2. `~/.haji/theme.json` 里记住的 `appearance`（`/appearance light|dark` 写入）
+3. `COLORFGBG`（部分终端会设置）
+4. OSC 11 查询终端默认背景色，并按相对亮度判定（最多等 120ms，超时回退深色）
+
+白底 / 浅底终端里如果觉得字偏灰、对比度不够，执行一次 `/appearance light` 即可：它会切到
+「近黑正文」的浅色调色板（正文 `#111111`、次要文字 `#3a3a3a`）并写进 `~/.haji/theme.json`，
+之后每次启动都跳过自动探测直接沿用。`/appearance` 无参显示当前外观。
 
 想强制使用固定底色（恢复旧行为）时，在 `~/.haji/theme.json` 或 `<项目>/.haji/theme.json` 里写 `{"background": "#101318"}`；写成 `""` 则表示继续跟随终端背景。其余颜色字段仍只接受 `#RRGGBB`。
 

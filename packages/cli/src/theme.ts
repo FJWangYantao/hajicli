@@ -133,7 +133,7 @@ const DARK_THEME: Theme = {
   userMsgFg: "#f2f5fa",
   foreground: "#d9dee7",
   accent: "#a995d6",
-  muted: "#8f98a5",
+  muted: "#b4b4b4",
   red: "#e07a7a",
   green: "#78b892",
   yellow: "#d6a85f",
@@ -153,10 +153,13 @@ const DARK_THEME: Theme = {
 const LIGHT_THEME: Theme = {
   background: "",
   userMsgBg: "#f0eef8",
-  userMsgFg: "#151a22",
-  foreground: "#242b36",
+  // 浅底上刻意用近黑正文：白底终端里「中灰字」看久了最容易疲劳（对比度不够、
+  // 又没有深底色衬托），所以正文 #111、次要文字 #3a 都压在中性灰阶的深端，
+  // 只靠明度拉层次，不再靠降低对比度。
+  userMsgFg: "#0f0f0f",
+  foreground: "#111111",
   accent: "#6b4fc4",
-  muted: "#5b6472",
+  muted: "#3a3a3a",
   red: "#b23a30",
   green: "#1d7a4d",
   yellow: "#8a6200",
@@ -179,7 +182,7 @@ const KERO_DARK_THEME: Theme = {
   userMsgFg: "#ffffff",
   foreground: "#e6e6ea",
   accent: "#6b93ff",
-  muted: "#a9a9b4",
+  muted: "#c4c4c4",
   red: "#ff6b64",
   green: "#4fd17a",
   yellow: "#f2c14e",
@@ -196,10 +199,10 @@ const KERO_DARK_THEME: Theme = {
 const KERO_LIGHT_THEME: Theme = {
   background: "#ffffff",
   userMsgBg: "#f4f4f4",
-  userMsgFg: "#111114",
-  foreground: "#1d1d1f",
+  userMsgFg: "#0f0f0f",
+  foreground: "#131315",
   accent: "#3b6cf6",
-  muted: "#6e6e78",
+  muted: "#3f3f3f",
   red: "#d3302f",
   green: "#22863a",
   yellow: "#b08800",
@@ -250,10 +253,16 @@ function isTerminalDefaultValue(key: keyof Theme, value: string): boolean {
 }
 
 function rgbToAnsi256(r: number, g: number, b: number): number {
-  if (r === g && g === b) {
-    if (r < 8) return 16;
-    if (r > 248) return 231;
-    return 232 + Math.min(23, Math.round((r - 8) / 10));
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  // 近中性色走 24 级灰阶：6×6×6 色立方没有真正的灰，略偏冷的灰会被量化成
+  // (175,215,215) 这类明显偏色的格子——实测 muted #aab3c0 在 256 色终端里发青。
+  // 阈值与 ansi16 的中性分流保持一致（0.18），保住强调色/语义色的色相。
+  if (max === 0 || (max - min) / max <= 0.18) {
+    const value = Math.round((r + g + b) / 3);
+    if (value < 8) return 16;
+    if (value > 248) return 231;
+    return 232 + Math.min(23, Math.round((value - 8) / 10));
   }
   const red = Math.round((r / 255) * 5);
   const green = Math.round((g / 255) * 5);
@@ -503,6 +512,29 @@ function resolveConfiguredPreset(): ThemePresetName {
   );
 }
 
+/** 从单个主题文件读取 appearance 字段；缺失/非法返回 undefined。 */
+function readThemeAppearanceFromFile(filePath: string): ThemeAppearance | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const appearance = (parsed as Record<string, unknown>).appearance;
+    return appearance === "dark" || appearance === "light" ? appearance : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 读取用户持久化的终端外观（`/appearance light|dark` 写入）。
+ *
+ * 只认用户级 `~/.haji/theme.json`：外观是「这台终端底色是深是浅」的事实，
+ * 跟着人走而不是跟着仓库走，克隆来的项目配置不该改掉别人的配色
+ * （与权限规则里项目级 `paths` 段被刻意忽略同一道理）。
+ */
+export function readThemeAppearance(): ThemeAppearance | undefined {
+  return readThemeAppearanceFromFile(userThemeConfigPath());
+}
+
 /** 当前生效预设；尚未解析时读一次配置。 */
 function currentPreset(): ThemePresetName {
   if (!activePreset) activePreset = resolveConfiguredPreset();
@@ -550,10 +582,10 @@ export function setThemePreset(preset: ThemePresetName): boolean {
 }
 
 /**
- * 把预设写回用户级 theme.json（保留文件中的既有颜色覆盖）。
+ * 把字段合并写回用户级 theme.json（保留文件中的既有颜色覆盖与其它字段）。
  * 写失败不影响本次运行内的切换效果。
  */
-export function persistThemePreset(preset: ThemePresetName): void {
+function writeUserThemeConfig(patch: Record<string, unknown>): void {
   const target = userThemeConfigPath();
   let source: Record<string, unknown> = {};
   try {
@@ -562,13 +594,26 @@ export function persistThemePreset(preset: ThemePresetName): void {
   } catch {
     // 文件不存在或损坏：从空对象重建。
   }
-  source.preset = preset;
+  Object.assign(source, patch);
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, `${JSON.stringify(source, null, 2)}\n`, "utf8");
   } catch {
     // 权限等写入失败：保持运行内生效即可。
   }
+}
+
+/**
+ * 把预设写回用户级 theme.json（保留文件中的既有颜色覆盖）。
+ * 写失败不影响本次运行内的切换效果。
+ */
+export function persistThemePreset(preset: ThemePresetName): void {
+  writeUserThemeConfig({ preset });
+}
+
+/** 把终端外观写回用户级 theme.json，下次启动直接沿用（会跳过自动探测）。 */
+export function persistThemeAppearance(appearance: ThemeAppearance): void {
+  writeUserThemeConfig({ appearance });
 }
 
 /**
@@ -672,12 +717,13 @@ export function diffToneBg(tone: "red" | "green"): string {
 
 /**
  * 第三档文字色（正文 > muted > faint）：思考行、└ 连线、耗时这类辅助信息。
- * 从 muted 朝背景再淡一截，但不低于 3:1，浅色底上也看得见。
+ * 从 muted 朝背景再淡一小截（0.2），但不低于 3:1，浅色底上也看得见。
+ * 旧值 0.35 在深色终端上偏灰，看不清；0.2 保持层次同时贴近 muted。
  */
 export function faintHex(): string {
   const theme = getTheme();
   return ensureContrast(
-    dimHex(theme.muted, 0.35),
+    dimHex(theme.muted, 0.2),
     referenceBackgroundFor(theme, getThemeAppearance()),
     ACCENT_MIN_CONTRAST,
   );

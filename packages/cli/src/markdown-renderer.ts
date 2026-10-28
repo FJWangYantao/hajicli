@@ -7,14 +7,30 @@
 import { performanceMonitor } from "@hajicli/core";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import { wrapAnsi } from "./terminal-text.js";
-import { buildAnsiStyles } from "./theme.js";
+import { buildAnsiStyles, getColorLevel, getTheme } from "./theme.js";
 
 /**
  * ANSI 样式代码字典。颜色取自当前主题（24-bit 真彩色），使 Markdown 渲染
  * 不再依赖终端 16 色调色板；reset 会恢复主题前景与背景，保证背景不丢失。
- * 在模块加载时构建一次。
+ *
+ * **必须在渲染时按当前主题重建**：本模块在启动早期就被 import，那时终端外观
+ * （dark / light）还没探测完，模块加载期构建的字典会永远停在深色调色板上。
+ * 白底终端里后果很直接：列表符号是深色板的 muted（浅灰），而 `reset` 更会把
+ * 后续正文刷成深色板的 foreground `#d9dee7`——白底上的浅灰字，越看越累。
  */
-const ANSI = buildAnsiStyles();
+let ANSI = buildAnsiStyles();
+let ansiTheme = getTheme();
+let ansiColorLevel = getColorLevel();
+
+/** 主题或颜色能力变了就重建样式字典（切换主题/外观时主题对象会换身份）。 */
+function refreshAnsiStyles(): void {
+  const theme = getTheme();
+  const level = getColorLevel();
+  if (theme === ansiTheme && level === ansiColorLevel) return;
+  ANSI = buildAnsiStyles();
+  ansiTheme = theme;
+  ansiColorLevel = level;
+}
 
 /** 常见编程语言关键字集合 */
 const KEYWORDS = new Set([
@@ -138,6 +154,9 @@ export class MarkdownStreamRenderer {
    * @param isFinal 是否已结束流式输出
    */
   render(content: string, isFinal = false): string {
+    // 主题/颜色能力可能在 import 之后才确定（启动探测外观、/appearance 切换），
+    // 每次渲染前对齐一次，否则 Markdown 会一直用启动那一刻的调色板。
+    refreshAnsiStyles();
     const safeContent = sanitizeTerminalText(content);
     return performanceMonitor.measureSync("markdown.render", () =>
       this.renderContent(safeContent, isFinal),

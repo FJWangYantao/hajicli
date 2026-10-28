@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MarkdownStreamRenderer } from "../dist/markdown-renderer.js";
+import {
+  fgSeq,
+  getTheme,
+  resetActiveColorLevel,
+  resetActiveTheme,
+  resetThemeAppearance,
+  setActiveColorLevel,
+  setThemeAppearance,
+} from "../dist/theme.js";
 
 const stripAnsi = (value) => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 
@@ -106,4 +115,45 @@ test("table cells keep only the link text so columns stay aligned", () => {
   );
   assert.match(rendered, /│ a {4}│ 文档 │/);
   assert.doesNotMatch(rendered, /https:/);
+});
+
+test("markdown styles follow the active appearance instead of freezing at import time", () => {
+  const renderer = new MarkdownStreamRenderer(() => 80);
+  const markdown = "我可以帮你：\n\n- 阅读、搜索、修改代码\n";
+
+  try {
+    setActiveColorLevel("truecolor");
+    resetThemeAppearance();
+    const darkOutput = renderer.render(markdown, true);
+    const darkTheme = getTheme();
+    assert.ok(darkOutput.includes(fgSeq(darkTheme.muted)), "dark 外观下列表符号用深色板 muted");
+    assert.ok(darkOutput.includes(fgSeq(darkTheme.foreground)), "dark 外观下 reset 恢复深色板正文");
+
+    assert.equal(setThemeAppearance("light"), true);
+    const lightOutput = renderer.render(markdown, true);
+    const lightTheme = getTheme();
+    assert.notEqual(lightTheme, darkTheme);
+    assert.ok(
+      lightOutput.includes(fgSeq(lightTheme.muted)),
+      "切到 light 后列表符号换成浅色板 muted",
+    );
+    assert.ok(
+      lightOutput.includes(fgSeq(lightTheme.foreground)),
+      "切到 light 后 reset 恢复浅色板正文（近黑），而不是深色板的浅灰",
+    );
+    assert.equal(
+      lightOutput.includes(fgSeq(darkTheme.muted)),
+      false,
+      "浅色板渲染不得残留深色板 muted",
+    );
+    assert.equal(
+      lightOutput.includes(fgSeq(darkTheme.foreground)),
+      false,
+      "浅色板渲染不得残留深色板 foreground",
+    );
+  } finally {
+    resetThemeAppearance();
+    resetActiveTheme();
+    resetActiveColorLevel();
+  }
 });

@@ -88,6 +88,9 @@ test("ansi256 sequences map RGB values to the xterm palette", () => {
   assert.equal(fgSeq("#ff0000"), "\x1b[38;5;196m");
   assert.equal(bgSeq("#000000"), "\x1b[48;5;16m");
   assert.equal(fgSeq("#f8f8f8"), "\x1b[38;5;255m");
+  // 近中性灰走 24 级灰阶，不进色立方（否则 #aab3c0 会量化成 175,215,215 的青灰）
+  assert.equal(fgSeq("#aab3c0"), "\x1b[38;5;249m");
+  assert.equal(fgSeq("#d9dee7"), "\x1b[38;5;254m");
   assert.match(paint.accent("HAJI"), /^\x1b\[38;5;201mHAJI/);
 });
 

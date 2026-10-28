@@ -21,6 +21,9 @@ test("immediate 指令：回合进行中直接执行", () => {
     "/effort low",
     "/theme",
     "/theme kero",
+    "/appearance",
+    "/appearance light",
+    "/appearance dark",
     "/cost",
     "/cost agent",
     "/help",
@@ -77,6 +80,7 @@ test("补全目录带出 immediate 标记（UI 与分发共用同一份元数据
   const catalog = buildSlashCommandCatalog();
   const byCommand = new Map(catalog.map((entry) => [entry.command, entry]));
   assert.equal(byCommand.get("/model")?.immediate, true);
+  assert.equal(byCommand.get("/appearance")?.immediate, true);
   assert.equal(byCommand.get("/cost")?.immediate, true);
   assert.equal(byCommand.get("/cost agent")?.immediate, true);
   assert.equal(byCommand.get("/cost config")?.immediate, false);
@@ -95,6 +99,7 @@ test("listImmediateCommands 覆盖声明过的顶层与成员指令", () => {
     "/model",
     "/effort",
     "/theme",
+    "/appearance",
     "/cost",
     "/sidebar",
     "/fold",

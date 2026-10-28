@@ -203,6 +203,12 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         immediate: {},
       },
       {
+        command: "/appearance",
+        description: "切换终端外观并记住：白底终端选 light（近黑文字），黑底选 dark",
+        argHint: "[light|dark]",
+        immediate: {},
+      },
+      {
         command: "/sidebar",
         description: "开关右侧会话信息栏（上下文 / 费用 / 任务 / 子代理）",
         argHint: "[on|off]",

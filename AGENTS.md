@@ -309,6 +309,35 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
   ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
 
+## 终端外观（dark / light）与 `/appearance`
+
+- **浅色板刻意是黑色系**：`LIGHT_THEME` 正文 `#111111`、`muted` `#3a3a3a`、`userMsgFg`
+  `#0f0f0f`（Kero 预设同理 `#131315` / `#3f3f3f`）。白底终端上「中灰字」对比度不足、
+  看久了疲劳，所以层次只靠明度（正文 18.9:1、muted 11.4:1、faint 6.6:1），不再靠降对比度。
+- 外观决定**用哪套内置调色板**，与预设（`default` / `kero`）正交；`getThemeAppearance()`
+  是唯一读点。
+- 探测优先级（`terminal-appearance.ts` 的 `detectTerminalAppearance`）：
+  `HAJI_THEME_APPEARANCE` 环境变量 → **用户持久化的 `theme.json.appearance`** →
+  `COLORFGBG` → OSC 11 查询 → 回退 `dark`。前两者是明确选择，命中即**完全不发查询**
+  （`preferred` 选项）；白底终端上 OSC 11 探测失败会退回 dark，把浅灰字压在白底上，
+  光调 muted 治不了本，必须切浅色板。
+- `/appearance [light|dark]` 是**立即指令**（`cli-help.ts` 的 `immediate: {}`，args 任意），
+  无参显示当前外观；切换后 `setThemeAppearance` + `persistThemeAppearance` + `ui.forceRedraw()`，
+  写进**用户级** `~/.haji/theme.json` 的 `appearance` 字段（与 `/theme` 写的 `preset` 共用文件、
+  `writeUserThemeConfig` 合并写回，互不覆盖）。项目级同名段刻意忽略：外观是「这台终端」的事实，
+  不该被克隆来的仓库配置改掉。
+- **Markdown 的样式字典必须按主题重建**：`markdown-renderer.ts` 的 `ANSI = buildAnsiStyles()`
+  曾经是模块加载期一次性构建，而该模块在启动早期就被 import（那时外观还没探测完），
+  于是白底终端上列表符号 `•` 仍是深色板的 muted，`ANSI.reset` 更把后续正文刷成深色板
+  foreground `#d9dee7`（白底上的浅灰字）——「我可以帮你之后全是灰的」就是这个。
+  现在 `ANSI` 是 `let`，`render()` 开头调 `refreshAnsiStyles()` 按 `getTheme()` 身份 +
+  `getColorLevel()` 比对后重建。**新增任何模块级的颜色常量都要先确认它在调用时取值**
+  （`terminal-text.ts` 的 `SEQ` 用 getter，`theme.ts` 的 `fgSeq`/`themeReset` 是函数，都没问题）。
+- 测试：`terminal-appearance.test.mjs`（持久化读写、`preferred` 跳过探测、env 覆盖优先）、
+  `contrast.test.mjs`（浅色板近黑与对比度下限）、`immediate-command.test.mjs`（立即通道口径）、
+  `hub-commands.test.mjs`（config 菜单项）、`markdown-responsive.test.mjs`
+  （深色→浅色切换后 Markdown 不残留深色板颜色）。
+
 ## 选区与复制（行号必须与屏幕逐行一致）
 
 - `getSelectionLayout()`（terminal-input.ts）是**复制与拖选唯一的坐标源**：`sealedSegments`

@@ -236,12 +236,16 @@ import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitiz
 import { terminalTitle } from "./terminal-title.js";
 import {
   colors,
+  getThemeAppearance,
   getThemePreset,
   listThemePresets,
+  persistThemeAppearance,
   persistThemePreset,
+  readThemeAppearance,
   setThemeAppearance,
   setThemePreset,
   THEME_PRESET_NAMES,
+  type ThemeAppearance,
   type ThemePresetName,
 } from "./theme.js";
 import { createToolCallBatches, runToolCallBatch, type ToolBatchOptions } from "./tool-batch.js";
@@ -373,11 +377,13 @@ async function main() {
     else console.log(message);
   };
 
-  // 终端外观探测：haji 不再绘制整屏底色（背景交给终端，与 pi 一致），
-  // 因此必须先知道终端底色是深是浅，才能在前缀帧就用对调色板。
+  // 终端外观：haji 不绘制整屏底色（背景交给终端，与 pi 一致），所以必须先知道
+  // 终端底色是深是浅，才能在前缀帧就用对调色板。优先级是「用户在 `/appearance`
+  // 里记住的选择（`~/.haji/theme.json` 的 `appearance`）> 自动探测」：白底终端上
+  // OSC 11 探测失败会回退 dark，把浅灰字压在白底上，光靠探测不可靠。
   // 失败/超时一律回退深色，绝不阻断启动。
   try {
-    setThemeAppearance(await detectTerminalAppearance());
+    setThemeAppearance(await detectTerminalAppearance({ preferred: readThemeAppearance() }));
   } catch {
     // 探测失败保持内置深色调色板。
   }
@@ -2689,6 +2695,43 @@ async function main() {
     immediateWriteLine(colors.okLine(`已切换到 ${reasoningEffort}，当前会话历史已保留。`));
   };
 
+  /**
+   * `/appearance [light|dark]`：切换终端外观并写进用户级 theme.json。
+   *
+   * 白底终端上的「字太灰」根因往往不是调色板而是外观判成了 dark，
+   * 光调 muted 治不了本；这条指令让用户一次性把底色事实告诉 haji，
+   * 之后启动都跳过自动探测（探测失败会退回 dark）。
+   */
+  const runAppearanceCommand = (words: readonly string[]): void => {
+    const label = (appearance: ThemeAppearance): string =>
+      appearance === "light"
+        ? "浅色外观（近黑文字，适合白底终端）"
+        : "深色外观（浅色文字，适合黑底终端）";
+    const arg = words[1]?.toLowerCase();
+    if (arg === undefined) {
+      immediateWriteLine(colors.okLine(`当前：${label(getThemeAppearance())}。`));
+      immediateWriteLine(
+        colors.gray("切换：/appearance light | dark（选择会写进 ~/.haji/theme.json）"),
+      );
+      return;
+    }
+    if (arg !== "light" && arg !== "dark") {
+      immediateWriteLine(colors.failLine("用法：/appearance [light|dark]（无参显示当前外观）"));
+      return;
+    }
+    const appearance = arg as ThemeAppearance;
+    const changed = setThemeAppearance(appearance);
+    persistThemeAppearance(appearance);
+    ui.forceRedraw();
+    immediateWriteLine(
+      changed
+        ? colors.okLine(
+            `已切换到${label(appearance)}，已记住，下次启动沿用（历史消息保留旧配色）。`,
+          )
+        : colors.gray(`当前已是${label(appearance)}。`),
+    );
+  };
+
   const runThemeCommand = async (parts: readonly string[]): Promise<void> => {
     let presetArg = parts[1]?.toLowerCase();
     const currentPreset = getThemePreset();
@@ -2788,6 +2831,7 @@ async function main() {
       if (command === "model") await runModelCommand();
       else if (command === "effort") await runEffortCommand(words);
       else if (command === "theme") await runThemeCommand(words);
+      else if (command === "appearance") runAppearanceCommand(words);
       else if (command === "cost") await runCostCommand(words);
       else if (command === "help") printSessionHelp();
       else if (command === "sidebar") runSidebarCommand(words);
@@ -4304,6 +4348,10 @@ async function main() {
         }
         if (command === "theme") {
           await runThemeCommand(parts);
+          continue;
+        }
+        if (command === "appearance") {
+          runAppearanceCommand(parts);
           continue;
         }
         if (command === "image") {

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -12,6 +15,9 @@ import {
   bgSeq,
   fgSeq,
   getTheme,
+  persistThemeAppearance,
+  persistThemePreset,
+  readThemeAppearance,
   resetActiveColorLevel,
   resetActiveTheme,
   resetThemeAppearance,
@@ -123,4 +129,60 @@ test("switching appearance swaps the palette but keeps the terminal background",
 
   resetThemeAppearance();
   resetActiveColorLevel();
+});
+
+/** 隔离 HOME/USERPROFILE 执行回调，避免测试碰到真实 ~/.haji/theme.json。 */
+async function withIsolatedHome(run) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "haji-appearance-"));
+  const previousHome = process.env.HOME;
+  const previousProfile = process.env.USERPROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return await run(home);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousProfile;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test("persisted appearance survives restarts and shares theme.json with the preset", async () => {
+  await withIsolatedHome(async (home) => {
+    assert.equal(readThemeAppearance(), undefined, "默认没有记住任何外观");
+
+    persistThemeAppearance("light");
+    assert.equal(readThemeAppearance(), "light");
+
+    // 与 /theme 写的 preset 共用同一个文件，互不覆盖。
+    persistThemePreset("kero");
+    assert.equal(readThemeAppearance(), "light");
+    const saved = JSON.parse(fs.readFileSync(path.join(home, ".haji", "theme.json"), "utf8"));
+    assert.deepEqual(saved, { appearance: "light", preset: "kero" });
+  });
+});
+
+test("a persisted appearance skips probing the terminal entirely", async () => {
+  const input = fakeInput();
+  const written = [];
+  const appearance = await detectTerminalAppearance({
+    input,
+    output: { isTTY: true, write: (chunk) => written.push(chunk) },
+    env: {},
+    preferred: "light",
+    timeoutMs: 500,
+  });
+
+  // 白底终端里 OSC 11 可能没人回话：有 persisted 值就不该发查询、更不该回退 dark。
+  assert.equal(appearance, "light");
+  assert.deepEqual(written, []);
+  assert.equal(input.rawHistory.length, 0);
+
+  // 环境变量仍是最高优先级的一次性覆盖。
+  assert.equal(
+    await detectTerminalAppearance({ preferred: "light", env: { HAJI_THEME_APPEARANCE: "dark" } }),
+    "dark",
+  );
 });

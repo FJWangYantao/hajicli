@@ -70,6 +70,7 @@ test("each hub maps its members to menu items without re-entering itself", () =>
       "/worktree",
       "/provider",
       "/theme",
+      "/appearance",
       "/sidebar",
       "/fold",
       "/think",

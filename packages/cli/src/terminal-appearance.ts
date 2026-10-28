@@ -10,9 +10,10 @@ import type { ThemeAppearance } from "./theme.js";
  *
  * 探测顺序（先快后准）：
  *   1. 显式覆盖：环境变量 HAJI_THEME_APPEARANCE=dark|light
- *   2. COLORFGBG（rxvt / 部分终端）尾部颜色索引
- *   3. OSC 11 查询终端默认背景色（`\x1b]11;?\x07`），按相对亮度判定
- *   4. 全部失败时回退 dark（与历史行为一致）
+ *   2. 用户持久化的外观（theme.json 的 `appearance`，由 `/appearance` 写入）
+ *   3. COLORFGBG（rxvt / 部分终端）尾部颜色索引
+ *   4. OSC 11 查询终端默认背景色（`\x1b]11;?\x07`），按相对亮度判定
+ *   5. 全部失败时回退 dark（与历史行为一致）
  */
 
 /** 单次探测的默认超时：终端通常在毫秒级回复，超时即放弃并回退。 */
@@ -54,12 +55,20 @@ export function parseOsc11Reply(value: string): ThemeAppearance | undefined {
   return rgb ? appearanceFromBackgroundColor(rgb) : undefined;
 }
 
+/** 环境变量里显式指定的外观（HAJI_THEME_APPEARANCE）；没有则 undefined。 */
+function forcedAppearanceFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): ThemeAppearance | undefined {
+  const forced = env.HAJI_THEME_APPEARANCE?.trim().toLowerCase();
+  return forced === "dark" || forced === "light" ? forced : undefined;
+}
+
 /** 从环境变量推断外观；无可用信息时返回 undefined。 */
 export function detectAppearanceFromEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): ThemeAppearance | undefined {
-  const forced = env.HAJI_THEME_APPEARANCE?.trim().toLowerCase();
-  if (forced === "dark" || forced === "light") return forced;
+  const forced = forcedAppearanceFromEnv(env);
+  if (forced) return forced;
 
   // COLORFGBG 形如 "15;0"：最后一个字段是背景的 ANSI 索引。
   const fgbg = env.COLORFGBG?.split(";").at(-1)?.trim();
@@ -73,6 +82,11 @@ export function detectAppearanceFromEnv(
 export interface DetectAppearanceOptions {
   /** 超时毫秒数；超时则回退到环境变量或 dark。 */
   timeoutMs?: number;
+  /**
+   * 用户持久化的外观（`/appearance` 写入 theme.json 的值）。
+   * 有值时跳过所有启发式探测：用户已经明确告诉过我们终端底色，没必要再猜。
+   */
+  preferred?: ThemeAppearance;
   /** 注入 stdin（测试用）。 */
   input?: Pick<NodeJS.ReadStream, "isTTY" | "isRaw" | "setRawMode" | "resume" | "on" | "off">;
   /** 注入 stdout（测试用）。 */
@@ -82,7 +96,12 @@ export interface DetectAppearanceOptions {
 }
 
 /**
- * 探测终端外观：先看环境变量，再向终端查询默认背景色。
+ * 探测终端外观：先看显式设置，再向终端查询默认背景色。
+ *
+ * 优先级：`HAJI_THEME_APPEARANCE` 环境变量 > 用户持久化的 `appearance`
+ * > COLORFGBG > OSC 11 查询 > 回退 dark。前两者都是用户的明确选择，
+ * 有值时完全跳过启发式探测（探测在部分终端/ssh/tmux 组合里会失败，
+ * 一旦失败回退成 dark，白底终端上就变成浅灰字压白底）。
  *
  * 查询需要临时进入 raw mode（否则行缓冲会吞掉没有换行的回复），
  * 结束后立即恢复原来的模式；整个探测是尽力而为的，任何失败都回退 dark。
@@ -92,10 +111,15 @@ export async function detectTerminalAppearance(
 ): Promise<ThemeAppearance> {
   const {
     timeoutMs = DEFAULT_QUERY_TIMEOUT_MS,
+    preferred,
     input = stdin,
     output = stdout,
     env = process.env,
   } = options;
+
+  const forced = forcedAppearanceFromEnv(env);
+  if (forced) return forced;
+  if (preferred) return preferred;
 
   const fromEnv = detectAppearanceFromEnv(env);
   if (fromEnv) return fromEnv;

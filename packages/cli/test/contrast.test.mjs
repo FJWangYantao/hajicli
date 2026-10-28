@@ -54,13 +54,17 @@ test("built-in palettes already satisfy the contrast floor", () => {
   resetActiveTheme();
   const dark = getTheme();
   assert.equal(dark.foreground, "#d9dee7");
-  assert.equal(dark.muted, "#8f98a5");
+  assert.equal(dark.muted, "#b4b4b4");
   assert.equal(dark.accent, "#a995d6");
 
   setThemeAppearance("light");
   const light = getTheme();
-  assert.equal(light.foreground, "#242b36");
+  // 浅色板刻意压到近黑：白底上的中灰字看久了对比度不足、容易疲劳。
+  assert.equal(light.foreground, "#111111");
+  assert.equal(light.muted, "#3a3a3a");
   assert.equal(light.accent, "#6b4fc4");
+  assert.ok(hexContrastRatio(light.foreground, "#ffffff") >= 15);
+  assert.ok(hexContrastRatio(light.muted, "#ffffff") >= 9);
 
   resetThemeAppearance();
   resetActiveTheme();
