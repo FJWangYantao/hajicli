@@ -155,17 +155,7 @@ import {
   savePermissionRule,
   saveUserPathRule,
 } from "./permission-rules.js";
-import {
-  detectProjectCheckCommand,
-  detectShellFileWrites,
-  diagnosticsMentionFile,
-  formatSelfProjectSkipHint,
-  formatVerificationNotice,
-  formatVerificationTimeoutHint,
-  isSelfProject,
-  runProjectCheck,
-  shouldPushVerificationNotice,
-} from "./post-edit-verify.js";
+import { detectProjectCheckCommand, isSelfProject, PostEditVerifier } from "./post-edit-verify.js";
 import { createPricingCommands } from "./pricing-commands.js";
 import { handleProviderCommand, type ProviderCommandContext } from "./provider-commands.js";
 import {
@@ -842,55 +832,10 @@ async function main() {
   });
 
   // 2. 注册 PostToolUse Hook：用于 Trace 轨迹审计收集与自动 Git 快照生成
-  // 编辑后验证（LSP 轻量版）：主 Agent 的 write/edit 成功后跑项目 typecheck，
-  // 诊断以系统消息注入会话，模型在下一次调用时可见并自纠。带冷却时间防编辑连发拖慢回合。
-  let postEditVerifyCommand: string | undefined | null = null;
-  let postEditVerifyLastRunAt = 0;
-  // 最近一次注入的验证结论：同一结论在窗口内不重复注入，避免系统消息把上下文刷满。
-  let lastPostEditNotice: { text: string; at: number } | undefined;
-  // 最近一次验证结果（回合小结的“类型检查 ✓/✕”数据源；按时间戳只统计本回合触发的）。
-  let lastPostEditCheck: { ok: boolean; at: number } | undefined;
-  // 超时/跳过只做一次界面提示：模型没拿到诊断，就不该往上下文里塞消息。
-  let lastPostEditHint = "";
-  const POST_EDIT_VERIFY_COOLDOWN_MS = 10_000;
-  const showPostEditHint = (hint: string): void => {
-    if (lastPostEditHint === hint) return;
-    lastPostEditHint = hint;
-    ui.writeLine(colors.muted(hint));
-  };
-  /** editedPaths 为空表示改了文件但不知道是哪些（例如 `xargs sed -i`）：诊断一律视为相关。 */
-  const maybeRunPostEditVerify = async (
-    editedPaths: readonly string[],
-  ): Promise<string | undefined> => {
-    if (postEditVerifyCommand === null) {
-      postEditVerifyCommand = detectProjectCheckCommand(process.cwd());
-    }
-    if (!postEditVerifyCommand) return undefined;
-    // 显式指定命令时由用户承担风险；否则在 haji 自身仓库跳过，避免构建覆盖运行中的 dist。
-    const explicitVerify = Boolean(
-      process.env.HAJI_POST_EDIT_VERIFY?.trim() && process.env.HAJI_POST_EDIT_VERIFY.trim() !== "0",
-    );
-    if (!explicitVerify && isSelfProject(process.cwd())) {
-      showPostEditHint(formatSelfProjectSkipHint());
-      return undefined;
-    }
-    const now = Date.now();
-    if (now - postEditVerifyLastRunAt < POST_EDIT_VERIFY_COOLDOWN_MS) return undefined;
-    postEditVerifyLastRunAt = now;
-    const result = await runProjectCheck(postEditVerifyCommand, process.cwd());
-    // 一条 bash 可能改了多个文件：优先拿诊断里点名的那个去判断相关性。
-    const editedPath =
-      editedPaths.find((file) => diagnosticsMentionFile(result.output, file)) ?? editedPaths[0];
-    // 小结里的「类型检查 ✕」只统计与本次编辑相关的诊断，避免被项目既有问题带偏。
-    const relevantFailure =
-      !result.ok && (!editedPath || diagnosticsMentionFile(result.output, editedPath));
-    lastPostEditCheck = { ok: !relevantFailure, at: Date.now() };
-    if (result.timedOut) {
-      showPostEditHint(formatVerificationTimeoutHint(postEditVerifyCommand));
-      return undefined;
-    }
-    return formatVerificationNotice(result, postEditVerifyCommand, editedPath);
-  };
+  // 编辑后验证（LSP 轻量版）：write/edit 与 bash 写源码成功后跑项目检查，诊断注入会话。
+  const postEditVerifier = new PostEditVerifier({
+    showHint: (hint) => ui.writeLine(colors.muted(hint)),
+  });
   hookEngine.register("PostToolUse", async (ctx) => {
     const isApproved =
       !ctx.toolOutput?.startsWith("错误:") && !ctx.toolOutput?.startsWith("[安全引擎拒绝拦截]");
@@ -912,29 +857,13 @@ async function main() {
       agentId: ctx.agentId,
       depth: ctx.depth,
     });
-    // bash 里的 `sed -i` / 重定向写源码同样要验证：否则模型一条 sed 批量改名，钩子从不触发。
-    const shellWrites =
-      !ctx.agentId && ctx.toolName === "bash" && typeof ctx.args?.command === "string"
-        ? detectShellFileWrites(ctx.args.command)
-        : undefined;
-    const editedPaths =
-      !ctx.agentId && (ctx.toolName === "write" || ctx.toolName === "edit")
-        ? typeof ctx.args?.path === "string"
-          ? [ctx.args.path]
-          : []
-        : shellWrites && (shellWrites.files.length > 0 || shellWrites.opaque)
-          ? shellWrites.opaque
-            ? []
-            : shellWrites.files
-          : undefined;
-    if (editedPaths && ctx.toolOutput && isApproved && !isFailedToolOutput(ctx.toolOutput)) {
-      const notice = await maybeRunPostEditVerify(editedPaths);
-      const now = Date.now();
-      if (notice && shouldPushVerificationNotice(lastPostEditNotice, notice, now)) {
-        lastPostEditNotice = { text: notice, at: now };
-        messages.push({ role: "system", content: notice });
-      }
-    }
+    const notice = await postEditVerifier.afterToolUse({
+      toolName: ctx.toolName,
+      args: ctx.args,
+      agentId: ctx.agentId,
+      succeeded: Boolean(ctx.toolOutput) && isApproved && !isFailedToolOutput(ctx.toolOutput || ""),
+    });
+    if (notice) messages.push({ role: "system", content: notice });
   });
 
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
@@ -3286,10 +3215,7 @@ async function main() {
     startBackgroundInput,
     flushImmediateEffects,
     getCostSnapshot: () => costTracker.getSummary(),
-    getLastTypeCheck: (sinceMs) =>
-      lastPostEditCheck && lastPostEditCheck.at >= sinceMs
-        ? { ok: lastPostEditCheck.ok }
-        : undefined,
+    getLastTypeCheck: (sinceMs) => postEditVerifier.lastCheckSince(sinceMs),
     listOwnedChanges: (sinceMs) => snapshotEngine.listOwnedChanges(sinceMs),
     notifyUserAttention,
     onTurnFinished: (durationMs) => {

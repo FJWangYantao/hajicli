@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 
-import { detectShellFileWrites } from "../dist/post-edit-verify.js";
+import {
+  detectShellFileWrites,
+  editedPathsForTool,
+  PostEditVerifier,
+} from "../dist/post-edit-verify.js";
 
 /**
  * bash 写源码也要触发编辑后验证：写路径基准里重命名任务一条 `sed -i` 就完成，
@@ -46,11 +49,74 @@ test("只读命令、日志重定向与引号里的文本不触发验证", () =>
   }
 });
 
-test("PostToolUse 钩子对 bash 写源码同样跑编辑后验证", () => {
-  const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(
-    source,
-    /ctx\.toolName === "bash"[\s\S]{0,120}detectShellFileWrites\(ctx\.args\.command\)/,
+test("PostEditVerifier：bash 写源码触发验证，只读命令、子代理与失败调用不触发", async () => {
+  const runs = [];
+  const hints = [];
+  let clock = 1_000_000;
+  const verifier = new PostEditVerifier({
+    showHint: (hint) => hints.push(hint),
+    cwd: () => "/tmp/not-haji",
+    env: { HAJI_POST_EDIT_VERIFY: "npm run typecheck" },
+    cooldownMs: 0,
+    now: () => clock++,
+    runCheck: async (command, cwd) => {
+      runs.push({ command, cwd });
+      return { ok: false, timedOut: false, output: "src/a.ts(3,1): error TS2304" };
+    },
+  });
+
+  assert.equal(
+    await verifier.afterToolUse({ toolName: "bash", args: { command: "ls src" }, succeeded: true }),
+    undefined,
   );
-  assert.match(source, /maybeRunPostEditVerify\(editedPaths\)/);
+  assert.equal(
+    await verifier.afterToolUse({
+      toolName: "bash",
+      args: { command: "sed -i s/a/b/ src/a.ts" },
+      agentId: "sub-1",
+      succeeded: true,
+    }),
+    undefined,
+  );
+  assert.equal(
+    await verifier.afterToolUse({
+      toolName: "edit",
+      args: { path: "src/a.ts" },
+      succeeded: false,
+    }),
+    undefined,
+  );
+  assert.equal(runs.length, 0);
+
+  const notice = await verifier.afterToolUse({
+    toolName: "bash",
+    args: { command: "sed -i s/a/b/ src/a.ts src/b.ts" },
+    succeeded: true,
+  });
+  assert.equal(runs.length, 1);
+  assert.match(notice, /\[编辑后验证\] npm run typecheck 发现以下问题/);
+  assert.equal(verifier.lastCheckSince(0)?.ok, false);
+
+  // 同一结论在窗口内不重复注入（但仍会跑检查）。
+  const repeat = await verifier.afterToolUse({
+    toolName: "edit",
+    args: { path: "src/a.ts" },
+    succeeded: true,
+  });
+  assert.equal(runs.length, 2);
+  assert.equal(repeat, undefined);
+  assert.deepEqual(hints, []);
+});
+
+test("editedPathsForTool：write/edit 取 path，bash 走写入识别，opaque 记为空数组", () => {
+  assert.deepEqual(editedPathsForTool("write", { path: "a.ts" }), ["a.ts"]);
+  assert.deepEqual(editedPathsForTool("edit", {}), []);
+  assert.deepEqual(editedPathsForTool("bash", { command: "cat > b.ts <<EOF\nx\nEOF" }), ["b.ts"]);
+  assert.deepEqual(
+    editedPathsForTool("bash", { command: "grep -rl a . | xargs sed -i s/a/b/" }),
+    [],
+  );
+  assert.equal(editedPathsForTool("bash", { command: "npm test > out.log" }), undefined);
+  assert.equal(editedPathsForTool("read", { path: "a.ts" }), undefined);
+  assert.equal(editedPathsForTool("write", { path: "a.ts" }, "sub"), undefined);
 });

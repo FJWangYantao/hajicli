@@ -347,3 +347,125 @@ export function formatVerificationTimeoutHint(command: string): string {
 export function formatSelfProjectSkipHint(): string {
   return "编辑后验证：当前仓库就是正在运行的 haji 本身，已跳过（避免构建覆盖运行中的 dist）。";
 }
+
+/**
+ * 一次工具调用改了哪些文件（编辑后验证的触发判定）。
+ * 返回 undefined 表示不触发；空数组表示改了文件但不知道是哪些（诊断一律视为相关）。
+ * 只看主 Agent：子代理的编辑由它自己的验证流程负责。
+ */
+export function editedPathsForTool(
+  toolName: string | undefined,
+  args: Record<string, unknown> | undefined,
+  agentId?: string,
+): string[] | undefined {
+  if (agentId) return undefined;
+  if (toolName === "write" || toolName === "edit") {
+    return typeof args?.path === "string" ? [args.path] : [];
+  }
+  // bash 里的 `sed -i` / 重定向写源码同样要验证：否则模型一条 sed 批量改名，钩子从不触发。
+  if (toolName === "bash" && typeof args?.command === "string") {
+    const writes = detectShellFileWrites(args.command);
+    if (writes.opaque) return [];
+    return writes.files.length > 0 ? writes.files : undefined;
+  }
+  return undefined;
+}
+
+export interface PostEditVerifierOptions {
+  /** 超时 / 自身仓库跳过这类只给人看的提示（不进模型上下文）。 */
+  showHint(hint: string): void;
+  cwd?: () => string;
+  env?: NodeJS.ProcessEnv;
+  cooldownMs?: number;
+  now?: () => number;
+  runCheck?: typeof runProjectCheck;
+}
+
+/**
+ * 编辑后验证（LSP 轻量版）的会话级编排：主 Agent 改完文件后跑项目检查，
+ * 诊断交给调用方作为系统消息注入，模型在下一次调用时可见并自纠。
+ *
+ * 带冷却时间防编辑连发拖慢回合；同一结论在窗口内不重复注入；
+ * 超时/跳过只做一次界面提示——模型没拿到诊断，就不该往上下文里塞消息。
+ */
+export class PostEditVerifier {
+  private command: string | undefined | null = null;
+  private lastRunAt = 0;
+  private lastNotice: { text: string; at: number } | undefined;
+  private lastCheck: { ok: boolean; at: number } | undefined;
+  private lastHint = "";
+  private readonly cwd: () => string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly cooldownMs: number;
+  private readonly now: () => number;
+  private readonly runCheck: typeof runProjectCheck;
+
+  constructor(private readonly options: PostEditVerifierOptions) {
+    this.cwd = options.cwd ?? (() => process.cwd());
+    this.env = options.env ?? process.env;
+    this.cooldownMs = options.cooldownMs ?? 10_000;
+    this.now = options.now ?? Date.now;
+    this.runCheck = options.runCheck ?? runProjectCheck;
+  }
+
+  /**
+   * 工具调用成功之后调用；返回需要注入会话的诊断（已去重），没有就是 undefined。
+   * `succeeded` 由调用方按工具回执判定（被拒、报错的调用不验证）。
+   */
+  async afterToolUse(input: {
+    toolName?: string;
+    args?: Record<string, unknown>;
+    agentId?: string;
+    succeeded: boolean;
+  }): Promise<string | undefined> {
+    if (!input.succeeded) return undefined;
+    const editedPaths = editedPathsForTool(input.toolName, input.args, input.agentId);
+    if (!editedPaths) return undefined;
+    const notice = await this.verify(editedPaths);
+    const now = this.now();
+    if (!notice || !shouldPushVerificationNotice(this.lastNotice, notice, now)) return undefined;
+    this.lastNotice = { text: notice, at: now };
+    return notice;
+  }
+
+  /** 回合小结的「类型检查 ✓/✕」：只认 sinceMs 之后触发的那次验证。 */
+  lastCheckSince(sinceMs: number): { ok: boolean } | undefined {
+    return this.lastCheck && this.lastCheck.at >= sinceMs ? { ok: this.lastCheck.ok } : undefined;
+  }
+
+  private showHint(hint: string): void {
+    if (this.lastHint === hint) return;
+    this.lastHint = hint;
+    this.options.showHint(hint);
+  }
+
+  /** editedPaths 为空表示改了文件但不知道是哪些（例如 `xargs sed -i`）：诊断一律视为相关。 */
+  private async verify(editedPaths: readonly string[]): Promise<string | undefined> {
+    const cwd = this.cwd();
+    if (this.command === null) this.command = detectProjectCheckCommand(cwd, this.env);
+    const command = this.command;
+    if (!command) return undefined;
+    // 显式指定命令时由用户承担风险；否则在 haji 自身仓库跳过，避免构建覆盖运行中的 dist。
+    const override = this.env.HAJI_POST_EDIT_VERIFY?.trim();
+    if (!(override && override !== "0") && isSelfProject(cwd)) {
+      this.showHint(formatSelfProjectSkipHint());
+      return undefined;
+    }
+    const startedAt = this.now();
+    if (startedAt - this.lastRunAt < this.cooldownMs) return undefined;
+    this.lastRunAt = startedAt;
+    const result = await this.runCheck(command, cwd);
+    // 一条 bash 可能改了多个文件：优先拿诊断里点名的那个去判断相关性。
+    const editedPath =
+      editedPaths.find((file) => diagnosticsMentionFile(result.output, file)) ?? editedPaths[0];
+    // 小结里的「类型检查 ✕」只统计与本次编辑相关的诊断，避免被项目既有问题带偏。
+    const relevantFailure =
+      !result.ok && (!editedPath || diagnosticsMentionFile(result.output, editedPath));
+    this.lastCheck = { ok: !relevantFailure, at: this.now() };
+    if (result.timedOut) {
+      this.showHint(formatVerificationTimeoutHint(command));
+      return undefined;
+    }
+    return formatVerificationNotice(result, command, editedPath);
+  }
+}

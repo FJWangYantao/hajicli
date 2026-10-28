@@ -381,7 +381,7 @@ test("index.ts wires the new feature batch end to end", () => {
   assert.ok(source.includes("promptAttachments:"), "附件传入回合");
   // post-edit 验证
   assert.ok(source.includes("detectProjectCheckCommand"), "编辑后验证探测");
-  assert.ok(source.includes("maybeRunPostEditVerify"), "冷却式验证执行");
+  assert.ok(source.includes("postEditVerifier.afterToolUse("), "冷却式验证执行");
 });
 
 test("turn-runner reports usage and passes attachments through", () => {
