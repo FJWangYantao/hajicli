@@ -96,7 +96,11 @@ function createHarness(executor, { stream } = {}) {
       getWidth: () => 80,
     }),
     tracker: { recordUserInput() {}, recordToolBatch() {} },
-    sessionManager: { saveCurrentSession() {}, generateTitleAsync: async () => {} },
+    sessionManager: {
+      saveCurrentSession() {},
+      flush: async () => {},
+      generateTitleAsync: async () => {},
+    },
     skillRegistry: { restoreScopeFromMessages() {} },
     snapshotEngine: { createAnchor: () => "snap-1" },
     hookEngine: { trigger: async () => {} },
@@ -137,7 +141,7 @@ function createHarness(executor, { stream } = {}) {
       commandInput: "跑个命令",
       promptDisplayStartOffset: 0,
     });
-  return { chat, messages, esc: () => escHandler?.(), live: () => liveTail, start };
+  return { chat, messages, deps, esc: () => escHandler?.(), live: () => liveTail, start };
 }
 
 test("执行中按 Esc：工具格以 ⊘ 留在对话区，不凭空消失", async () => {
@@ -171,6 +175,77 @@ test("执行中按 Esc：工具格以 ⊘ 留在对话区，不凭空消失", as
   // 模型侧的消息拓扑不变：被中止的调用仍补一条跳过结果。
   const toolMessage = harness.messages.find((message) => message.role === "tool");
   assert.match(toolMessage.content, /已跳过/);
+});
+
+test("取消工具后立即继续：旧调用有配对结果，下一轮能正常完成", async () => {
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const harness = createHarness(
+    (_name, _args, context) =>
+      new Promise((resolve) => {
+        started();
+        context.abortSignal.addEventListener("abort", () => resolve(undefined), { once: true });
+      }),
+  );
+  const first = harness.start();
+  await ready;
+  harness.esc();
+  await first;
+  const calls = harness.messages.flatMap((message) => message.tool_calls ?? []);
+  for (const call of calls) {
+    assert.equal(harness.messages.filter((message) => message.tool_call_id === call.id).length, 1);
+  }
+  await harness.start();
+  assert.equal(harness.messages.at(-1).content, "好的");
+  assert.equal(harness.messages.filter((message) => message.role === "user").length, 2);
+});
+
+test("请求前取消：不提交 prompt，回填后可以重新发送", async () => {
+  const harness = createHarness(async () => ({ output: "done", duration: 1 }));
+  let submitted = 0;
+  harness.deps.tracker.recordUserInput = () => {
+    submitted += 1;
+  };
+  harness.deps.hookEngine.trigger = async (name) => {
+    if (name === "UserPromptSubmit") harness.esc();
+  };
+  await harness.start();
+  assert.equal(submitted, 0);
+  assert.deepEqual(harness.messages, []);
+  assert.deepEqual(harness.deps.deferredInputDrafts, ["跑个命令"]);
+  harness.deps.hookEngine.trigger = async () => {};
+  await harness.start();
+  assert.equal(submitted, 1);
+  assert.equal(harness.messages.at(-1).content, "好的");
+});
+
+test("正文生成中取消：保留部分输出供下一轮继续", async () => {
+  let harness;
+  let requests = 0;
+  harness = createHarness(
+    async () => {
+      throw new Error("不应执行工具");
+    },
+    {
+      stream: async function* (_messages, options) {
+        options.onRequestStart?.();
+        requests += 1;
+        if (requests === 1) {
+          yield "已完成的部分";
+          harness.esc();
+        } else {
+          assert.ok(_messages.some((message) => message.content === "已完成的部分"));
+          yield "继续完成";
+        }
+      },
+    },
+  );
+  await harness.start();
+  assert.equal(harness.messages.at(-1).content, "已完成的部分");
+  await harness.start();
+  assert.equal(harness.messages.at(-1).content, "继续完成");
 });
 
 test("授权卡片上按 Esc（取消错误）：工具格同样以 ⊘ 留在对话区", async () => {

@@ -189,9 +189,15 @@ export async function* parseOpenAICompatibleStream(
 
     if (!streamDone && buffer.trim()) {
       const event = consumeLine(buffer);
+      if (event.done) streamDone = true;
       if (event.content) yield event.content;
     }
 
+    // HTTP 正常 EOF 不等于模型完成：代理断流可能没有抛网络异常。
+    // 兼容只发 finish_reason 或只发 [DONE] 的服务，二者都缺失才判为中断。
+    if (!streamDone && !finishReason) {
+      throw new ProviderError("模型响应流提前结束，已接收的内容可能不完整。", provider);
+    }
     completion.onFinish?.({ reason: finishReason });
     const completedToolCalls = toolCalls.filter((toolCall): toolCall is ToolCall =>
       Boolean(toolCall),

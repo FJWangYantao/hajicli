@@ -110,11 +110,14 @@ export function estimateMessagesTokens(
 }
 
 /**
- * Removes protocol-invalid tool exchanges without inventing tool results.
- * A tool-calling assistant message is valid only when the immediately following
- * tool messages contain exactly one result for every declared tool call ID.
+ * 修复工具调用配对：默认删除不完整交换，供压缩裁剪使用。
+ * 故障恢复可选择保留合法调用和已有结果，将缺失回执标记为状态未知。
+ * 每条调用后必须恰好有一个对应结果；非法参数仍按默认规则移除。
  */
-export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
+export function repairToolCallPairs(
+  messages: ChatMessage[],
+  options: { preserveIncomplete?: boolean } = {},
+): ChatMessage[] {
   const repaired: ChatMessage[] = [];
   let changed = false;
 
@@ -150,6 +153,26 @@ export function repairToolCallPairs(messages: ChatMessage[]): ChatMessage[] {
         seen.size === expected.size;
       if (complete) {
         repaired.push(message, ...validToolMessages);
+      } else if (
+        options.preserveIncomplete &&
+        callsAreValid &&
+        expectedIds.length === toolCalls.length &&
+        expected.size === toolCalls.length
+      ) {
+        // 故障恢复保留已完成结果；缺回执不代表没有执行，不能自动重放写操作。
+        // 压缩裁剪仍采用默认删除语义，避免把主动裁剪误报成故障。
+        changed = true;
+        repaired.push(message, ...validToolMessages);
+        for (const id of expectedIds) {
+          if (!seen.has(id)) {
+            repaired.push({
+              role: "tool",
+              tool_call_id: id,
+              content:
+                "[工具执行状态未知：上次会话中断，未保存此调用的结果。操作可能已执行；请先核实文件或外部状态，再决定是否重试，勿直接重复写入或外部操作。]",
+            });
+          }
+        }
       } else {
         changed = true;
         if (message.content.trim() || message.reasoning_content) {

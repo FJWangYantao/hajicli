@@ -114,6 +114,51 @@ test("parallel tool calls report their own index while streaming", async () => {
   );
 });
 
+test("提前 EOF 不交付未确认完成的工具调用", async () => {
+  let calls = 0;
+  let finished = 0;
+  await assert.rejects(
+    collect(
+      streamResponse([
+        sseLine({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "write-1",
+                    function: { name: "write", arguments: '{"path":"a","content":"b"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ]),
+      { onToolCall: () => calls++, onFinish: () => finished++ },
+    ),
+    /提前结束/,
+  );
+  assert.equal(calls, 0);
+  assert.equal(finished, 0);
+});
+
+for (const ending of [
+  "data: [DONE]",
+  sseLine({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+]) {
+  test(`兼容独立终止标记 ${ending.trim()}`, async () => {
+    assert.equal(
+      await collect(
+        streamResponse([sseLine({ choices: [{ delta: { content: "完整回复" } }] }), ending]),
+        {},
+      ),
+      "完整回复",
+    );
+  });
+}
+
 test("reasoning and content still stream when no tool call delta hook is set", async () => {
   const reasoning = [];
   const response = streamResponse([

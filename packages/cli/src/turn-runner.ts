@@ -209,6 +209,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     messages = next;
     deps.setMessages(next);
   };
+  // 自动压缩钩子也会清理工具配对，必须先补齐恢复状态，避免它删掉已完成结果。
+  const recoveredMessages = repairToolCallPairs(messages, { preserveIncomplete: true });
+  if (recoveredMessages !== messages) setMessages(recoveredMessages);
   const messagesBeforePrompt = [...messages];
   // 经验召回随本轮用户消息注入（A/B: experience_recall=message）：只动消息尾部，
   // 不重建 system prompt，前缀缓存不受影响；回放时按标记剥掉，不冒充用户原话。
@@ -412,7 +415,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let turnFailed = false;
   const repeatedFailures = new RepeatedFailureTracker();
   while (keepCalling) {
-    const repairedMessages = repairToolCallPairs(messages);
+    const repairedMessages = repairToolCallPairs(messages, { preserveIncomplete: true });
     if (repairedMessages !== messages) {
       // 静默修复：历史配对不完整通常来自被中止的回合，属于内部卫生问题，
       // 不打断对话区的观感；修好的结果直接落盘，可在会话文件里查到差异。
@@ -628,18 +631,18 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       streamCompleted = true;
     } catch (streamError) {
       stopActiveTurnVisuals();
+      // 取消与网络断流都保留已收到的正文和推理；未完整生成的工具调用不能执行或落盘。
+      if (textContent) {
+        ui.updateChatFrom(streamStartOffset, mdStreamRenderer.render(textContent, true));
+      }
+      if (textContent || reasoningContent) {
+        const partialMessage: ChatMessage = { role: "assistant", content: textContent };
+        if (reasoningContent) partialMessage.reasoning_content = reasoningContent;
+        messages.push(partialMessage);
+        sessionManager.saveCurrentSession(messages);
+        deps.updateStatusUI();
+      }
       if (isTurnAborted) {
-        // 最后一帧可能尚未经过节流渲染；终止时补齐并保存已生成的部分内容。
-        if (textContent) {
-          ui.updateChatFrom(streamStartOffset, mdStreamRenderer.render(textContent, true));
-        }
-        if (textContent || reasoningContent) {
-          const partialMessage: ChatMessage = { role: "assistant", content: textContent };
-          if (reasoningContent) partialMessage.reasoning_content = reasoningContent;
-          messages.push(partialMessage);
-          sessionManager.saveCurrentSession(messages);
-          deps.updateStatusUI();
-        }
         showAbortNotice();
       } else {
         commitPromptForRequest();
@@ -708,6 +711,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     }
     messages.push(assistantMessage);
     sessionManager.saveCurrentSession(messages);
+    // 执行工具前保留调用意图；强退后至少能判断哪些操作需要核实。
+    await sessionManager.flush();
     deps.updateStatusUI();
 
     if (invalidToolCall) {
@@ -1036,6 +1041,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           sessionManager.saveCurrentSession(messages);
           deps.updateStatusUI();
         }
+        // 每批结果落盘后再进入下一批或请求，避免已完成的写操作失去恢复依据。
+        sessionManager.saveCurrentSession(messages);
+        await sessionManager.flush();
       }
       // 工具调用块后空一行：与下方思考/正文分隔
       ui.writeLine();
@@ -1175,6 +1183,9 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     sessionManager.saveCurrentSession(messages);
   }
   stopActiveTurnVisuals();
+  // 包括网络失败、取消和停止分支；返回输入框前完成本轮快照写入。
+  sessionManager.saveCurrentSession(messages);
+  await sessionManager.flush();
   // 终端侧栏状态：正常收尾报 done（Kero 标未读 Done），失败报 error，中止回 idle。
   if (isTurnAborted) {
     agentStatus.idle("已中止");

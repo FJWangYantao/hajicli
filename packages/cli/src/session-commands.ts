@@ -96,7 +96,9 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ctx.syncTaskPlanUI();
   // 新会话从零开始：费用、压缩次数、上轮耗时都必须退回 0，否则侧栏还挂着上一个会话的数。
   ctx.applySessionUsage(undefined);
-  ctx.setMessages([{ role: "system", content: ctx.getSystemPrompt() }]);
+  // 先移除旧摘要，再按新会话的目标与技能状态重建，避免下一轮继续旧任务。
+  ctx.setMessages([{ role: "system", content: "" }]);
+  await ctx.refreshSystemPrompt();
   ctx.refreshAgentVerificationContext(ctx.getMessages());
   ctx.saveSession();
   ctx.updateStatusUI();
@@ -160,26 +162,29 @@ async function loadAndRenderSession(
     ui.writeLine(colors.warnLine("会话文件已不存在或无法读取。"));
     return false;
   }
-  if (sessionManager.isArchivedSession(sessionId)) {
+  const previousStoreDir = sessionManager.getSessionsDir();
+  const archived = sessionManager.isArchivedSession(sessionId);
+  // 成功读取与校验后才切 cwd / scope，损坏或空会话不能污染当前工作区。
+  const loaded = sessionManager.loadSession(sessionId);
+  if (!loaded) {
+    ui.writeLine(colors.warnLine("选中的会话为空或加载失败。"));
+    return false;
+  }
+  if (archived) {
     // 原工作树已移除：会话复制回当前目录续写（loadSession 负责复制），归档副本不动。
     ui.writeLine(
       colors.gray(
         `已从归档取回会话（原工作树 ${path.basename(path.dirname(storeDir))}），在当前目录继续。`,
       ),
     );
-  } else if (path.resolve(storeDir) !== path.resolve(sessionManager.getSessionsDir())) {
-    const worktreeRoot = path.resolve(storeDir, "..", "..");
+  } else if (path.resolve(sessionManager.getSessionsDir()) !== path.resolve(previousStoreDir)) {
+    const worktreeRoot = path.resolve(sessionManager.getSessionsDir(), "..", "..");
     if (ctx.enterSessionWorktree && fs.existsSync(path.join(worktreeRoot, ".git"))) {
       ctx.enterSessionWorktree(worktreeRoot);
       ui.writeLine(colors.gray(`已切换到会话所在的工作树：${worktreeRoot}`));
     }
   }
   const thinkingVisible = ctx.isThinkingVisible?.() !== false;
-  const loaded = sessionManager.loadSession(sessionId);
-  if (!loaded || loaded.messages.length === 0) {
-    ui.writeLine(colors.warnLine("选中的会话为空或加载失败。"));
-    return false;
-  }
   taskStore.setTaskScope(loaded.id);
   snapshotEngine.setScope(loaded.id);
   agentManager.setScope(loaded.id);

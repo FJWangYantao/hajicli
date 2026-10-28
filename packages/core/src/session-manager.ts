@@ -270,12 +270,48 @@ export class SessionManager {
     this.searchDirs = this.searchDirs.filter((candidate) => path.resolve(candidate) !== moved);
   }
 
-  /** 找出会话文件所在目录（主目录优先，其次附加目录）；找不到返回 null。 */
-  public locateSessionDir(id: string): string | null {
-    for (const dir of [this.sessionsDir, ...this.searchDirs, ...this.archiveDirs]) {
-      if (fs.existsSync(this.getSessionPathFor(dir, id))) return dir;
+  /** 先校验可恢复性，避免加载失败时已经切换目录或替换当前会话。 */
+  private readSession(dir: string, id: string): StoredSession | null {
+    try {
+      const session = JSON.parse(fs.readFileSync(this.getSessionPathFor(dir, id), "utf8"));
+      if (
+        !session ||
+        session.id !== id ||
+        typeof session.title !== "string" ||
+        !Array.isArray(session.messages) ||
+        !session.messages.every(
+          (message: ChatMessage) =>
+            message &&
+            ["system", "user", "assistant", "tool"].includes(message.role) &&
+            typeof message.content === "string",
+        ) ||
+        !this.hasEffectiveMessages(session.messages)
+      ) {
+        return null;
+      }
+      // 同时验证工具调用可被快照复制；失败时不接纳这个副本。
+      session.messages.map(cloneMessage);
+      return session as StoredSession;
+    } catch {
+      return null;
     }
-    return null;
+  }
+
+  /** 与列表去重口径一致：选择最新可恢复副本，同时间优先主目录。 */
+  public locateSessionDir(id: string): string | null {
+    let selected: string | null = null;
+    let latest = -Infinity;
+    for (const dir of [this.sessionsDir, ...this.searchDirs, ...this.archiveDirs]) {
+      const session = this.readSession(dir, id);
+      if (!session) continue;
+      const timestamp = new Date(session.updatedAt).getTime();
+      const updatedAt = Number.isFinite(timestamp) ? timestamp : -Infinity;
+      if (selected === null || updatedAt > latest) {
+        selected = dir;
+        latest = updatedAt;
+      }
+    }
+    return selected;
   }
 
   private scheduleFlush(): void {
@@ -434,9 +470,9 @@ export class SessionManager {
     const dir = this.locateSessionDir(id);
     if (!dir) return null;
     try {
-      const session = JSON.parse(
-        fs.readFileSync(this.getSessionPathFor(dir, id), "utf8"),
-      ) as StoredSession;
+      const session = this.readSession(dir, id);
+      if (!session) return null;
+      const snapshot = session.messages.map(cloneMessage);
       const archived = this.archiveDirs.some(
         (candidate) => path.resolve(candidate) === path.resolve(dir),
       );
@@ -449,7 +485,7 @@ export class SessionManager {
         this.setSessionsDir(dir);
       }
       this.currentSession = session;
-      this.lastQueuedMessages = session.messages.map(cloneMessage);
+      this.lastQueuedMessages = snapshot;
       this.lastQueuedTitle = session.title;
       this.lastQueuedUsage = JSON.stringify(session.usage ?? null);
       this.lastQueuedGoal = JSON.stringify(session.goal ?? null);
@@ -503,9 +539,18 @@ export class SessionManager {
       const filePath = path.join(dir, file);
       try {
         const session = JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredSession;
-        if (session?.id && this.hasEffectiveMessages(session.messages)) {
-          sessions.push(session);
-        } else if (mayDeleteEmpty && session) {
+        const valid = session?.id ? this.readSession(dir, session.id) : null;
+        if (valid) {
+          sessions.push(valid);
+        } else if (
+          mayDeleteEmpty &&
+          session &&
+          Array.isArray(session.messages) &&
+          session.messages.every(
+            (message: ChatMessage) => message && typeof message.role === "string",
+          ) &&
+          !this.hasEffectiveMessages(session.messages)
+        ) {
           try {
             fs.unlinkSync(filePath);
           } catch {}
