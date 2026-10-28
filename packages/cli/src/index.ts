@@ -1255,6 +1255,7 @@ async function main() {
     continuationPrompt: colors.muted("│ "),
     renderBorder: (width) => colors.gray("─".repeat(width)),
     forceNonInteractive: Boolean(headlessRequest),
+    startupMotion: !headlessRequest,
     muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
     // 侧栏区域 id → 动作。上下文详情页由 TerminalUI 自己打开，不会走到这里。
     onSidebarAction: (id) => {

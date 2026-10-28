@@ -48,6 +48,7 @@ import {
 import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
 import {
   buildStartupLauncher,
+  STARTUP_MOTION_MS,
   STARTUP_PLACEHOLDERS,
   startupLauncherGeometry,
 } from "./startup-launcher.js";
@@ -219,6 +220,11 @@ export interface TerminalUIOptions {
   onSidebarAction?: (id: string) => void;
   /** 首屏选中历史会话，由主循环安全接管并恢复。 */
   onResumeSession?: (id: string) => void;
+  /**
+   * 首屏启动动效（标语解码 / Logo 高光 / 星点闪烁，约 1.8 秒后静止）。
+   * 默认关闭，由入口按交互模式开启；`HAJI_REDUCED_MOTION=1` 时强制关闭。
+   */
+  startupMotion?: boolean;
 }
 
 export interface ReadInputOptions {
@@ -801,6 +807,8 @@ export class TerminalUI {
   private startupSelected = -1;
   /** 首屏入口的鼠标悬停项：只换颜色，不改行数。 */
   private startupHovered = -1;
+  private startupMotionStartedAt?: number;
+  private startupMotionTimer: NodeJS.Timeout | null = null;
   private startupHits: Array<{ row: number; index: number; left: number; right: number }> = [];
   private pendingStartupClick?: { row: number; index: number };
 
@@ -4226,6 +4234,24 @@ export class TerminalUI {
     }
   }
 
+  /** 启动动效已播放的毫秒数：首次画首屏时起算；关闭动效时返回 undefined（静止画面）。 */
+  private startupMotionElapsed(): number | undefined {
+    if (!this.options.startupMotion || process.env.HAJI_REDUCED_MOTION === "1") return undefined;
+    this.startupMotionStartedAt ??= Date.now();
+    const elapsed = Date.now() - this.startupMotionStartedAt;
+    return elapsed < STARTUP_MOTION_MS ? elapsed : undefined;
+  }
+
+  /** 动效期间约 20 帧/秒；定时器 unref，不拖住进程退出。 */
+  private scheduleStartupMotionFrame(): void {
+    if (this.startupMotionTimer) return;
+    this.startupMotionTimer = setTimeout(() => {
+      this.startupMotionTimer = null;
+      if (this.startupHomeAvailable()) this.scheduleRender(true);
+    }, 50);
+    this.startupMotionTimer.unref?.();
+  }
+
   private renderStartupLauncher(width: number, height: number): void {
     const geometry = startupLauncherGeometry(width, height);
     const { inputWidth } = geometry;
@@ -4256,7 +4282,6 @@ export class TerminalUI {
     const frame = buildStartupLauncher({
       width,
       height,
-      header: this.options.header.trim().split("\n"),
       leading,
       cardRows,
       suggestions,
@@ -4271,7 +4296,10 @@ export class TerminalUI {
         reasoningEffort: this.reasoningEffort,
       },
       notice: this.transientHintText || this.copiedNotice,
+      hasDraft: Boolean(this.activeInput?.graphemes.length),
+      motionElapsed: this.startupMotionElapsed(),
     });
+    if (frame.animating) this.scheduleStartupMotionFrame();
     this.inputSelectionTop = frame.inputTop + chips.length;
     this.inputSelectionHeight = inputLayout.rows.length;
     this.startupHits = frame.hits.map((hit) => ({

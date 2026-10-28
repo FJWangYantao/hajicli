@@ -47,12 +47,31 @@ export function appearanceFromBackgroundColor(
   return relativeLuminance(rgb) > 0.5 ? "light" : "dark";
 }
 
+/** 最近一次 OSC 11 探测到的终端底色（#rrggbb）；没探测过或探测失败为 undefined。 */
+let detectedBackground: string | undefined;
+
+/**
+ * 终端真实底色。主题背景为空（跟随终端）时，首页光晕要拿它做混色基准，
+ * 否则光晕边缘会和真实底色对不上、露出一圈色块；拿不到就不画光晕。
+ */
+export function getDetectedTerminalBackground(): string | undefined {
+  return detectedBackground;
+}
+
 /** 从一段终端输出中提取 OSC 11 回复。支持 BEL 与 ST 两种终止符。 */
 export function parseOsc11Reply(value: string): ThemeAppearance | undefined {
   const match = /\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/.exec(value);
   if (!match) return undefined;
   const rgb = parseColorSpec(match[1]);
-  return rgb ? appearanceFromBackgroundColor(rgb) : undefined;
+  if (!rgb) return undefined;
+  detectedBackground = `#${rgb
+    .map((channel) =>
+      Math.round(channel * 255)
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+  return appearanceFromBackgroundColor(rgb);
 }
 
 /** 环境变量里显式指定的外观（HAJI_THEME_APPEARANCE）；没有则 undefined。 */

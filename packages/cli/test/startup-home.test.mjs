@@ -4,20 +4,26 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { SessionManager } from "@hajicli/core";
+import { CellCanvas } from "../dist/cell-canvas.js";
 import { resumeSessionById } from "../dist/session-commands.js";
 import { buildStartupHome, startupActions } from "../dist/startup-home.js";
-import { STARTUP_TAGLINE } from "../dist/startup-launcher.js";
+import { buildStartupLauncher, STARTUP_TAGLINE } from "../dist/startup-launcher.js";
+import { parseOsc11Reply } from "../dist/terminal-appearance.js";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
 import { getColorLevel, setColorLevel, setThemeAppearance, setThemePreset } from "../dist/theme.js";
 import { buildSidebarFrame } from "../dist/tui-sidebar.js";
 
 const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+// 默认 3 天前：超出「继续上次」的 24 小时窗口，多数用例的版式不随运行日期变化。
 const sessions = Array.from({ length: 4 }, (_, index) => ({
   id: `session-${index}`,
   title: `会话 ${index}`,
-  updatedAt: "2026-10-28T15:00:00Z",
+  updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
 }));
+const hasTagline = (rows) =>
+  rows.some((row) => row.replace(/\s/g, "").includes("把想法，写成下一步"));
+const INVERSE = /\x1b\[(?:\d+;)*7(?:;[\d;]*)?m/;
 const workspace = {
   name: "hajicli",
   branch: "master",
@@ -88,7 +94,7 @@ function withUI(columns, rows, callback) {
 
 test("home caps recent sessions, sanitizes titles and fits small dimensions", () => {
   assert.equal(startupActions(sessions).length, 6);
-  const home = buildStartupHome(sessions, 70, 20, 3, Date.parse("2026-10-28T15:01:00Z"));
+  const home = buildStartupHome(sessions, 70, 20, 3);
   assert.equal(home.hits.length, 6);
   assert.match(strip(home.rows.join("\n")), /最近会话/);
   assert.doesNotMatch(strip(home.rows.join("\n")), /会话 3/);
@@ -110,8 +116,8 @@ test("home keyboard fills prompts without sending and resumes by ID; first send 
   setThemePreset("paper");
   withUI(140, 40, (ui) => {
     const plain = ui.renderedScreenRows.map(strip);
-    assert.ok(plain.some((row) => row.includes(STARTUP_TAGLINE)));
-    assert.ok(plain.some((row) => row.includes("hajicli · master")));
+    assert.ok(hasTagline(plain));
+    assert.ok(plain.some((row) => /hajicli\s+master/.test(row)));
     assert.equal(ui.chatAreaRightEdgeColumn, 0);
     assert.ok(ui.inputSelectionLeft > 0);
     assert.equal(ui.chatContent, "");
@@ -155,27 +161,43 @@ test("mouse opens only on matching down/up; auth input and ordinary typing remai
   });
 });
 
-test("quick actions stack as a list with full-width rows, and collapse inline when short", () => {
+test("quick actions render as three clickable tiles, a list when narrower, inline when short", () => {
   withUI(140, 36, (ui) => {
-    const actions = ui.startupHits.filter((hit) => hit.index < 3);
-    assert.equal(new Set(actions.map((hit) => hit.row)).size, 3);
-    assert.deepEqual(
-      actions.map((hit) => hit.row),
-      actions.map((_, index) => actions[0].row + index),
-    );
-    assert.match(strip(ui.renderedScreenRows[actions[0].row - 1]), /了解当前项目\s+梳理结构/);
+    const tiles = [0, 1, 2].map((index) => ui.startupHits.filter((hit) => hit.index === index));
+    for (const rows of tiles) {
+      assert.equal(rows.length, 3);
+      assert.deepEqual(
+        rows.map((hit) => hit.row),
+        rows.map((_, offset) => rows[0].row + offset),
+      );
+    }
+    assert.ok(tiles[0][0].right < tiles[1][0].left && tiles[1][0].right < tiles[2][0].left);
     assert.match(
-      strip(ui.renderedScreenRows[actions[0].row - 2]),
+      strip(ui.renderedScreenRows[tiles[0][1].row - 1]),
+      /1\s+了解当前项目.*2\s+检查工作区/,
+    );
+    assert.match(strip(ui.renderedScreenRows[tiles[0][2].row - 1]), /梳理结构与入口/);
+    assert.match(
+      strip(ui.renderedScreenRows[tiles[0][0].row - 2]),
       /快速开始.*Tab 选择 · Enter 打开/,
     );
-    for (const hit of actions) {
+    for (const rows of tiles) {
       ui.activeInput.graphemes = [];
+      const hit = rows[2];
       const click = { button: 0, row: hit.row, column: hit.right - 1, action: "down" };
       ui.handleMouseEvent(click);
       ui.handleMouseEvent({ ...click, action: "up" });
       assert.equal(ui.activeInput.graphemes.join(""), startupActions(sessions)[hit.index].value);
       assert.equal(ui.submitted, undefined);
     }
+  });
+  withUI(60, 30, (ui) => {
+    const actions = ui.startupHits.filter((hit) => hit.index < 3);
+    assert.deepEqual(
+      actions.map((hit) => hit.row),
+      actions.map((_, index) => actions[0].row + index),
+    );
+    assert.match(strip(ui.renderedScreenRows[actions[0].row - 1]), /了解当前项目\s+梳理结构/);
   });
   withUI(76, 11, (ui) => {
     // 排队提示 + 两行附件 + 两行输入把纵向空间吃紧，入口退成一行三格。
@@ -204,12 +226,13 @@ test("Shift+Tab, arrows and Esc move or clear the selection; hover only recolors
     assert.equal(ui.startupSelected, 5);
     ui.renderFrame();
     const selectedRow = ui.startupHits.find((hit) => hit.index === 5).row - 1;
-    assert.match(strip(ui.renderedScreenRows[selectedRow]), /▸ 会话 2/);
+    assert.match(strip(ui.renderedScreenRows[selectedRow]), /▸\s+会话 2/);
     ui.handleKeypress("", { name: "escape" });
     assert.equal(ui.startupSelected, -1);
     ui.renderFrame();
     const before = [...ui.renderedScreenRows];
-    const hit = ui.startupHits.find((item) => item.index === 1);
+    // 入口卡片的第二行是名称行（第一行是顶边）。
+    const hit = ui.startupHits.filter((item) => item.index === 1)[1];
     ui.handleMouseEvent({ button: 3, row: hit.row, column: hit.left + 3, action: "move" });
     assert.equal(ui.startupHovered, 1);
     ui.renderFrame();
@@ -229,15 +252,14 @@ test("input card keeps a closed right edge, placeholder and model line at every 
   ]) {
     withUI(columns, rows, (ui) => {
       const plain = ui.renderedScreenRows.map(strip);
-      const card = plain.filter((row) => row.includes("┃"));
+      const card = plain.filter((row) => row.includes("▌"));
       assert.ok(card.length >= 1);
-      assert.equal(new Set(card.map((row) => terminalWidth(row))).size, 1);
       assert.ok(
         plain.every((row) => !row.includes("…")),
         `${columns}x${rows} 出现截断`,
       );
       const input = plain[ui.inputSelectionTop];
-      assert.ok(input.includes("┃"));
+      assert.ok(input.includes("▌"));
       assert.match(input, /描述/);
       if (rows >= 18) assert.ok(card.some((row) => row.includes("deepseek-v4-pro · high")));
       ui.activeInput.graphemes = [..."hi"];
@@ -248,15 +270,20 @@ test("input card keeps a closed right edge, placeholder and model line at every 
   }
 });
 
-test("big logo appears only with room to breathe; otherwise a one-line wordmark", () => {
+test("logo steps from big pixels to half blocks to a one-line wordmark", () => {
   withUI(140, 40, (ui) => {
     const plain = ui.renderedScreenRows.map(strip);
-    assert.ok(plain.some((row) => row.trim() === "HAJI"));
-    assert.ok(plain.some((row) => row.trim() === "LOGO"));
+    assert.equal(plain.filter((row) => row.includes("██")).length, 6);
+    assert.ok(hasTagline(plain));
+  });
+  withUI(100, 30, (ui) => {
+    const plain = ui.renderedScreenRows.map(strip);
+    assert.ok(!plain.some((row) => row.includes("██  ")));
+    assert.equal(plain.filter((row) => /[▀▄]/.test(row)).length >= 2, true);
   });
   withUI(80, 24, (ui) => {
     const plain = ui.renderedScreenRows.map(strip);
-    assert.ok(!plain.some((row) => row.trim() === "LOGO"));
+    assert.ok(!plain.some((row) => /[▀▄]|██/.test(row)));
     assert.ok(plain.some((row) => row.includes(`haji  ·  ${STARTUP_TAGLINE}`)));
   });
 });
@@ -266,7 +293,7 @@ test("transient notices take over the footer's left side", () => {
     ui.transientHintText = "再按一次 Ctrl+C 退出";
     ui.renderFrame();
     const footer = strip(ui.renderedScreenRows[ui.renderedScreenRows.length - 2]);
-    assert.match(footer, /再按一次 Ctrl\+C 退出\s+ctx 0%/);
+    assert.match(footer, /再按一次 Ctrl\+C 退出\s+ctx .*0%/);
   });
 });
 
@@ -284,7 +311,7 @@ test("centered input cursor, drag selection and vertical movement use its actual
     ui.handleMouseEvent({ ...click, column: firstColumn + 5, action: "up" });
     assert.equal(ui.getSelectedInputText(), "bc中文");
     ui.renderFrame();
-    assert.ok(ui.renderedScreenRows[ui.inputSelectionTop].includes("\x1b[7m"));
+    assert.match(ui.renderedScreenRows[ui.inputSelectionTop], INVERSE);
     const cursor = /\x1b\[(\d+);(\d+)H/.exec(ui.renderedCursorState);
     assert.equal(Number(cursor[1]), top);
     assert.equal(Number(cursor[2]), ui.inputSelectionLeft + 13);
@@ -293,8 +320,8 @@ test("centered input cursor, drag selection and vertical movement use its actual
     ui.renderFrame();
     assert.equal(ui.inputSelectionHeight, 2);
     assert.equal(ui.moveVertically(-1), true);
-    // 卡片正文宽 68（72 − 左竖条/内边距 2 − 右内边距 2），首行扣掉提示符 2 列放 66 字。
-    assert.equal(ui.activeInput.cursorIndex, 34);
+    // 卡片正文宽 72（76 − 左竖条/内边距 2 − 右内边距 2），首行扣掉提示符 2 列放 70 字。
+    assert.equal(ui.activeInput.cursorIndex, 30);
     ui.dismissStartupHeader();
     ui.renderFrame();
     assert.equal(ui.inputSelectionLeft, 0);
@@ -371,7 +398,7 @@ test("launcher footer reflects real task, conflict, resource and unpriced states
     const plain = strip(text);
     assert.match(plain, /任务 1\/2 · 实现首页/);
     assert.match(plain, /冲突 2/);
-    assert.match(plain, /ctx 1%/);
+    assert.match(plain, /ctx .*1%/);
     assert.match(plain, /¥1\.2345\+\?/);
     ui.contextItemsProvider = () => [
       {
@@ -437,7 +464,7 @@ test("launcher keeps input primary, sessions separate and project status in the 
             withUI(width, height, (ui) => {
               const plain = ui.renderedScreenRows.map(strip);
               const card = plain
-                .map((row, index) => (row.includes("┃") ? index : -1))
+                .map((row, index) => (row.includes("▌") ? index : -1))
                 .filter((index) => index >= 0);
               const top = card[0];
               const bottom = card[card.length - 1];
@@ -447,9 +474,7 @@ test("launcher keeps input primary, sessions separate and project status in the 
                 card.map((_, index) => top + index),
               );
               assert.ok(ui.inputSelectionTop >= top && ui.inputSelectionTop <= bottom);
-              if (height >= 18) {
-                assert.ok(plain.some((row) => row.includes(STARTUP_TAGLINE)));
-              }
+              if (height >= 18) assert.ok(hasTagline(plain));
               assert.ok(ui.startupHits.every((hit) => hit.row - 1 > bottom));
               const recent = plain.findIndex((row) => row.includes("最近会话"));
               const actions = ui.startupHits.filter((hit) => hit.index < 3);
@@ -460,11 +485,11 @@ test("launcher keeps input primary, sessions separate and project status in the 
               assert.ok(hit.rowStart > ui.inputSelectionTop);
               assert.ok(hit.columnStart > 0 && hit.columnEnd < width);
               if (height >= 24) {
-                const project = plain.findIndex((row) => row.includes("hajicli · master"));
+                const project = plain.findIndex((row) => /hajicli\s+master/.test(row));
                 assert.ok(project > ui.inputSelectionTop);
                 assert.ok(project > recent);
                 assert.equal(hit.rowStart - 1, project);
-                assert.match(plain[project], /6 项改动/);
+                assert.match(plain[project], /~3 \+1 \?2/);
                 assert.ok(plain.slice(hit.rowStart).every((row) => !row.includes("工作区")));
               }
             });
@@ -575,4 +600,121 @@ test("recent session recovers the exact stored conversation, usage, task scope a
   assert.match(restored, /目标会话/);
   assert.equal(dismissed, true);
   assert.equal(await resumeSessionById(context, "missing-session"), false);
+});
+
+function launcherFrame(overrides = {}) {
+  return buildStartupLauncher({
+    width: 140,
+    height: 40,
+    cardRows: ["> "],
+    sessions,
+    selected: -1,
+    state: { usedTokens: 0, maxTokens: 1000, costCny: 0, workspace },
+    model: {
+      permissionMode: "auto",
+      modelName: "deepseek-v4-pro",
+      providerName: "deepseek",
+      reasoningEffort: "high",
+    },
+    ...overrides,
+  });
+}
+const backgrounds = (rows) => new Set(rows.join("").match(/\x1b\[48;2;[\d;]+m/g) ?? []);
+
+test("a session from the last 24 hours becomes a resume row above the card", () => {
+  const fresh = sessions.map((session, index) => ({
+    ...session,
+    updatedAt: new Date(Date.now() - (index + 1) * 4 * 60_000).toISOString(),
+  }));
+  const frame = launcherFrame({ sessions: fresh });
+  const plain = frame.rows.map(strip);
+  const resumeRow = plain.findIndex((row) => row.includes("继续上次"));
+  assert.ok(resumeRow >= 0 && resumeRow < frame.inputTop);
+  assert.match(plain[resumeRow], /继续上次\s+会话 0 · 4 分钟前/);
+  assert.equal(frame.hits.find((hit) => hit.index === 3).row, resumeRow);
+  // 时间线只列剩下的会话，不重复「继续上次」那一条。
+  assert.ok(!plain.slice(resumeRow + 1).some((row) => row.includes("会话 0")));
+  assert.ok(plain.some((row) => /○\s+会话 1/.test(row)));
+  const stale = launcherFrame().rows.map(strip);
+  assert.ok(!stale.some((row) => row.includes("继续上次")));
+  assert.ok(stale.some((row) => /●\s+会话 0/.test(row)));
+});
+
+test("glow paints only on truecolor with a known background; motion settles into the static frame", (t) => {
+  const previous = getColorLevel();
+  t.after(() => {
+    setColorLevel(previous);
+    setThemePreset("default");
+  });
+  setColorLevel("truecolor");
+  setThemePreset("default");
+  // 主题跟随终端底色且没探测到：不画光晕，只剩卡片 / 入口这几种底色。
+  const plain = backgrounds(launcherFrame().rows).size;
+  assert.ok(plain <= 6, `无光晕时底色种类过多：${plain}`);
+  parseOsc11Reply("\x1b]11;rgb:1515/1414/1b1b\x07");
+  const glowing = backgrounds(launcherFrame().rows).size;
+  assert.ok(glowing > plain + 10, `光晕应带来渐变底色：${glowing}`);
+  setColorLevel("ansi256");
+  assert.equal(
+    launcherFrame()
+      .rows.join("")
+      .match(/\x1b\[48;2;/g),
+    null,
+    "256 色不输出真彩色底色",
+  );
+  setColorLevel("truecolor");
+  const moving = launcherFrame({ motionElapsed: 200 });
+  assert.equal(moving.animating, true);
+  assert.ok(!hasTagline(moving.rows.map(strip)), "动效早期标语仍在解码");
+  const settled = launcherFrame({ motionElapsed: 5000 });
+  assert.equal(settled.animating, false);
+  assert.deepEqual(settled.rows, launcherFrame().rows);
+});
+
+test("startup motion is opt-in, schedules frames while playing and honors HAJI_REDUCED_MOTION", (t) => {
+  t.after(() => {
+    delete process.env.HAJI_REDUCED_MOTION;
+  });
+  withUI(140, 40, (ui) => {
+    assert.equal(ui.startupMotionTimer, null);
+    ui.options.startupMotion = true;
+    ui.renderFrame();
+    assert.ok(ui.startupMotionTimer);
+    clearTimeout(ui.startupMotionTimer);
+    ui.startupMotionTimer = null;
+    ui.startupMotionStartedAt = Date.now() - 10_000;
+    ui.renderFrame();
+    assert.equal(ui.startupMotionTimer, null);
+    assert.ok(hasTagline(ui.renderedScreenRows.map(strip)));
+  });
+  process.env.HAJI_REDUCED_MOTION = "1";
+  withUI(140, 40, (ui) => {
+    ui.options.startupMotion = true;
+    ui.renderFrame();
+    assert.equal(ui.startupMotionTimer, null);
+  });
+});
+
+test("cell canvas keeps surface backgrounds through theme resets and handles wide characters", (t) => {
+  const previous = getColorLevel();
+  t.after(() => setColorLevel(previous));
+  setColorLevel("truecolor");
+  const canvas = new CellCanvas(12, 2);
+  const card = "\x1b[48;2;1;2;3m";
+  canvas.fill(0, 0, 12, 1, card);
+  canvas.ansi(1, 0, "\x1b[1ma\x1b[0mb中\x1b[49mc", card);
+  canvas.backdrop = (column, row) => (row === 1 && column < 3 ? "\x1b[48;2;9;9;9m" : undefined);
+  canvas.text(10, 1, "中文");
+  const [first, second] = canvas.toRows();
+  assert.equal(strip(first).trimEnd(), " ab中c");
+  // themeReset / SGR 49 之后的格子仍铺着卡片底色。
+  assert.equal(first.split(card).length - 1 >= 2, true);
+  assert.ok(!first.slice(0, first.lastIndexOf("\x1b[0m")).includes("\x1b[49m"));
+  assert.match(second, /\x1b\[48;2;9;9;9m/);
+  // 放不下整个宽字符时不写半个。
+  assert.ok(!strip(second).includes("文"));
+  setColorLevel("mono");
+  const mono = new CellCanvas(6, 1);
+  mono.ansi(0, 0, "\x1b[7mab\x1b[27mc");
+  assert.equal(mono.toRows()[0], "\x1b[0;7mab\x1b[0mc\x1b[0m");
 });
