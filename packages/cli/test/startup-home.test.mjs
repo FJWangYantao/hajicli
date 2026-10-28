@@ -6,9 +6,10 @@ import test from "node:test";
 import { SessionManager } from "@hajicli/core";
 import { resumeSessionById } from "../dist/session-commands.js";
 import { buildStartupHome, startupActions } from "../dist/startup-home.js";
+import { STARTUP_TAGLINE } from "../dist/startup-launcher.js";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
-import { setColorLevel, setThemeAppearance, setThemePreset } from "../dist/theme.js";
+import { getColorLevel, setColorLevel, setThemeAppearance, setThemePreset } from "../dist/theme.js";
 import { buildSidebarFrame } from "../dist/tui-sidebar.js";
 
 const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -68,6 +69,10 @@ function withUI(columns, rows, callback) {
     };
     ui.setRecentSessions(sessions);
     ui.setWorkspaceStatus(workspace);
+    ui.permissionMode = "auto";
+    ui.modelName = "deepseek-v4-pro";
+    ui.providerName = "deepseek";
+    ui.reasoningEffort = "high";
     ui.renderFrame();
     callback(ui);
   } finally {
@@ -105,7 +110,7 @@ test("home keyboard fills prompts without sending and resumes by ID; first send 
   setThemePreset("paper");
   withUI(140, 40, (ui) => {
     const plain = ui.renderedScreenRows.map(strip);
-    assert.ok(plain.some((row) => row.includes("haji  ·  AI coding assistant")));
+    assert.ok(plain.some((row) => row.includes(STARTUP_TAGLINE)));
     assert.ok(plain.some((row) => row.includes("hajicli · master")));
     assert.equal(ui.chatAreaRightEdgeColumn, 0);
     assert.ok(ui.inputSelectionLeft > 0);
@@ -150,20 +155,118 @@ test("mouse opens only on matching down/up; auth input and ordinary typing remai
   });
 });
 
-test("launcher uses lightweight numbered shortcuts with separate clickable regions", () => {
+test("quick actions stack as a list with full-width rows, and collapse inline when short", () => {
   withUI(140, 36, (ui) => {
     const actions = ui.startupHits.filter((hit) => hit.index < 3);
-    assert.equal(new Set(actions.map((hit) => hit.row)).size, 1);
-    assert.ok(actions[0].right < actions[1].left && actions[1].right < actions[2].left);
-    assert.match(strip(ui.renderedScreenRows[actions[0].row - 1]), /1 了解当前项目/);
+    assert.equal(new Set(actions.map((hit) => hit.row)).size, 3);
+    assert.deepEqual(
+      actions.map((hit) => hit.row),
+      actions.map((_, index) => actions[0].row + index),
+    );
+    assert.match(strip(ui.renderedScreenRows[actions[0].row - 1]), /了解当前项目\s+梳理结构/);
+    assert.match(
+      strip(ui.renderedScreenRows[actions[0].row - 2]),
+      /快速开始.*Tab 选择 · Enter 打开/,
+    );
     for (const hit of actions) {
       ui.activeInput.graphemes = [];
-      const click = { button: 0, row: hit.row, column: hit.left + 2, action: "down" };
+      const click = { button: 0, row: hit.row, column: hit.right - 1, action: "down" };
       ui.handleMouseEvent(click);
       ui.handleMouseEvent({ ...click, action: "up" });
       assert.equal(ui.activeInput.graphemes.join(""), startupActions(sessions)[hit.index].value);
       assert.equal(ui.submitted, undefined);
     }
+  });
+  withUI(76, 11, (ui) => {
+    // 排队提示 + 两行附件 + 两行输入把纵向空间吃紧，入口退成一行三格。
+    ui.queueText = "下一条消息已排队";
+    ui.pendingImages = Array.from({ length: 4 }, (_, i) => ({ displayName: `image-${i}.png` }));
+    ui.activeInput.graphemes = [..."first\nsecond"];
+    ui.activeInput.cursorIndex = ui.activeInput.graphemes.length;
+    ui.renderFrame();
+    const actions = ui.startupHits.filter((hit) => hit.index < 3);
+    assert.equal(actions.length, 3);
+    assert.equal(new Set(actions.map((hit) => hit.row)).size, 1);
+    assert.ok(actions[0].right < actions[1].left && actions[1].right < actions[2].left);
+  });
+});
+
+test("Shift+Tab, arrows and Esc move or clear the selection; hover only recolors", (t) => {
+  const previous = getColorLevel();
+  setColorLevel("truecolor");
+  t.after(() => setColorLevel(previous));
+  withUI(140, 36, (ui) => {
+    ui.handleKeypress("\t", { name: "tab", shift: true });
+    assert.equal(ui.startupSelected, 5);
+    ui.handleKeypress("", { name: "down" });
+    assert.equal(ui.startupSelected, 0);
+    ui.handleKeypress("", { name: "up" });
+    assert.equal(ui.startupSelected, 5);
+    ui.renderFrame();
+    const selectedRow = ui.startupHits.find((hit) => hit.index === 5).row - 1;
+    assert.match(strip(ui.renderedScreenRows[selectedRow]), /▸ 会话 2/);
+    ui.handleKeypress("", { name: "escape" });
+    assert.equal(ui.startupSelected, -1);
+    ui.renderFrame();
+    const before = [...ui.renderedScreenRows];
+    const hit = ui.startupHits.find((item) => item.index === 1);
+    ui.handleMouseEvent({ button: 3, row: hit.row, column: hit.left + 3, action: "move" });
+    assert.equal(ui.startupHovered, 1);
+    ui.renderFrame();
+    assert.deepEqual(ui.renderedScreenRows.map(strip), before.map(strip));
+    assert.notEqual(ui.renderedScreenRows[hit.row - 1], before[hit.row - 1]);
+  });
+});
+
+test("input card keeps a closed right edge, placeholder and model line at every size", () => {
+  for (const [columns, rows] of [
+    [160, 48],
+    [140, 40],
+    [100, 30],
+    [80, 24],
+    [40, 12],
+    [25, 10],
+  ]) {
+    withUI(columns, rows, (ui) => {
+      const plain = ui.renderedScreenRows.map(strip);
+      const card = plain.filter((row) => row.includes("┃"));
+      assert.ok(card.length >= 1);
+      assert.equal(new Set(card.map((row) => terminalWidth(row))).size, 1);
+      assert.ok(
+        plain.every((row) => !row.includes("…")),
+        `${columns}x${rows} 出现截断`,
+      );
+      const input = plain[ui.inputSelectionTop];
+      assert.ok(input.includes("┃"));
+      assert.match(input, /描述/);
+      if (rows >= 18) assert.ok(card.some((row) => row.includes("deepseek-v4-pro · high")));
+      ui.activeInput.graphemes = [..."hi"];
+      ui.activeInput.cursorIndex = 2;
+      ui.renderFrame();
+      assert.doesNotMatch(strip(ui.renderedScreenRows[ui.inputSelectionTop]), /描述/);
+    });
+  }
+});
+
+test("big logo appears only with room to breathe; otherwise a one-line wordmark", () => {
+  withUI(140, 40, (ui) => {
+    const plain = ui.renderedScreenRows.map(strip);
+    assert.ok(plain.some((row) => row.trim() === "HAJI"));
+    assert.ok(plain.some((row) => row.trim() === "LOGO"));
+  });
+  withUI(80, 24, (ui) => {
+    const plain = ui.renderedScreenRows.map(strip);
+    assert.ok(!plain.some((row) => row.trim() === "LOGO"));
+    assert.ok(plain.some((row) => row.includes(`haji  ·  ${STARTUP_TAGLINE}`)));
+  });
+});
+
+test("transient notices take over the footer's left side", () => {
+  withUI(140, 36, (ui) => {
+    ui.transientHintText = "再按一次 Ctrl+C 退出";
+    ui.renderFrame();
+    const footer = strip(ui.renderedScreenRows[ui.renderedScreenRows.length - 2]);
+    assert.match(footer, /再按一次 Ctrl\+C 退出\s+ctx 0%/);
   });
 });
 
@@ -190,7 +293,8 @@ test("centered input cursor, drag selection and vertical movement use its actual
     ui.renderFrame();
     assert.equal(ui.inputSelectionHeight, 2);
     assert.equal(ui.moveVertically(-1), true);
-    assert.equal(ui.activeInput.cursorIndex, 38);
+    // 卡片正文宽 68（72 − 左竖条/内边距 2 − 右内边距 2），首行扣掉提示符 2 列放 66 字。
+    assert.equal(ui.activeInput.cursorIndex, 34);
     ui.dismissStartupHeader();
     ui.renderFrame();
     assert.equal(ui.inputSelectionLeft, 0);
@@ -332,13 +436,19 @@ test("launcher keeps input primary, sessions separate and project status in the 
           ]) {
             withUI(width, height, (ui) => {
               const plain = ui.renderedScreenRows.map(strip);
-              const top = plain.findIndex((row) => row.includes("╭"));
-              const bottom = plain.findIndex((row) => row.includes("╰"));
-              assert.ok(top >= 0 && bottom > top);
-              assert.equal(plain.filter((row) => row.includes("╭")).length, 1);
-              assert.ok(ui.inputSelectionTop > top && ui.inputSelectionTop < bottom);
-              if (height >= 12) {
-                assert.ok(plain.some((row) => row.includes("haji  ·  AI coding assistant")));
+              const card = plain
+                .map((row, index) => (row.includes("┃") ? index : -1))
+                .filter((index) => index >= 0);
+              const top = card[0];
+              const bottom = card[card.length - 1];
+              assert.ok(top >= 0 && bottom >= top);
+              assert.deepEqual(
+                card,
+                card.map((_, index) => top + index),
+              );
+              assert.ok(ui.inputSelectionTop >= top && ui.inputSelectionTop <= bottom);
+              if (height >= 18) {
+                assert.ok(plain.some((row) => row.includes(STARTUP_TAGLINE)));
               }
               assert.ok(ui.startupHits.every((hit) => hit.row - 1 > bottom));
               const recent = plain.findIndex((row) => row.includes("最近会话"));
@@ -352,7 +462,7 @@ test("launcher keeps input primary, sessions separate and project status in the 
               if (height >= 24) {
                 const project = plain.findIndex((row) => row.includes("hajicli · master"));
                 assert.ok(project > ui.inputSelectionTop);
-                assert.ok(project >= recent);
+                assert.ok(project > recent);
                 assert.equal(hit.rowStart - 1, project);
                 assert.match(plain[project], /6 项改动/);
                 assert.ok(plain.slice(hit.rowStart).every((row) => !row.includes("工作区")));

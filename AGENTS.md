@@ -360,6 +360,25 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
   ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
 
+## 启动首页（startup-launcher）
+
+- 排版在 `startup-launcher.ts` 的 `buildStartupLauncher`（纯函数），TerminalUI 的
+  `renderStartupLauncher` 只负责排好输入行 / 附件 chip / 补全候选再交给它。
+  自上而下：大 Logo + 标语 → 输入卡片 → 快速开始（3 个入口，带说明列）→ 最近会话（≤3）；
+  整块在状态行上方垂直居中、略偏上（上下留白 2:3），状态行固定在倒数第二行。
+- 输入卡片是「左侧强调色竖条 `┃` + `userMsgBg` 铺底」，**不画四边框**：卡片行宽恒等于
+  `contentWidth`，正文宽 `contentWidth − 4`（`inputLeft = left + 2`）。旧版把
+  `│ ` + 正文 + ` │` 截到 `contentWidth`，右边框永远被 `…` 吃掉——别再用截断宽度去装边框。
+  铺底区域里的子串会带 `themeReset()`（它会把背景恢复成主题底色），必须经 `onSurface()`
+  把主题底色/SGR 0/49 换回卡片底色，否则底色在行中间断开。
+- 空间不够时按固定顺序让步：大 Logo（需余 ≥4 行才保留）→ 会话 3→2→1 → 卡片上下留白 →
+  段间空行 → 会话 → 模型行 → 小标题 → 入口改一行三格 → 字标 → 入口；卡片与状态行永远保留。
+  字标、占位提示都是「放不下就换短的」，不截成半句。
+- 交互：空输入 Tab / Shift+Tab 循环入口，已选中时 ↑↓ 移动、Esc 取消；点击按下松开同一项才触发；
+  悬停只换颜色（`startupHovered`），行数不变。临时提示（Ctrl+C 确认等）顶替状态行左侧。
+- 测试：`startup-home.test.mjs`（右边缘闭合不截断、占位/模型行、Logo 档位、列表/一行入口、
+  键盘与悬停、尺寸矩阵不越界）。
+
 ## 回到底部浮标（Jump to End）
 
 - 滚动离开底部（`chatScrollOffset > 0`）时，对话区底部正中画一个三行小矩形

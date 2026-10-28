@@ -46,7 +46,11 @@ import {
   type RequestDetailFrame,
 } from "./request-detail-page.js";
 import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
-import { buildStartupLauncher, startupLauncherGeometry } from "./startup-launcher.js";
+import {
+  buildStartupLauncher,
+  STARTUP_PLACEHOLDERS,
+  startupLauncherGeometry,
+} from "./startup-launcher.js";
 import {
   buildInlineImage,
   clipInlinePlacement,
@@ -795,6 +799,8 @@ export class TerminalUI {
   private recentSessions: RecentSessionEntry[] = [];
   private workspaceStatus?: WorkspaceStatus;
   private startupSelected = -1;
+  /** 首屏入口的鼠标悬停项：只换颜色，不改行数。 */
+  private startupHovered = -1;
   private startupHits: Array<{ row: number; index: number; left: number; right: number }> = [];
   private pendingStartupClick?: { row: number; index: number };
 
@@ -3127,6 +3133,16 @@ export class TerminalUI {
   private handleMouseEvent(event: TerminalMouseEvent): void {
     // 1003 any-event 跟踪下的纯移动（无按键按下）：侧栏圆环悬停 + 对话区可点行悬停。
     if (event.action === "move" && (event.button & 3) === 3) {
+      if (this.startupHomeAvailable()) {
+        const hovered =
+          this.startupHits.find(
+            (hit) => hit.row === event.row && event.column >= hit.left && event.column <= hit.right,
+          )?.index ?? -1;
+        if (hovered !== this.startupHovered) {
+          this.startupHovered = hovered;
+          this.scheduleRender(true);
+        }
+      }
       this.updateSidebarHover(event.column, event.row);
       this.updateChatHover(event.column, event.row);
       return;
@@ -4212,37 +4228,51 @@ export class TerminalUI {
 
   private renderStartupLauncher(width: number, height: number): void {
     const geometry = startupLauncherGeometry(width, height);
-    const inputWidth = geometry.contentWidth;
+    const { inputWidth } = geometry;
     this.renderedInputWidth = inputWidth;
-    this.inputSelectionLeft = geometry.left + 2;
+    this.inputSelectionLeft = geometry.inputLeft;
+    // 卡片与状态行之外可用的行数：首行留白 + 状态行上方留白 + 状态行与末行。
+    const budget = Math.max(1, height - geometry.footerRows - 2);
     const leading = this.queueText ? [truncateAnsiText(this.queueText, inputWidth)] : [];
     const chips = this.buildPastedImageRows(inputWidth).slice(0, 2);
-    const available = height - geometry.footerRows - leading.length - chips.length - 4;
+    const reserved = leading.length + chips.length;
     const suggestions = this.getCommandSuggestionRows(
       inputWidth,
-      Math.min(geometry.maxSuggestionRows, Math.max(0, available - 1)),
+      Math.min(geometry.maxSuggestionRows, Math.max(0, budget - reserved - 1)),
     );
     const inputLayout = this.getInputLayout(
       inputWidth,
-      Math.max(1, Math.min(geometry.maxInputRows, available - suggestions.length)),
+      Math.max(1, Math.min(geometry.maxInputRows, budget - reserved - suggestions.length)),
     );
-    const divider = this.options.renderBorder(inputWidth);
-    const inputOffset = leading.length + 1 + chips.length;
-    const inputRows = [...leading, divider, ...chips, ...inputLayout.rows, divider, ...suggestions];
-    this.highlightInputRows(inputRows, inputOffset);
+    const inputRows = [...inputLayout.rows];
+    if (this.activeInput && this.activeInput.graphemes.length === 0 && inputRows.length === 1) {
+      const used = terminalWidth(inputRows[0]);
+      const room = Math.max(0, inputWidth - used);
+      const hint = STARTUP_PLACEHOLDERS.find((text) => terminalWidth(text) <= room);
+      if (hint) inputRows[0] = `${inputRows[0]}${SEQ.faint}${hint}${SEQ.reset}`;
+    }
+    const cardRows = [...chips, ...inputRows];
+    this.highlightInputRows(cardRows, chips.length);
     const frame = buildStartupLauncher({
       width,
       height,
       header: this.options.header.trim().split("\n"),
-      compactHeader: this.options.compactHeader,
-      inputRows,
+      leading,
+      cardRows,
+      suggestions,
       sessions: this.recentSessions,
       selected: this.startupSelected,
+      hovered: this.startupHovered,
       state: this.buildSidebarState(),
-      status: this.buildStatusBar(inputWidth, inputWidth < 60 ? "minimal" : "compact"),
-      notice: this.transientHintText || this.copiedNotice || this.status,
+      model: {
+        permissionMode: this.permissionMode,
+        modelName: this.modelName,
+        providerName: this.providerName,
+        reasoningEffort: this.reasoningEffort,
+      },
+      notice: this.transientHintText || this.copiedNotice,
     });
-    this.inputSelectionTop = frame.inputTop + inputOffset;
+    this.inputSelectionTop = frame.inputTop + chips.length;
     this.inputSelectionHeight = inputLayout.rows.length;
     this.startupHits = frame.hits.map((hit) => ({
       ...hit,
@@ -4255,7 +4285,7 @@ export class TerminalUI {
     this.sidebarHits.clear();
     this.sidebarHits.set("context.usage", {
       columnStart: geometry.left + 1,
-      columnEnd: geometry.left + inputWidth,
+      columnEnd: geometry.left + geometry.contentWidth,
       rowStart: frame.contextRow + 1,
       rowEnd: frame.contextRow + 1,
     });
@@ -5161,16 +5191,35 @@ export class TerminalUI {
       return;
     }
     if (this.startupHomeAvailable() && this.startupHits.length > 0) {
-      if (
-        key.name === "tab" &&
-        !key.shift &&
-        !key.ctrl &&
-        !key.meta &&
-        activeInput.graphemes.length === 0
-      ) {
-        const indices = this.startupHits.map((hit) => hit.index);
+      // 空输入时 Tab / Shift+Tab 循环选择入口；已有选中项时 ↑↓ 也在入口间移动，Esc 取消选中。
+      const empty = activeInput.graphemes.length === 0;
+      const cycle =
+        empty && key.name === "tab" && !key.ctrl && !key.meta
+          ? key.shift
+            ? -1
+            : 1
+          : this.startupSelected >= 0 && (key.name === "up" || key.name === "down")
+            ? key.name === "up"
+              ? -1
+              : 1
+            : 0;
+      if (cycle !== 0) {
+        const indices = [...new Set(this.startupHits.map((hit) => hit.index))].sort(
+          (a, b) => a - b,
+        );
         const current = indices.indexOf(this.startupSelected);
-        this.startupSelected = indices[(current + 1) % indices.length];
+        const next =
+          current < 0
+            ? cycle > 0
+              ? 0
+              : indices.length - 1
+            : (current + cycle + indices.length) % indices.length;
+        this.startupSelected = indices[next];
+        this.scheduleRender(true);
+        return;
+      }
+      if (key.name === "escape" && this.startupSelected >= 0) {
+        this.startupSelected = -1;
         this.scheduleRender(true);
         return;
       }
