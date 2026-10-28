@@ -284,7 +284,10 @@ test("the large HAJI logo remains until the first ordinary user message", () => 
     terminalSource,
     /const headerInfo =[\s\S]*?this\.startupHeaderVisible && layout\.headerMode === "full" \? this\.headerInfo : \[\]/,
   );
-  assert.match(terminalSource, /\.\.\.wrapAnsi\(header, width\),\s*\.\.\.\(headerInfo\.length/);
+  assert.match(
+    terminalSource,
+    /\.\.\.wrapAnsi\(header, leftAreaWidth\),\s*\.\.\.\(headerInfo\.length/,
+  );
 });
 
 test("strict read-only shell commands skip approval outside Plan Mode", async () => {

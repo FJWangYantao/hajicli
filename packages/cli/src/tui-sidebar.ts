@@ -16,6 +16,13 @@ import {
   type ContextBreakdown,
   type ContextCategory,
 } from "./context-breakdown.js";
+import {
+  paperHoverBg,
+  paperSidebarBg,
+  paperSidebarEnabled,
+  paperSidebarSpace,
+  paperWorkBg,
+} from "./paper-sidebar.js";
 import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
 import {
   SEQ,
@@ -59,6 +66,12 @@ export interface SidebarState {
   compactionCount?: number;
   taskPlan?: TaskPanelState;
   agents?: readonly AgentPanelItem[];
+  /** 一次性状态反馈的开始时间；未变化时不传，避免动画持续重播。 */
+  contextPulseAt?: number;
+  costPulseAt?: number;
+  goalPulseAt?: number;
+  taskPulseAt?: number;
+  costDetailsPulseAt?: number;
 }
 
 /** 后台定价 agent 状态（费用区的单行提示）。 */
@@ -145,6 +158,8 @@ export interface SidebarFrame {
   ring?: SidebarRingGeometry;
   /** 本帧全部可交互区域，按 depth 升序排列（命中时从后往前找）。 */
   regions: SidebarRegion[];
+  /** 每行可选的表面色，拼接时铺满整行，不改变文本几何。 */
+  surfaces?: Array<string | undefined>;
 }
 
 /** 低于该宽度或高度时右侧栏让位给对话区。 */
@@ -190,13 +205,15 @@ export function sidebarDensity(maxRows: number): SidebarDensity {
 
 /**
  * 计算右侧栏内容宽度；返回 0 表示不显示。
- * 宽度随终端增长，但保持在 24–34 列之间，避免宽屏下信息栏被拉得过散。
+ * 宽度随终端增长；纸间需要容纳双侧内边距，保持在 32–36 列。
  */
 export function resolveSidebarWidth(columns: number, rows: number, enabled: boolean): number {
   if (!enabled) return 0;
   if (!Number.isFinite(columns) || !Number.isFinite(rows)) return 0;
   if (columns < SIDEBAR_MIN_COLUMNS || rows < SIDEBAR_MIN_ROWS) return 0;
-  const target = Math.min(34, Math.max(24, Math.round(columns * 0.26)));
+  const target = paperSidebarEnabled()
+    ? Math.min(36, Math.max(32, Math.round(columns * 0.28)))
+    : Math.min(34, Math.max(24, Math.round(columns * 0.26)));
   if (columns - target - SIDEBAR_GAP_WIDTH < SIDEBAR_MIN_CHAT_WIDTH) return 0;
   return target;
 }
@@ -484,9 +501,14 @@ export function buildSidebarFrame(
 ): SidebarFrame {
   if (width <= 0 || maxRows <= 0) return { rows: [], regions: [] };
   const w = Math.max(1, Math.floor(width));
-  /** 文字可用宽度：右侧留 1 列，避免贴边。 */
-  const contentW = Math.max(1, w - SIDEBAR_RIGHT_MARGIN);
+  const paper = paperSidebarEnabled();
+  /** 纸面两侧各留两列；对话与纸面之间的三列间距由 composeSidebarRow 统一添加。 */
+  const contentW = Math.max(1, w - (paper ? 4 : SIDEBAR_RIGHT_MARGIN));
   const rows: string[] = [];
+  const surfaces: Array<string | undefined> = [];
+  const paperPadding = paper ? "  " : "";
+  const pulse = (at: number | undefined): boolean =>
+    paper && at !== undefined && now >= at && now - at < 800;
   // 交互区域：先登记再统一按 depth 排序，命中时从深到浅找。
   // 行号在这里同步记账（push 时就知道落在第几行），不要事后扫字符串反推。
   const regions: SidebarRegion[] = [];
@@ -506,7 +528,7 @@ export function buildSidebarFrame(
         top,
         height: clipped,
         left: options.left ?? 0,
-        width: options.width ?? contentW,
+        width: options.width ?? contentW + (paper ? 4 : 0),
       },
       hover,
       depth: options.depth ?? 0,
@@ -514,20 +536,23 @@ export function buildSidebarFrame(
     });
   };
   const isHovered = (id: SidebarRegionId): boolean => hoverId === id;
-  const push = (row: string): void => {
+  const push = (row: string, surface?: string): void => {
     // 统一守一道宽度闸：任何一行都不许溢出内容宽度（窄栏下多个区块同时变窄，
     // 逐个调用点补 truncate 容易漏，漏掉的那一行会顶穿到对话区的分隔线上）。
     const safeRow = terminalWidth(row) > contentW ? truncateAnsiText(row, contentW) : row;
-    if (rows.length < maxRows) rows.push(safeRow);
+    if (rows.length < maxRows) {
+      rows.push(`${paperPadding}${safeRow}`);
+      surfaces.push(surface);
+    }
   };
-  const blank = (): void => {
-    if (rows.length > 0 && rows.length < maxRows) push("");
+  const blank = (force = false): void => {
+    if (rows.length > 0 && rows.length < maxRows && (force || !paper)) push("");
   };
   /** 章节标题自带前置空行：三段的呼吸节奏一致，不再靠调用点手动补。 */
   const section = (label: string): void => {
-    blank();
+    blank(paper);
     // 标题也要按内容宽度截断：窄栏下宁可写「费用」两个字，也不能让整行溢出到分隔线上。
-    push(`${SEQ.boldAccent}${truncateText(label, contentW)}${SEQ.reset}`);
+    push(`${paper ? SEQ.muted : SEQ.boldAccent}${truncateText(label, contentW)}${SEQ.reset}`);
   };
   /** 在内容宽度内水平居中（ANSI 行按可见宽度计算）。 */
   const centered = (text: string): string => {
@@ -561,9 +586,67 @@ export function buildSidebarFrame(
   /** 目标/任务/代理区块是否值得展开（minimal 档只要标题行就够）。 */
   const upperMinRows = density === "minimal" ? 2 : 3;
 
+  // ── 空会话：收敛成「上下文 / 费用」两段一行摘要，不画圆环、不铺费用表 ──
+  // 判定「空会话」：还没有任何请求、没有上下文分类、没有目标/任务/代理。
+  // 启动屏因此只留两条主指标（占多少、花多少）+ 一句「有数据后会展开什么」，
+  // 不再一上来就画满盲文圆环、摊开一张全是零的费用表，避免首屏碎点与空行。
+  const hasActiveWork =
+    Boolean(state.goal) ||
+    (state.taskPlan?.items.length ?? 0) > 0 ||
+    (state.agents?.length ?? 0) > 0;
+  // 启动时 breakdown 一定存在（系统提示词 + 工具定义已计入），所以不能拿「有没有 breakdown」
+  // 判断空会话；改看对话类 token 是否为 0——还没聊过天时它恒为 0，聊过之后必然 > 0。
+  const noConversation = (state.breakdown?.conversation ?? 0) === 0;
+  const freshSession =
+    !hasActiveWork &&
+    (state.costRequests ?? 0) === 0 &&
+    noConversation &&
+    (state.compactionCount ?? 0) === 0;
+  if (freshSession) {
+    if (paper) push(`${SEQ.muted}SESSION${SEQ.reset}`);
+    const usedC = Math.max(0, state.usedTokens);
+    const maxC = Math.max(1, state.maxTokens);
+    const ratioC = Math.min(1, Math.max(0, usedC / maxC));
+    const pctC = `${Math.round(ratioC * 100)}%`;
+    section("上下文");
+    const usageTopC = rows.length;
+    tableRow("占用", `${pctC} · ${formatTokenBudget(usedC)} / ${formatTokenBudget(maxC)}`);
+    register("context.usage", usageTopC, 1, "text");
+    push(`${SEQ.faint}${truncateText("有对话后显示分类构成", contentW)}${SEQ.reset}`);
+
+    const costTopC = rows.length;
+    section("费用");
+    if (state.costCny === undefined) {
+      push(`${SEQ.muted}${truncateText("暂无已计费调用", contentW)}${SEQ.reset}`);
+    } else {
+      const costRowTop = rows.length;
+      tableRow(
+        "花费",
+        formatCostAmount(state.costCny),
+        isHovered("cost.summary") ? SEQ.accent : SEQ.reset,
+      );
+      register("cost.turn.cost", costRowTop, 1, "text", { depth: 2 });
+    }
+    push(`${SEQ.faint}${truncateText("有请求后显示明细 · Ctrl+E", contentW)}${SEQ.reset}`);
+    register("cost.summary", costTopC, rows.length - costTopC, "text", { depth: 1 });
+
+    regions.sort((a, b) => a.depth - b.depth);
+    return { rows: rows.slice(0, maxRows), ring: undefined, regions };
+  }
+
   // ── 目标：setgoal 记录的会话目标摘要，最多两行（完整原文与完成审计由 selfstate 查询）──
   // 只显示进行中的目标：达成后收尾反馈由对话区的 goalfinish 工具格承担，侧栏不再占行。
-  if (state.goal && state.goal.status === "active" && upperBudget() >= upperMinRows) {
+  if (paper) push(`${SEQ.muted}SESSION${SEQ.reset}`);
+  const workSurface = paperWorkBg();
+  if (paper && state.goal && state.goal.status === "active" && upperBudget() >= upperMinRows) {
+    push(
+      `${SEQ.boldAccent}当前工作${SEQ.reset}`,
+      pulse(state.goalPulseAt) ? paperHoverBg() : workSurface,
+    );
+    for (const line of wrapSidebarText(state.goal.text, contentW, Math.min(2, upperBudget()))) {
+      push(pulse(state.goalPulseAt) ? `${SEQ.bold}${line}${SEQ.reset}` : line, workSurface);
+    }
+  } else if (state.goal && state.goal.status === "active" && upperBudget() >= upperMinRows) {
     section("目标 · 进行中");
     for (const line of wrapSidebarText(state.goal.text, contentW, Math.min(2, upperBudget()))) {
       // 原文用正文色：强调色留给选中态与可操作入口，整段高亮反而看不出重点。
@@ -580,8 +663,29 @@ export function buildSidebarFrame(
       // minimal 档只留标题行（done/total 与进行中项数都在里面），其余档收成紧凑列表。
       const limit = density === "minimal" ? 1 : Math.min(available, 7);
       const taskRows = buildTaskPanelRows(state.taskPlan, contentW, limit, now, { compact: true });
-      // 走 push 而不是 rows.push：面板自己产出的行也要过宽度闸（窄栏下标题行会超宽）。
-      for (const row of taskRows.slice(0, available)) push(row);
+      const current = state.taskPlan.items.find((item) => item.status === "in_progress");
+      if (paper && current && limit >= 3) {
+        const title = `任务 · ${state.taskPlan.title}  ${state.taskPlan.items.filter((item) => item.status === "completed").length}/${state.taskPlan.items.length}`;
+        push(`${SEQ.bold}${truncateText(title, contentW)}${SEQ.reset}`, workSurface);
+        push(
+          `${SEQ.accent}●${SEQ.reset} ${SEQ.bold}${truncateText(current.content, Math.max(1, contentW - 8))}${SEQ.reset}${SEQ.muted} 进行中${SEQ.reset}`,
+          workSurface,
+        );
+        const done = state.taskPlan.items.filter((item) => item.status === "completed").length;
+        const remaining = state.taskPlan.items.length - done - 1;
+        push(
+          `${SEQ.muted}${truncateText(`已完成 ${done} 项${remaining > 0 ? ` · 剩余 ${remaining} 项` : ""}`, contentW)}${SEQ.reset}`,
+          workSurface,
+        );
+      } else {
+        // 走 push 而不是 rows.push：面板自己产出的行也要过宽度闸（窄栏下标题行会超宽）。
+        for (const row of taskRows.slice(0, available)) {
+          push(
+            paper && pulse(state.taskPulseAt) ? `${SEQ.bold}${row}${SEQ.reset}` : row,
+            paper ? (pulse(state.taskPulseAt) ? paperHoverBg() : workSurface) : undefined,
+          );
+        }
+      }
     }
   }
 
@@ -602,6 +706,14 @@ export function buildSidebarFrame(
   const ratio = Math.min(1, Math.max(0, used / max));
   const percent = `${Math.round(ratio * 100)}%`;
   section("上下文");
+  if (paper) {
+    const contextTitle = "上下文";
+    const titleRow = rows.length - 1;
+    const gap = Math.max(1, contentW - terminalWidth(contextTitle) - terminalWidth(percent));
+    rows[titleRow] =
+      `${paperPadding}${SEQ.muted}${contextTitle}${SEQ.reset}${" ".repeat(gap)}${SEQ.accent}${percent}${SEQ.reset}`;
+    if (pulse(state.contextPulseAt)) surfaces[titleRow] = paperHoverBg();
+  }
 
   // 空间够时画圆环；太挤则退回单行进度条，避免把费用/任务全部挤掉。
   let ring: SidebarRingGeometry | undefined;
@@ -617,7 +729,7 @@ export function buildSidebarFrame(
         : 0;
   // 圆环一旦放不下就退回单行进度条：宁可少画图形，也不把下面的用量行挤没。
   const ringFits = ringHeight > 0 && rows.length + ringHeight <= maxRows - COST_MIN_ROWS;
-  if (ringFits) {
+  if (ringFits && !paper) {
     // 宽 = 2 × 高：点阵 2×4，只有这个比例在终端里才是正圆。
     const ringWidth = Math.min(ringHeight * 2, Math.max(4, contentW));
     const left = Math.max(0, Math.floor((contentW - ringWidth) / 2));
@@ -630,23 +742,39 @@ export function buildSidebarFrame(
     const filled = Math.min(barCapacity, Math.max(0, Math.round(ratio * barCapacity)));
     const empty = Math.max(0, barCapacity - filled);
     const ratioColor = ratio >= 0.85 ? SEQ.boldRed : ratio >= 0.6 ? SEQ.yellow : SEQ.softAccent;
-    push(
-      `${ratioColor}${"█".repeat(filled)}${SEQ.reset}${SEQ.faint}${"░".repeat(empty)}${SEQ.reset} ${ratioColor}${percent}${SEQ.reset}`,
-    );
+    if (paper) {
+      const paperBar = Math.max(4, Math.min(14, contentW - 1));
+      const paperFilled = Math.min(paperBar, Math.round(ratio * paperBar));
+      const metricSurface = pulse(state.contextPulseAt) ? paperHoverBg() : undefined;
+      push(
+        `${SEQ.bold}${formatTokenBudget(used)}${SEQ.reset} ${SEQ.muted}/ ${formatTokenBudget(max)}${SEQ.reset}`,
+        metricSurface,
+      );
+      push(
+        `${SEQ.accent}${"━".repeat(paperFilled)}${SEQ.reset}${SEQ.muted}${"─".repeat(paperBar - paperFilled)}${SEQ.reset}`,
+        metricSurface,
+      );
+    } else {
+      push(
+        `${ratioColor}${"█".repeat(filled)}${SEQ.reset}${SEQ.faint}${"░".repeat(empty)}${SEQ.reset} ${ratioColor}${percent}${SEQ.reset}`,
+      );
+    }
   }
 
   // 分类明细不占侧栏行数：鼠标悬停圆环时由浮层卡片展示（buildContextCard），
   // 侧栏这里永远只保留一条总用量，悬停也只会加粗圆环里的百分比。
   // 用量行和圆环做同一件事（开上下文详情页）：圆环有 5~7 行高，宽屏下靠它定位
   // 很别扭，一条贴边的文字行才是更好点的靶子。
-  const usageTop = rows.length;
+  const usageTop = paper ? rows.length - 2 : rows.length;
   const usageColor = isHovered("context.usage") ? SEQ.reset : SEQ.muted;
-  push(
-    centered(
-      `${usageColor}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
-    ),
-  );
-  register("context.usage", usageTop, 1, "text");
+  if (!paper) {
+    push(
+      centered(
+        `${usageColor}${formatTokenBudget(used)} / ${formatTokenBudget(max)} tokens${SEQ.reset}`,
+      ),
+    );
+  }
+  register("context.usage", usageTop, paper ? 2 : 1, "text", paper ? { hasCard: true } : {});
 
   // 压缩徽标：圆环会因压缩突然掉下来，标注一次就能消掉“上下文怎么没了”的困惑。
   // 压缩徽标是可选的：空间只够预留额度时先让它，别把费用区块顶出可见区域。
@@ -673,7 +801,15 @@ export function buildSidebarFrame(
   // 点哪一行就按哪种口径把每一轮摊开（见 onSidebarAction / formatTurnReport）。
   const costRow = (id: SidebarRegionId | undefined, label: string, value: string): void => {
     const top = rows.length;
-    tableRow(label, value, costRowColor(id));
+    if (paper && id === "cost.turn.cost") {
+      push(
+        `${costRowColor(id)}${SEQ.muted}¥${SEQ.reset}${SEQ.bold}${truncateText(value.slice(1), contentW - 1)}${SEQ.reset}`,
+        pulse(state.costPulseAt) ? paperHoverBg() : undefined,
+      );
+    } else {
+      tableRow(label, value, costRowColor(id));
+      if (paper && pulse(state.costDetailsPulseAt)) surfaces[rows.length - 1] = paperHoverBg();
+    }
     if (id !== undefined) register(id, top, 1, "text", { depth: 2 });
   };
   if (state.costCny === undefined) {
@@ -720,10 +856,13 @@ export function buildSidebarFrame(
     const detailTop = rows.length;
     const expanded = state.costDetailsExpanded === true;
     const arrowColor = isHovered("cost.detail") ? SEQ.boldAccent : SEQ.muted;
-    const arrow = expanded ? "▾ 明细" : "▸ 明细";
+    const arrow = paper ? (expanded ? "⌄ 查看明细" : "› 查看明细") : expanded ? "▾ 明细" : "▸ 明细";
     // 键盘入口只在放得下时提示：宽 15 列起步，窄栏里「明细」两字仍然是完整可点的靶子。
-    const label = contentW >= 16 ? `${arrow} · Ctrl+E` : arrow;
-    push(`${arrowColor}${truncateText(label, contentW)}${SEQ.reset}`);
+    const label = contentW >= 16 ? (paper ? `${arrow}  Ctrl+E` : `${arrow} · Ctrl+E`) : arrow;
+    push(
+      `${arrowColor}${truncateText(label, contentW)}${SEQ.reset}`,
+      paper && pulse(state.costDetailsPulseAt) ? paperHoverBg() : undefined,
+    );
     register("cost.detail", detailTop, 1, "label", { depth: 2 });
     if (expanded) {
       const promptTokens = Math.max(0, state.promptTokens ?? 0);
@@ -758,6 +897,14 @@ export function buildSidebarFrame(
   // 高度被裁到 0 时 register 会直接跳过，调用方也就拿不到这块区域。
   register("cost.summary", costHitTop, rows.length - costHitTop, "text", { depth: 1 });
 
+  if (paper) {
+    for (const region of regions) {
+      if (!isHovered(region.id)) continue;
+      const end = Math.min(rows.length, region.hit.top + region.hit.height);
+      for (let index = region.hit.top; index < end; index += 1) surfaces[index] = paperHoverBg();
+    }
+  }
+
   // 按 depth 升序返回：命中时从后往前找，深层（定价 agent 行、配置单价行）
   // 自然压过外层费用区块。
   regions.sort((a, b) => a.depth - b.depth);
@@ -765,6 +912,7 @@ export function buildSidebarFrame(
     rows: rows.slice(0, maxRows),
     ring,
     regions,
+    surfaces: paper ? surfaces.slice(0, maxRows) : undefined,
   };
 }
 
@@ -788,6 +936,7 @@ export function composeSidebarRow(
   leftWidth: number,
   sidebarRow: string,
   sidebarWidth: number,
+  surface?: string,
 ): string {
   const leftVisible = terminalWidth(left);
   const safeLeft = leftVisible > leftWidth ? truncateAnsiText(left, leftWidth) : left;
@@ -800,5 +949,12 @@ export function composeSidebarRow(
   const sidebarPadded = `${safeSidebar}${SEQ.reset}${" ".repeat(
     Math.max(0, sidebarWidth - terminalWidth(safeSidebar)),
   )}`;
+  if (paperSidebarEnabled()) {
+    const background = surface ?? paperSidebarBg();
+    const paperRow = `${background}${safeSidebar}${background}${" ".repeat(
+      Math.max(0, sidebarWidth - terminalWidth(safeSidebar)),
+    )}${SEQ.reset}`;
+    return `${leftPadded}${paperSidebarSpace(3)}${paperRow}`;
+  }
   return `${leftPadded} ${SEQ.faint}│${SEQ.reset} ${sidebarPadded}`;
 }

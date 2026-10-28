@@ -52,10 +52,10 @@ export interface Theme {
  * - `kero`：Kero 设计稿色系（复刻 design/kero/kero-tokens.ts），Apple 系统色 + 蓝色强调。
  * 每套预设都提供 dark/light 两份，最终生效值由 preset × appearance 决定。
  */
-export type ThemePresetName = "default" | "kero";
+export type ThemePresetName = "default" | "kero" | "paper";
 
 /** 已注册的主题预设名（顺序即展示顺序）。 */
-export const THEME_PRESET_NAMES: readonly ThemePresetName[] = ["default", "kero"];
+export const THEME_PRESET_NAMES: readonly ThemePresetName[] = ["default", "kero", "paper"];
 
 /** 终端颜色能力，从完全无色到 24-bit 真彩色。 */
 export type ColorLevel = "mono" | "ansi16" | "ansi256" | "truecolor";
@@ -215,16 +215,58 @@ const KERO_LIGHT_THEME: Theme = {
   brightCyan: "#14a3bf",
 };
 
+/** 纸间：暖白纸面与鼠尾草绿焦点；正文保持高对比，不靠浅灰营造轻盈感。 */
+const PAPER_LIGHT_THEME: Theme = {
+  background: "#f5f3ee",
+  userMsgBg: "#ebe6dc",
+  userMsgFg: "#252522",
+  foreground: "#45433e",
+  accent: "#697750",
+  muted: "#716c62",
+  red: "#a55f55",
+  green: "#537a58",
+  yellow: "#8a6b2e",
+  blue: "#536c83",
+  magenta: "#89637c",
+  cyan: "#477777",
+  brightGreen: "#466d4b",
+  brightYellow: "#795d24",
+  brightBlue: "#405e76",
+  brightCyan: "#376666",
+};
+
+/** 深色终端上仍可使用纸间：保留暖灰与鼠尾草绿，切换为深色纸面。 */
+const PAPER_DARK_THEME: Theme = {
+  background: "#252420",
+  userMsgBg: "#34322c",
+  userMsgFg: "#f0eee5",
+  foreground: "#dedbd1",
+  accent: "#a4b184",
+  muted: "#b7b1a4",
+  red: "#d99487",
+  green: "#91b395",
+  yellow: "#d0b373",
+  blue: "#9eb3c4",
+  magenta: "#c2a0b6",
+  cyan: "#8db6b0",
+  brightGreen: "#a5c5a8",
+  brightYellow: "#dfc58c",
+  brightBlue: "#b4c8d8",
+  brightCyan: "#a4cbc4",
+};
+
 /** 每套预设的显示说明，供 /theme 列表展示。 */
 const THEME_PRESET_INFO: Readonly<Record<ThemePresetName, string>> = {
   default: "HAJI 自带：低干扰深色表面 + 克制紫色强调",
   kero: "Kero 设计稿：Apple 系统色系 + 蓝色强调",
+  paper: "纸间：暖白纸面 + 鼠尾草绿强调 + 宽松侧栏",
 };
 
 /** preset × appearance → 内置调色板基线。 */
 const PALETTES: Readonly<Record<ThemePresetName, Readonly<Record<ThemeAppearance, Theme>>>> = {
   default: { dark: DARK_THEME, light: LIGHT_THEME },
   kero: { dark: KERO_DARK_THEME, light: KERO_LIGHT_THEME },
+  paper: { dark: PAPER_DARK_THEME, light: PAPER_LIGHT_THEME },
 };
 
 /** 向后兼容的默认主题别名（深色调色板）。 */

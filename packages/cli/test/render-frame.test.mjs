@@ -7,9 +7,10 @@ import {
   clearTerminalWidthCache,
   terminalWidth,
 } from "../dist/terminal-text.js";
-import { resetActiveColorLevel, setActiveColorLevel } from "../dist/theme.js";
+import { resetActiveColorLevel, setActiveColorLevel, setThemePreset } from "../dist/theme.js";
 
 setActiveColorLevel("mono");
+setThemePreset("default");
 const ESC = String.fromCharCode(27);
 
 test("terminalWidth measures ASCII, CJK and emoji at their real cell widths", () => {

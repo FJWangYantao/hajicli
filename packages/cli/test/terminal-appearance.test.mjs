@@ -23,6 +23,7 @@ import {
   resetThemeAppearance,
   setActiveColorLevel,
   setThemeAppearance,
+  setThemePreset,
   themeBg,
   themeReset,
 } from "../dist/theme.js";
@@ -32,6 +33,7 @@ const BEL = String.fromCharCode(7);
 const ST = `${ESC}\\`;
 
 setActiveColorLevel("truecolor");
+setThemePreset("default");
 resetThemeAppearance();
 
 /** 构造一个可注入的伪 stdin：记录 raw mode 与写入的查询。 */

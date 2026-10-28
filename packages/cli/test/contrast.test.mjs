@@ -20,7 +20,10 @@ import {
   resetThemeAppearance,
   setActiveColorLevel,
   setThemeAppearance,
+  setThemePreset,
 } from "../dist/theme.js";
+
+setThemePreset("default");
 
 test("WCAG luminance and contrast match the reference values", () => {
   assert.equal(relativeLuminance([0, 0, 0]), 0);

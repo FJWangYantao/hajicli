@@ -55,7 +55,7 @@ const FIXED_THEME = {
 afterEach(() => {
   resetActiveColorLevel();
   resetActiveTheme();
-  resetThemePreset();
+  setThemePreset("default");
   resetThemeAppearance();
 });
 
@@ -258,4 +258,17 @@ test("theme preset list exposes the registered presets", () => {
   assert.deepEqual(names, [...THEME_PRESET_NAMES]);
   assert.ok(names.includes("default"));
   assert.ok(names.includes("kero"));
+  assert.ok(names.includes("paper"));
+});
+
+test("paper preset matches the warm paper prototype in light appearance", () => {
+  resetThemePreset();
+  setActiveColorLevel("truecolor");
+  setThemePreset("paper");
+  setThemeAppearance("light");
+  const theme = getTheme();
+  assert.equal(theme.background, "#f5f3ee");
+  assert.equal(theme.foreground, "#45433e");
+  assert.equal(theme.accent, "#697750");
+  assert.equal(theme.userMsgBg, "#ebe6dc");
 });

@@ -18,9 +18,10 @@ import {
   preferredDiffWidth,
 } from "../dist/diff-preview.js";
 import { fitText, terminalWidth } from "../dist/terminal-text.js";
-import { setActiveColorLevel } from "../dist/theme.js";
+import { setActiveColorLevel, setThemePreset } from "../dist/theme.js";
 
 setActiveColorLevel("mono");
+setThemePreset("default");
 
 const SAMPLE = [
   "const a = 1;",

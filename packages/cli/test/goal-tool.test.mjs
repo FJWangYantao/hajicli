@@ -13,7 +13,10 @@ import {
 } from "@hajicli/plugins";
 
 import { formatGoalPromptPart, GoalPromptPart } from "../dist/goal-prompt.js";
+import { setThemePreset } from "../dist/theme.js";
 import { buildSidebarRows, wrapSidebarText } from "../dist/tui-sidebar.js";
+
+setThemePreset("default");
 
 /**
  * 会话目标是纯模型驱动的能力：setgoal 记录、goalfinish 收尾，没有用户侧 /goal 指令。

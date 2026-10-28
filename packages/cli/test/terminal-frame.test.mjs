@@ -3,6 +3,9 @@ import test from "node:test";
 
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
+import { setThemePreset } from "../dist/theme.js";
+
+setThemePreset("default");
 
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const FRAME_SIZES = [

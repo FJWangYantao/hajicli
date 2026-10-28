@@ -31,6 +31,7 @@ import {
   inputCellFromPoint,
   inputRowHighlightSpan,
 } from "./input-selection.js";
+import { paperSidebarEnabled } from "./paper-sidebar.js";
 import {
   buildFoldHeader,
   type ChatSegmentView,
@@ -680,6 +681,12 @@ export class TerminalUI {
   private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
   private sidebarEnabled = true;
+  private contextPulseAt?: number;
+  private costPulseAt?: number;
+  private goalPulseAt?: number;
+  private taskPulseAt?: number;
+  private costDetailsPulseAt?: number;
+  private sidebarPulseTimer: NodeJS.Timeout | null = null;
   private costCny?: number;
   private costRequests = 0;
   private costHasUnpriced = false;
@@ -851,8 +858,14 @@ export class TerminalUI {
   }
 
   setContextUsage(usedTokens: number, maxTokens = 1000000, breakdown?: ContextBreakdown): void {
-    this.usedTokens = Math.max(0, usedTokens);
-    this.maxTokens = Math.max(1, maxTokens);
+    const nextUsed = Math.max(0, usedTokens);
+    const nextMax = Math.max(1, maxTokens);
+    if (nextUsed !== this.usedTokens || nextMax !== this.maxTokens) {
+      this.contextPulseAt = Date.now();
+      this.scheduleSidebarPulseEnd();
+    }
+    this.usedTokens = nextUsed;
+    this.maxTokens = nextMax;
     this.contextBreakdown = breakdown;
     this.scheduleRender();
   }
@@ -1279,6 +1292,10 @@ export class TerminalUI {
     cachedPromptTokens = 0,
     offPeakRequests = 0,
   ): void {
+    if (totalCostCny !== this.costCny) {
+      this.costPulseAt = Date.now();
+      this.scheduleSidebarPulseEnd();
+    }
     this.costCny = totalCostCny;
     this.costRequests = Math.max(0, requests);
     this.costHasUnpriced = hasUnpriced;
@@ -1304,6 +1321,8 @@ export class TerminalUI {
   toggleCostDetailRows(): boolean {
     if (this.costCny === undefined) return false;
     this.costDetailRowsExpanded = !this.costDetailRowsExpanded;
+    this.costDetailsPulseAt = Date.now();
+    this.scheduleSidebarPulseEnd();
     this.scheduleRender(true);
     return true;
   }
@@ -1320,6 +1339,8 @@ export class TerminalUI {
       : undefined;
     if (next?.text === this.sidebarGoal?.text && next?.status === this.sidebarGoal?.status) return;
     this.sidebarGoal = next;
+    this.goalPulseAt = Date.now();
+    this.scheduleSidebarPulseEnd();
     this.scheduleRender();
   }
 
@@ -1373,6 +1394,8 @@ export class TerminalUI {
             : undefined,
         }))
       : [];
+    this.taskPulseAt = Date.now();
+    this.scheduleSidebarPulseEnd();
     if (!plan || this.taskPanelItems.length <= 5) this.taskPanelExpanded = false;
     this.scheduleRender();
   }
@@ -1864,6 +1887,10 @@ export class TerminalUI {
     if (this.agentPanelTimer) {
       clearInterval(this.agentPanelTimer);
       this.agentPanelTimer = null;
+    }
+    if (this.sidebarPulseTimer) {
+      clearTimeout(this.sidebarPulseTimer);
+      this.sidebarPulseTimer = null;
     }
     if (this.transientHintTimer) {
       clearTimeout(this.transientHintTimer);
@@ -3807,7 +3834,19 @@ export class TerminalUI {
     this.scheduleRender(true);
   }
 
+  /** 一次性反馈只安排结束帧；空闲时没有动画定时器。 */
+  private scheduleSidebarPulseEnd(): void {
+    if (this.sidebarPulseTimer) clearTimeout(this.sidebarPulseTimer);
+    this.sidebarPulseTimer = setTimeout(() => {
+      this.sidebarPulseTimer = null;
+      this.scheduleRender();
+    }, 800);
+    this.sidebarPulseTimer.unref?.();
+  }
+
   private buildSidebarState(): SidebarState {
+    const pulseActive = (at: number | undefined): number | undefined =>
+      at !== undefined && Date.now() - at < 800 ? at : undefined;
     return {
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
@@ -3835,6 +3874,11 @@ export class TerminalUI {
           }
         : undefined,
       agents: this.agentPanelItems,
+      contextPulseAt: pulseActive(this.contextPulseAt),
+      costPulseAt: pulseActive(this.costPulseAt),
+      goalPulseAt: pulseActive(this.goalPulseAt),
+      taskPulseAt: pulseActive(this.taskPulseAt),
+      costDetailsPulseAt: pulseActive(this.costDetailsPulseAt),
     };
   }
 
@@ -4085,7 +4129,8 @@ export class TerminalUI {
     );
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
-    // 右侧会话信息栏：只占对话区高度，输入框与状态栏仍保持整行宽度。
+    // 右侧会话信息栏：只占对话区高度，顶框、输入框与状态栏都收窄到左区宽度，
+    // 让整块左侧内容的右边界对齐；侧栏下方的右侧留背景空白，不再横跨整行。
     // 整页视图（上下文详情 / 费用日志）打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
     const pageOpen = Boolean(this.contextInspector) || Boolean(this.costLog);
     const sidebarWidth = pageOpen ? 0 : resolveSidebarWidth(width, height, this.sidebarEnabled);
@@ -4097,7 +4142,7 @@ export class TerminalUI {
     // 记下对话区的右边界：鼠标落在这之后的一律算侧栏，不参与文本选区。
     this.chatAreaRightEdgeColumn = sidebarVisible ? leftAreaWidth : 0;
     const persistentHeader = this.sessionTitle
-      ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, width - 7))}${SEQ.reset}`
+      ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, leftAreaWidth - 7))}${SEQ.reset}`
       : this.options.compactHeader;
     const header =
       layout.headerMode === "hidden"
@@ -4111,8 +4156,10 @@ export class TerminalUI {
       this.startupHeaderVisible && layout.headerMode === "full" ? this.headerInfo : [];
     const headerRows = header
       ? [
-          ...wrapAnsi(header, width),
-          ...(headerInfo.length ? ["", ...headerInfo.flatMap((l) => wrapAnsi(l, width))] : []),
+          ...wrapAnsi(header, leftAreaWidth),
+          ...(headerInfo.length
+            ? ["", ...headerInfo.flatMap((l) => wrapAnsi(l, leftAreaWidth))]
+            : []),
         ]
       : [];
     const panelBudget = Math.max(0, Math.min(layout.panelRows, height - headerRows.length - 4));
@@ -4124,7 +4171,11 @@ export class TerminalUI {
       ? []
       : this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
     const topRows = [...headerRows, ...taskRows, ...agentRows];
-    const divider = this.options.renderBorder(width);
+    const divider = this.options.renderBorder(leftAreaWidth);
+    const inputDivider =
+      paperSidebarEnabled() && this.activeInput
+        ? `${SEQ.softAccent}${"-".repeat(leftAreaWidth)}${SEQ.reset}`
+        : divider;
     let inputLayout: VisibleInputLayout | undefined;
     let inputBlock: string[];
     let inputCursorOffset = 0;
@@ -4137,18 +4188,18 @@ export class TerminalUI {
     // 活动行不搬进侧栏——侧栏只显示上下文/费用/任务这些状态量。
     let activityInChat = Boolean(this.activityFrame) && !minimal && !pageOpen;
     const activityRow =
-      (activityInChat ? "" : this.buildActivityRow(width)) ||
+      (activityInChat ? "" : this.buildActivityRow(leftAreaWidth)) ||
       (this.copiedNotice && topRows.length === 0
-        ? truncateAnsiText(`${SEQ.bold}${SEQ.green}${this.copiedNotice}${SEQ.reset}`, width)
+        ? truncateAnsiText(`${SEQ.bold}${SEQ.green}${this.copiedNotice}${SEQ.reset}`, leftAreaWidth)
         : "") ||
-      (this.transientHintText ? truncateAnsiText(this.transientHintText, width) : "") ||
-      (this.status ? truncateAnsiText(this.status, width) : "");
+      (this.transientHintText ? truncateAnsiText(this.transientHintText, leftAreaWidth) : "") ||
+      (this.status ? truncateAnsiText(this.status, leftAreaWidth) : "");
     const statusBar =
       !emergencyMinimal && activityRow
         ? activityRow
-        : this.buildStatusBar(width, layout.statusDetail);
+        : this.buildStatusBar(leftAreaWidth, layout.statusDetail);
     const leadingInputRows: string[] = [];
-    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
+    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, leftAreaWidth));
     const emergencyLeadingBudget = Math.max(0, height - 2);
     const visibleLeadingInputRows = emergencyMinimal
       ? emergencyLeadingBudget === 0
@@ -4157,13 +4208,13 @@ export class TerminalUI {
       : leadingInputRows;
     const emergencyStatusRows = emergencyMinimal && height < 2 ? [] : [statusBar];
     // 粘贴图片占输入框上方的行：文字输入行保持在 chip 下方。
-    const pastedRows = this.buildPastedImageRows(width);
+    const pastedRows = this.buildPastedImageRows(leftAreaWidth);
 
     if (this.activeSelection) {
       const maxSelectionRows = emergencyMinimal
         ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
         : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 5));
-      const selectionRows = this.getSelectionRows(width, maxSelectionRows);
+      const selectionRows = this.getSelectionRows(leftAreaWidth, maxSelectionRows);
       if (emergencyMinimal) {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
       } else if (minimal) {
@@ -4181,7 +4232,7 @@ export class TerminalUI {
             ),
           )
         : 0;
-      const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
+      const suggestionRows = this.getCommandSuggestionRows(leftAreaWidth, maxSuggestionRows);
       const maxInputRows = emergencyMinimal
         ? Math.max(
             1,
@@ -4199,7 +4250,7 @@ export class TerminalUI {
               suggestionRows.length -
               (minimal ? 3 : 5),
           );
-      inputLayout = this.getInputLayout(width, maxInputRows);
+      inputLayout = this.getInputLayout(leftAreaWidth, maxInputRows);
       if (emergencyMinimal) {
         inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
         inputBlock = [
@@ -4219,10 +4270,10 @@ export class TerminalUI {
         // 也不该把光标顶到框中间。
         inputBlock = [
           ...visibleLeadingInputRows,
-          divider,
+          inputDivider,
           ...pastedRows,
           ...inputLayout.rows,
-          divider,
+          inputDivider,
           ...suggestionRows,
           statusBar,
         ];
@@ -4234,7 +4285,7 @@ export class TerminalUI {
     // 对话区至少要留一行正文给活动行（空行 + 活动行）让位；多行输入把它挤小时退回底栏。
     if (activityInChat && chatHeight < CHAT_ACTIVITY_ROWS + 1) {
       activityInChat = false;
-      inputBlock[inputBlock.length - 1] = this.buildActivityRow(width);
+      inputBlock[inputBlock.length - 1] = this.buildActivityRow(leftAreaWidth);
     }
     // 输入框正文的屏幕行区间（供鼠标拖选命中）与选区高亮。
     // 顺序：先按未着色的行算出几何，再把高亮写回 inputBlock 的对应位置。
@@ -4553,18 +4604,34 @@ export class TerminalUI {
       screenTop: chatScreenTop,
       enabled: !minimal && !pageOpen,
     });
-    const composedChatRows = chatRows.map((row, index) => {
-      const painted = paintContextCard(row, index);
-      return sidebarVisible
-        ? composeSidebarRow(painted, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
-        : painted;
-    });
-    const screenRows = emergencyMinimal
-      ? [...composedChatRows, ...inputBlock].slice(0, height)
-      : [...topRows, divider, ...composedChatRows, ...inputBlock].slice(0, height);
-    while (screenRows.length < height) screenRows.push("");
+    const composedChatRows = chatRows.map((row, index) => paintContextCard(row, index));
+    const leftRows = emergencyMinimal
+      ? [...composedChatRows, ...inputBlock]
+      : [...topRows, divider, ...composedChatRows, ...inputBlock];
     // 复制角标贴在顶行右端（标题行）；头部隐藏时改走底栏提示。
-    if (topRows.length > 0) this.overlayCopiedNotice(screenRows, width);
+    // 先贴再合成侧栏，避免角标把贯穿的竖线切断。
+    if (topRows.length > 0) this.overlayCopiedNotice(leftRows, leftAreaWidth);
+    // 侧栏竖线贯穿整个高度：左侧每一行都补到左区宽度后接一条竖线，
+    // 顶部/底部没有侧栏内容的行只留竖线与背景，保证右边界处处对齐。
+    const chatStartIndex = emergencyMinimal ? 0 : topRows.length + 1;
+    const screenRows = leftRows.slice(0, height).map((row, index) => {
+      if (!sidebarVisible) return row;
+      const chatIndex = index - chatStartIndex;
+      const sidebarRow =
+        chatIndex >= 0 && chatIndex < sidebarRows.length ? sidebarRows[chatIndex] : "";
+      // 非对话行也走同一个拼接函数，保证宽度和三列间距不重复计算。
+      return composeSidebarRow(
+        row,
+        leftAreaWidth,
+        sidebarRow,
+        sidebarWidth,
+        sidebarFrame.surfaces?.[chatIndex],
+      );
+    });
+    while (screenRows.length < height) {
+      // 补齐的空行也要带上竖线，否则屏幕底部会缺一段分隔线、右边界错位。
+      screenRows.push(sidebarVisible ? composeSidebarRow("", leftAreaWidth, "", sidebarWidth) : "");
+    }
     const fullRefresh =
       width !== this.renderedScreenWidth ||
       height !== this.renderedScreenHeight ||
@@ -4589,7 +4656,7 @@ export class TerminalUI {
     let cursorState = "";
     if (this.activeInput && inputLayout) {
       const inputTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
-      const cursorColumn = Math.min(inputLayout.cursor.column, width) + 1;
+      const cursorColumn = Math.min(inputLayout.cursor.column, leftAreaWidth) + 1;
       const cursorRow = inputTop + inputCursorOffset + inputLayout.cursor.row + 1;
       cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }

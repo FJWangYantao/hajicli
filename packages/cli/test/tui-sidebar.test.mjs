@@ -3,6 +3,12 @@ import test from "node:test";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
 import {
+  resetThemeAppearance,
+  setActiveColorLevel,
+  setThemeAppearance,
+  setThemePreset,
+} from "../dist/theme.js";
+import {
   buildContextCard,
   buildSidebarFrame,
   buildSidebarRows,
@@ -11,6 +17,10 @@ import {
   resolveSidebarWidth,
   sidebarDensity,
 } from "../dist/tui-sidebar.js";
+
+setActiveColorLevel("mono");
+setThemePreset("default");
+resetThemeAppearance();
 
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -136,6 +146,127 @@ test("composed row keeps the exact terminal width", () => {
   const row = composeSidebarRow("对话内容", 50, "右侧信息", 30);
   assert.equal(terminalWidth(row), 50 + 3 + 30);
   assert.match(stripAnsi(row), /对话内容 +│ 右侧信息/);
+});
+
+test("paper sidebar paints a seamless warm surface without the divider", () => {
+  setActiveColorLevel("truecolor");
+  setThemePreset("paper");
+  setThemeAppearance("light");
+  try {
+    const row = composeSidebarRow("对话内容", 50, "上下文", 30);
+    assert.equal(terminalWidth(row), 83);
+    assert.doesNotMatch(stripAnsi(row), /│/);
+    assert.ok(row.includes("\x1b[48;2;233;230;220m"));
+    const frame = buildSidebarFrame(sidebarState(), 30, 30, 5000);
+    assert.equal(frame.ring, undefined, "paper uses the prototype bar instead of a ring");
+    const text = frame.rows.map(stripAnsi).join("\n");
+    assert.match(text, /^ {2}上下文 +25%$/m, "标题与百分比同一行");
+    assert.match(text, /^ {2}250 \/ 1\.0k$/m, "数字独立成行且保留内边距");
+    assert.match(text, /━+─+/);
+    assert.match(text, /费用\n {2}¥0\.0100\n {2}› 查看明细/, "费用金额与入口保持两行节奏");
+    assert.match(text, /¥0\.0100/);
+    assert.ok(frame.regions.some((region) => region.id === "context.usage" && region.hasCard));
+  } finally {
+    setThemePreset("default");
+    resetThemeAppearance();
+    setActiveColorLevel("mono");
+  }
+});
+
+test("paper sidebar keeps stable work groups and compact resource groups", () => {
+  setActiveColorLevel("mono");
+  setThemePreset("paper");
+  try {
+    assert.equal(resolveSidebarWidth(120, 30, true), 34);
+    assert.equal(resolveSidebarWidth(160, 30, true), 36);
+    const rows = buildSidebarRows(
+      sidebarState({ goal: { status: "active", text: "调整布局" } }),
+      34,
+      30,
+      5000,
+    ).map(stripAnsi);
+    const task = rows.findIndex((row) => row.includes("任务 ·"));
+    const context = rows.findIndex((row) => row.includes("上下文"));
+    const cost = rows.findIndex((row) => row.includes("费用"));
+    assert.equal(rows[task + 1].includes("●"), true);
+    assert.equal(rows[context - 1].trim(), "", "当前工作与资源之间留一行");
+    assert.equal(rows[cost - 1].trim(), "", "资源与费用之间留一行");
+    assert.equal(rows[cost + 1].trim(), "¥0.0100");
+    assert.equal(rows[cost + 2].includes("› 查看明细"), true);
+  } finally {
+    setThemePreset("default");
+  }
+});
+
+test("paper sidebar expands costs without changing geometry", () => {
+  setActiveColorLevel("mono");
+  setThemePreset("paper");
+  try {
+    const state = sidebarState({ promptTokens: 1200, completionTokens: 340 });
+    const folded = buildSidebarFrame(state, 34, 30, 5000);
+    const expanded = buildSidebarFrame({ ...state, costDetailsExpanded: true }, 34, 30, 5000);
+    assert.equal(expanded.rows.length > folded.rows.length, true);
+    assert.ok(expanded.rows.every((row) => terminalWidth(row) <= 34));
+    assert.match(expanded.rows.map(stripAnsi).join("\n"), /输入 +↑1\.2k/);
+    for (const id of ["context.usage", "cost.detail", "cost.turn.input"]) {
+      assert.ok(expanded.regions.some((region) => region.id === id));
+    }
+  } finally {
+    setThemePreset("default");
+  }
+});
+
+test("paper surfaces, hover and one-shot pulses preserve row geometry", () => {
+  setActiveColorLevel("truecolor");
+  setThemePreset("paper");
+  setThemeAppearance("light");
+  try {
+    const state = sidebarState({
+      goal: { status: "active", text: "调整布局" },
+      contextPulseAt: 5000,
+      costPulseAt: 5000,
+    });
+    const frame = buildSidebarFrame(state, 34, 30, 5000);
+    assert.ok(frame.surfaces?.some((surface) => surface?.includes("227;224;212")));
+    const workIndex = frame.rows.findIndex((row) => stripAnsi(row).includes("当前工作"));
+    assert.ok(frame.surfaces?.[workIndex]?.includes("227;224;212"));
+    const hover = buildSidebarFrame(state, 34, 30, 5000, "cost.detail");
+    const detail = hover.regions.find((region) => region.id === "cost.detail");
+    assert.ok(detail && hover.surfaces?.[detail.hit.top]?.includes("217;214;201"));
+    assert.deepEqual(hover.rows.map(stripAnsi), frame.rows.map(stripAnsi));
+    const settled = buildSidebarFrame(state, 34, 30, 5800);
+    const cost = settled.regions.find((region) => region.id === "cost.turn.cost");
+    assert.ok(cost && settled.surfaces?.[cost.hit.top] === undefined);
+    setActiveColorLevel("mono");
+    const mono = buildSidebarFrame(state, 34, 30, 5000);
+    assert.ok(mono.surfaces?.every((surface) => surface === "" || surface === undefined));
+    assert.doesNotMatch(composeSidebarRow("", 60, mono.rows[0], 34, mono.surfaces?.[0]), /\x1b/);
+  } finally {
+    setThemePreset("default");
+    resetThemeAppearance();
+    setActiveColorLevel("mono");
+  }
+});
+
+test("paper current work is compact and explicit", () => {
+  setActiveColorLevel("mono");
+  setThemePreset("paper");
+  try {
+    const text = buildSidebarRows(
+      sidebarState({ goal: { status: "active", text: "调整布局" } }),
+      34,
+      30,
+      5000,
+    )
+      .map(stripAnsi)
+      .join("\n");
+    assert.match(text, /当前工作/);
+    assert.match(text, /● 接入状态 进行中/);
+    assert.match(text, /已完成 1 项/);
+    assert.doesNotMatch(text, /另有 1 项/);
+  } finally {
+    setThemePreset("default");
+  }
 });
 
 test("cost section explains the bill with an input/output token split", () => {
@@ -484,7 +615,7 @@ test("dragging over the sidebar never starts a text selection", () => {
   try {
     const rows = renderPlain(ui);
     assert.ok(rows.length > 0);
-    const hit = ui.sidebarHits.get("context.ring");
+    const hit = ui.sidebarHits.get("context.usage");
     assert.ok(hit, "sidebar hit box is recorded");
 
     ui.handleMouseEvent({
