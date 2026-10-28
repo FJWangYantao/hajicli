@@ -75,8 +75,9 @@ import {
 import { redactSensitiveCommand, sanitizeTerminalText } from "./terminal-sanitize.js";
 import {
   type AnsiTextLayout,
-  buildLabeledDivider,
   buildScreenUpdate,
+  buildScrollJumpHint,
+  buildScrollJumpHintLine,
   buildViewportScrollUpdate,
   cellAtColumn,
   concatAnsiLayouts,
@@ -558,6 +559,15 @@ export class TerminalUI {
   private chatScrollOffset = 0;
   private maxChatScrollOffset = 0;
   private chatPageSize = 1;
+  /** 「回到底部」浮标本帧的屏幕命中区（1 基）；未绘制时清空。 */
+  private chatHintHit?: {
+    columnStart: number;
+    columnEnd: number;
+    rowStart: number;
+    rowEnd: number;
+  };
+  /** 按下浮标时的屏幕行：松开仍落在浮标内才算一次点击。 */
+  private pendingChatHintClick?: number;
   private status = "";
   private activityFrame?: ActivityFrame;
   /** 渲染在已提交正文之后的实时区域，不写入 chatContent。 */
@@ -2814,6 +2824,54 @@ export class TerminalUI {
     rows[0] = `${base}${padding}${badge}`;
   }
 
+  /**
+   * 滚动离开底部时在对话区底部正中画「回到底部」浮标。
+   *
+   * 只覆盖渲染行，不写进 chatContent，也不改变折行与选区坐标（复制/拖选仍按正文算）。
+   * 高度不够时降级成一行 `↑ Jump to End`；一行都放不下就不画。
+   */
+  private paintScrollJumpHint(
+    rows: string[],
+    options: {
+      width: number;
+      height: number;
+      bottomInset: number;
+      screenTop: number;
+      enabled: boolean;
+    },
+  ): void {
+    this.chatHintHit = undefined;
+    if (!options.enabled || this.chatScrollOffset <= 0) return;
+    const bottom = Math.min(options.height, rows.length) - options.bottomInset;
+    if (bottom <= 0) return;
+    const box = buildScrollJumpHint();
+    if (bottom >= box.rows.length && options.width >= box.width) {
+      const left = Math.floor((options.width - box.width) / 2);
+      const start = bottom - box.rows.length;
+      for (let index = 0; index < box.rows.length; index += 1) {
+        rows[start + index] = " ".repeat(left) + box.rows[index];
+      }
+      this.chatHintHit = {
+        columnStart: left + 1,
+        columnEnd: left + box.width,
+        rowStart: options.screenTop + start,
+        rowEnd: options.screenTop + bottom - 1,
+      };
+      return;
+    }
+    const line = buildScrollJumpHintLine();
+    const lineWidth = terminalWidth(line);
+    if (lineWidth >= options.width) return;
+    const left = Math.floor((options.width - lineWidth) / 2);
+    rows[bottom - 1] = " ".repeat(left) + line;
+    this.chatHintHit = {
+      columnStart: left + 1,
+      columnEnd: left + lineWidth,
+      rowStart: options.screenTop + bottom - 1,
+      rowEnd: options.screenTop + bottom - 1,
+    };
+  }
+
   private dispatchProtocolEvent(event: TerminalProtocolEvent): void {
     if (event.type === "keyboard") {
       this.keyInput.write(event.data);
@@ -2933,6 +2991,7 @@ export class TerminalUI {
 
     const isLeftButton = (event.button & 3) === 0;
     if (event.action === "down" && isLeftButton) {
+      this.pendingChatHintClick = undefined;
       // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
       const inputRow = this.inputRowIndexAt(event.row);
       if (inputRow !== undefined) {
@@ -2970,6 +3029,25 @@ export class TerminalUI {
         this.pendingInputSelection = undefined;
         this.textSelection.clear();
         this.selectionLayout = undefined;
+        this.scheduleRender();
+        return;
+      }
+      // 「回到底部」浮标：按下只记屏幕行，松开仍在浮标内才算点击，不产生文本选区。
+      const hintHit = this.chatHintHit;
+      if (
+        hintHit &&
+        event.column >= hintHit.columnStart &&
+        event.column <= hintHit.columnEnd &&
+        event.row >= hintHit.rowStart &&
+        event.row <= hintHit.rowEnd
+      ) {
+        this.pendingMouseSelection = undefined;
+        this.pendingInputSelection = undefined;
+        this.pendingSidebarClick = undefined;
+        this.selectionPointer = undefined;
+        this.textSelection.clear();
+        this.selectionLayout = undefined;
+        this.pendingChatHintClick = event.row;
         this.scheduleRender();
         return;
       }
@@ -3084,6 +3162,24 @@ export class TerminalUI {
         this.sidebarRegionAt(event.column, event.row) === pending.id
       ) {
         this.dispatchSidebarAction(pending.id);
+      }
+      return;
+    }
+
+    // 「回到底部」浮标：按下与松开都落在浮标内才跳到底，避免拖选误触。
+    if (event.action === "up" && isLeftButton && this.pendingChatHintClick !== undefined) {
+      const pressed = this.pendingChatHintClick;
+      this.pendingChatHintClick = undefined;
+      const hintHit = this.chatHintHit;
+      if (
+        pressed === event.row &&
+        hintHit &&
+        event.column >= hintHit.columnStart &&
+        event.column <= hintHit.columnEnd &&
+        event.row >= hintHit.rowStart &&
+        event.row <= hintHit.rowEnd
+      ) {
+        this.scrollChat(-this.chatScrollOffset);
       }
       return;
     }
@@ -3975,7 +4071,6 @@ export class TerminalUI {
     let inputLayout: VisibleInputLayout | undefined;
     let inputBlock: string[];
     let inputCursorOffset = 0;
-    let historyDividerIndex = -1;
 
     const minimal = layout.mode === "minimal";
     const emergencyMinimal = minimal && height < 8;
@@ -4017,7 +4112,6 @@ export class TerminalUI {
       } else if (minimal) {
         inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
       } else {
-        historyDividerIndex = visibleLeadingInputRows.length;
         inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
       }
     } else {
@@ -4058,7 +4152,6 @@ export class TerminalUI {
         inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
         inputBlock = [...visibleLeadingInputRows, ...pastedRows, ...inputLayout.rows, statusBar];
       } else {
-        historyDividerIndex = visibleLeadingInputRows.length;
         inputCursorOffset = visibleLeadingInputRows.length + 1 + pastedRows.length;
         // 输入区上下各一条分隔线：中间是输入行与补全候选，底行由状态栏承担；
         // 有活动时活动状态顶替状态栏，不再单独占行。
@@ -4148,14 +4241,6 @@ export class TerminalUI {
     this.pendingWheelRows = 0;
     const wheelMovedRows =
       queuedWheelRows === 0 ? 0 : this.scrollChat(queuedWheelRows, false, true);
-
-    if (historyDividerIndex >= 0 && this.chatScrollOffset > 0) {
-      const label =
-        width < 40
-          ? `↑ ${this.chatScrollOffset} 行 · Ctrl+End`
-          : `↑ 历史 · 距底部 ${this.chatScrollOffset} 行 · Ctrl+End 返回`;
-      inputBlock[historyDividerIndex] = buildLabeledDivider(width, label);
-    }
 
     this.chatPageSize = Math.max(1, chatViewportHeight - 1);
     const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
@@ -4396,17 +4481,25 @@ export class TerminalUI {
       // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
       this.costLogHit = undefined;
     }
-    const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")].map(
-      (row, index) => {
-        const painted = paintContextCard(row, index);
-        return sidebarVisible
-          ? composeSidebarRow(painted, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
-          : painted;
-      },
-    );
+    const chatRows = [...chatColumn, ...new Array(chatHeight - chatColumn.length).fill("")];
+    // 滚动离开底部时，在对话区底部正中画「回到底部」浮标：只覆盖渲染行，
+    // 不参与换行/选区布局（复制出来的仍是正文原文）。
+    this.paintScrollJumpHint(chatRows, {
+      width: leftAreaWidth,
+      height: chatHeight,
+      bottomInset: activityRows.length,
+      screenTop: chatScreenTop,
+      enabled: !minimal && !pageOpen,
+    });
+    const composedChatRows = chatRows.map((row, index) => {
+      const painted = paintContextCard(row, index);
+      return sidebarVisible
+        ? composeSidebarRow(painted, leftAreaWidth, sidebarRows[index] ?? "", sidebarWidth)
+        : painted;
+    });
     const screenRows = emergencyMinimal
-      ? [...chatRows, ...inputBlock].slice(0, height)
-      : [...topRows, divider, ...chatRows, ...inputBlock].slice(0, height);
+      ? [...composedChatRows, ...inputBlock].slice(0, height)
+      : [...topRows, divider, ...composedChatRows, ...inputBlock].slice(0, height);
     while (screenRows.length < height) screenRows.push("");
     // 复制角标贴在顶行右端（标题行）；头部隐藏时改走底栏提示。
     if (topRows.length > 0) this.overlayCopiedNotice(screenRows, width);

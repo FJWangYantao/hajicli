@@ -417,7 +417,7 @@ test("an animation tick repaints only the fixed activity row", () => {
   });
 });
 
-test("shows the history distance hint and Ctrl+End returns an active input to the bottom", () => {
+test("shows the Jump to End hint and Ctrl+End returns an active input to the bottom", () => {
   withFakeStdout(80, 24, () => {
     const ui = createTerminalUI();
     try {
@@ -429,10 +429,35 @@ test("shows the history distance hint and Ctrl+End returns an active input to th
       ui.renderFrame();
 
       const screen = ui.renderedScreenRows.map(stripAnsi).join("\n");
-      assert.match(screen, /距底部/);
-      assert.match(screen, /Ctrl\+End/);
+      assert.match(screen, /Jump to End/);
       assert.equal(ui.chatScrollOffset, 7);
 
+      // 浮标是对话区底部的三行小矩形，不再占用输入框上边框。
+      const rows = ui.renderedScreenRows.map(stripAnsi);
+      const labelIndex = rows.findIndex((row) => row.includes("Jump to End"));
+      assert.notEqual(labelIndex, -1, "missing scroll hint");
+      assert.match(rows[labelIndex - 1], /^ *╭─+╮$/);
+      assert.match(rows[labelIndex + 1], /^ *╰─+╯$/);
+      assert.match(rows[labelIndex + 2], /^-+$/, "input top divider stays intact");
+      assert.match(rows[labelIndex + 3], /> INPUT/);
+      // 在对话区内水平居中：左右留白差不超过 1 列。
+      const boxTop = rows[labelIndex - 1];
+      const leading = boxTop.length - boxTop.trimStart().length;
+      const boxWidth = terminalWidth(boxTop.trim());
+      const areaWidth = ui.chatViewport.width + ui.chatViewport.padding * 2;
+      assert.ok(Math.abs(leading * 2 + boxWidth - areaWidth) <= 1, "hint is centered");
+
+      // 点矩形本体即回到底部（按下与松开都在浮标内才生效）。
+      const labelRow = labelIndex + 1;
+      const clickColumn = leading + 2;
+      ui.handleMouseEvent({ action: "down", button: 0, column: clickColumn, row: labelRow });
+      ui.handleMouseEvent({ action: "up", button: 0, column: clickColumn, row: labelRow });
+      assert.equal(ui.chatScrollOffset, 0, "clicking the hint jumps to the bottom");
+      ui.renderFrame();
+      assert.ok(!ui.renderedScreenRows.map(stripAnsi).join("\n").includes("Jump to End"));
+
+      ui.chatScrollOffset = 7;
+      ui.renderFrame();
       ui.handleKeypress("", { name: "end", ctrl: true });
       assert.equal(ui.chatScrollOffset, 0);
 

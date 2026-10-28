@@ -309,6 +309,20 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 测试：`packages/cli/test/tool-block-fold.test.mjs`（纯函数折叠/计数/悬停配色、
   ToolRunView 留档与区间、TerminalUI 封口-展开-点击-悬停-关折叠全链路、归一化降级）。
 
+## 回到底部浮标（Jump to End）
+
+- 滚动离开底部（`chatScrollOffset > 0`）时，对话区底部正中画一个三行小矩形
+  `╭─ Jump to End ─╮`（`terminal-text.ts` 的 `buildScrollJumpHint`），**不再占用输入框上边框**。
+- 只覆盖渲染行（`chatRows`），不写 `chatContent`，也不参与折行/选区布局，复制结果不受影响；
+  窄/矮对话区放不下矩形时降级成一行 `↑ Jump to End`；minimal 档与详情页不画。
+- 点击矩形本体（按下与松开都在 `chatHintHit` 内）等价 Ctrl+End，命中区每帧重建；
+  因此它在鼠标按下分支里先于对话选区处理，避免点成拖选。
+- 次要文字配色：`muted` 深底 `#b4b4b4` / 浅底 `#3a3a3a`（纯中性灰，不带蓝调），
+  `faint` 的 dim 系数 0.35 → 0.2（旧值在深色终端上偏灰）。256 色终端的
+  `rgbToAnsi256` 对近中性色（饱和度 ≤ 0.18）走 24 级灰阶而不是 6×6×6 色立方，
+  否则 `#aab3c0` 会被量化成 `175,215,215` 的青灰。测试：`terminal-frame.test.mjs`
+  （位置/居中/点击）、`contrast.test.mjs`（调色板底线）、`theme.test.mjs`（ansi256 灰阶）。
+
 ## 终端外观（dark / light）与 `/appearance`
 
 - **浅色板刻意是黑色系**：`LIGHT_THEME` 正文 `#111111`、`muted` `#3a3a3a`、`userMsgFg`

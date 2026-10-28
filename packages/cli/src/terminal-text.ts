@@ -429,16 +429,26 @@ export function truncateTailText(value: string, width: number): string {
   return `…${suffix}`;
 }
 
-export function buildLabeledDivider(width: number, label: string): string {
-  if (width <= 0) return "";
-  const visibleLabel = truncateText(label, Math.max(1, width - 2));
-  const labelWidth = terminalWidth(visibleLabel);
-  if (labelWidth + 2 >= width)
-    return `${SEQ.muted}${truncateText(visibleLabel, width)}${SEQ.reset}`;
-  const remaining = width - labelWidth - 2;
-  const left = Math.floor(remaining / 2);
-  const right = remaining - left;
-  return `${SEQ.muted}${"─".repeat(left)} ${visibleLabel} ${"─".repeat(right)}${SEQ.reset}`;
+/**
+ * 「回到底部」浮标：三行小矩形，文字左右各留一格。
+ *
+ * 只用于对话区底部的浮层，不参与正文换行与选区布局；`width` 供调用方做水平居中。
+ */
+export function buildScrollJumpHint(label = "Jump to End"): { rows: string[]; width: number } {
+  const inner = terminalWidth(label) + 2;
+  return {
+    rows: [
+      `${SEQ.faint}╭${"─".repeat(inner)}╮${SEQ.reset}`,
+      `${SEQ.faint}│${SEQ.reset} ${SEQ.boldAccent}${label}${SEQ.reset} ${SEQ.faint}│${SEQ.reset}`,
+      `${SEQ.faint}╰${"─".repeat(inner)}╯${SEQ.reset}`,
+    ],
+    width: inner + 2,
+  };
+}
+
+/** 窄/矮对话区放不下矩形时的一行降级：`↑ Jump to End`。 */
+export function buildScrollJumpHintLine(label = "Jump to End"): string {
+  return `${SEQ.muted}↑ ${SEQ.boldAccent}${label}${SEQ.reset}`;
 }
 
 export function layoutInput(

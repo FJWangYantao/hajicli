@@ -804,7 +804,10 @@ export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: strin
   { keys: "Esc", description: "中止当前回合（未发出的 prompt 会收回输入框）" },
   { keys: "Shift+Tab", description: "循环切换权限模式" },
   { keys: "↑ / ↓", description: "浏览输入历史" },
-  { keys: "PgUp / PgDn", description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 回到底部" },
+  {
+    keys: "PgUp / PgDn",
+    description: "翻阅对话；Shift+↑↓ 逐行滚动，Ctrl+End 或点击 Jump to End 回到底部",
+  },
   { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
   { keys: "Ctrl+O", description: "展开 / 收起最近一段过程（工具调用与思考）" },
   { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行）" },
