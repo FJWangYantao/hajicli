@@ -1127,10 +1127,24 @@ export function describeModelError(error: unknown): ModelErrorDescription {
     );
   }
   if (
-    (error instanceof Error && error.name === "ConnectionError") ||
-    /econn|enotfound|etimedout|eai_again|socket hang up|fetch failed|network|timed? ?out|超时|无法连接|无法解析/.test(
+    status === 400 &&
+    /image not recognized|replace the image|unsupported.*image|图片无法识别|图片格式不支持/.test(
       text,
     )
+  ) {
+    return describe(
+      "图片无法识别",
+      "当前图片未被模型服务解析：请转换为标准 JPG 或 PNG 后重新发送，或移除历史图片附件。",
+    );
+  }
+  // 收到明确 HTTP 状态码说明请求已经到达上游，不能再归类为网络连接失败；
+  // 尤其 400 的“图片无法解析”不应触发代理排查提示。
+  if (
+    (error instanceof Error && error.name === "ConnectionError") ||
+    (status === undefined &&
+      /econn|enotfound|etimedout|eai_again|socket hang up|fetch failed|network|timed? ?out|超时|无法连接/.test(
+        text,
+      ))
   ) {
     return describe("网络连接失败", "检查网络与代理（HAJI_PROXY / HTTPS_PROXY）后重新发送。");
   }

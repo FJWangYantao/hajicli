@@ -12,11 +12,11 @@ export interface LauncherHit {
 }
 
 export function startupLauncherGeometry(width: number, height: number) {
-  const contentWidth = Math.min(80, Math.max(1, width - (width >= 40 ? 8 : 6)));
+  const contentWidth = Math.min(64, Math.max(1, width - (width >= 40 ? 8 : 6)));
   return {
     contentWidth,
     left: Math.floor((width - contentWidth) / 2),
-    footerRows: height >= 18 ? 6 : 2,
+    footerRows: 2,
     maxInputRows: Math.max(1, Math.min(6, Math.floor(height / 6))),
     maxSuggestionRows: height >= 24 ? 3 : 1,
   };
@@ -54,7 +54,7 @@ export function buildStartupLauncher(options: {
   const { width, height, state } = options;
   const geometry = startupLauncherGeometry(width, height);
   const { contentWidth, left, footerRows } = geometry;
-  // 外框上下各预留一行，状态区预算用于裁剪欢迎内容；最终紧跟内容排放。
+  // 状态区始终贴近底部，内容从顶部自然排列；中间留白用于区分输入与会话。
   const footerTop = height - footerRows - 1;
   const rows: string[] = Array.from({ length: height }, () => "");
   const hits: LauncherHit[] = [];
@@ -62,33 +62,31 @@ export function buildStartupLauncher(options: {
     if (row < 0 || row >= height) return;
     rows[row] = " ".repeat(column) + truncateAnsiText(text, budget);
   };
-  const centered = (row: number, text: string): void => {
-    const clipped = truncateAnsiText(text, contentWidth);
-    paint(row, clipped, Math.max(0, Math.floor((width - terminalWidth(clipped)) / 2)));
-  };
-  // 先为真实输入预留空间，依次收紧会话间距、Logo 和引导空行。
+  // 品牌只保留一行；输入区是唯一带边框和底色的操作卡片。
   const remaining = footerTop - options.inputRows.length;
-  const fullHeader =
-    options.header.length > 0 &&
-    options.header.length <= 7 &&
-    options.header.every((row) => terminalWidth(row) <= contentWidth) &&
-    remaining >= options.header.length + 12;
-  const header = remaining < 3 ? [] : fullHeader ? options.header : [options.compactHeader];
-  const headerTop = remaining >= header.length + 14 ? 2 : 1;
-  header.forEach((row, index) => {
-    centered(headerTop + index, row);
-  });
-  let next = headerTop + header.length;
-  if (remaining >= header.length + 11) {
-    centered(++next, `${SEQ.boldAccent}你想完成什么？${SEQ.reset}`);
-    next += 2;
-  } else next++;
-  const inputTop = Math.min(next, Math.max(0, footerTop - options.inputRows.length));
+  if (remaining >= 3) {
+    const brand = clean(options.compactHeader).toLowerCase() || "haji";
+    paint(
+      1,
+      `${SEQ.boldAccent}${brand}${SEQ.reset}${SEQ.muted}  ·  AI coding assistant${SEQ.reset}`,
+    );
+  }
+  const inputTop = Math.min(3, Math.max(0, footerTop - options.inputRows.length));
+  const background = bgSeq(getTheme().userMsgBg);
+  const reset = themeReset();
+  const panelReset = reset + background;
+  const surface = (text: string): string => (reset ? text.split(reset).join(panelReset) : text);
+  const border = (first: string, last: string): string =>
+    `${background}${SEQ.softAccent}${first}${"─".repeat(contentWidth)}${last}${reset}`;
   options.inputRows.forEach((row, index) => {
-    paint(inputTop + index, row);
+    paint(
+      inputTop + index,
+      `${SEQ.softAccent}│${SEQ.reset}${background} ${surface(pad(row, contentWidth))} ${SEQ.softAccent}│${reset}`,
+    );
   });
-  next = inputTop + options.inputRows.length;
-  if (footerTop - next >= 10) next++;
+  if (inputTop > 0) paint(inputTop - 1, border("╭", "╮"));
+  paint(inputTop + options.inputRows.length, border("╰", "╯"));
+  let next = inputTop + options.inputRows.length + 2;
   const workspace = state.workspace;
   const branch =
     workspace?.gitStatus === "not-repository"
@@ -97,35 +95,24 @@ export function buildStartupLauncher(options: {
         ? "Git 状态暂不可用"
         : clean(workspace?.branch ?? "");
   const project = workspace
-    ? `工作区  ${clean(workspace.name)}${branch ? ` · ${branch}` : ""}`
-    : "工作区  状态读取中";
-  const counts =
-    workspace && workspace.gitStatus === "ready"
-      ? `修改 ${workspace.modified} · 新增 ${workspace.added} · 删除 ${workspace.deleted} · 未跟踪 ${workspace.untracked}${workspace.conflicted ? ` · 冲突 ${workspace.conflicted}` : ""}`
-      : "";
+    ? `${clean(workspace.name)}${branch ? ` · ${branch}` : ""}`
+    : "状态读取中";
   const task = state.taskPlan;
   const taskText = task
     ? `任务 ${task.items.filter((item) => item.status === "completed").length}/${task.items.length} · ${clean(task.title)}`
     : state.goal?.status === "active"
       ? `目标 ${clean(state.goal.text)}`
-      : "当前任务  尚未开始";
-  const statusRows = footerRows >= 6 ? 3 : 2;
-  const entriesBottom = height - statusRows - 1;
-  if (footerRows >= 6) {
-    paint(next++, `${SEQ.accent}${project}${SEQ.reset}`);
-    paint(next++, `${SEQ.accent}${taskText}${SEQ.reset}`);
-    paint(next++, `${workspace?.conflicted ? SEQ.yellow : SEQ.muted}${counts}${SEQ.reset}`);
-    if (entriesBottom - next >= 5) next++;
-  }
+      : "";
+  const entriesBottom = footerTop;
   const actions = startupActions(options.sessions);
-  const horizontal = contentWidth >= 62;
   const actionCount = Math.min(3, Math.max(0, entriesBottom - next));
-  if (horizontal && actionCount > 0) {
+  const horizontal = contentWidth >= 56 && actionCount === 3;
+  if (horizontal) {
     const slot = Math.floor(contentWidth / 3);
     let line = "";
     for (let index = 0; index < 3; index++) {
       const active = index === options.selected;
-      const label = truncateText(`${active ? "›" : "·"} ${actions[index].label}`, slot - 1);
+      const label = truncateText(`${index + 1} ${actions[index].label}`, slot - 1);
       line += `${active ? SEQ.boldAccent : SEQ.muted}${pad(label, slot)}${SEQ.reset}`;
       hits.push({
         row: next,
@@ -137,19 +124,19 @@ export function buildStartupLauncher(options: {
     paint(next++, line);
   } else {
     for (let index = 0; index < actionCount; index++) {
+      const active = index === options.selected;
       hits.push({ row: next, left, right: left + contentWidth - 1, index });
       paint(
         next++,
-        `${index === options.selected ? SEQ.boldAccent : SEQ.muted}${index === options.selected ? "›" : "·"} ${actions[index].label}${SEQ.reset}`,
+        `${active ? SEQ.boldAccent : SEQ.muted}${index + 1} ${actions[index].label}${SEQ.reset}`,
       );
     }
   }
   const available = entriesBottom - next;
   const recent = options.sessions.slice(0, Math.max(0, Math.min(3, available - 2)));
   if (recent.length) {
-    const step = available >= recent.length * 2 + 3 ? 2 : 1;
     next++;
-    paint(next++, `${SEQ.accent}最近会话${SEQ.reset}`);
+    paint(next++, `${SEQ.softAccent}最近会话${SEQ.reset}`);
     const now = options.now ?? Date.now();
     recent.forEach((session, index) => {
       const stamp = relativeTime(session.updatedAt, now);
@@ -157,63 +144,46 @@ export function buildStartupLauncher(options: {
       const title = truncateText(clean(session.title) || "未命名会话", titleWidth);
       const active = index + 3 === options.selected;
       paint(
-        next,
+        next++,
         `${active ? SEQ.boldAccent : SEQ.muted}${active ? "›" : "·"} ${contentWidth >= 40 ? pad(title, titleWidth) + stamp : title}${SEQ.reset}`,
       );
-      hits.push({ row: next, left, right: left + contentWidth - 1, index: index + 3 });
-      next += step;
+      hits.push({ row: next - 1, left, right: left + contentWidth - 1, index: index + 3 });
     });
   }
-  if (entriesBottom - next >= 2) {
-    centered(next++, `${SEQ.muted}Tab 选择 · Enter 打开 · 点击入口${SEQ.reset}`);
-  }
-  const statusTop = Math.min(entriesBottom, next + (entriesBottom - next >= 2 ? 1 : 0));
-  const footerWidth = contentWidth;
-  const footer = (offset: number, text: string): void =>
-    paint(statusTop + offset, text, left, footerWidth);
-  footer(0, `${SEQ.softAccent}${"─".repeat(footerWidth)}${SEQ.reset}`);
+  const statusTop = entriesBottom;
+  const footer = (offset: number, text: string): void => paint(statusTop + offset, text);
+  footer(0, `${SEQ.softAccent}${"─".repeat(contentWidth)}${SEQ.reset}`);
   const ratio = state.maxTokens > 0 ? Math.round((state.usedTokens / state.maxTokens) * 100) : 0;
-  const resource = `上下文 ${ratio}% · ${state.usedTokens.toLocaleString("en-US")} / ${state.maxTokens.toLocaleString("en-US")}   费用 ¥${(state.costCny ?? 0).toFixed(4)}${state.hasUnpricedCost ? " + 未定价" : ""}`;
   const contextRow = statusTop + 1;
-  if (footerRows >= 6) {
-    const compactResource = `上下文 ${ratio}% · ¥${(state.costCny ?? 0).toFixed(4)}${state.hasUnpricedCost ? "+?" : ""}`;
-    footer(
-      1,
-      `${SEQ.muted}${terminalWidth(resource) <= footerWidth ? resource : compactResource}${SEQ.reset}`,
-    );
-    footer(2, options.notice || options.status);
-  } else {
-    footer(
-      1,
-      `${SEQ.muted}${truncateText(clean(workspace?.name ?? "工作区"), Math.max(1, footerWidth - 18))} · ${ratio}% · ¥${(state.costCny ?? 0).toFixed(2)}${state.hasUnpricedCost ? "+?" : ""}${SEQ.reset}`,
-    );
-  }
-  const panelBottom = statusTop + statusRows;
-  const panelLeft = left - 2;
-  const innerWidth = contentWidth + 2;
-  const background = bgSeq(getTheme().userMsgBg);
-  const reset = themeReset();
-  const panelReset = reset + background;
-  const surface = (text: string): string => (reset ? text.split(reset).join(panelReset) : text);
-  const border = (first: string, last: string): string =>
-    `${" ".repeat(panelLeft)}${background}${SEQ.softAccent}${first}${"─".repeat(innerWidth)}${last}${reset}`;
-  rows[0] = border("╭", "╮");
-  for (let row = 1; row < panelBottom; row++) {
-    // 已排好的行采用屏幕列；去掉外部留白，再补满面板内部。每个 reset 后恢复卡片底色。
-    const content = (rows[row] ?? "").slice(left);
-    rows[row] =
-      `${" ".repeat(panelLeft)}${background}${SEQ.softAccent}│${SEQ.reset}${background} ${surface(pad(content, contentWidth))} ${SEQ.softAccent}│${reset}`;
-  }
-  rows[panelBottom] = border("╰", "╯");
-  const shift = Math.max(0, Math.floor((height - panelBottom - 1) / 2));
-  const screen = Array.from({ length: height }, (_, row) =>
-    row >= shift ? rows[row - shift] : "",
+  const totalChanges = workspace
+    ? workspace.modified + workspace.added + workspace.deleted + workspace.untracked
+    : 0;
+  const projectStatus = `${project}${totalChanges ? ` · ${totalChanges} 项改动` : ""}${workspace?.conflicted ? ` · 冲突 ${workspace.conflicted}` : ""}`;
+  const cost = `¥${(state.costCny ?? 0).toFixed(4)}${state.hasUnpricedCost ? "+?" : ""}`;
+  const detailedResource = `ctx ${ratio}% · ${state.usedTokens.toLocaleString("en-US")} / ${state.maxTokens.toLocaleString("en-US")} · ${cost}`;
+  const resource =
+    terminalWidth(projectStatus) + terminalWidth(detailedResource) + 2 <= contentWidth
+      ? detailedResource
+      : `ctx ${ratio}% · ${cost}`;
+  const taskStatus = taskText ? ` · ${taskText}` : "";
+  const combinedStatus = `${projectStatus}${taskStatus}`;
+  const leftStatus = truncateText(
+    terminalWidth(combinedStatus) + terminalWidth(resource) + 2 <= contentWidth
+      ? combinedStatus
+      : [taskText, workspace?.conflicted ? `冲突 ${workspace.conflicted}` : "", projectStatus]
+          .filter(Boolean)
+          .join(" · "),
+    Math.max(1, contentWidth - terminalWidth(resource) - 3),
+  );
+  footer(
+    1,
+    `${SEQ.muted}${pad(leftStatus, contentWidth - terminalWidth(resource) - 2)}  ${resource}${SEQ.reset}`,
   );
   return {
-    rows: screen,
-    inputTop: inputTop + shift,
-    hits: hits.map((hit) => ({ ...hit, row: hit.row + shift })),
-    footerTop: statusTop + shift,
-    contextRow: contextRow + shift,
+    rows,
+    inputTop,
+    hits,
+    footerTop: statusTop,
+    contextRow,
   };
 }

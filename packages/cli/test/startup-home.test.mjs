@@ -8,14 +8,7 @@ import { resumeSessionById } from "../dist/session-commands.js";
 import { buildStartupHome, startupActions } from "../dist/startup-home.js";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
-import {
-  bgSeq,
-  getTheme,
-  setColorLevel,
-  setThemeAppearance,
-  setThemePreset,
-  themeReset,
-} from "../dist/theme.js";
+import { setColorLevel, setThemeAppearance, setThemePreset } from "../dist/theme.js";
 import { buildSidebarFrame } from "../dist/tui-sidebar.js";
 
 const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -111,11 +104,9 @@ test("home caps recent sessions, sanitizes titles and fits small dimensions", ()
 test("home keyboard fills prompts without sending and resumes by ID; first send dismisses it", () => {
   setThemePreset("paper");
   withUI(140, 40, (ui) => {
-    assert.match(strip(ui.renderedScreenRows.join("\n")), /你想完成什么/);
-    assert.ok(
-      ui.renderedScreenRows.findIndex((row) => strip(row).includes("工作区")) >
-        ui.inputSelectionTop,
-    );
+    const plain = ui.renderedScreenRows.map(strip);
+    assert.ok(plain.some((row) => row.includes("haji  ·  AI coding assistant")));
+    assert.ok(plain.some((row) => row.includes("hajicli · master")));
     assert.equal(ui.chatAreaRightEdgeColumn, 0);
     assert.ok(ui.inputSelectionLeft > 0);
     assert.equal(ui.chatContent, "");
@@ -159,11 +150,12 @@ test("mouse opens only on matching down/up; auth input and ordinary typing remai
   });
 });
 
-test("centered launcher shares horizontal action rows without overlapping mouse hit regions", () => {
+test("launcher uses lightweight numbered shortcuts with separate clickable regions", () => {
   withUI(140, 36, (ui) => {
     const actions = ui.startupHits.filter((hit) => hit.index < 3);
     assert.equal(new Set(actions.map((hit) => hit.row)).size, 1);
     assert.ok(actions[0].right < actions[1].left && actions[1].right < actions[2].left);
+    assert.match(strip(ui.renderedScreenRows[actions[0].row - 1]), /1 了解当前项目/);
     for (const hit of actions) {
       ui.activeInput.graphemes = [];
       const click = { button: 0, row: hit.row, column: hit.left + 2, action: "down" };
@@ -198,7 +190,7 @@ test("centered input cursor, drag selection and vertical movement use its actual
     ui.renderFrame();
     assert.equal(ui.inputSelectionHeight, 2);
     assert.equal(ui.moveVertically(-1), true);
-    assert.equal(ui.activeInput.cursorIndex, 22);
+    assert.equal(ui.activeInput.cursorIndex, 38);
     ui.dismissStartupHeader();
     ui.renderFrame();
     assert.equal(ui.inputSelectionLeft, 0);
@@ -275,8 +267,8 @@ test("launcher footer reflects real task, conflict, resource and unpriced states
     const plain = strip(text);
     assert.match(plain, /任务 1\/2 · 实现首页/);
     assert.match(plain, /冲突 2/);
-    assert.match(plain, /2,900 \/ 500,000/);
-    assert.match(plain, /¥1\.2345 \+ 未定价/);
+    assert.match(plain, /ctx 1%/);
+    assert.match(plain, /¥1\.2345\+\?/);
     ui.contextItemsProvider = () => [
       {
         category: "system",
@@ -324,7 +316,7 @@ test("welcome layout never exceeds terminal bounds across narrow and short windo
   }
 });
 
-test("launcher panel encloses input, entries and live states with a continuous theme surface", () => {
+test("launcher keeps input primary, sessions separate and project status in the footer", () => {
   try {
     for (const theme of ["default", "paper", "kero"]) {
       setThemePreset(theme);
@@ -340,41 +332,30 @@ test("launcher panel encloses input, entries and live states with a continuous t
           ]) {
             withUI(width, height, (ui) => {
               const plain = ui.renderedScreenRows.map(strip);
-              const first = plain.findIndex((row) => row.includes("╭"));
+              const top = plain.findIndex((row) => row.includes("╭"));
               const bottom = plain.findIndex((row) => row.includes("╰"));
-              assert.ok(first >= 0 && bottom > first);
-              const left = plain[first].indexOf("╭");
-              const panelWidth = terminalWidth(plain[first]) - left;
-              assert.ok(panelWidth < width);
-              for (let row = first + 1; row < bottom; row++) {
-                assert.equal(plain[row].indexOf("│"), left);
-                assert.equal(terminalWidth(plain[row]), left + panelWidth);
-                assert.ok(plain[row].endsWith("│"));
-                const raw = ui.renderedScreenRows[row];
-                if (level === "mono") assert.ok(!raw.includes("\x1b"));
-                else {
-                  const reset = themeReset(),
-                    background = bgSeq(getTheme().userMsgBg);
-                  const inner = raw.slice(0, -reset.length);
-                  assert.ok(inner.includes(background));
-                  assert.ok(
-                    inner
-                      .split(reset)
-                      .slice(1)
-                      .every((part) => part.startsWith(background)),
-                  );
-                  assert.ok(raw.endsWith(reset));
-                }
+              assert.ok(top >= 0 && bottom > top);
+              assert.equal(plain.filter((row) => row.includes("╭")).length, 1);
+              assert.ok(ui.inputSelectionTop > top && ui.inputSelectionTop < bottom);
+              if (height >= 12) {
+                assert.ok(plain.some((row) => row.includes("haji  ·  AI coding assistant")));
               }
-              assert.ok(ui.inputSelectionTop > first && ui.inputSelectionTop < bottom);
-              assert.ok(ui.startupHits.every((hit) => hit.row - 1 > first && hit.row - 1 < bottom));
+              assert.ok(ui.startupHits.every((hit) => hit.row - 1 > bottom));
+              const recent = plain.findIndex((row) => row.includes("最近会话"));
+              const actions = ui.startupHits.filter((hit) => hit.index < 3);
+              if (recent >= 0) {
+                assert.ok(recent > Math.max(...actions.map((hit) => hit.row - 1)));
+              }
               const hit = ui.sidebarHits.get("context.usage");
-              assert.ok(hit.rowStart - 1 < bottom);
-              assert.ok(hit.columnStart > left + 1 && hit.columnEnd < left + panelWidth);
+              assert.ok(hit.rowStart > ui.inputSelectionTop);
+              assert.ok(hit.columnStart > 0 && hit.columnEnd < width);
               if (height >= 24) {
-                assert.ok(plain.findIndex((row) => row.includes("工作区")) > ui.inputSelectionTop);
-                assert.ok(plain.findIndex((row) => row.includes("工作区")) < bottom);
-                assert.ok(plain.slice(bottom + 1).every((row) => !row.trim()));
+                const project = plain.findIndex((row) => row.includes("hajicli · master"));
+                assert.ok(project > ui.inputSelectionTop);
+                assert.ok(project >= recent);
+                assert.equal(hit.rowStart - 1, project);
+                assert.match(plain[project], /6 项改动/);
+                assert.ok(plain.slice(hit.rowStart).every((row) => !row.includes("工作区")));
               }
             });
           }

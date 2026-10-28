@@ -204,6 +204,13 @@ export interface TerminalUIOptions {
   forceNonInteractive?: boolean;
   /** 无头 JSON 输出模式：非交互下正文也不写 stdout，由调用方统一输出 JSON。 */
   muteNonInteractiveOutput?: boolean;
+  /**
+   * 非交互模式的正文出口（默认 process.stdout）。驱动服务（`haji mcp-serve`）用它
+   * 把正文/工具块接进事件总线，而不是写到已被 MCP 协议占用的 stdout。
+   */
+  outputSink?: (text: string) => void;
+  /** 非交互模式的提示性输出出口（默认 process.stderr）。 */
+  errorSink?: (text: string) => void;
   /** 点击侧栏里某个可交互区域：id 见 tui-sidebar.ts 的 SidebarRegionId，映射由调用方负责。 */
   onSidebarAction?: (id: string) => void;
   /** 首屏选中历史会话，由主循环安全接管并恢复。 */
@@ -868,6 +875,21 @@ export class TerminalUI {
     this.outputMuted = Boolean(options.muteNonInteractiveOutput);
   }
 
+  /** 非交互模式的正文出口：默认 stdout，驱动模式下由调用方接管。 */
+  private writeOut(text: string): void {
+    if (this.outputMuted) return;
+    const sink = this.options.outputSink;
+    if (sink) sink(text);
+    else stdout.write(text);
+  }
+
+  /** 非交互模式的提示性出口：默认 stderr，驱动模式下由调用方接管。 */
+  private writeErr(text: string): void {
+    const sink = this.options.errorSink;
+    if (sink) sink(text);
+    else stderr.write(text);
+  }
+
   /**
    * 强制下一次渲染走全量刷新：清屏并按当前主题重绘整屏。
    * 主题/配色在运行中切换后调用。注意：已提交的历史行是固化的 SGR 文本，
@@ -1502,6 +1524,17 @@ export class TerminalUI {
   }
 
   /**
+   * 外部请求中止当前回合：等价于用户按一次 Esc。
+   * 驱动服务（`haji mcp-serve`）用它在 `haji_cancel` 时切断网络与工具。
+   * 没有在跑的回合时是无操作。
+   */
+  requestAbort(): boolean {
+    if (!this.onEscCallback) return false;
+    this.onEscCallback();
+    return true;
+  }
+
+  /**
    * 临时接管 ESC，返回恢复函数（可重复调用，幂等）。
    *
    * 回合进行中开选择器等场景需要它：`onEsc` 是单槽，直接覆盖会丢掉「ESC 中止回合」
@@ -1707,7 +1740,7 @@ export class TerminalUI {
   showTransientHint(text: string, durationMs = 2500): void {
     if (!this.started) return;
     if (!this.interactive) {
-      stderr.write(`${text}\n`);
+      this.writeErr(`${text}\n`);
       return;
     }
     this.transientHintText = text;
@@ -1728,7 +1761,7 @@ export class TerminalUI {
   private flashCopied(durationMs = 1_200): void {
     if (!this.started) return;
     if (!this.interactive) {
-      stderr.write("Copied\n");
+      this.writeErr("Copied\n");
       return;
     }
     this.copiedNotice = "Copied";
@@ -1871,7 +1904,7 @@ export class TerminalUI {
     this.pendingWheelRows = 0;
 
     if (!this.interactive) {
-      if (this.options.compactHeader) stdout.write(`${this.options.compactHeader}\n`);
+      if (this.options.compactHeader) this.writeOut(`${this.options.compactHeader}\n`);
       return;
     }
 
@@ -2476,7 +2509,7 @@ export class TerminalUI {
     // 否则终端真的制表位会把已测量的行宽推超、自动折行撑破布局。
     const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      if (!this.outputMuted) stdout.write(text);
+      this.writeOut(text);
       return;
     }
 
@@ -2527,7 +2560,7 @@ export class TerminalUI {
   writeLine(value: string = ""): void {
     // 非交互（无头/管道）下提示性整行走 stderr，stdout 只保留流式正文与工具块。
     if (!this.interactive) {
-      stderr.write(`${value}\n`);
+      this.writeErr(`${value}\n`);
       return;
     }
     this.writeChat(`${value}\n`);
@@ -2539,7 +2572,7 @@ export class TerminalUI {
    */
   writeBlankLine(): void {
     if (!this.interactive) {
-      if (!this.outputMuted) stdout.write("\n");
+      this.writeOut("\n");
       return;
     }
     if (this.chatContent && !this.chatContent.endsWith("\n")) {
@@ -2564,7 +2597,7 @@ export class TerminalUI {
   replaceChat(value: string): void {
     const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
-      stdout.write(text);
+      this.writeOut(text);
       return;
     }
 
@@ -2607,9 +2640,7 @@ export class TerminalUI {
     const text = normalizeTerminalOutput(value);
     if (!this.interactive) {
       const delta = text.slice(Math.max(0, this.chatContent.length - offset));
-      if (delta && !this.outputMuted) {
-        stdout.write(delta);
-      }
+      if (delta) this.writeOut(delta);
     }
 
     this.markStableChatPrefix(offset);
@@ -4183,7 +4214,7 @@ export class TerminalUI {
     const geometry = startupLauncherGeometry(width, height);
     const inputWidth = geometry.contentWidth;
     this.renderedInputWidth = inputWidth;
-    this.inputSelectionLeft = geometry.left;
+    this.inputSelectionLeft = geometry.left + 2;
     const leading = this.queueText ? [truncateAnsiText(this.queueText, inputWidth)] : [];
     const chips = this.buildPastedImageRows(inputWidth).slice(0, 2);
     const available = height - geometry.footerRows - leading.length - chips.length - 4;
@@ -4243,7 +4274,7 @@ export class TerminalUI {
       height !== this.renderedScreenHeight ||
       this.renderedScreenRows.length !== height;
     const update = buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, frame.rows);
-    const cursorState = `\x1b[${this.inputSelectionTop + inputLayout.cursor.row + 1};${geometry.left + inputLayout.cursor.column + 1}H\x1b[?25h`;
+    const cursorState = `\x1b[${this.inputSelectionTop + inputLayout.cursor.row + 1};${this.inputSelectionLeft + inputLayout.cursor.column + 1}H\x1b[?25h`;
     if (fullRefresh || update || cursorState !== this.renderedCursorState) {
       const accepted = stdout.write(
         `\x1b[?2026h\x1b[?25l${fullRefresh ? `${themeEnter()}\x1b[2J` : ""}${update}${cursorState}\x1b[?2026l`,

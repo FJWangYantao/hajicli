@@ -58,6 +58,31 @@ test("describeModelError covers provider error classes with actionable hints", (
   }
 });
 
+test("describeModelError classifies image 400/11135 as an image error, not a network failure", () => {
+  const payload = JSON.stringify({
+    code: 11135,
+    msg: "Please start a new conversation, replace the image, and try again.",
+    requestId: "329345dd58b4afb419c4e52d60b134b0",
+    extError: {
+      code: "invalid_request_error",
+      message: "Please start a new conversation, replace the image, and try again.",
+      type: "invalid_request_error",
+      StatusCode: 400,
+    },
+    displayMsg: { en: "Image not recognized. Please use another image and retry" },
+    displayTips: {
+      en: "The image format is unsupported or the file is corrupted and cannot be parsed. Please convert it to JPG or PNG and upload again.",
+      zh: "图片格式不支持或文件已损坏，无法解析。请换成 JPG 或 PNG 格式重新上传。",
+    },
+  });
+  const described = describeModelError(providerError(payload, 400));
+  assert.match(described.title, /^图片无法识别（400）$/);
+  assert.match(described.hint, /JPG|PNG/);
+  assert.doesNotMatch(described.title, /网络连接失败/);
+  assert.doesNotMatch(described.hint, /HAJI_PROXY|HTTPS_PROXY/);
+  assert.match(summarizeModelErrorShort(providerError(payload, 400)), /^图片无法识别（400）/);
+});
+
 test("turn-runner retry line uses the classified summary (source assertion)", () => {
   const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   assert.match(source, /summarizeModelErrorShort\(error\)/);

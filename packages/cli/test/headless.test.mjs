@@ -59,14 +59,8 @@ test("parseHeadlessArgs rejects missing prompt and invalid modes", () => {
 test("index.ts wires the headless branch end to end", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.ok(source.includes("parseHeadlessArgs(cliArgs)"), "启动时解析 -p 参数");
-  assert.ok(
-    source.includes("forceNonInteractive: Boolean(headlessRequest)"),
-    "TerminalUI 强制非交互",
-  );
-  assert.ok(
-    source.includes('compactHeader: headlessRequest ? "" :'),
-    "无头模式下不在 stdout 打印头部",
-  );
+  assert.ok(source.includes("forceNonInteractive: quietMode"), "TerminalUI 强制非交互");
+  assert.ok(source.includes('compactHeader: quietMode ? "" :'), "无头模式下不在 stdout 打印头部");
   assert.ok(source.includes("无头模式不支持 Plan 审批"), "plan 档自动升级为 default");
   assert.ok(
     source.includes("headlessRequest && !process.stdin.isTTY"),
@@ -85,7 +79,7 @@ test("index.ts wires the headless branch end to end", () => {
       source.indexOf("const startBackgroundInput"),
       source.indexOf("const startBackgroundInput") + 300,
     ),
-    /if \(headlessRequest\) return;/,
+    /if \(quietMode\) return;/,
   );
 });
 
