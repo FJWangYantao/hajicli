@@ -229,10 +229,10 @@ test("tool results preview a few lines: bash tail, error context, first search h
     { blocked: false },
   );
   assert.equal(testRun.text, "94 行输出");
-  // 命令输出保尾：10 行预算，前面省掉的 84 行用一行标记交代。
+  // 命令输出保尾：6 行预算，前面省掉的 88 行用一行标记交代。
   assert.deepEqual(testRun.preview, [
-    "… 前 84 行未显示",
-    ...Array.from({ length: 7 }, (_, i) => `ok ${i + 85}`),
+    "… 前 88 行未显示",
+    ...Array.from({ length: 3 }, (_, i) => `ok ${i + 89}`),
     "# pass 91",
     "# fail 0",
     "  # duration_ms 140.45",
@@ -304,11 +304,11 @@ test("tool results preview a few lines: bash tail, error context, first search h
   // 通用预算默认 3 行：多出来的预览行一律不显示。
   assert.deepEqual(rows.slice(1), [
     "    └ 94 行输出",
-    "      … 前 84 行未显示",
-    "      ok 85",
-    "      ok 86",
+    "      … 前 88 行未显示",
+    "      ok 89",
+    "      ok 90",
   ]);
-  // 命令类工具块按 shell 预算放宽到 10 行。
+  // 命令类工具块按 shell 预算放宽到 6 行。
   const shellRows = formatToolCell({
     status: "success",
     toolName: "bash",
@@ -316,9 +316,9 @@ test("tool results preview a few lines: bash tail, error context, first search h
     width: 40,
     resultText: testRun.text,
     preview: testRun.preview,
-    maxPreviewLines: 10,
+    maxPreviewLines: 6,
   });
-  assert.equal(shellRows.length, 1 + 1 + Math.min(10, testRun.preview.length));
+  assert.equal(shellRows.length, 1 + 1 + Math.min(6, testRun.preview.length));
   const narrow = formatToolCell({
     status: "success",
     toolName: "global",

@@ -173,8 +173,8 @@ test("expanded blocks show full preview, output body and a collapse indicator", 
   const previewLines = plain.filter((row) => /tail-\d/.test(row));
   assert.equal(previewLines.length, 10, "预览全量显示");
   const bodyLines = plain.filter((row) => /line-\d/.test(row));
-  assert.equal(bodyLines.length, TOOL_BLOCK_EXPAND_LINES, "输出正文给到上限 40 行");
-  // bash 保尾：正文显示的是输出的最后 40 行。
+  assert.equal(bodyLines.length, TOOL_BLOCK_EXPAND_LINES, "输出正文给到上限行数");
+  // bash 保尾：正文显示的是输出的最后若干行。
   assert.match(bodyLines[0], new RegExp(`line-${80 - TOOL_BLOCK_EXPAND_LINES}`), "保尾从头裁掉");
   assert.match(bodyLines[bodyLines.length - 1], /line-79/, "保尾包含最后一行");
   assert.match(plain[rendered.indicatorRow], /点击收起/);

@@ -24,8 +24,8 @@ export interface CollapsedOutput {
   omitted: number;
 }
 
-/** shell 结果预览预算：10 行 / 10 × 80 列（与设计文档第 5 节的展示规则一致）。 */
-export const SHELL_PREVIEW_LINES = 10;
+/** shell 结果预览预算：6 行 / 6 × 80 列。 */
+export const SHELL_PREVIEW_LINES = 6;
 export const SHELL_PREVIEW_MAX_CHARS = SHELL_PREVIEW_LINES * 80;
 
 /**

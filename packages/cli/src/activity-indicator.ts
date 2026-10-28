@@ -485,7 +485,7 @@ export class ToolRunView {
       stats: entry.stats,
       preview: entry.preview,
       argLines,
-      // 命令类结果按 shell 预算放宽到 10 行；edit/write 的 diff 预算放宽到 14 行，
+      // 命令类结果按 shell 预算放宽到 6 行；edit/write 的 diff 预算放宽到 14 行，
       // 否则整个 hunk 会被截成三行，看不到改动位置。
       maxPreviewLines:
         entry.toolName === "bash"

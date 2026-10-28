@@ -22,7 +22,7 @@ import { collapseShellOutput, collapseToolOutput, formatOmittedLines } from "./t
 export const TOOL_BLOCK_COLLAPSE_LINES = 3;
 
 /** 展开时输出正文行数上限：再长的输出也只占这些行，余下用省略行交代。 */
-export const TOOL_BLOCK_EXPAND_LINES = 40;
+export const TOOL_BLOCK_EXPAND_LINES = 20;
 
 /** 单块留档全文的字符上限：防止超长输出（整文件 read）把内存与展开视图撑爆。 */
 export const TOOL_BLOCK_OUTPUT_MAX_CHARS = 20_000;

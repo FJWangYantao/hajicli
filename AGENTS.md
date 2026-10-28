@@ -280,7 +280,7 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 
 - 两级折叠：一级是过程段收敛成 `● 摘要行`（process-fold.ts，点击/Ctrl+O 展开整段）；
   二级是**单个工具块**的按行数收口，但默认态是**全展开**——段展开（或 `/fold off`）后
-  每块直接铺开预览全量 + 输出正文至 `TOOL_BLOCK_EXPAND_LINES`（40）行（bash 保尾、其余保头），
+  每块直接铺开预览全量 + 输出正文至 `TOOL_BLOCK_EXPAND_LINES`（20）行（bash 保尾、其余保头），
   点块头可单独收起成 `TOOL_BLOCK_COLLAPSE_LINES`（3）行预览 + `⋯ 还有 N 行 · 点击展开`，
   再点头行/指示行重新展开。封口时 `sealFoldGroup` 把段内块初始化为 `expanded: true`。
 - 数据链路：`ToolRunView.finish(..., fullOutput)` 留档全文（截到 20k 字符/块），

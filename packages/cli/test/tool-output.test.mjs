@@ -46,8 +46,8 @@ test("both budgets apply: display width, not string length", () => {
   assert.equal(clipped, `${"🙂".repeat(4)}…`);
 });
 
-test("shell preview budget is the documented ten lines", () => {
-  assert.equal(SHELL_PREVIEW_LINES, 10);
+test("shell preview budget is the documented six lines", () => {
+  assert.equal(SHELL_PREVIEW_LINES, 6);
 });
 
 test("empty output collapses to nothing, blank tails are dropped", () => {
