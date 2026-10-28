@@ -2887,51 +2887,15 @@ export class TerminalUI {
   private handleMouseEvent(event: TerminalMouseEvent): void {
     // 1003 any-event 跟踪下的纯移动（无按键按下）：侧栏圆环悬停 + 对话区可点行悬停。
     if (event.action === "move" && (event.button & 3) === 3) {
-      if (this.startupHomeAvailable()) {
-        const hovered =
-          this.startupHits.find(
-            (hit) => hit.row === event.row && event.column >= hit.left && event.column <= hit.right,
-          )?.index ?? -1;
-        if (hovered !== this.startupHovered) {
-          this.startupHovered = hovered;
-          this.scheduleRender(true);
-        }
-      }
-      this.updateSidebarHover(event.column, event.row);
-      this.updateChatHover(event.column, event.row);
+      this.handlePointerHover(event);
       return;
     }
     if (event.action === "wheel") {
-      // 详情页打开时滚轮归原文；费用日志页没有独立滚动区，滚轮等价于上下移动选中项。
-      if (this.costLog) {
-        const rows = event.wheelRows ?? 0;
-        this.moveCostLogSelection(
-          rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS,
-        );
-        return;
-      }
-      if (this.contextInspector) {
-        const rows = event.wheelRows ?? 0;
-        this.scrollInspector(
-          rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS,
-        );
-        return;
-      }
-      this.pendingMouseSelection = undefined;
-      this.queueWheelScroll(event.wheelRows ?? 0);
-      if (this.textSelection.dragging) {
-        // 端点随合并后的滚动帧更新，避免每个滚轮报文都触发一次选区布局。
-        this.selectionPointer = { column: event.column, row: event.row };
-      }
+      this.handleMouseWheel(event);
       return;
     }
-
     const isLeftButton = (event.button & 3) === 0;
-    const startupHit = this.startupHomeAvailable()
-      ? this.startupHits.find(
-          (hit) => hit.row === event.row && event.column >= hit.left && event.column <= hit.right,
-        )
-      : undefined;
+    const startupHit = this.startupHitAt(event.column, event.row);
     if (event.action === "down" && isLeftButton && startupHit) {
       this.pendingStartupClick = { row: startupHit.row, index: startupHit.index };
       this.startupSelected = startupHit.index;
@@ -2947,93 +2911,156 @@ export class TerminalUI {
       return;
     }
     if (event.action === "down" && isLeftButton) {
-      this.pendingChatHintClick = undefined;
-      // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
-      const inputRow = this.inputRowIndexAt(event.row);
-      if (inputRow !== undefined) {
-        this.stopSelectionAutoScroll();
-        this.selectionPointer = undefined;
-        this.pendingMouseSelection = undefined;
-        this.pendingSidebarClick = undefined;
-        this.textSelection.clear();
-        this.selectionLayout = undefined;
-        // 单击不产生选区：只有真的拖动才从锚点开始选，避免一点就复制一个字符。
-        this.pendingInputSelection = { column: event.column, row: event.row };
-        this.inputSelection.clear();
-        this.scheduleRender();
-        return;
+      this.handleLeftButtonDown(event);
+      return;
+    }
+    if (event.action === "move" && isLeftButton) {
+      this.handleLeftButtonDrag(event);
+      return;
+    }
+    if (event.action === "up" && isLeftButton) this.handleLeftButtonUp(event);
+  }
+
+  /** 首页入口在该格的命中项（首页不可用时为 undefined）。 */
+  private startupHitAt(column: number, row: number) {
+    if (!this.startupHomeAvailable()) return undefined;
+    return this.startupHits.find(
+      (hit) => hit.row === row && column >= hit.left && column <= hit.right,
+    );
+  }
+
+  /** 该格是否落在「回到底部」浮标内。 */
+  private isOnChatHint(column: number, row: number): boolean {
+    const hit = this.chatHintHit;
+    return Boolean(
+      hit &&
+        column >= hit.columnStart &&
+        column <= hit.columnEnd &&
+        row >= hit.rowStart &&
+        row <= hit.rowEnd,
+    );
+  }
+
+  /** 无按键移动：首页入口、侧栏与对话区的悬停高亮（只换颜色，不改行数）。 */
+  private handlePointerHover(event: TerminalMouseEvent): void {
+    if (this.startupHomeAvailable()) {
+      const hovered = this.startupHitAt(event.column, event.row)?.index ?? -1;
+      if (hovered !== this.startupHovered) {
+        this.startupHovered = hovered;
+        this.scheduleRender(true);
       }
-      // 详情页覆盖了对话区：按下只记录待点击行，不产生文本选区。
-      if (this.contextInspector || this.costLog) {
-        this.pendingMouseSelection = undefined;
-        this.pendingInputSelection = undefined;
-        this.pendingSidebarClick = undefined;
-        this.pendingInspectorClickRow = event.row;
-        return;
-      }
-      // 侧栏可交互区域：按下只记 id 与屏幕行，松开落在同一行、同一区域才算一次点击，
-      // 拖动经过时不会误触。深层区域（配置单价行、定价 agent 行）由命中顺序保证优先。
-      const sidebarRegionId = this.sidebarRegionAt(event.column, event.row);
-      if (sidebarRegionId) {
-        this.pendingMouseSelection = undefined;
-        this.pendingSidebarClick = { id: sidebarRegionId, row: event.row };
-        return;
-      }
-      // 侧栏与分隔带不是对话内容：在这里按下不开选区，否则拖选会把侧栏文字带进复制结果。
-      if (this.isPointerInSidebar(event.column)) {
-        this.pendingMouseSelection = undefined;
-        this.pendingInputSelection = undefined;
-        this.textSelection.clear();
-        this.selectionLayout = undefined;
-        this.scheduleRender();
-        return;
-      }
-      // 「回到底部」浮标：按下只记屏幕行，松开仍在浮标内才算点击，不产生文本选区。
-      const hintHit = this.chatHintHit;
-      if (
-        hintHit &&
-        event.column >= hintHit.columnStart &&
-        event.column <= hintHit.columnEnd &&
-        event.row >= hintHit.rowStart &&
-        event.row <= hintHit.rowEnd
-      ) {
-        this.pendingMouseSelection = undefined;
-        this.pendingInputSelection = undefined;
-        this.pendingSidebarClick = undefined;
-        this.selectionPointer = undefined;
-        this.textSelection.clear();
-        this.selectionLayout = undefined;
-        this.pendingChatHintClick = event.row;
-        this.scheduleRender();
-        return;
-      }
+    }
+    this.updateSidebarHover(event.column, event.row);
+    this.updateChatHover(event.column, event.row);
+  }
+
+  /** 滚轮：覆盖页打开时归覆盖页，否则合并成对话区滚动帧（拖选中端点随帧更新）。 */
+  private handleMouseWheel(event: TerminalMouseEvent): void {
+    // 详情页打开时滚轮归原文；费用日志页没有独立滚动区，滚轮等价于上下移动选中项。
+    const rows = event.wheelRows ?? 0;
+    const step = rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS;
+    if (this.costLog) {
+      this.moveCostLogSelection(step);
+      return;
+    }
+    if (this.contextInspector) {
+      this.scrollInspector(step);
+      return;
+    }
+    this.pendingMouseSelection = undefined;
+    this.queueWheelScroll(event.wheelRows ?? 0);
+    if (this.textSelection.dragging) {
+      // 端点随合并后的滚动帧更新，避免每个滚轮报文都触发一次选区布局。
+      this.selectionPointer = { column: event.column, row: event.row };
+    }
+  }
+
+  /**
+   * 左键按下：按命中优先级只登记「待定」状态（输入框选区 / 覆盖页点击 / 侧栏点击 /
+   * 浮标点击 / 对话区选区锚点），真正的动作等松开或拖动时再定。
+   */
+  private handleLeftButtonDown(event: TerminalMouseEvent): void {
+    this.pendingChatHintClick = undefined;
+    // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
+    const inputRow = this.inputRowIndexAt(event.row);
+    if (inputRow !== undefined) {
       this.stopSelectionAutoScroll();
       this.selectionPointer = undefined;
+      this.pendingMouseSelection = undefined;
       this.pendingSidebarClick = undefined;
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
+      // 单击不产生选区：只有真的拖动才从锚点开始选，避免一点就复制一个字符。
+      this.pendingInputSelection = { column: event.column, row: event.row };
       this.inputSelection.clear();
+      this.scheduleRender();
+      return;
+    }
+    // 详情页覆盖了对话区：按下只记录待点击行，不产生文本选区。
+    if (this.contextInspector || this.costLog) {
+      this.pendingMouseSelection = undefined;
       this.pendingInputSelection = undefined;
-      const logicalRow = this.getLogicalChatRow(event.row);
-      if (logicalRow === undefined) {
-        this.pendingMouseSelection = undefined;
-        this.textSelection.clear();
-        this.selectionLayout = undefined;
-        this.scheduleRender();
-        return;
-      }
-
-      // 单击只记录轻量屏幕锚点；收到真实移动事件后才计算完整文档布局。
-      this.pendingMouseSelection = {
-        column: event.column,
-        row: event.row,
-        logicalRow,
-      };
+      this.pendingSidebarClick = undefined;
+      this.pendingInspectorClickRow = event.row;
+      return;
+    }
+    // 侧栏可交互区域：按下只记 id 与屏幕行，松开落在同一行、同一区域才算一次点击，
+    // 拖动经过时不会误触。深层区域（配置单价行、定价 agent 行）由命中顺序保证优先。
+    const sidebarRegionId = this.sidebarRegionAt(event.column, event.row);
+    if (sidebarRegionId) {
+      this.pendingMouseSelection = undefined;
+      this.pendingSidebarClick = { id: sidebarRegionId, row: event.row };
+      return;
+    }
+    // 侧栏与分隔带不是对话内容：在这里按下不开选区，否则拖选会把侧栏文字带进复制结果。
+    if (this.isPointerInSidebar(event.column)) {
+      this.pendingMouseSelection = undefined;
+      this.pendingInputSelection = undefined;
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
+      this.scheduleRender();
+      return;
+    }
+    // 「回到底部」浮标：按下只记屏幕行，松开仍在浮标内才算点击，不产生文本选区。
+    if (this.isOnChatHint(event.column, event.row)) {
+      this.pendingMouseSelection = undefined;
+      this.pendingInputSelection = undefined;
+      this.pendingSidebarClick = undefined;
+      this.selectionPointer = undefined;
+      this.textSelection.clear();
+      this.selectionLayout = undefined;
+      this.pendingChatHintClick = event.row;
+      this.scheduleRender();
+      return;
+    }
+    this.stopSelectionAutoScroll();
+    this.selectionPointer = undefined;
+    this.pendingSidebarClick = undefined;
+    this.inputSelection.clear();
+    this.pendingInputSelection = undefined;
+    const logicalRow = this.getLogicalChatRow(event.row);
+    if (logicalRow === undefined) {
+      this.pendingMouseSelection = undefined;
       this.textSelection.clear();
       this.selectionLayout = undefined;
       this.scheduleRender();
       return;
     }
 
-    if (event.action === "move" && isLeftButton && this.pendingInputSelection) {
+    // 单击只记录轻量屏幕锚点；收到真实移动事件后才计算完整文档布局。
+    this.pendingMouseSelection = {
+      column: event.column,
+      row: event.row,
+      logicalRow,
+    };
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.scheduleRender();
+  }
+
+  /** 左键拖动：把待定的锚点转成真实选区，或推进进行中的选区。 */
+  private handleLeftButtonDrag(event: TerminalMouseEvent): void {
+    if (this.pendingInputSelection) {
       const pending = this.pendingInputSelection;
       if (pending.column === event.column && pending.row === event.row) {
         return;
@@ -3052,12 +3079,12 @@ export class TerminalUI {
       return;
     }
 
-    if (event.action === "move" && isLeftButton && this.inputSelection.dragging) {
+    if (this.inputSelection.dragging) {
       this.updateInputSelection(event.column, event.row);
       return;
     }
 
-    if (event.action === "move" && isLeftButton && this.pendingMouseSelection) {
+    if (this.pendingMouseSelection) {
       const pending = this.pendingMouseSelection;
       if (pending.column === event.column && pending.row === event.row) {
         return;
@@ -3071,12 +3098,15 @@ export class TerminalUI {
       return;
     }
 
-    if (event.action === "move" && isLeftButton && this.textSelection.dragging) {
+    if (this.textSelection.dragging) {
       this.updateMouseSelection(event.column, event.row);
       return;
     }
+  }
 
-    if (event.action === "up" && isLeftButton && this.pendingInputSelection) {
+  /** 左键松开：按下时登记的待定状态在这里结算（同一处按下松开才算点击）。 */
+  private handleLeftButtonUp(event: TerminalMouseEvent): void {
+    if (this.pendingInputSelection) {
       // 按下后没拖动：只是点了输入框，不产生选区，也不复制。
       this.pendingInputSelection = undefined;
       this.inputSelection.clear();
@@ -3084,7 +3114,7 @@ export class TerminalUI {
       return;
     }
 
-    if (event.action === "up" && isLeftButton && this.inputSelection.dragging) {
+    if (this.inputSelection.dragging) {
       const geometry = this.inputSelectionGeometry;
       const row = this.inputRowIndexAt(event.row);
       const cell =
@@ -3099,7 +3129,7 @@ export class TerminalUI {
     }
 
     // 详情页内的点击：松开与按下同一行才处理（拖动时不误触）。
-    if (event.action === "up" && isLeftButton && this.pendingInspectorClickRow !== undefined) {
+    if (this.pendingInspectorClickRow !== undefined) {
       const pressedRow = this.pendingInspectorClickRow;
       this.pendingInspectorClickRow = undefined;
       if (pressedRow === event.row) {
@@ -3112,7 +3142,7 @@ export class TerminalUI {
 
     // 侧栏可交互区域：按下与松开落在同一屏幕行、且仍命中同一块区域，才算一次点击。
     // 命中 id 相同这一点很关键——从「配置单价」行拖到「花费」行松开，不该跳出费用明细。
-    if (event.action === "up" && isLeftButton && this.pendingSidebarClick !== undefined) {
+    if (this.pendingSidebarClick !== undefined) {
       const pending = this.pendingSidebarClick;
       this.pendingSidebarClick = undefined;
       if (
@@ -3125,24 +3155,16 @@ export class TerminalUI {
     }
 
     // 「回到底部」浮标：按下与松开都落在浮标内才跳到底，避免拖选误触。
-    if (event.action === "up" && isLeftButton && this.pendingChatHintClick !== undefined) {
+    if (this.pendingChatHintClick !== undefined) {
       const pressed = this.pendingChatHintClick;
       this.pendingChatHintClick = undefined;
-      const hintHit = this.chatHintHit;
-      if (
-        pressed === event.row &&
-        hintHit &&
-        event.column >= hintHit.columnStart &&
-        event.column <= hintHit.columnEnd &&
-        event.row >= hintHit.rowStart &&
-        event.row <= hintHit.rowEnd
-      ) {
+      if (pressed === event.row && this.isOnChatHint(event.column, event.row)) {
         this.scrollChat(-this.chatScrollOffset);
       }
       return;
     }
 
-    if (event.action === "up" && isLeftButton && this.pendingMouseSelection) {
+    if (this.pendingMouseSelection) {
       const pending = this.pendingMouseSelection;
       this.pendingMouseSelection = undefined;
       this.selectionPointer = undefined;
@@ -3164,7 +3186,7 @@ export class TerminalUI {
       return;
     }
 
-    if (event.action === "up" && isLeftButton && this.textSelection.dragging) {
+    if (this.textSelection.dragging) {
       const cell = this.getChatCellFromMouse(event.column, event.row, true);
       this.stopSelectionAutoScroll();
       this.selectionPointer = undefined;
