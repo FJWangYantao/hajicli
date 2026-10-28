@@ -33,6 +33,7 @@ import {
 const FIXED_THEME = {
   background: "#000000",
   userMsgBg: "#202020",
+  userMsgFg: "#f2f2f2",
   foreground: "#ffffff",
   accent: "#ff00ff",
   muted: "#808080",
@@ -132,6 +133,16 @@ test("mono mode removes ANSI while preserving readable user prefixes", () => {
 
   const styles = buildAnsiStyles();
   assert.ok(Object.values(styles).every((value) => value === ""));
+});
+
+test("sent user messages use their own foreground and bold body text", () => {
+  setActiveTheme(FIXED_THEME);
+  setActiveColorLevel("truecolor");
+
+  const output = paint.userMsg("第一行\n第二行");
+  const userText = `\x1b[1m${fgSeq(FIXED_THEME.userMsgFg)}`;
+  assert.ok(output.includes(`${bgSeq(FIXED_THEME.userMsgBg)}${userText}第一行`));
+  assert.ok(output.includes(`${bgSeq(FIXED_THEME.userMsgBg)}${userText}   第二行`));
 });
 
 test("terminal UI color sequences follow runtime color-level changes", () => {

@@ -24,6 +24,8 @@ export interface Theme {
   background: string;
   /** 用户消息行的整行背景色（略亮于 background，形成色块卡片）。 */
   userMsgBg: string;
+  /** 用户消息正文色：比助手回复更深/更醒目，并加粗显示。 */
+  userMsgFg: string;
   /** 默认前景（正文）色。 */
   foreground: string;
   /** 主强调色（Logo、提示符、选中态等）。 */
@@ -128,6 +130,7 @@ export type ThemeAppearance = "dark" | "light";
 const DARK_THEME: Theme = {
   background: "",
   userMsgBg: "#1c1a26",
+  userMsgFg: "#f2f5fa",
   foreground: "#d9dee7",
   accent: "#a995d6",
   muted: "#8f98a5",
@@ -150,6 +153,7 @@ const DARK_THEME: Theme = {
 const LIGHT_THEME: Theme = {
   background: "",
   userMsgBg: "#f0eef8",
+  userMsgFg: "#151a22",
   foreground: "#242b36",
   accent: "#6b4fc4",
   muted: "#5b6472",
@@ -172,6 +176,7 @@ const LIGHT_THEME: Theme = {
 const KERO_DARK_THEME: Theme = {
   background: "#232328",
   userMsgBg: "#323237",
+  userMsgFg: "#ffffff",
   foreground: "#e6e6ea",
   accent: "#6b93ff",
   muted: "#a9a9b4",
@@ -191,6 +196,7 @@ const KERO_DARK_THEME: Theme = {
 const KERO_LIGHT_THEME: Theme = {
   background: "#ffffff",
   userMsgBg: "#f4f4f4",
+  userMsgFg: "#111114",
   foreground: "#1d1d1f",
   accent: "#3b6cf6",
   muted: "#6e6e78",
@@ -401,7 +407,7 @@ function readThemeFile(filePath: string): Partial<Theme> {
  */
 const TEXT_MIN_CONTRAST = 4.5;
 const ACCENT_MIN_CONTRAST = 3;
-const TEXT_KEYS = ["foreground", "muted"] as const;
+const TEXT_KEYS = ["foreground", "muted", "userMsgFg"] as const;
 const ACCENT_KEYS = [
   "accent",
   "red",
@@ -763,15 +769,17 @@ export const paint = {
     }
     const theme = getTheme();
     const accent = fgSeq(theme.accent);
+    const userText = `${BOLD}${fgSeq(theme.userMsgFg)}`;
     const bg = bgSeq(theme.userMsgBg);
+    // 用户正文加粗并使用独立前景色，与普通字重的助手回复形成明确区分。
     // 整行背景填充：每行前置 bg，行尾用激活背景的 \x1b[K 清到行尾实现整行填满。
     // 首行用 accent 色 ❯ 前缀，续行用 3 空格缩进对齐 "❯ "。
     // 每行用 themeReset() 收尾，避免背景泄漏到后续渲染（wrapAnsi 跨行时会保留 bg 作为 activeStyle）。
     return lines
       .map((line, idx) =>
         idx === 0
-          ? `${bg}${BOLD}${accent} ❯ ${themeReset()}${bg}${line}\x1b[K${themeReset()}`
-          : `${bg}   ${line}\x1b[K${themeReset()}`,
+          ? `${bg}${BOLD}${accent} ❯ ${themeReset()}${bg}${userText}${line}\x1b[K${themeReset()}`
+          : `${bg}${userText}   ${line}\x1b[K${themeReset()}`,
       )
       .join("\n");
   },
