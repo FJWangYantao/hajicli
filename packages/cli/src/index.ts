@@ -136,14 +136,6 @@ import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./con
 import { CostTracker, formatCostCny, type TurnMetric } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
-import { startMcpStdio } from "./driver/index.js";
-import { DriverServer } from "./driver/server.js";
-import type {
-  DriverPatch,
-  DriverSelectionRequest,
-  DriverStatus,
-  DriverTurnResult,
-} from "./driver/types.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
 import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
@@ -214,7 +206,6 @@ import {
   resolveUtilityModel,
   VOLCENGINE_MODELS,
 } from "./provider-models.js";
-import { parseServeArgs } from "./serve-args.js";
 import {
   handleClearCommand,
   handleResumeCommand,
@@ -281,21 +272,6 @@ import {
 } from "./worktree.js";
 import { handleWorktreeCommand } from "./worktree-commands.js";
 
-/** 驱动事件里的工具入参摘要：截断避免长参数把事件撑爆。 */
-function summarizeDriverArgs(args: Record<string, unknown>): string {
-  try {
-    const json = JSON.stringify(args);
-    return json.length > 200 ? `${json.slice(0, 200)}…` : json;
-  } catch {
-    return "(无法序列化)";
-  }
-}
-
-/** 驱动事件里的工具输出摘要：只要开头一段，完整结果模型仍能在会话里读到。 */
-function summarizeDriverOutput(output: string): string {
-  return output.length > 300 ? `${output.slice(0, 300)}…` : output;
-}
-
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
   // 供 scripts/profile-startup.mjs 采集启动各阶段耗时；正常运行时零输出。
@@ -320,27 +296,6 @@ async function main() {
     process.exit(1);
   }
   const headlessRequest = headlessParse.request;
-  // 驱动服务（haji mcp-serve）：常驻进程，经 MCP stdio 对外提供「发消息 + 调整」工具面。
-  const serveParse = parseServeArgs(cliArgs);
-  if (serveParse.error) {
-    console.error(colors.failLine(serveParse.error));
-    process.exit(1);
-  }
-  const serveRequest = serveParse.request;
-  // 无头 / 驱动模式共用的「安静模式」：不打印 Logo、不清屏、不弹配置向导。
-  const quietMode = Boolean(headlessRequest || serveRequest);
-  if (serveRequest?.cwd) {
-    try {
-      process.chdir(serveRequest.cwd);
-    } catch (error) {
-      console.error(
-        colors.failLine(
-          `无法切换到工作目录 ${serveRequest.cwd}：${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  }
   // 会话恢复参数（haji -c / haji -r）：只在交互模式生效，无头 -p 时忽略。
   const sessionResumeRequest = headlessRequest ? undefined : parseSessionResumeArgs(cliArgs);
   // 追加工作区根（--add-dir，可重复）：只影响本次进程，不写配置。
@@ -420,7 +375,7 @@ async function main() {
   }
   // 无头模式下所有提示性输出改道 stderr，stdout 只保留模型正文与工具块。
   const progressLog = (message: string): void => {
-    if (quietMode) console.error(message);
+    if (headlessRequest) console.error(message);
     else console.log(message);
   };
 
@@ -470,7 +425,7 @@ async function main() {
 
   // 读取上次保存的偏好（模型 + 思考强度）；提前到清屏之前以便打印一行有用的启动信息。
   const savedPreference = loadPreference();
-  if (!quietMode) {
+  if (!headlessRequest) {
     // 启动时清空终端屏幕，实现“置顶并开辟新页面”效果
     console.clear();
 
@@ -1290,33 +1245,17 @@ async function main() {
   let openTurnReportRef: (metric: TurnMetric) => void = () => {};
 
   let resumeStartupSession: (id: string) => void = () => {};
-  // 驱动服务（mcp-serve）的事件出口与启动期输出缓冲：ui 早于 DriverServer 构造，
-  // 期间写出的内容先攒着，等服务起来再补发成 notice 事件，避免落到 MCP 占用的 stdout。
-  let driverServerRef: DriverServer | undefined;
-  const serveOutputBuffer: string[] = [];
-  const serveSink = (text: string): void => {
-    if (driverServerRef) driverServerRef.emitText(text);
-    else if (text) serveOutputBuffer.push(text);
-  };
-  const serveErrorSink = (text: string): void => {
-    const line = text.endsWith("\n") ? text.slice(0, -1) : text;
-    if (!line) return;
-    if (driverServerRef) driverServerRef.emit({ type: "notice", text: line });
-    else serveOutputBuffer.push(line);
-  };
-
   const ui = new TerminalUI({
     onResumeSession: (id) => resumeStartupSession(id),
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: buildLogo().trim(),
     // 无头模式下 compactHeader 会被 ui.start() 直写 stdout，置空以保持输出纯净。
-    compactHeader: quietMode ? "" : colors.boldPurple("HAJI"),
+    compactHeader: headlessRequest ? "" : colors.boldPurple("HAJI"),
     inputPrompt: colors.boldAccent("› "),
     continuationPrompt: colors.muted("│ "),
     renderBorder: (width) => colors.gray("─".repeat(width)),
-    forceNonInteractive: quietMode,
+    forceNonInteractive: Boolean(headlessRequest),
     muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
-    ...(serveRequest ? { outputSink: serveSink, errorSink: serveErrorSink } : {}),
     // 侧栏区域 id → 动作。上下文详情页由 TerminalUI 自己打开，不会走到这里。
     onSidebarAction: (id) => {
       if (id === "cost.summary") openCostDetailsRef();
@@ -1329,7 +1268,7 @@ async function main() {
   });
   // 无头（-p）不参与侧栏状态：--output-format json 的 stdout 必须保持纯净。
   // 窗口标题同理：无头模式不该改调用方终端的标题。
-  if (quietMode) {
+  if (headlessRequest) {
     agentStatus.setEnabled(false);
     terminalTitle.setEnabled(false);
   }
@@ -2152,46 +2091,6 @@ async function main() {
     return ui.readSelection(options);
   };
 
-  /**
-   * 需要用户决策时的统一入口：驱动服务（mcp-serve）把卡片发成 selection_request 事件、
-   * 等外部 `haji_approve`；否则走终端选择器。授权卡片、受控申请、Plan 审批都走这里。
-   */
-  const askSelection = async (
-    options: Parameters<TerminalUI["readSelection"]>[0],
-    draftHandling: "queue" | "restore" = "queue",
-  ): Promise<ReturnType<TerminalUI["readSelection"]> extends Promise<infer T> ? T : never> => {
-    if (driverServerRef) {
-      const request: DriverSelectionRequest = {
-        title: options.title,
-        items: options.items.map((item) => ({
-          value: item.value,
-          label: item.label,
-          ...(item.description ? { description: item.description } : {}),
-          ...(item.hotkey ? { hotkey: item.hotkey } : {}),
-        })),
-        ...(options.preview ? { preview: options.preview } : {}),
-        ...(options.selectedValue !== undefined ? { selectedValue: options.selectedValue } : {}),
-        ...(options.secondary
-          ? {
-              secondary: {
-                label: options.secondary.label,
-                items: options.secondary.items.map((item) => ({
-                  value: item.value,
-                  label: item.label,
-                  ...(item.description ? { description: item.description } : {}),
-                })),
-                ...(options.secondary.selectedValue !== undefined
-                  ? { selectedValue: options.secondary.selectedValue }
-                  : {}),
-              },
-            }
-          : {}),
-      };
-      return driverServerRef.requestSelection(request);
-    }
-    return readSelectionSafely(options, draftHandling);
-  };
-
   const USER_REJECTED_TOOL_OUTPUT = "错误: 用户拒绝了此命令的执行请求。";
   // “本会话内总是允许”只对当前会话有效；/clear、/resume 切换会话后自动失效。
   // 键由 resolveToolGrant 给出：bash 按命令前缀，工作区外按「读/写 + 目录前缀」，其余按工具名。
@@ -2233,7 +2132,7 @@ async function main() {
     const requester = ctx.agentId ? `子代理 ${ctx.agentId}` : "主 Agent";
     const outsideHint = isPathScopedGrant(grant) ? "（工作区外）" : "";
     const protectedHint = hardProtected ? "（受保护目标 · 不可永久授权）" : "";
-    if (!ui.isInteractive() && !driverServerRef) {
+    if (!ui.isInteractive()) {
       // 无头且 stdin 非 TTY（管道/CI）时没有交互确认的机会，自动拒绝并把原因反馈给模型。
       if (headlessRequest && !process.stdin.isTTY) {
         if (!hardProtected) return USER_REJECTED_TOOL_OUTPUT;
@@ -2246,7 +2145,7 @@ async function main() {
     }
     notifyUserAttention();
     agentStatus.blocked("permission", `等待授权 · ${permissionVerb(toolName)}`);
-    const selection = await askSelection(
+    const selection = await readSelectionSafely(
       {
         title: hardProtected
           ? `需要授权 · ${requester} 请求${permissionVerb(toolName)}${protectedHint}`
@@ -2395,7 +2294,7 @@ async function main() {
     preview: string[],
   ): Promise<RequestDecision> => {
     const requester = spec.agentId ? `子代理 ${spec.agentId}` : "主 Agent";
-    if (!ui.isInteractive() && !driverServerRef) {
+    if (!ui.isInteractive()) {
       if (headlessRequest && !process.stdin.isTTY) {
         return {
           approved: false,
@@ -2412,8 +2311,7 @@ async function main() {
     }
     notifyUserAttention();
     agentStatus.blocked("question", `Agent 申请 · ${title}`);
-    // 驱动服务（mcp-serve）下把这张卡片发成 selection_request 事件，等外部 haji_approve。
-    const selection = await askSelection(
+    const selection = await readSelectionSafely(
       {
         title: `Agent 申请 · ${title}`,
         preview: [...preview, "", colors.gray(`目标：${spec.target} · 发起方：${requester}`)],
@@ -2990,9 +2888,8 @@ async function main() {
   };
 
   const startBackgroundInput = (initialValue?: string) => {
-    // 无头 / 驱动模式没有“边跑边输入下一句”的场景，避免 readline 挂在 stdin 上。
-    // 驱动模式下 stdin 是 MCP 协议通道，绝不能去读它，否则会把协议消息当成用户输入。
-    if (quietMode) return;
+    // 无头模式没有“边跑边输入下一句”的场景，避免 readline 挂在 stdin 上。
+    if (headlessRequest) return;
     if (ui.isInputActive()) return;
     ui.readInput({ slashCommands, initialValue })
       .then(async (input) => {
@@ -3886,168 +3783,6 @@ async function main() {
     },
   };
 
-  /**
-   * 驱动服务（haji mcp-serve）：把本进程当作常驻 haji，经 MCP stdio 对外提供
-   * 「发消息 + 调整 + 查状态」工具面。复用上面全部接线，只替换授权通道与输出出口。
-   */
-  const runServeMode = async (): Promise<void> => {
-    if (!serveRequest) return;
-
-    // 工具执行进度：包一层 executor，把 start/end 发成事件（不改引擎本身）。
-    const toolEventExecutor = (() => {
-      const proxy = Object.create(toolExecutor) as typeof toolExecutor;
-      proxy.execute = async (toolName, args, context) => {
-        driverServerRef?.emit({
-          type: "tool_start",
-          name: toolName,
-          args: summarizeDriverArgs(args),
-        });
-        const startedAt = Date.now();
-        const result = await toolExecutor.execute(toolName, args, context);
-        driverServerRef?.emit({
-          type: "tool_end",
-          name: toolName,
-          ok: !result.blocked && !result.rejected,
-          durationMs: Date.now() - startedAt,
-          summary: summarizeDriverOutput(result.output),
-        });
-        return result;
-      };
-      return proxy;
-    })();
-
-    let abortRequested = false;
-
-    const driverTurnDeps: TurnDeps = {
-      ...turnDeps,
-      // 授权卡片 / 计划审批 / 受控申请一律走事件，等外部 haji_approve。
-      readSelectionSafely: askSelection,
-      toolExecutor: toolEventExecutor,
-    };
-
-    const driver = new DriverServer(
-      {
-        runTurn: async (text) => {
-          abortRequested = false;
-          const startedAt = Date.now();
-          const before = costTracker.getSummary();
-          await runAgentTurn(driverTurnDeps, {
-            forwardedPrompt: text,
-            commandInput: text,
-            manualSkillExchange: undefined,
-            promptDisplayStartOffset: ui.getChatLength(),
-          });
-          const finalMessages = turnDeps.getMessages();
-          const lastAssistant = [...finalMessages]
-            .reverse()
-            .find(
-              (message) =>
-                message.role === "assistant" &&
-                typeof message.content === "string" &&
-                message.content.trim().length > 0,
-            );
-          const after = costTracker.getSummary();
-          const session = sessionManager.getCurrentSession();
-          return {
-            ok: !abortRequested,
-            text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
-            sessionId: session.id,
-            model: selectedModel,
-            permissionMode,
-            toolCalls: finalMessages.filter((message) => message.role === "tool").length,
-            durationMs: Date.now() - startedAt,
-            usage: {
-              requests: after.requests - before.requests,
-              promptTokens: after.promptTokens - before.promptTokens,
-              completionTokens: after.completionTokens - before.completionTokens,
-              estimatedCostCny: Number((after.totalCostCny - before.totalCostCny).toFixed(6)),
-            },
-          } satisfies DriverTurnResult;
-        },
-        status: (): DriverStatus => {
-          const cost = costTracker.getSummary();
-          const session = sessionManager.getCurrentSession();
-          return {
-            sessionId: session.id,
-            sessionTitle: session.title,
-            model: selectedModel,
-            provider: providerPlainLabel(currentProviderName),
-            effort: reasoningEffort,
-            permissionMode,
-            cwd: process.cwd(),
-            running: false,
-            messageCount: messages.length,
-            usage: {
-              requests: cost.requests,
-              promptTokens: cost.promptTokens,
-              completionTokens: cost.completionTokens,
-              estimatedCostCny: Number(cost.totalCostCny.toFixed(6)),
-            },
-          };
-        },
-        adjust: async (patch: DriverPatch) => {
-          const applied: Record<string, unknown> = {};
-          const errors: string[] = [];
-          if (patch.model !== undefined) {
-            if (!availableModels.some((item) => item.value === patch.model)) {
-              errors.push(`未知模型：${patch.model}`);
-            } else {
-              const nextProvider = detectProviderForModel(
-                patch.model,
-                providerConfig,
-                currentProviderName,
-              );
-              // 换模型就重建 provider 实例；在飞回合持有的是旧快照，不受影响。
-              if (patch.model !== selectedModel || nextProvider !== currentProviderName) {
-                provider = buildProvider(patch.model, undefined, currentProviderName);
-                currentProviderName = nextProvider;
-              }
-              selectedModel = patch.model;
-              applied.model = patch.model;
-              applied.provider = currentProviderName;
-            }
-          }
-          if (patch.effort !== undefined) {
-            reasoningEffort = patch.effort;
-            applied.effort = patch.effort;
-          }
-          if (patch.thinkingVisible !== undefined) {
-            showThinking = patch.thinkingVisible;
-            applied.thinkingVisible = patch.thinkingVisible;
-          }
-          if (patch.permissionMode !== undefined) {
-            await applyPermissionMode(patch.permissionMode, { persist: false });
-            applied.permissionMode = permissionMode;
-          }
-          if (patch.plan !== undefined) {
-            await applyPermissionMode(patch.plan ? "plan" : "default", { persist: false });
-            applied.plan = patch.plan;
-            applied.permissionMode = permissionMode;
-          }
-          if (errors.length === 0) {
-            await requestPromptRefresh();
-            updateStatusUI();
-          }
-          return { applied, errors };
-        },
-        cancel: () => {
-          abortRequested = true;
-          return ui.requestAbort();
-        },
-        close: async () => {
-          await sessionManager.flush();
-        },
-      },
-      { waitMs: serveRequest.waitMs, approval: serveRequest.approval },
-    );
-
-    driverServerRef = driver;
-    // 启动期（服务就绪前）攒下的输出补发成 notice 事件。
-    for (const line of serveOutputBuffer.splice(0)) driver.emit({ type: "notice", text: line });
-    await startMcpStdio(driver);
-    driverServerRef = undefined;
-  };
-
   let fatalExit: unknown;
   try {
     markStartupStage("ready");
@@ -4061,11 +3796,6 @@ async function main() {
       ui.dismissStartupHeader();
     }
     while (true) {
-      // 驱动服务：进入 MCP stdio 循环；客户端关闭 stdin 后收尾退出（走统一清理）。
-      if (serveRequest) {
-        await runServeMode();
-        break;
-      }
       // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
       if (headlessRequest) {
         const headlessStartedAt = Date.now();
