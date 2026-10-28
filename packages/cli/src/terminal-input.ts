@@ -4270,6 +4270,124 @@ export class TerminalUI {
     return inspectorFrame?.rows ?? requestFrame?.rows ?? turnFrame?.rows ?? costLogFrame?.rows;
   }
 
+  /**
+   * 输入区（排队提示 / 选择器或输入行 / 粘贴 chip / 补全候选 / 状态栏）按三档布局组装。
+   * 返回整块行、输入行布局（选择器时为空）与光标所在输入首行在块内的偏移。
+   */
+  private buildInputBlock(options: {
+    width: number;
+    height: number;
+    topRowCount: number;
+    minimal: boolean;
+    emergencyMinimal: boolean;
+    showHints: boolean;
+    statusBar: string;
+    divider: string;
+    inputDivider: string;
+  }): { inputBlock: string[]; inputLayout?: VisibleInputLayout; inputCursorOffset: number } {
+    const {
+      width,
+      height,
+      topRowCount,
+      minimal,
+      emergencyMinimal,
+      showHints,
+      statusBar,
+      divider,
+      inputDivider,
+    } = options;
+    let inputLayout: VisibleInputLayout | undefined;
+    let inputBlock: string[];
+    let inputCursorOffset = 0;
+    const leadingInputRows: string[] = [];
+    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
+    const emergencyLeadingBudget = Math.max(0, height - 2);
+    const visibleLeadingInputRows = emergencyMinimal
+      ? emergencyLeadingBudget === 0
+        ? []
+        : leadingInputRows.slice(-emergencyLeadingBudget)
+      : leadingInputRows;
+    const emergencyStatusRows = emergencyMinimal && height < 2 ? [] : [statusBar];
+    // 粘贴图片占输入框上方的行：文字输入行保持在 chip 下方。
+    const pastedRows = this.buildPastedImageRows(width);
+
+    if (this.activeSelection) {
+      const maxSelectionRows = emergencyMinimal
+        ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
+        : Math.max(1, height - topRowCount - visibleLeadingInputRows.length - (minimal ? 3 : 5));
+      const selectionRows = this.getSelectionRows(width, maxSelectionRows);
+      if (emergencyMinimal) {
+        inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
+      } else if (minimal) {
+        inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
+      } else {
+        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
+      }
+    } else {
+      const maxSuggestionRows = showHints
+        ? Math.min(
+            resolveHintRowBudget(height),
+            Math.max(
+              0,
+              height - topRowCount - visibleLeadingInputRows.length - pastedRows.length - 5,
+            ),
+          )
+        : 0;
+      const suggestionRows = this.getCommandSuggestionRows(width, maxSuggestionRows);
+      const maxInputRows = emergencyMinimal
+        ? Math.max(
+            1,
+            height -
+              visibleLeadingInputRows.length -
+              pastedRows.length -
+              emergencyStatusRows.length,
+          )
+        : Math.max(
+            1,
+            height -
+              topRowCount -
+              visibleLeadingInputRows.length -
+              pastedRows.length -
+              suggestionRows.length -
+              (minimal ? 3 : 5),
+          );
+      // 长输入在框内跟随光标滚动，保留对话与侧栏的垂直空间。
+      const visibleInputRows = emergencyMinimal
+        ? maxInputRows
+        : Math.min(maxInputRows, Math.max(1, Math.min(6, Math.floor(height / 4))));
+      this.renderedInputWidth = width;
+      inputLayout = this.getInputLayout(width, visibleInputRows);
+      if (emergencyMinimal) {
+        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          ...pastedRows,
+          ...inputLayout.rows,
+          ...emergencyStatusRows,
+        ];
+      } else if (minimal) {
+        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
+        inputBlock = [...visibleLeadingInputRows, ...pastedRows, ...inputLayout.rows, statusBar];
+      } else {
+        inputCursorOffset = visibleLeadingInputRows.length + 1 + pastedRows.length;
+        // 输入区上下各一条分隔线：中间只放输入行（与粘贴 chip），底行由状态栏承担；
+        // 有活动时活动状态顶替状态栏，不再单独占行。
+        // 斜杠 / @ 补全候选画在下方分隔线之外——列表属于临时浮层，不该撑高输入框，
+        // 也不该把光标顶到框中间。
+        inputBlock = [
+          ...visibleLeadingInputRows,
+          inputDivider,
+          ...pastedRows,
+          ...inputLayout.rows,
+          inputDivider,
+          ...suggestionRows,
+          statusBar,
+        ];
+      }
+    }
+    return { inputBlock, inputLayout, inputCursorOffset };
+  }
+
   private renderFrame(): void {
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
@@ -4350,10 +4468,6 @@ export class TerminalUI {
       paperSidebarEnabled() && this.activeInput
         ? `${SEQ.softAccent}${"-".repeat(leftAreaWidth)}${SEQ.reset}`
         : divider;
-    let inputLayout: VisibleInputLayout | undefined;
-    let inputBlock: string[];
-    let inputCursorOffset = 0;
-
     const minimal = layout.mode === "minimal";
     const emergencyMinimal = minimal && height < 8;
     // 活动行放在对话区尾部（空一行跟在最新内容之后，内容满屏时固定在对话区底部），
@@ -4372,92 +4486,17 @@ export class TerminalUI {
       !emergencyMinimal && activityRow
         ? activityRow
         : this.buildStatusBar(leftAreaWidth, layout.statusDetail);
-    const leadingInputRows: string[] = [];
-    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, leftAreaWidth));
-    const emergencyLeadingBudget = Math.max(0, height - 2);
-    const visibleLeadingInputRows = emergencyMinimal
-      ? emergencyLeadingBudget === 0
-        ? []
-        : leadingInputRows.slice(-emergencyLeadingBudget)
-      : leadingInputRows;
-    const emergencyStatusRows = emergencyMinimal && height < 2 ? [] : [statusBar];
-    // 粘贴图片占输入框上方的行：文字输入行保持在 chip 下方。
-    const pastedRows = this.buildPastedImageRows(leftAreaWidth);
-
-    if (this.activeSelection) {
-      const maxSelectionRows = emergencyMinimal
-        ? Math.max(1, height - visibleLeadingInputRows.length - emergencyStatusRows.length)
-        : Math.max(1, height - topRows.length - visibleLeadingInputRows.length - (minimal ? 3 : 5));
-      const selectionRows = this.getSelectionRows(leftAreaWidth, maxSelectionRows);
-      if (emergencyMinimal) {
-        inputBlock = [...visibleLeadingInputRows, ...selectionRows, ...emergencyStatusRows];
-      } else if (minimal) {
-        inputBlock = [...visibleLeadingInputRows, ...selectionRows, statusBar];
-      } else {
-        inputBlock = [...visibleLeadingInputRows, divider, ...selectionRows, divider, statusBar];
-      }
-    } else {
-      const maxSuggestionRows = layout.showHints
-        ? Math.min(
-            resolveHintRowBudget(height),
-            Math.max(
-              0,
-              height - topRows.length - visibleLeadingInputRows.length - pastedRows.length - 5,
-            ),
-          )
-        : 0;
-      const suggestionRows = this.getCommandSuggestionRows(leftAreaWidth, maxSuggestionRows);
-      const maxInputRows = emergencyMinimal
-        ? Math.max(
-            1,
-            height -
-              visibleLeadingInputRows.length -
-              pastedRows.length -
-              emergencyStatusRows.length,
-          )
-        : Math.max(
-            1,
-            height -
-              topRows.length -
-              visibleLeadingInputRows.length -
-              pastedRows.length -
-              suggestionRows.length -
-              (minimal ? 3 : 5),
-          );
-      // 长输入在框内跟随光标滚动，保留对话与侧栏的垂直空间。
-      const visibleInputRows = emergencyMinimal
-        ? maxInputRows
-        : Math.min(maxInputRows, Math.max(1, Math.min(6, Math.floor(height / 4))));
-      this.renderedInputWidth = leftAreaWidth;
-      inputLayout = this.getInputLayout(leftAreaWidth, visibleInputRows);
-      if (emergencyMinimal) {
-        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
-        inputBlock = [
-          ...visibleLeadingInputRows,
-          ...pastedRows,
-          ...inputLayout.rows,
-          ...emergencyStatusRows,
-        ];
-      } else if (minimal) {
-        inputCursorOffset = visibleLeadingInputRows.length + pastedRows.length;
-        inputBlock = [...visibleLeadingInputRows, ...pastedRows, ...inputLayout.rows, statusBar];
-      } else {
-        inputCursorOffset = visibleLeadingInputRows.length + 1 + pastedRows.length;
-        // 输入区上下各一条分隔线：中间只放输入行（与粘贴 chip），底行由状态栏承担；
-        // 有活动时活动状态顶替状态栏，不再单独占行。
-        // 斜杠 / @ 补全候选画在下方分隔线之外——列表属于临时浮层，不该撑高输入框，
-        // 也不该把光标顶到框中间。
-        inputBlock = [
-          ...visibleLeadingInputRows,
-          inputDivider,
-          ...pastedRows,
-          ...inputLayout.rows,
-          inputDivider,
-          ...suggestionRows,
-          statusBar,
-        ];
-      }
-    }
+    const { inputBlock, inputLayout, inputCursorOffset } = this.buildInputBlock({
+      width: leftAreaWidth,
+      height,
+      topRowCount: topRows.length,
+      minimal,
+      emergencyMinimal,
+      showHints: layout.showHints,
+      statusBar,
+      divider,
+      inputDivider,
+    });
     const chatHeight = emergencyMinimal
       ? Math.max(0, height - inputBlock.length)
       : Math.max(1, height - topRows.length - 1 - inputBlock.length);

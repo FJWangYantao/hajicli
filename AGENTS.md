@@ -634,6 +634,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   过程日志、已提醒模型留在模块内）；会话级编排用类（`PostEditVerifier`）。TerminalUI 里的纯状态
   转移抽成函数模块（`overlay-navigation.ts`、`terminal-keys.ts`、`terminal-menu.ts`），类只留持有
   状态与重绘；测试会直接读 `ui.costLog` / `ui.startupHits` 这类私有字段，搬字段前先查测试。
+  类内的大方法按阶段拆：`handleMouseEvent` 只分流（悬停 / 滚轮 / 首页点击 / 左键按下·拖动·松开
+  各一个方法，命中判定走 `startupHitAt` / `isOnChatHint`）；`renderFrame` 的整页视图在
+  `renderOverlayPage`、输入区组装在 `buildInputBlock`。新增鼠标交互或底部区块时加在对应阶段方法里。
 - `dist/` 未入库（`.gitignore` 中 `dist/`），提交时不包含构建产物。
 - 新增交互逻辑尽量配一条 `packages/cli/test/*.test.mjs` 用例；测试通过临时目录 + 覆盖 `HOME`/`USERPROFILE`
   做路径隔离（参考 `provider-config.test.mjs` 的 `withIsolatedPaths`），不要读写真实 `~/.haji`。
