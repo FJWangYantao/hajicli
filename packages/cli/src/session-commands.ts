@@ -253,8 +253,14 @@ async function loadAndRenderSession(
   return true;
 }
 
-/** 只重建显示，不重新读取磁盘或切换作用域；messages 缺省取当前内存上下文。 */
-function renderSessionHistory(
+/**
+ * 只重建显示，不重新读取磁盘或切换作用域；messages 缺省取当前内存上下文。
+ *
+ * 供切换主题/外观后按新调色板重放历史：历史行是固化的 SGR 文本，若只重绘新帧，
+ * 旧行会保留旧主题背景（默认主题 `background: ""` 会重置成终端底色），在新主题
+ * 的整屏底色上留下通栏色带。这里按当前主题从消息重建整段历史，保证新旧一致。
+ */
+export function renderSessionHistory(
   ctx: SessionCommandContext,
   heading?: string,
   messages: ChatMessage[] = ctx.getMessages(),
