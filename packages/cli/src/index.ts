@@ -934,6 +934,10 @@ async function main() {
   const postEditVerifier = new PostEditVerifier({
     showHint: (hint) => ui.writeLine(colors.muted(hint)),
   });
+  // 工具执行期间产生的回注（编辑后诊断、用户 Hook 反馈）先排队：此刻 assistant(tool_calls)
+  // 已入列而工具结果还没写，直接 push 会把 system 消息夹在两者之间，下一轮配对修复
+  // 会把真实结果换成「状态未知」。由 turn-runner 在下一次请求前的安全点落地。
+  const pendingToolNotices: string[] = [];
   hookEngine.register("PostToolUse", async (ctx) => {
     const isApproved =
       !ctx.toolOutput?.startsWith("错误:") && !ctx.toolOutput?.startsWith("[安全引擎拒绝拦截]");
@@ -961,7 +965,7 @@ async function main() {
       agentId: ctx.agentId,
       succeeded: Boolean(ctx.toolOutput) && isApproved && !isFailedToolOutput(ctx.toolOutput || ""),
     });
-    if (notice) messages.push({ role: "system", content: notice });
+    if (notice) pendingToolNotices.push(notice);
   });
 
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
@@ -3461,6 +3465,7 @@ async function main() {
     flushImmediateEffects,
     getCostSnapshot: () => costTracker.getSummary(),
     getLastTypeCheck: (sinceMs) => postEditVerifier.lastCheckSince(sinceMs),
+    drainToolNotices: () => pendingToolNotices.splice(0),
     listOwnedChanges: (sinceMs) => snapshotEngine.listOwnedChanges(sinceMs),
     notifyUserAttention,
     onTurnFinished: (durationMs) => {

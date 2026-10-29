@@ -169,6 +169,11 @@ export interface TurnDeps {
   onTurnSettled?(outcome: TurnOutcome): void;
   /** 回合小结数据源：最近一次编辑后验证结果（sinceMs 之前的旧结果不显示）。 */
   getLastTypeCheck?(sinceMs: number): { ok: boolean } | undefined;
+  /**
+   * 取走工具执行期间排队的回注（编辑后诊断、Hook 反馈）。只能在工具结果全部入列之后追加，
+   * 否则 system 消息会夹在 tool_calls 与结果之间，破坏配对。
+   */
+  drainToolNotices?(): string[];
   /** 回合小结数据源：自某时间戳起会话拥有的工作区改动（快照日志口径）。 */
   listOwnedChanges?(sinceMs: number): Array<{
     path: string;
@@ -470,6 +475,12 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         ui.writeLine(colors.failLine("steer 消息尚未保存，已停止后续请求。"));
         break;
       }
+    }
+    // 安全点：上一批工具结果已全部入列，排队的回注追加在结果之后。
+    const toolNotices = deps.drainToolNotices?.() ?? [];
+    if (toolNotices.length > 0) {
+      for (const content of toolNotices) messages.push({ role: "system", content });
+      sessionManager.saveCurrentSession(messages);
     }
     const repairedMessages = repairToolCallPairs(messages, { preserveIncomplete: true });
     if (repairedMessages !== messages) {
