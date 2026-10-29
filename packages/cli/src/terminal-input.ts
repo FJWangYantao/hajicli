@@ -49,6 +49,14 @@ import {
 import { costLogHit, inspectorHit, requestDetailHit, resolveOverlayPage } from "./overlay-page.js";
 import { paperSidebarEnabled } from "./paper-sidebar.js";
 import {
+  buildQueueSteerHits,
+  buildQueueSteerRows,
+  sidebarRegionAt as findSidebarRegion,
+  type QueueSteerHit,
+  rowSpanAt,
+  spanContains,
+} from "./pointer-hits.js";
+import {
   buildFoldHeader,
   type ChatSegmentView,
   type FoldGroupStats,
@@ -567,20 +575,8 @@ export class TerminalUI {
   private queuedInputs: string[] = [];
   private queueSteerCallback?: (index: number, text: string) => boolean;
   private steerEnabled = false;
-  private queueSteerHits: Array<{
-    row: number;
-    left: number;
-    right: number;
-    index: number;
-    text: string;
-  }> = [];
-  private pendingQueueSteer?: {
-    row: number;
-    left: number;
-    right: number;
-    index: number;
-    text: string;
-  };
+  private queueSteerHits: QueueSteerHit[] = [];
+  private pendingQueueSteer?: QueueSteerHit;
 
   onQueueSteer(callback: (index: number, text: string) => boolean): void {
     this.queueSteerCallback = callback;
@@ -608,43 +604,24 @@ export class TerminalUI {
   }
 
   private getQueueRows(width: number, maxItems: number): string[] {
-    if (!this.queuedInputs.length || maxItems <= 0) return [];
-    const rows = [
-      truncateText(`待发送 (${this.queuedInputs.length} 条 · Alt+Q 管理 · 本轮结束后发送)`, width),
-    ];
-    for (let index = 0; index < Math.min(maxItems, this.queuedInputs.length); index++) {
-      const text = this.queuedInputs[index];
-      const button = this.steerEnabled && !text.trimStart().startsWith("/") ? "[steer] " : "";
-      rows.push(
-        truncateText(
-          ` ${button}${index + 1}. ${redactSensitiveCommand(sanitizeTerminalText(text)).replace(/\s*\n\s*/g, " ")}`,
-          width,
-        ),
-      );
-    }
-    if (this.queuedInputs.length > maxItems) rows.push(truncateText("… Alt+Q 查看其余消息", width));
-    return rows;
+    return buildQueueSteerRows({
+      queued: this.queuedInputs,
+      width,
+      maxItems,
+      steerEnabled: this.steerEnabled,
+    });
   }
 
   private updateQueueSteerHits(rows: string[], screenTop: number): void {
-    this.queueSteerHits = [];
-    if (!this.steerEnabled || this.activeSelection || this.inputManager?.draft) return;
-    for (let offset = 0; offset < rows.length; offset++) {
-      const plain = rows[offset].replace(/\x1b\[[0-9;]*m/g, "");
-      const match = /^\s*›?\s*\[steer\] (\d+)\./u.exec(plain);
-      if (!match) continue;
-      const index = Number(match[1]) - 1;
-      const text = this.queuedInputs[index];
-      if (text === undefined) continue;
-      const left = plain.indexOf("[steer]") + 1;
-      this.queueSteerHits.push({ row: screenTop + offset, left, right: left + 6, index, text });
-    }
+    // steer 按钮只在没有浮层、也没有输入管理草稿时登记：那时点它没有意义。
+    this.queueSteerHits =
+      !this.steerEnabled || this.activeSelection || this.inputManager?.draft
+        ? []
+        : buildQueueSteerHits({ rows, queued: this.queuedInputs, screenTop });
   }
 
   private queueSteerHitAt(column: number, row: number) {
-    return this.queueSteerHits.find(
-      (hit) => hit.row === row && column >= hit.left && column <= hit.right,
-    );
+    return rowSpanAt(this.queueSteerHits, column, row);
   }
   private inputManager?: {
     kind: "queue" | "attachments";
@@ -3070,21 +3047,13 @@ export class TerminalUI {
   /** 首页入口在该格的命中项（首页不可用时为 undefined）。 */
   private startupHitAt(column: number, row: number) {
     if (!this.startupHomeAvailable()) return undefined;
-    return this.startupHits.find(
-      (hit) => hit.row === row && column >= hit.left && column <= hit.right,
-    );
+    return rowSpanAt(this.startupHits, column, row);
   }
 
   /** 该格是否落在「回到底部」浮标内。 */
   private isOnChatHint(column: number, row: number): boolean {
     const hit = this.chatHintHit;
-    return Boolean(
-      hit &&
-        column >= hit.columnStart &&
-        column <= hit.columnEnd &&
-        row >= hit.rowStart &&
-        row <= hit.rowEnd,
-    );
+    return hit !== undefined && spanContains(hit, column, row);
   }
 
   /** 无按键移动：首页入口、侧栏与对话区的悬停高亮（只换颜色，不改行数）。 */
@@ -3359,25 +3328,9 @@ export class TerminalUI {
     }
   }
 
-  /**
-   * 解析鼠标位置命中的侧栏区域 id；不在任何区域上时返回 undefined。
-   *
-   * 命中区按 depth 升序登记（见 buildSidebarFrame 末尾的排序），所以从后往前找
-   * 就等价于"深层优先"：定价 agent 行 > 配置单价行 > 整块费用。
-   */
+  /** 解析鼠标位置命中的侧栏区域 id（深层优先，见 sidebarRegionAt）。 */
   private sidebarRegionAt(column: number, row: number): string | undefined {
-    let found: string | undefined;
-    for (const [id, hit] of this.sidebarHits) {
-      if (
-        column >= hit.columnStart &&
-        column <= hit.columnEnd &&
-        row >= hit.rowStart &&
-        row <= hit.rowEnd
-      ) {
-        found = id;
-      }
-    }
-    return found;
+    return findSidebarRegion(this.sidebarHits, column, row);
   }
 
   /**

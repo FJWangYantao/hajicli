@@ -44,6 +44,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 
 - `terminal-input.ts`：`TerminalUI`——全屏布局（对话区 / 状态栏 / 输入框）、readInput / readSelection / 实时区域（setLiveTail）。输入编辑、鼠标选区与整帧渲染共享私有状态，保持为单一类；面板类构建逻辑已抽为纯函数。
 - `inline-image-sync.ts`：内联图 placement 同步层（`InlineImageSync`）与 `/view` 全屏看图帧（`renderImageOverlayFrame`）。原先挂在 `TerminalUI` 上的三项节流状态（上次放置时刻 / 是否有被抑制的微调 / 收尾定时器）和 kitty 上传、删除、裁剪重放逻辑搬到这里，宿主只注入 `scheduleRender` 与 `write`；纯规划算法仍在 `terminal-image.ts`（`diffInlinePlacements` / `clipInlinePlacement`）。
+- `pointer-hits.ts`：指针可点目标的登记与命中测试——队列 steer 行（`buildQueueSteerRows` / `buildQueueSteerHits`）、首页入口与侧栏区域（`rowSpanAt` / `findSidebarRegion`，侧栏按登记顺序取最后一个，即深层优先）、「回到底部」浮标（`spanContains`）。`TerminalUI` 只负责「拿到目标 → 执行动作」。
 - `overlay-page.ts`：覆盖对话区的只读整页视图（上下文详情 / 费用日志三层）的渲染决策：选当前该画哪一层、按该层最小尺寸判断终端放不放得下、把帧内几何换算成屏幕坐标（1 基）的命中区域（`OverlayHit`）。`TerminalUI` 只写回命中表与夹紧后的选中下标；页面状态转移在 `overlay-navigation.ts`。
 - `terminal-panels.ts`：状态栏 / 活动状态行 / 任务面板的纯构建函数（与 `agent-panel.ts` 同模式），输入标量状态输出 ANSI 行，可用固定宽度直接单测。活动行放在对话区尾部（空一行跟在最新内容后，满屏时固定在对话区底部，不进 `chatContent`），底栏状态栏常驻；细节文字用「解码」动效（`buildDecodedText`）循环还原，停滞 / 等授权 / 终止时静止。minimal 档或对话区被多行输入挤到放不下时，活动行退回底栏顶替状态栏。
 - `native-terminal-engine.ts`：加载 Rust `.node` 模块（换行 / ANSI 文档排版），失败回退纯 TS；`/perf` 可看当前引擎。
