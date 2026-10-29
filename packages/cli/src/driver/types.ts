@@ -66,6 +66,8 @@ export interface DriverTurnResult {
   durationMs: number;
   usage?: DriverUsage;
   error?: string;
+  /** 被 --max-cost / --max-turns 硬上限叫停时的原因。 */
+  stopReason?: "max_cost" | "max_turns";
 }
 
 export interface DriverStatus {

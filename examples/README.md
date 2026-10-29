@@ -66,6 +66,9 @@ loop:
 - **拒绝要给理由**：选 `deny-reason` 并带 `reason`，理由会原样回传给模型，它会换个做法；
   Plan 审批选 `no` 并带 `reason`，模型会在同一回合里按意见改计划，再次请求审批。
 - `turn_end.ok` 为 `false` 表示模型请求失败或回合被中止，不代表任务没做完——结论看正文。
+- 无人值守建议加硬上限：`haji mcp-serve --max-cost 5 --max-turns 40`。命中时 `turn_end` /
+  回合结果带 `stopReason`（`max_cost` / `max_turns`）；费用上限按整个进程累计，超出后
+  `haji_send` 直接拒绝，需要继续就重启服务。
 
 ## 最小客户端示例
 

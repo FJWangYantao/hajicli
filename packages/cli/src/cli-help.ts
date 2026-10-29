@@ -1021,6 +1021,8 @@ ${colors.bold("选项:")}
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
   --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）
   --allow <键>        无头模式的额外放行键（可重复）：bash:<命令前缀> 或工具名，仅本次进程生效、不落盘
+  --max-cost <元>      无头 / mcp-serve 的费用上限（本次进程估算费用，含子代理等旁路调用），超出即停、退出码 1
+  --max-turns <n>     无头 / mcp-serve 单个回合内向模型请求的次数上限，超出即停、退出码 1
   --add-dir <目录>      追加工作区根（可重复；只对本次进程生效，/workspace add 可持久化）
   --worktree          本次强制新建 git worktree（忽略项目配置）
   --no-worktree       本次不新建 git worktree（-c/-r 恢复会话本就不新建）

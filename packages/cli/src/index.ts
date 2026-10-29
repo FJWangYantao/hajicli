@@ -195,6 +195,7 @@ import {
   VOLCENGINE_MODELS,
 } from "./provider-models.js";
 import { runReloadProcess, supportsProcessReload } from "./reload.js";
+import { evaluateRunLimits, hasRunLimits } from "./run-limits.js";
 import { parseServeArgs, type ServeRequest } from "./serve-args.js";
 import { lastAssistantText, runServeMode } from "./serve-mode.js";
 import {
@@ -3427,6 +3428,15 @@ async function main() {
    */
   let currentTurnPrompt: string | undefined;
 
+  // 无人值守硬上限：费用按本次进程口径（-c 续写时扣掉恢复进来的历史花费），基线在进入主循环前取。
+  const runLimits = hasRunLimits(headlessRequest?.limits)
+    ? headlessRequest.limits
+    : hasRunLimits(serveRequest?.limits)
+      ? serveRequest.limits
+      : undefined;
+  let runCostBaseline = 0;
+  let unpricedLimitWarned = false;
+  const getRunCostCny = (): number => costTracker.getSummary().totalCostCny - runCostBaseline;
   const turnDeps: TurnDeps = {
     ui,
     activityIndicator,
@@ -3505,6 +3515,22 @@ async function main() {
     getCostSnapshot: () => costTracker.getSummary(),
     getLastTypeCheck: (sinceMs) => postEditVerifier.lastCheckSince(sinceMs),
     drainToolNotices: () => pendingToolNotices.splice(0),
+    checkRunLimit: runLimits
+      ? (requestsThisTurn) => {
+          const summary = costTracker.getSummary();
+          if (runLimits.maxCostCny !== undefined && summary.hasUnpriced && !unpricedLimitWarned) {
+            unpricedLimitWarned = true;
+            const warning =
+              "部分模型没有单价，--max-cost 只统计已定价的调用（/cost config 补单价）。";
+            if (headlessRequest) console.error(colors.warnLine(warning));
+            else ui.writeLine(colors.warnLine(warning));
+          }
+          return evaluateRunLimits(runLimits, {
+            requestsThisTurn,
+            costCny: getRunCostCny(),
+          });
+        }
+      : undefined,
     listOwnedChanges: (sinceMs) => snapshotEngine.listOwnedChanges(sinceMs),
     notifyUserAttention,
     onTurnFinished: (durationMs) => {
@@ -3535,6 +3561,7 @@ async function main() {
   const startServeMode = async (request: ServeRequest): Promise<void> =>
     runServeMode({
       serveRequest: request,
+      getRunCostCny,
       turnDeps,
       toolExecutor,
       costTracker,
@@ -3591,6 +3618,7 @@ async function main() {
       }
       ui.dismissStartupHeader();
     }
+    runCostBaseline = costTracker.getSummary().totalCostCny;
     while (true) {
       // 驱动服务：进入 MCP stdio 循环；客户端关闭 stdin 后收尾退出（走统一清理）。
       if (serveRequest) {
@@ -3627,6 +3655,7 @@ async function main() {
               {
                 // 模型请求失败、会话落盘失败也算失败；-c / -r 续写时 toolCalls 只计本次。
                 ok: headlessOk,
+                ...(headlessOutcome?.stoppedBy ? { stopReason: headlessOutcome.stoppedBy } : {}),
                 prompt: headlessRequest.prompt,
                 model: selectedModel,
                 text: lastAssistantText(turnDeps.getMessages()),

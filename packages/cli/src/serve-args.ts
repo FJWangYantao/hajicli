@@ -4,6 +4,8 @@
  *
  * 纯函数：不读环境、不退出进程，错误以 error 字段返回，便于单测。
  */
+import { parseRunLimitValue, type RunLimits } from "./run-limits.js";
+
 export interface ServeRequest {
   /** 工作目录覆盖（默认沿用启动目录，含自动 worktree 的结果）。 */
   cwd?: string;
@@ -16,6 +18,11 @@ export interface ServeRequest {
   approval: "ask" | "auto";
   /** 单次 `haji_send` 的默认等待时长（毫秒）；超时返回 running + taskId。 */
   waitMs: number;
+  /**
+   * 硬上限：`--max-cost` 累计本进程费用，超出后当前回合停止、之后的 `haji_send` 直接拒绝；
+   * `--max-turns` 限制每个回合内的请求次数。
+   */
+  limits?: RunLimits;
 }
 
 export interface ServeParseResult {
@@ -39,6 +46,7 @@ export function parseServeArgs(args: readonly string[]): ServeParseResult {
   let cwd: string | undefined;
   let approval: "ask" | "auto" = "ask";
   let waitMs = DEFAULT_WAIT_MS;
+  const limits: RunLimits = {};
 
   for (let index = 1; index < args.length; index++) {
     const arg = args[index];
@@ -69,8 +77,17 @@ export function parseServeArgs(args: readonly string[]): ServeParseResult {
       index += 1;
       continue;
     }
+    if (arg === "--max-cost" || arg === "--max-turns") {
+      const parsed = parseRunLimitValue(arg, args[index + 1]);
+      if ("error" in parsed) return { error: parsed.error };
+      if (arg === "--max-cost") limits.maxCostCny = parsed.value;
+      else limits.maxTurns = parsed.value;
+      index += 1;
+      continue;
+    }
     return { error: `未知的 mcp-serve 参数：${arg}` };
   }
 
-  return { request: { cwd, approval, waitMs } };
+  const hasLimits = limits.maxCostCny !== undefined || limits.maxTurns !== undefined;
+  return { request: { cwd, approval, waitMs, ...(hasLimits ? { limits } : {}) } };
 }

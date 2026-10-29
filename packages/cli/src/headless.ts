@@ -1,4 +1,6 @@
 import { isPermissionMode, type PermissionMode } from "@hajicli/core";
+import { parseRunLimitValue, type RunLimits } from "./run-limits.js";
+import { isServeCommand } from "./serve-args.js";
 
 /** `haji -p "prompt"` 无头单次执行模式的启动请求。 */
 export interface HeadlessRequest {
@@ -12,6 +14,8 @@ export interface HeadlessRequest {
    * `bash:<命令前缀>`（如 `bash:npm test`）或工具名（如 `write`）。只作用于本次进程，不落盘。
    */
   allow?: string[];
+  /** 硬上限（--max-cost / --max-turns）：超出后停止后续请求，退出码 1。 */
+  limits?: RunLimits;
 }
 
 export interface HeadlessParseResult {
@@ -54,9 +58,16 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
   let permissionMode: PermissionMode | undefined;
   let outputFormat: "text" | "json" | undefined;
   const allow: string[] = [];
+  const limits: RunLimits = {};
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (arg === "-p" || arg === "--print") {
+    if (arg === "--max-cost" || arg === "--max-turns") {
+      const parsed = parseRunLimitValue(arg, args[index + 1]);
+      if ("error" in parsed) return { error: parsed.error };
+      if (arg === "--max-cost") limits.maxCostCny = parsed.value;
+      else limits.maxTurns = parsed.value;
+      index += 1;
+    } else if (arg === "-p" || arg === "--print") {
       const value = args[index + 1];
       if (value === undefined || (value.startsWith("-") && value.length > 1)) {
         return { error: '-p/--print 需要一个 prompt 参数，例如：haji -p "解释这段代码"' };
@@ -94,8 +105,24 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
   if (prompt === undefined && allow.length) {
     return { error: "--allow 只在无头模式（-p）下生效；交互会话请在授权卡片里选择「永久允许」。" };
   }
+  const hasLimits = limits.maxCostCny !== undefined || limits.maxTurns !== undefined;
+  // mcp-serve 自己解析这两个参数（serve-args.ts）。
+  if (prompt === undefined && hasLimits && !isServeCommand(args)) {
+    return {
+      error:
+        "--max-cost / --max-turns 只在无头模式（-p）或 haji mcp-serve 下生效；交互会话的费用提醒用偏好 budget。",
+    };
+  }
   if (prompt === undefined) return {};
-  return { request: { prompt, permissionMode, outputFormat, ...(allow.length ? { allow } : {}) } };
+  return {
+    request: {
+      prompt,
+      permissionMode,
+      outputFormat,
+      ...(allow.length ? { allow } : {}),
+      ...(hasLimits ? { limits } : {}),
+    },
+  };
 }
 
 /**

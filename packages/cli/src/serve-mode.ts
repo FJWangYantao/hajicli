@@ -10,12 +10,15 @@ import type { CostSummary, CostTracker } from "./cost-tracker.js";
 import { startMcpStdio } from "./driver/index.js";
 import { DriverServer } from "./driver/server.js";
 import type { DriverPatch, DriverStatus, DriverTurnResult, DriverUsage } from "./driver/types.js";
+import { evaluateRunLimits } from "./run-limits.js";
 import type { ServeRequest } from "./serve-args.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 import { runAgentTurn, type TurnDeps, type TurnOutcome } from "./turn-runner.js";
 
 export interface ServeModeContext {
   serveRequest: ServeRequest;
+  /** 本进程启动以来的估算费用（--max-cost 口径）。 */
+  getRunCostCny(): number;
   turnDeps: TurnDeps;
   toolExecutor: SharedToolExecutor;
   costTracker: CostTracker;
@@ -154,6 +157,24 @@ export async function runServeMode(ctx: ServeModeContext): Promise<void> {
         lastOutcome = undefined;
         const startedAt = Date.now();
         const before = costTracker.getSummary();
+        // 费用上限是整个进程的闸：超了以后新回合直接拒绝，不再发任何请求。
+        const limits = ctx.serveRequest.limits;
+        const spent = ctx.getRunCostCny();
+        if (limits?.maxCostCny !== undefined && spent >= limits.maxCostCny) {
+          const hit = evaluateRunLimits(limits, { requestsThisTurn: 0, costCny: spent });
+          return {
+            ok: false,
+            text: "",
+            sessionId: sessionManager.getCurrentSession().id,
+            model: ctx.getSelectedModel(),
+            permissionMode: ctx.getPermissionMode(),
+            toolCalls: 0,
+            durationMs: 0,
+            usage: toDriverUsage(costTracker.getSummary(), before),
+            stopReason: "max_cost",
+            error: hit?.message ?? "已达费用上限。",
+          } satisfies DriverTurnResult;
+        }
         await runAgentTurn(driverTurnDeps, {
           forwardedPrompt: text,
           commandInput: text,
@@ -161,7 +182,7 @@ export async function runServeMode(ctx: ServeModeContext): Promise<void> {
           promptDisplayStartOffset: ctx.getChatLength(),
         });
         // 回合没走到收尾（例如抛错前就退出）时没有 outcome，按失败上报。
-        const outcome = lastOutcome ?? { aborted: false, failed: true, toolCalls: 0 };
+        const outcome: TurnOutcome = lastOutcome ?? { aborted: false, failed: true, toolCalls: 0 };
         return {
           ok: !outcome.aborted && !outcome.failed,
           text: lastAssistantText(turnDeps.getMessages()),
@@ -171,6 +192,15 @@ export async function runServeMode(ctx: ServeModeContext): Promise<void> {
           toolCalls: outcome.toolCalls,
           durationMs: Date.now() - startedAt,
           usage: toDriverUsage(costTracker.getSummary(), before),
+          ...(outcome.stoppedBy
+            ? {
+                stopReason: outcome.stoppedBy,
+                error:
+                  outcome.stoppedBy === "max_cost"
+                    ? "已达 --max-cost 费用上限，回合已停止；之后的 haji_send 会被拒绝。"
+                    : "已达 --max-turns 请求轮数上限，回合已停止。",
+              }
+            : {}),
         } satisfies DriverTurnResult;
       },
       status: (): DriverStatus => {

@@ -219,12 +219,14 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 把 haji 变成常驻的**驱动进程**：挂在 stdio 上按 MCP 协议对外提供「派活 + 跟进 + 调整」的工具面，供外部 Agent（Hermes 等）或任意 MCP 客户端调用。与上一节的「MCP 外部工具」方向相反——那里是 haji 调别人的工具，这里是别人把 haji 当工具用。
 
 ```bash
-haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
+haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>] [--max-cost <元>] [--max-turns <n>]
 ```
 
 - `--cwd`：切换工作目录（默认沿用启动目录，含自动 worktree 的结果）。
 - `--approval ask|auto`：需要授权时的策略。`ask`（默认）把选择卡发成 `selection_request` 事件挂起，等客户端调 `haji_approve`，5 分钟没回复**按拒绝处理**（事件里的 `default` 就是兜底值）；`auto` 只替客户端放行普通授权（仅本次），受保护目标（授权配置、凭据等）、加工作区根、临时提权一律拒绝，Plan 审批批准后切到 [默认] 而不是 [自动]。
 - `--wait-ms`：单次 `haji_send` 的默认等待时长，默认 25000，上限 600000。
+- `--max-cost` / `--max-turns`：硬上限，口径同无头模式（见「安全边界」）。费用上限按整个进程累计，
+  超出后当前回合停止，之后的 `haji_send` 直接返回 `ok: false`、`stopReason: "max_cost"`，不再发请求。
 
 工具面（MCP `tools/list`）：
 
@@ -274,6 +276,10 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
 - 无头模式（`haji -p`）回合成功退出码为 0；模型请求失败或回合被中止时退出码为 1（`--output-format json` 的 `ok` 同为 `false`），CI 可直接据此判失败。
 - 无头模式没有人可确认，越界调用会被拒绝，除非命中用户级路径规则、命令行 `--allow` 预放行或设置了上面的环境变量。
   无头 / CI 场景用 `--allow "bash:npm test"`（键形态与 `permissions.json` 的 `key` 一致，可重复）把已知安全的验证命令预先放行，只对本次进程生效、不写盘。
+- 无头模式的硬上限：`--max-cost <元>` 按本次进程的估算费用（`-c` 续写时不含历史花费，含子代理、压缩等旁路调用），
+  `--max-turns <n>` 限制回合内向模型请求的次数。每次请求前检查，命中即停、退出码 1，JSON 输出带
+  `stopReason: "max_cost" | "max_turns"`。正在跑的请求与工具批不会被打断，所以最多超出一次请求的费用；
+  模型没有单价时费用按 0 计，会在 stderr 提示。
 
 路径规则写在用户级 `~/.haji/permissions.json` 的 `paths` 段，`deny` 优先于 `allow`；项目级文件的 `paths` 段不会生效，避免克隆仓库自带扩权配置：
 

@@ -271,6 +271,7 @@ export class DriverServer {
         sessionId: result.sessionId,
         ...(result.usage ? { usage: result.usage } : {}),
         ...(result.error ? { error: result.error } : {}),
+        ...(result.stopReason ? { stopReason: result.stopReason } : {}),
       });
       return result;
     };

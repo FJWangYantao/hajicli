@@ -43,6 +43,7 @@ import {
   shouldShowToolThinkingSummary,
 } from "./markdown-renderer.js";
 import { FoldStatsCollector } from "./process-fold.js";
+import type { RunLimitHit, RunLimitKind } from "./run-limits.js";
 import { appendSteering, skipSteeredCalls } from "./steering.js";
 import {
   type FoldGroupHandle,
@@ -90,6 +91,8 @@ export interface TurnOutcome {
   aborted: boolean;
   failed: boolean;
   toolCalls: number;
+  /** 被 --max-cost / --max-turns 硬上限叫停（同时 failed=true）。 */
+  stoppedBy?: RunLimitKind;
 }
 
 export interface TurnDeps {
@@ -174,6 +177,11 @@ export interface TurnDeps {
    * 否则 system 消息会夹在 tool_calls 与结果之间，破坏配对。
    */
   drainToolNotices?(): string[];
+  /**
+   * 无人值守硬上限（-p / mcp-serve 的 --max-cost、--max-turns）：每次请求前调用，
+   * 命中则停止本回合。requestsThisTurn 是本回合已发出的请求数。
+   */
+  checkRunLimit?(requestsThisTurn: number): RunLimitHit | undefined;
   /** 回合小结数据源：自某时间戳起会话拥有的工作区改动（快照日志口径）。 */
   listOwnedChanges?(sinceMs: number): Array<{
     path: string;
@@ -467,7 +475,17 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     deps.updateStatusUI();
     return true;
   };
+  let requestsThisTurn = 0;
+  let stoppedBy: RunLimitKind | undefined;
   while (keepCalling) {
+    const limitHit = deps.checkRunLimit?.(requestsThisTurn);
+    if (limitHit) {
+      stoppedBy = limitHit.kind;
+      turnFailed = true;
+      ui.writeLine(colors.warnLine(limitHit.message));
+      break;
+    }
+    requestsThisTurn += 1;
     if (applySteering()) {
       await sessionManager.flush();
       if (sessionManager.hasPendingWrites()) {
@@ -1315,7 +1333,12 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   sessionManager.saveCurrentSession(messages);
   await sessionManager.flush();
   if (sessionManager.hasPendingWrites()) turnFailed = true;
-  deps.onTurnSettled?.({ aborted: isTurnAborted, failed: turnFailed, toolCalls: turnToolCalls });
+  deps.onTurnSettled?.({
+    aborted: isTurnAborted,
+    failed: turnFailed,
+    toolCalls: turnToolCalls,
+    ...(stoppedBy ? { stoppedBy } : {}),
+  });
   // 终端侧栏状态：正常收尾报 done（Kero 标未读 Done），失败报 error，中止回 idle。
   if (isTurnAborted) {
     agentStatus.idle("已中止");

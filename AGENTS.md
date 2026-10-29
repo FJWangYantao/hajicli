@@ -202,6 +202,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - **硬约束**：`startMcpStdio` 之前就产生的输出必须先缓冲到 `serveOutputBuffer`，等 `driverServerRef` 就绪后补发成 `notice` 事件——否则启动期的报错会直接写进 stdout 打断协议帧。stdout 只允许出现协议回包。
 - **授权通道**：`ask` 模式下选择卡不走终端，改由 `DriverServer.requestSelection()` 发 `selection_request` 并挂起，等 `haji_approve` 或超时回落默认项；`auto` 直接取默认选项。新增「需要用户决策」的入口必须同时处理这两条通道。
 - **历史坑**：曾有一次提交（`b5fd389`）把 `index.ts` 接到从未提交的 `driver/`、`serve-args` 上，导致 tsc 与全部测试无法运行，只能用 `dee4b18` 摘掉接线恢复构建。改动这条链路时，源码、`index.ts` 接线、测试必须在同一提交里齐活，别让 master 依赖未提交文件。
+- **硬上限**（`run-limits.ts`）：`-p` 与 `mcp-serve` 都认 `--max-cost` / `--max-turns`。检查点只有一个：
+  turn-runner 每次请求前调 `deps.checkRunLimit(requestsThisTurn)`，命中则 `failed=true` + `stoppedBy`；
+  费用按 `getRunCostCny()`（进入主循环前取基线，`-c` 续写不算历史）。驱动模式费用超限后 `runTurn`
+  直接拒绝、不发请求。测试：`run-limits.test.mjs`（假模型持续要工具 + 上报大额 usage）。
 - `haji_send` 回 `running` 时 `lastSeq` 是**回合开始前**的游标（不是「现在」）：本回合可能在回包前就发出了
   `selection_request`，给当前游标会让客户端 `haji_wait` 错过那张卡、干等到超时拒绝。
 - 外部接入文档与最小客户端在 `examples/`（`README.md` + `mcp-serve-client.mjs`），e2e 测试会真跑这个示例，
