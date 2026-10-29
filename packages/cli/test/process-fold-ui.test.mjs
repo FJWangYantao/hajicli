@@ -220,7 +220,7 @@ test("toggling while scrolled up keeps the summary row in place", () => {
     assert.match(after.join("\n"), /read src\/auth\/token\.ts/, "the segment is now expanded");
     assert.ok(
       after[summaryIndex].includes("● 读取"),
-      "the clicked summary row did not jump: " + JSON.stringify(after[summaryIndex]),
+      `the clicked summary row did not jump: ${JSON.stringify(after[summaryIndex])}`,
     );
   });
 });

@@ -231,7 +231,7 @@ if (process.argv.includes("--text")) {
           " ===",
       );
       for (const row of rows) {
-        asText.push("|" + stripAnsi(row).padEnd(sidebarWidth - 1) + "|");
+        asText.push(`|${stripAnsi(row).padEnd(sidebarWidth - 1)}|`);
       }
       asText.push("");
     }
@@ -248,4 +248,4 @@ const outPath =
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, buildHtml(), "utf8");
 // 只打印路径：调用方可以直接把它喂给 scripts/shot.mjs。
-process.stdout.write(outPath + "\n");
+process.stdout.write(`${outPath}\n`);
