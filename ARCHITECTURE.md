@@ -43,6 +43,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 ### TUI 与渲染
 
 - `terminal-input.ts`：`TerminalUI`——全屏布局（对话区 / 状态栏 / 输入框）、readInput / readSelection / 实时区域（setLiveTail）。输入编辑、鼠标选区与整帧渲染共享私有状态，保持为单一类；面板类构建逻辑已抽为纯函数。
+- `inline-image-sync.ts`：内联图 placement 同步层（`InlineImageSync`）与 `/view` 全屏看图帧（`renderImageOverlayFrame`）。原先挂在 `TerminalUI` 上的三项节流状态（上次放置时刻 / 是否有被抑制的微调 / 收尾定时器）和 kitty 上传、删除、裁剪重放逻辑搬到这里，宿主只注入 `scheduleRender` 与 `write`；纯规划算法仍在 `terminal-image.ts`（`diffInlinePlacements` / `clipInlinePlacement`）。
 - `terminal-panels.ts`：状态栏 / 活动状态行 / 任务面板的纯构建函数（与 `agent-panel.ts` 同模式），输入标量状态输出 ANSI 行，可用固定宽度直接单测。活动行放在对话区尾部（空一行跟在最新内容后，满屏时固定在对话区底部，不进 `chatContent`），底栏状态栏常驻；细节文字用「解码」动效（`buildDecodedText`）循环还原，停滞 / 等授权 / 终止时静止。minimal 档或对话区被多行输入挤到放不下时，活动行退回底栏顶替状态栏。
 - `native-terminal-engine.ts`：加载 Rust `.node` 模块（换行 / ANSI 文档排版），失败回退纯 TS；`/perf` 可看当前引擎。
 - `markdown-renderer.ts`：流式 Markdown 渲染 + 节流；`theme.ts`：深浅两套调色板 + 自定义色对比度兜底（WCAG AA）。

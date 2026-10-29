@@ -32,17 +32,18 @@ function createTerminalUI() {
   return ui;
 }
 
+/** 收尾帧定时器随同步层搬到了 inline-image-sync.ts，测试直接改它的内部状态。 */
 function stopScheduledRender(ui) {
   if (ui.streamRenderTimer) clearTimeout(ui.streamRenderTimer);
-  if (ui.inlineImageSettleTimer) clearTimeout(ui.inlineImageSettleTimer);
+  if (ui.inlineImages.settleTimer) clearTimeout(ui.inlineImages.settleTimer);
   ui.streamRenderTimer = null;
-  ui.inlineImageSettleTimer = null;
+  ui.inlineImages.settleTimer = null;
   ui.renderScheduled = false;
 }
 
 /** 滚动微调节流以真实时钟计时：把上次放置时间拨回过去，模拟间隔已过。 */
 function rewindNudgeWindow(ui) {
-  ui.inlineImageLastPlaceAt -= 1_000;
+  ui.inlineImages.lastPlaceAt -= 1_000;
 }
 
 function withEnv(overrides, run) {
@@ -279,15 +280,15 @@ test("同步层：滚动微调节流，收尾帧把最终位置对齐", () => {
     const nudged = ui.syncInlineImages({ ...visible, visibleStart: 2, visibleEnd: 52 });
     assert.equal(nudged, "");
     assert.equal(segment.image.placed.row, 8, "抑制期间不更新已放置状态");
-    assert.ok(ui.inlineImageSettleTimer, "应安排收尾帧");
-    assert.equal(ui.inlineImageNudgePending, true);
+    assert.ok(ui.inlineImages.settleTimer, "应安排收尾帧");
+    assert.equal(ui.inlineImages.nudgePending, true);
 
     // 越过间隔后：一条 a=p 对齐到精确位置
     rewindNudgeWindow(ui);
     const snapped = ui.syncInlineImages({ ...visible, visibleStart: 2, visibleEnd: 52 });
     assert.match(snapped, /a=p/);
     assert.equal(segment.image.placed.row, 6);
-    assert.equal(ui.inlineImageNudgePending, false);
+    assert.equal(ui.inlineImages.nudgePending, false);
     stopScheduledRender(ui);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
