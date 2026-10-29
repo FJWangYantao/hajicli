@@ -18,6 +18,7 @@ import { formatOffPeakWindow, type OffPeakPricing, parseOffPeakWindow } from "@h
 import { loadPreference, saveUserPreference } from "./cli-runtime.js";
 import type { CostTracker } from "./cost-tracker.js";
 import {
+  channelPricingKey,
   describeCurrentTier,
   formatPricingLabel,
   parsePriceInput,
@@ -33,7 +34,7 @@ import {
   resolveOfficialPricingUrls,
   runPricingAgent,
 } from "./pricing-agent.js";
-import type { ProviderConfig } from "./provider-config.js";
+import { isBuiltinProvider, type ProviderConfig } from "./provider-config.js";
 import { findProviderForModel } from "./provider-models.js";
 import type { TerminalUI } from "./terminal-input.js";
 import { colors } from "./theme.js";
@@ -106,6 +107,16 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
   };
 
   /** 把单价写进 ~/.haji/pricing.json，并按新单价立刻重算本会话已发生的调用。 */
+  /**
+   * 单价写盘键：内置 provider 用模型名，自定义渠道用 `<provider>/<model>`。
+   * 同名模型可能同时由官方与中转渠道提供，只按模型名落盘会把两个渠道的价串在一起。
+   */
+  const pricingStorageKey = (model: string): string => {
+    const providerName = ctx.getCurrentProviderName();
+    if (!providerName || isBuiltinProvider(providerName)) return model;
+    return channelPricingKey(model, providerName) ?? model;
+  };
+
   const savePricingFor = (
     model: string,
     inputPerMTokens: number,
@@ -114,7 +125,8 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
     cachedInputPerMTokens?: number,
     offPeak?: OffPeakPricing,
   ): boolean => {
-    const saved = savePricingOverride(model, {
+    const storageKey = pricingStorageKey(model);
+    const saved = savePricingOverride(storageKey, {
       inputPerMTokens,
       outputPerMTokens,
       source,
@@ -126,7 +138,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
       return false;
     }
     // 有单价了，之前「查不到」的记录就没意义了。
-    recordPricingAttempt(model, undefined);
+    recordPricingAttempt(storageKey, undefined);
     ctx.publishCostInfo();
     const cachedNote =
       cachedInputPerMTokens !== undefined ? ` · 缓存命中 ¥${cachedInputPerMTokens}` : "";
@@ -135,7 +147,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
       : "";
     ctx.ui.writeLine(
       colors.okLine(
-        `${model} 单价已保存：输入 ¥${inputPerMTokens} / 输出 ¥${outputPerMTokens}${cachedNote}${offPeakNote} 每百万 token（~/.haji/pricing.json）。`,
+        `${storageKey} 单价已保存：输入 ¥${inputPerMTokens} / 输出 ¥${outputPerMTokens}${cachedNote}${offPeakNote} 每百万 token（~/.haji/pricing.json）。`,
       ),
     );
     return true;
@@ -336,7 +348,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
 
   /** 手动录入单价：输入/输出各问一次，两个都是正数才写入。 */
   const configurePricingManually = async (model: string): Promise<void> => {
-    const current = resolveModelPricing(model);
+    const current = resolveModelPricing(model, ctx.getCurrentProviderName());
     const currentHint = current ? `（当前 ${formatPricingLabel(current)}）` : "";
     try {
       const inputText = await readPricingLine(
@@ -470,7 +482,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
         {
           title: "配置哪个模型的单价？",
           items: candidates.map((model) => {
-            const origin = pricingOrigin(model);
+            const origin = pricingOrigin(model, ctx.getCurrentProviderName());
             return {
               value: model,
               label: model,
@@ -486,8 +498,8 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
         "restore",
       );
       const model = pickedModel.value;
-      const origin = pricingOrigin(model);
-      const pricing = resolveModelPricing(model);
+      const origin = pricingOrigin(model, ctx.getCurrentProviderName());
+      const pricing = resolveModelPricing(model, ctx.getCurrentProviderName());
       const originLabel =
         origin === "none" ? "未定价" : origin === "builtin" ? "内置单价" : "本地覆盖单价";
       const pickedAction = await ctx.readSelectionSafely(

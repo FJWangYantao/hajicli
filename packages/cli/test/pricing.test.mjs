@@ -18,6 +18,7 @@ import {
   estimateRequestCostCny,
 } from "../dist/cost-tracker.js";
 import {
+  channelPricingKey,
   describeCurrentTier,
   formatPricingLabel,
   loadPricingOverrides,
@@ -120,6 +121,40 @@ test("解析单价时内置注册表优先，其次才是本地覆盖", () => {
     assert.equal(resolved?.outputPerMTokens, 1.6);
     assert.equal(resolved?.currency, "CNY");
     assert.match(formatPricingLabel(resolved), /¥0\.4 \/ ¥1\.6/);
+  });
+});
+
+test("渠道单价 provider/model 压过内置价，模型覆盖仍然次之", () => {
+  withTempPricing(() => {
+    // 同名模型走 CN 中转：渠道单价必须生效，否则会一直按官方价估算
+    savePricingOverride("cndeepseek/deepseek-v4-flash", {
+      inputPerMTokens: 0.35,
+      outputPerMTokens: 1.4,
+    });
+    assert.equal(
+      channelPricingKey("deepseek-v4-flash", "cndeepseek"),
+      "cndeepseek/deepseek-v4-flash",
+    );
+    assert.equal(
+      resolveModelPricing("deepseek-v4-flash", "cndeepseek")?.inputPerMTokens,
+      0.35,
+      "渠道单价压过内置价",
+    );
+    assert.equal(pricingOrigin("deepseek-v4-flash", "cndeepseek"), "override");
+    // 未配置渠道价的渠道仍用内置价
+    assert.equal(resolveModelPricing("deepseek-v4-flash", "globaldeepseek")?.inputPerMTokens, 2);
+    assert.equal(pricingOrigin("deepseek-v4-flash", "globaldeepseek"), "builtin");
+    // 不传 provider 时行为与原来一致（内置优先，其次模型覆盖）
+    assert.equal(resolveModelPricing("deepseek-v4-flash")?.inputPerMTokens, 2);
+
+    // 无内置价的模型：渠道键与模型键各自独立
+    savePricingOverride("myproxy/custom-model", { inputPerMTokens: 1, outputPerMTokens: 2 });
+    savePricingOverride("custom-model", { inputPerMTokens: 9, outputPerMTokens: 18 });
+    assert.equal(resolveModelPricing("custom-model", "myproxy")?.inputPerMTokens, 1);
+    assert.equal(resolveModelPricing("custom-model", "otherproxy")?.inputPerMTokens, 9);
+    // 空 provider / 空模型不给渠道键
+    assert.equal(channelPricingKey("m", "  "), undefined);
+    assert.equal(channelPricingKey("", "p"), undefined);
   });
 });
 

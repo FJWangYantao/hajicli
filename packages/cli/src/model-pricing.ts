@@ -190,14 +190,19 @@ export function removePricingOverride(model: string): boolean {
 }
 
 /**
- * 解析模型单价：内置注册表优先，其次本地覆盖表。
- * 返回 undefined 表示这个模型仍然没有可用单价（费用只能统计 tokens）。
+ * 渠道单价键：`<provider>/<model>`。
+ *
+ * 同一个模型名可能由多个渠道提供（官方直连、CN 中转、自建代理），单价并不相同。
+ * 因此允许按「渠道 + 模型」单独定价，见 `resolveModelPricing` 的优先级。
  */
-export function resolveModelPricing(model: string): ModelPricing | undefined {
-  const builtin = getModelPricing(model);
-  if (builtin) return builtin;
-  const entry = loadPricingOverrides()[model];
-  if (!entry) return undefined;
+export function channelPricingKey(model: string, provider?: string): string | undefined {
+  const providerName = provider?.trim();
+  const modelName = model.trim();
+  if (!providerName || !modelName) return undefined;
+  return `${providerName}/${modelName}`;
+}
+
+function toModelPricing(entry: PricingOverrideEntry): ModelPricing {
   return {
     inputPerMTokens: entry.inputPerMTokens,
     outputPerMTokens: entry.outputPerMTokens,
@@ -207,6 +212,27 @@ export function resolveModelPricing(model: string): ModelPricing | undefined {
       : {}),
     ...(entry.offPeak ? { offPeak: entry.offPeak } : {}),
   };
+}
+
+/**
+ * 解析模型单价，优先级：
+ * 1. 渠道覆盖 `<provider>/<model>`：渠道单价是用户对该渠道的明确声明，必须压过内置价，
+ *    否则「同一模型走 CN 中转」永远算成官方价（这正是费用归属出错的场景）；
+ * 2. 内置注册表：官方模型价，发布时校准过，不被本地文件悄悄改掉；
+ * 3. 模型覆盖 `<model>`：自定义 provider / `~/.haji/models.json` 里登记的模型补价。
+ *
+ * 返回 undefined 表示这个模型仍然没有可用单价（费用只能统计 tokens）。
+ */
+export function resolveModelPricing(model: string, provider?: string): ModelPricing | undefined {
+  const overrides = loadPricingOverrides();
+  const channelKey = channelPricingKey(model, provider);
+  const channelEntry = channelKey ? overrides[channelKey] : undefined;
+  if (channelEntry) return toModelPricing(channelEntry);
+  const builtin = getModelPricing(model);
+  if (builtin) return builtin;
+  const entry = overrides[model];
+  if (!entry) return undefined;
+  return toModelPricing(entry);
 }
 
 /**
@@ -227,17 +253,24 @@ export function formatPricingLabel(pricing: ModelPricing): string {
 }
 
 /** 现在这个时刻该模型走峰价还是谷价（详情页与手动配置回显用）。 */
-export function describeCurrentTier(model: string, now = Date.now()): "peak" | "offPeak" | "flat" {
-  const pricing = resolveModelPricing(model);
+export function describeCurrentTier(
+  model: string,
+  now = Date.now(),
+  provider?: string,
+): "peak" | "offPeak" | "flat" {
+  const pricing = resolveModelPricing(model, provider);
   if (!pricing) return "flat";
   if (!pricing.offPeak) return "flat";
   return isWithinOffPeak(now, pricing.offPeak.window) ? "offPeak" : "peak";
 }
 
-/** 该模型的单价来自哪里：内置注册表 / 本地覆盖 / 无。 */
-export function pricingOrigin(model: string): "builtin" | "override" | "none" {
+/** 该模型的单价来自哪里：内置注册表 / 本地覆盖（含渠道覆盖）/ 无。 */
+export function pricingOrigin(model: string, provider?: string): "builtin" | "override" | "none" {
+  const overrides = loadPricingOverrides();
+  const channelKey = channelPricingKey(model, provider);
+  if (channelKey && channelKey in overrides) return "override";
   if (getModelPricing(model)) return "builtin";
-  return model in loadPricingOverrides() ? "override" : "none";
+  return model in overrides ? "override" : "none";
 }
 
 /** 手动输入的单价格式：接受 "2"、"2.5"、"¥2" 这类写法。 */

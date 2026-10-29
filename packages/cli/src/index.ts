@@ -739,7 +739,7 @@ async function main() {
   const permissionEngine = new PermissionEngine();
   // 会话级费用记账：主线回合的 onUsage 按注册表单价估算（/cost 查看）。
   // 会话级费用记账：单价来自内置注册表 + 本地覆盖表（/cost 查看，费用栏可点进去配置）。
-  const costTracker = new CostTracker((model) => resolveModelPricing(model));
+  const costTracker = new CostTracker((model) => resolveModelPricing(model, currentProviderName));
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   // 无头模式的 --allow 键并入同一视图（只在本进程生效，不落盘）：CI / 评测里没有交互确认的机会，
