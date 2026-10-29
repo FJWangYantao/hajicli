@@ -402,7 +402,8 @@ test("CLI exposes deterministic Skill commands and preserves tool-call pairing",
   // /skill 枢纽已取消：/skills 是管理入口，/skill <名称> 仍保留为直连调用。
   assert.doesNotMatch(surface, /command: "\/skill",$/);
   assert.match(source, /if \(command === "skill"\)/);
-  assert.match(source, /parts\[1\]\?\.toLowerCase\(\) === "validate"/);
+  // /skills validate 已搬到 extension-commands.ts（行为测试见 extension-commands.test.mjs）。
+  assert.match(source, /handleSkillsCommand\(parts\.slice\(1\)/);
   assert.match(source, /new ListSkillResourcesTool\(skillRegistry\)/);
   assert.match(source, /new ReadSkillResourceTool\(skillRegistry\)/);
   assert.match(source, /if \(!entry\) \{\s*ui\.writeLine\(colors\.failLine\(`未找到 Skill/);

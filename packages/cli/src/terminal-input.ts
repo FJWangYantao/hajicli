@@ -17,6 +17,13 @@ import {
   removeFileMention,
 } from "./file-mentions.js";
 import {
+  composeScreenRows,
+  liveTailSeparator,
+  overlayRightCard,
+  placeCard,
+  sidebarHitBoxes,
+} from "./frame-compose.js";
+import {
   type ImageOverlayView,
   type InlineImageFrame,
   type InlineImageSegmentState,
@@ -63,6 +70,14 @@ import {
   renderSegmentText,
   splitBlankEdges,
 } from "./process-fold.js";
+import {
+  applySelectionKey,
+  buildSelectionRows,
+  filterSelectionItems,
+  type SelectionPickerState,
+  type TerminalSelectionOptions,
+  type TerminalSelectionResult,
+} from "./selection-picker.js";
 import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
 import {
   buildStartupLauncher,
@@ -92,7 +107,7 @@ import {
   isRealCtrlT,
   isRealCtrlU,
 } from "./terminal-keys.js";
-import { formatMenuRows, windowMenuRows } from "./terminal-menu.js";
+import { windowMenuRows } from "./terminal-menu.js";
 import {
   type ActivityBadge,
   buildActivityRow,
@@ -141,7 +156,6 @@ import { resolveHintRowBudget, resolveTuiLayout, type TuiStatusDetail } from "./
 import {
   buildContextCard,
   buildSidebarFrame,
-  composeSidebarRow,
   resolveSidebarWidth,
   SIDEBAR_GAP_WIDTH,
   type SidebarGoalState,
@@ -236,44 +250,12 @@ export interface SlashCommand {
   immediate?: boolean;
 }
 
-export interface TerminalSelectionItem {
-  value: string;
-  label: string;
-  description?: string;
-  /** 单键直选（不区分大小写），例如授权卡片的 y / a / n。 */
-  hotkey?: string;
-}
-
-export interface TerminalSelectionAxis {
-  label: string;
-  items: readonly TerminalSelectionItem[];
-  selectedValue?: string;
-}
-
-export interface TerminalSelectionOptions {
-  /** 输入关键词筛选选项，仅供显式开启的列表使用。 */
-  searchable?: boolean;
-  title: string;
-  items: readonly TerminalSelectionItem[];
-  selectedValue?: string;
-  secondary?: TerminalSelectionAxis;
-  /** 标题与选项之间的预览行（已着色），以左侧竖线成卡片显示，按宽度与高度裁剪。 */
-  preview?: readonly string[];
-  /** 覆盖标题右侧的默认按键提示。 */
-  hint?: string;
-  /** 选择器出现后的这段时间内忽略确认键，防止提前敲下的回车误确认。 */
-  confirmDelayMs?: number;
-}
-
-export interface TerminalSelectionResult {
-  value: string;
-  secondaryValue?: string;
-  /**
-   * 外部决策方随选择给出的说明（仅 mcp-serve 驱动模式，来自 `haji_approve.reason`）。
-   * 有值（含空串）表示说明已经收齐，调用方不能再开输入框——驱动模式的 stdin 是协议通道。
-   */
-  reason?: string;
-}
+export type {
+  TerminalSelectionAxis,
+  TerminalSelectionItem,
+  TerminalSelectionOptions,
+  TerminalSelectionResult,
+} from "./selection-picker.js";
 
 interface ActiveInput {
   prompt: string;
@@ -291,12 +273,7 @@ interface ActiveInput {
   reject: (error: Error) => void;
 }
 
-interface ActiveSelection {
-  query?: string;
-  options: TerminalSelectionOptions;
-  openedAt?: number;
-  selectedIndex: number;
-  secondaryIndex: number;
+interface ActiveSelection extends SelectionPickerState {
   resolve: (value: TerminalSelectionResult) => void;
   reject: (error: Error) => void;
 }
@@ -3699,95 +3676,8 @@ export class TerminalUI {
     activeInput.commandNavigated = false;
   }
 
-  private selectionItems(selection: ActiveSelection): readonly TerminalSelectionItem[] {
-    const query = selection.options.searchable ? selection.query?.trim().toLowerCase() : "";
-    if (!query) return selection.options.items;
-    return selection.options.items.filter((item) =>
-      `${item.label} ${item.value} ${item.description ?? ""}`.toLowerCase().includes(query),
-    );
-  }
-
   private getSelectionRows(width: number, maxRows: number): string[] {
-    const activeSelection = this.activeSelection;
-    if (!activeSelection || maxRows <= 0) {
-      return [];
-    }
-
-    const { options } = activeSelection;
-    const items = this.selectionItems(activeSelection);
-    const navigation =
-      options.hint ??
-      (options.secondary
-        ? `↑↓ 选择 · ←→ ${options.secondary.label} · Enter 确认 · Esc 取消`
-        : "↑↓ 选择 · Enter 确认 · Esc 取消");
-    const rows = [
-      `${SEQ.bold}${truncateText(options.title, width)}${SEQ.reset}  ${SEQ.muted}${truncateText(navigation, Math.max(1, width - terminalWidth(options.title) - 2))}${SEQ.reset}`,
-    ];
-
-    if (options.secondary) {
-      const selectedSecondary = options.secondary.items[activeSelection.secondaryIndex];
-      const effortLabels = options.secondary.items.map((item, index) =>
-        index === activeSelection.secondaryIndex ? `‹${item.label}›` : item.label,
-      );
-      const fullSecondaryText = `${options.secondary.label}  ${effortLabels.join("  ")}`;
-      if (terminalWidth(fullSecondaryText) <= width) {
-        const styledEfforts = options.secondary.items.map((item, index) =>
-          index === activeSelection.secondaryIndex
-            ? `${SEQ.boldAccent}‹${item.label}›${SEQ.reset}`
-            : `${SEQ.muted}${item.label}${SEQ.reset}`,
-        );
-        rows.push(
-          `${SEQ.muted}${options.secondary.label}${SEQ.reset}  ${styledEfforts.join("  ")}`,
-        );
-      } else {
-        const secondaryText = `${options.secondary.label}  ‹ ${selectedSecondary.label} ›`;
-        rows.push(`${SEQ.boldAccent}${truncateText(secondaryText, width)}${SEQ.reset}`);
-      }
-    }
-
-    if (options.searchable) {
-      rows.push(
-        `${SEQ.muted}${truncateText(`搜索：${activeSelection.query || "输入关键词"} · ${items.length}/${options.items.length} · 退格删除`, width)}${SEQ.reset}`,
-      );
-      if (items.length === 0) rows.push(`${SEQ.muted}没有匹配的选项${SEQ.reset}`);
-    }
-
-    if (options.preview?.length) {
-      // 至少给选项留出三行（或全部选项），其余高度给预览。
-      const reservedItemRows = Math.min(items.length, 3);
-      const previewBudget = Math.max(0, maxRows - rows.length - reservedItemRows);
-      const bar = `${SEQ.muted}│${SEQ.reset} `;
-      const lineWidth = Math.max(1, width - 2);
-      const preview = options.preview;
-      const fits = preview.length <= previewBudget;
-      const shown = fits ? preview : preview.slice(0, Math.max(0, previewBudget - 1));
-      for (const line of shown) rows.push(`${bar}${truncateAnsiText(line, lineWidth)}`);
-      if (!fits && previewBudget > 0) {
-        rows.push(
-          `${bar}${SEQ.muted}${truncateText(`… 另有 ${preview.length - shown.length} 行（窗口高度不足）`, lineWidth)}${SEQ.reset}`,
-        );
-      }
-    }
-
-    const availableItemRows = Math.max(1, maxRows - rows.length);
-    const firstVisibleIndex = Math.min(
-      Math.max(0, activeSelection.selectedIndex - availableItemRows + 1),
-      Math.max(0, items.length - availableItemRows),
-    );
-    const visibleItems = items.slice(firstVisibleIndex, firstVisibleIndex + availableItemRows);
-
-    rows.push(
-      ...formatMenuRows(
-        visibleItems.map((item) => ({
-          label: `${item.label}${item.hotkey ? ` (${item.hotkey})` : ""}`,
-          description: item.description,
-        })),
-        activeSelection.selectedIndex - firstVisibleIndex,
-        width,
-      ),
-    );
-
-    return rows.slice(0, maxRows);
+    return this.activeSelection ? buildSelectionRows(this.activeSelection, width, maxRows) : [];
   }
 
   private scrollChat(rows: number, render = true, preservePendingWheel = false): number {
@@ -4315,6 +4205,203 @@ export class TerminalUI {
     return { inputBlock, inputLayout, inputCursorOffset };
   }
 
+  /** 顶部区块：标题行（启动页全量 / 常驻精简）+ 无侧栏时的任务与子代理面板。 */
+  private buildTopRows(
+    layout: ReturnType<typeof resolveTuiLayout>,
+    width: number,
+    height: number,
+    leftAreaWidth: number,
+    sidebarVisible: boolean,
+  ): string[] {
+    const persistentHeader = this.sessionTitle
+      ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, leftAreaWidth - 7))}${SEQ.reset}`
+      : this.options.compactHeader;
+    const header =
+      layout.headerMode === "hidden"
+        ? ""
+        : this.startupHeaderVisible
+          ? layout.headerMode === "full"
+            ? this.options.header
+            : persistentHeader
+          : `${" ".repeat(layout.chatPadding)}${persistentHeader}`;
+    const headerInfo =
+      this.startupHeaderVisible && layout.headerMode === "full" ? this.headerInfo : [];
+    const headerRows = header
+      ? [
+          ...wrapAnsi(header, leftAreaWidth),
+          ...(headerInfo.length
+            ? ["", ...headerInfo.flatMap((l) => wrapAnsi(l, leftAreaWidth))]
+            : []),
+        ]
+      : [];
+    // 侧栏出现时任务与子代理面板搬进侧栏，避免与对话区上方重复占用高度。
+    if (sidebarVisible) return headerRows;
+    const panelBudget = Math.max(0, Math.min(layout.panelRows, height - headerRows.length - 4));
+    const taskRows = this.buildTaskPanel(
+      width,
+      this.taskPanelExpanded ? panelBudget : Math.min(5, panelBudget),
+    );
+    const agentRows = this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
+    return [...headerRows, ...taskRows, ...agentRows];
+  }
+
+  /**
+   * 对话区视口：折行（封口区 + 尾部）、滚动锚点与滚轮补偿、可见窗口与选区跟随。
+   * 会更新滚动相关状态与 chatViewport（鼠标命中的坐标源），返回本帧可见的已着色行。
+   */
+  private layoutChatViewport(args: {
+    contentWithStatus: string;
+    chatWidth: number;
+    chatPadding: number;
+    viewportHeight: number;
+    /** 对话区第一行的屏幕行号（1 基）。 */
+    screenTop: number;
+  }): { visibleChat: string[]; visibleStart: number; visibleEnd: number } {
+    const { contentWithStatus, chatWidth, chatPadding, viewportHeight } = args;
+    const contentChanged =
+      contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
+    const previousWrappedCount = this.cachedWrappedChat.length;
+    const tailRows = this.getWrappedChat(contentWithStatus, chatWidth);
+    // 只有尾部会在底部增长；已封口区的行数变化一律交给滚动锚点处理。
+    const tailRowDelta = tailRows.length - previousWrappedCount;
+    const sealedRows = this.getSealedRows(chatWidth);
+    const wrappedChat = sealedRows.length > 0 ? sealedRows.concat(tailRows) : tailRows;
+    if (this.pendingScrollAnchor) {
+      const anchor = this.pendingScrollAnchor;
+      this.pendingScrollAnchor = undefined;
+      const entry = this.sealedRowIndex.find((item) => item.id === anchor.segmentId);
+      if (entry) {
+        const logical = entry.start + Math.min(anchor.rowInSegment, Math.max(0, entry.count - 1));
+        const desiredVisibleStart = Math.max(0, logical - anchor.screenOffset);
+        this.chatScrollOffset = Math.max(
+          0,
+          wrappedChat.length - viewportHeight - desiredVisibleStart,
+        );
+      }
+    } else if (contentChanged && this.chatScrollOffset > 0 && tailRowDelta !== 0) {
+      this.chatScrollOffset = Math.max(0, this.chatScrollOffset + tailRowDelta);
+    }
+    this.maxChatScrollOffset = Math.max(0, wrappedChat.length - viewportHeight);
+    this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
+
+    const queuedWheelRows = this.pendingWheelRows;
+    this.pendingWheelRows = 0;
+    const wheelMovedRows =
+      queuedWheelRows === 0 ? 0 : this.scrollChat(queuedWheelRows, false, true);
+
+    this.chatPageSize = Math.max(1, viewportHeight - 1);
+    const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
+    const visibleStart = Math.max(0, visibleEnd - viewportHeight);
+    this.chatViewport = {
+      screenTop: args.screenTop,
+      visibleStart,
+      visibleEnd,
+      width: chatWidth,
+      padding: chatPadding,
+    };
+    if (wheelMovedRows !== 0 && this.textSelection.dragging && this.selectionPointer) {
+      const cell = this.getChatCellFromMouse(
+        this.selectionPointer.column,
+        this.selectionPointer.row,
+        true,
+      );
+      if (cell) this.textSelection.update(cell);
+    }
+    const chatPrefix = " ".repeat(chatPadding);
+    const visibleChat = wrappedChat
+      .slice(visibleStart, visibleEnd)
+      // 顺序：先补全用户消息行的行尾背景（软换行中间行缺 \x1b[K），
+      // 再做选区高亮（列基于内容，无 padding），最后补左 padding。
+      .map(
+        (row, index) =>
+          chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index),
+      );
+    return { visibleChat, visibleStart, visibleEnd };
+  }
+
+  /**
+   * 把整屏行写到终端：能滚动视口就只发增量，内容与光标都没变就什么都不写；
+   * 同步输出（DECSET 2026）包住一帧，内联图在文本层之后对齐。
+   */
+  private flushScreen(args: {
+    width: number;
+    height: number;
+    screenRows: string[];
+    chatRegionStart: number;
+    chatHeight: number;
+    chatPadding: number;
+    visibleStart: number;
+    visibleEnd: number;
+    cursorState: string;
+    /** 浮层卡片盖在对话区上时不能用视口滚动（卡片不随内容移动）。 */
+    hasOverlayCard: boolean;
+  }): void {
+    const { width, height, screenRows, chatRegionStart, chatHeight, visibleStart, cursorState } =
+      args;
+    const fullRefresh =
+      width !== this.renderedScreenWidth ||
+      height !== this.renderedScreenHeight ||
+      this.renderedScreenRows.length !== height;
+    const viewportScrollRows = this.renderedChatVisibleStart - visibleStart;
+    const canScrollViewport =
+      chatHeight > 0 &&
+      !fullRefresh &&
+      !args.hasOverlayCard &&
+      chatRegionStart === this.renderedChatRegionStart &&
+      chatHeight === this.renderedChatRegionHeight;
+    const screenUpdate = canScrollViewport
+      ? (buildViewportScrollUpdate(
+          this.renderedScreenRows,
+          screenRows,
+          chatRegionStart,
+          chatHeight,
+          viewportScrollRows,
+        ) ?? buildScreenUpdate(this.renderedScreenRows, screenRows))
+      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+
+    // 有被节流的图片滚动微调没落地时不能提前返回：那一帧的 syncInlineImages 输出
+    // 就是本帧唯一要做的事（文本与光标都没变）。
+    if (
+      !fullRefresh &&
+      !screenUpdate &&
+      cursorState === this.renderedCursorState &&
+      !this.inlineImages.pendingNudge
+    ) {
+      this.renderedChatVisibleStart = visibleStart;
+      this.renderedChatRegionStart = chatRegionStart;
+      this.renderedChatRegionHeight = chatHeight;
+      return;
+    }
+
+    // 同步输出（DECSET 2026）：一帧内的光标/擦除/重写/光标定位作为一个原子刷新交给
+    // 终端，避免逐条转义序列被扫描到一半时的撕裂与闪烁。不支持的终端会忽略该私模式。
+    let frame = "\x1b[?2026h\x1b[?25l";
+    if (fullRefresh) frame += `${themeEnter()}\x1b[2J`;
+    frame += screenUpdate;
+    // 2J 按协议清掉屏幕上的图（部分实现连同数据）：重置后全部按未上传处理，强制重传。
+    if (fullRefresh) this.resetInlineImageScreen();
+    // 内联图同步层：文本层画完后，把可见图的 kitty placement 对齐到本帧屏幕位置。
+    // 无图或位置未变时零输出，不增加常规帧的负担。
+    frame += this.syncInlineImages({
+      visibleStart,
+      visibleEnd: args.visibleEnd,
+      chatRegionStart,
+      chatPadding: args.chatPadding,
+      suppressed: Boolean(this.contextInspector),
+    });
+    frame += cursorState;
+    frame += "\x1b[?2026l";
+    const accepted = stdout.write(frame);
+    this.renderedScreenRows = screenRows;
+    this.renderedScreenWidth = width;
+    this.renderedScreenHeight = height;
+    this.renderedCursorState = cursorState;
+    this.renderedChatVisibleStart = visibleStart;
+    this.renderedChatRegionStart = chatRegionStart;
+    this.renderedChatRegionHeight = chatHeight;
+    if (!accepted) this.stdoutBackpressured = true;
+  }
+
   private renderFrame(): void {
     this.queueSteerHits = [];
     if (this.streamRenderTimer) {
@@ -4361,36 +4448,7 @@ export class TerminalUI {
     );
     // 记下对话区的右边界：鼠标落在这之后的一律算侧栏，不参与文本选区。
     this.chatAreaRightEdgeColumn = sidebarVisible ? leftAreaWidth : 0;
-    const persistentHeader = this.sessionTitle
-      ? `${this.options.compactHeader}  ${SEQ.muted}${truncateText(this.sessionTitle, Math.max(1, leftAreaWidth - 7))}${SEQ.reset}`
-      : this.options.compactHeader;
-    const header =
-      layout.headerMode === "hidden"
-        ? ""
-        : this.startupHeaderVisible
-          ? layout.headerMode === "full"
-            ? this.options.header
-            : persistentHeader
-          : `${" ".repeat(layout.chatPadding)}${persistentHeader}`;
-    const headerInfo =
-      this.startupHeaderVisible && layout.headerMode === "full" ? this.headerInfo : [];
-    const headerRows = header
-      ? [
-          ...wrapAnsi(header, leftAreaWidth),
-          ...(headerInfo.length
-            ? ["", ...headerInfo.flatMap((l) => wrapAnsi(l, leftAreaWidth))]
-            : []),
-        ]
-      : [];
-    const panelBudget = Math.max(0, Math.min(layout.panelRows, height - headerRows.length - 4));
-    // 侧栏出现时任务与子代理面板搬进侧栏，避免与对话区上方重复占用高度。
-    const taskRows = sidebarVisible
-      ? []
-      : this.buildTaskPanel(width, this.taskPanelExpanded ? panelBudget : Math.min(5, panelBudget));
-    const agentRows = sidebarVisible
-      ? []
-      : this.buildAgentPanel(width, Math.max(0, panelBudget - taskRows.length));
-    const topRows = [...headerRows, ...taskRows, ...agentRows];
+    const topRows = this.buildTopRows(layout, width, height, leftAreaWidth, sidebarVisible);
     const divider = this.options.renderBorder(leftAreaWidth);
     const inputDivider =
       paperSidebarEnabled() && this.activeInput
@@ -4454,80 +4512,22 @@ export class TerminalUI {
     // 实时区域（工具草稿 / 工具格 / 推理预览）是独立块，与正文之间留一个空行：
     // 正文经 updateChatFrom 写入时不以换行结尾，只补一个换行会让它和工具块贴在一起。
     // 正式工具格提交前已有 writeBlankLine，这里只在还缺空行时补，避免出现连续空行。
-    const liveTailGap =
-      !this.liveTail || !this.chatContent
-        ? ""
-        : this.chatContent.endsWith("\n\n")
-          ? ""
-          : this.chatContent.endsWith("\n")
-            ? "\n"
-            : "\n\n";
     const contentWithStatus = this.liveTail
-      ? `${this.chatContent}${liveTailGap}${this.liveTail}`
+      ? `${this.chatContent}${liveTailSeparator(this.chatContent, this.liveTail)}${this.liveTail}`
       : this.chatContent;
-    const contentChanged =
-      contentWithStatus !== this.cachedContentWithStatus || chatWidth !== this.cachedWrappedWidth;
-    const previousWrappedCount = this.cachedWrappedChat.length;
-    const tailRows = this.getWrappedChat(contentWithStatus, chatWidth);
-    // 只有尾部会在底部增长；已封口区的行数变化一律交给滚动锚点处理。
-    const tailRowDelta = tailRows.length - previousWrappedCount;
-    const sealedRows = this.getSealedRows(chatWidth);
-    const wrappedChat = sealedRows.length > 0 ? sealedRows.concat(tailRows) : tailRows;
     // 活动行不进 chatContent：动画帧不会让折行缓存失效，也不会被选区复制出去。
     const activityRows = activityInChat
       ? ["", `${" ".repeat(chatPadding)}${this.buildActivityRow(chatWidth, false)}`]
       : [];
-    const chatViewportHeight = chatHeight - (activityInChat ? CHAT_ACTIVITY_ROWS : 0);
-    if (this.pendingScrollAnchor) {
-      const anchor = this.pendingScrollAnchor;
-      this.pendingScrollAnchor = undefined;
-      const entry = this.sealedRowIndex.find((item) => item.id === anchor.segmentId);
-      if (entry) {
-        const logical = entry.start + Math.min(anchor.rowInSegment, Math.max(0, entry.count - 1));
-        const desiredVisibleStart = Math.max(0, logical - anchor.screenOffset);
-        this.chatScrollOffset = Math.max(
-          0,
-          wrappedChat.length - chatViewportHeight - desiredVisibleStart,
-        );
-      }
-    } else if (contentChanged && this.chatScrollOffset > 0 && tailRowDelta !== 0) {
-      this.chatScrollOffset = Math.max(0, this.chatScrollOffset + tailRowDelta);
-    }
-    this.maxChatScrollOffset = Math.max(0, wrappedChat.length - chatViewportHeight);
-    this.chatScrollOffset = Math.min(this.chatScrollOffset, this.maxChatScrollOffset);
-
-    const queuedWheelRows = this.pendingWheelRows;
-    this.pendingWheelRows = 0;
-    const wheelMovedRows =
-      queuedWheelRows === 0 ? 0 : this.scrollChat(queuedWheelRows, false, true);
-
-    this.chatPageSize = Math.max(1, chatViewportHeight - 1);
-    const visibleEnd = Math.max(0, wrappedChat.length - this.chatScrollOffset);
-    const visibleStart = Math.max(0, visibleEnd - chatViewportHeight);
-    this.chatViewport = {
+    const { visibleChat, visibleStart, visibleEnd } = this.layoutChatViewport({
+      contentWithStatus,
+      chatWidth,
+      chatPadding,
+      viewportHeight: chatHeight - (activityInChat ? CHAT_ACTIVITY_ROWS : 0),
       screenTop: emergencyMinimal ? 1 : topRows.length + 2,
-      visibleStart,
-      visibleEnd,
-      width: chatWidth,
-      padding: chatPadding,
-    };
-    if (wheelMovedRows !== 0 && this.textSelection.dragging && this.selectionPointer) {
-      const cell = this.getChatCellFromMouse(
-        this.selectionPointer.column,
-        this.selectionPointer.row,
-        true,
-      );
-      if (cell) this.textSelection.update(cell);
-    }
+    });
     const chatPrefix = " ".repeat(chatPadding);
-    const visibleChat = wrappedChat
-      .slice(visibleStart, visibleEnd)
-      // 顺序：先补全用户消息行的行尾背景（软换行中间行缺 \x1b[K），
-      // 再做选区高亮（列基于内容，无 padding），最后补左 padding。
-      .map(
-        (row, index) =>
-          chatPrefix + this.highlightChatRow(fillUserMsgRowEol(row), visibleStart + index),
-      );
+
     const sidebarScreenTop = this.workspaceStatus ? 0 : emergencyMinimal ? 0 : topRows.length + 1;
     const sidebarFrame = sidebarVisible
       ? buildSidebarFrame(
@@ -4545,17 +4545,12 @@ export class TerminalUI {
     this.sidebarHits.clear();
     if (sidebarVisible) {
       const columnBase = leftAreaWidth + SIDEBAR_GAP_WIDTH + 1;
-      const rowBase = sidebarScreenTop + 1;
-      for (const region of sidebarFrame.regions) {
-        const columnStart = columnBase + region.hit.left;
-        const rowStart = rowBase + region.hit.top;
-        this.sidebarHits.set(region.id, {
-          columnStart,
-          columnEnd: columnStart + region.hit.width - 1,
-          rowStart,
-          rowEnd: rowStart + region.hit.height - 1,
-        });
-      }
+      for (const [id, box] of sidebarHitBoxes(
+        sidebarFrame.regions,
+        columnBase,
+        sidebarScreenTop + 1,
+      ))
+        this.sidebarHits.set(id, box);
     }
     // 命中的区域这一帧可能已经消失（比如费用表被挤掉）：悬停 id 一并作废。
     if (this.sidebarHoverId !== undefined && !this.sidebarHits.has(this.sidebarHoverId)) {
@@ -4576,28 +4571,14 @@ export class TerminalUI {
       sidebarFrame.ring
         ? buildContextCard(this.contextBreakdown, this.usedTokens, this.maxTokens, leftAreaWidth)
         : undefined;
+    const chatRegionStart = emergencyMinimal ? 0 : topRows.length + 1;
     const cardTop = contextCard
-      ? Math.max(
-          0,
-          Math.min(
-            chatHeight - contextCard.length,
-            sidebarScreenTop +
-              (sidebarFrame.ring?.top ?? 0) -
-              (emergencyMinimal ? 0 : topRows.length + 1) -
-              1,
-          ),
+      ? placeCard(
+          contextCard.length,
+          chatHeight,
+          sidebarScreenTop + (sidebarFrame.ring?.top ?? 0) - chatRegionStart,
         )
       : 0;
-    const paintContextCard = (row: string, index: number): string => {
-      const cardRow = contextCard?.[index - cardTop];
-      if (cardRow === undefined) return row;
-      const cardWidth = Math.min(leftAreaWidth, terminalWidth(cardRow));
-      const left = Math.max(1, leftAreaWidth - cardWidth + 1);
-      const head = truncateAnsiText(row, left - 1);
-      const pad = " ".repeat(Math.max(0, left - 1 - terminalWidth(head)));
-      const tail = " ".repeat(Math.max(0, leftAreaWidth - (left - 1) - cardWidth));
-      return `${head}${pad}${truncateAnsiText(cardRow, cardWidth)}${tail}`;
-    };
     // 整页视图（上下文详情 / 费用日志）：整块替换对话区
     // （活动行、折叠段、悬停卡片都不参与本帧）。命中区域按屏幕坐标（1 基）换算。
     const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
@@ -4632,7 +4613,7 @@ export class TerminalUI {
       screenTop: chatScreenTop,
       enabled: !minimal && !pageOpen,
     });
-    const composedChatRows = chatRows.map((row, index) => paintContextCard(row, index));
+    const composedChatRows = overlayRightCard(chatRows, contextCard, cardTop, leftAreaWidth);
     const leftRows = emergencyMinimal
       ? [...composedChatRows, ...inputBlock]
       : [...topRows, divider, ...composedChatRows, ...inputBlock];
@@ -4642,45 +4623,19 @@ export class TerminalUI {
     if (topRows.length > 0) this.overlayCopiedNotice(leftRows, leftAreaWidth);
     // 侧栏竖线贯穿整个高度：左侧每一行都补到左区宽度后接一条竖线，
     // 顶部/底部没有侧栏内容的行只留竖线与背景，保证右边界处处对齐。
-    const screenRows = leftRows.slice(0, height).map((row, index) => {
-      if (!sidebarVisible) return row;
-      const chatIndex = index - sidebarScreenTop;
-      const sidebarRow =
-        chatIndex >= 0 && chatIndex < sidebarRows.length ? sidebarRows[chatIndex] : "";
-      // 非对话行也走同一个拼接函数，保证宽度和三列间距不重复计算。
-      return composeSidebarRow(
-        row,
-        leftAreaWidth,
-        sidebarRow,
-        sidebarWidth,
-        sidebarFrame.surfaces?.[chatIndex],
-      );
-    });
-    while (screenRows.length < height) {
-      // 补齐的空行也要带上竖线，否则屏幕底部会缺一段分隔线、右边界错位。
-      screenRows.push(sidebarVisible ? composeSidebarRow("", leftAreaWidth, "", sidebarWidth) : "");
-    }
-    const fullRefresh =
-      width !== this.renderedScreenWidth ||
-      height !== this.renderedScreenHeight ||
-      this.renderedScreenRows.length !== height;
-    const chatRegionStart = emergencyMinimal ? 0 : topRows.length + 1;
-    const viewportScrollRows = this.renderedChatVisibleStart - visibleStart;
-    const canScrollViewport =
-      chatHeight > 0 &&
-      !fullRefresh &&
-      !contextCard &&
-      chatRegionStart === this.renderedChatRegionStart &&
-      chatHeight === this.renderedChatRegionHeight;
-    const screenUpdate = canScrollViewport
-      ? (buildViewportScrollUpdate(
-          this.renderedScreenRows,
-          screenRows,
-          chatRegionStart,
-          chatHeight,
-          viewportScrollRows,
-        ) ?? buildScreenUpdate(this.renderedScreenRows, screenRows))
-      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+    const screenRows = composeScreenRows(
+      leftRows,
+      height,
+      leftAreaWidth,
+      sidebarVisible
+        ? {
+            rows: sidebarRows,
+            width: sidebarWidth,
+            screenTop: sidebarScreenTop,
+            surfaces: sidebarFrame.surfaces,
+          }
+        : undefined,
+    );
     let cursorState = "";
     if (this.activeInput && inputLayout) {
       const inputTop = emergencyMinimal ? chatHeight : topRows.length + 1 + chatHeight;
@@ -4688,48 +4643,18 @@ export class TerminalUI {
       const cursorRow = inputTop + inputCursorOffset + inputLayout.cursor.row + 1;
       cursorState = `\x1b[${cursorRow};${cursorColumn}H\x1b[?25h`;
     }
-
-    // 有被节流的图片滚动微调没落地时不能提前返回：那一帧的 syncInlineImages 输出
-    // 就是本帧唯一要做的事（文本与光标都没变）。
-    if (
-      !fullRefresh &&
-      !screenUpdate &&
-      cursorState === this.renderedCursorState &&
-      !this.inlineImages.pendingNudge
-    ) {
-      this.renderedChatVisibleStart = visibleStart;
-      this.renderedChatRegionStart = chatRegionStart;
-      this.renderedChatRegionHeight = chatHeight;
-      return;
-    }
-
-    // 同步输出（DECSET 2026）：一帧内的光标/擦除/重写/光标定位作为一个原子刷新交给
-    // 终端，避免逐条转义序列被扫描到一半时的撕裂与闪烁。不支持的终端会忽略该私模式。
-    let frame = "\x1b[?2026h\x1b[?25l";
-    if (fullRefresh) frame += `${themeEnter()}\x1b[2J`;
-    frame += screenUpdate;
-    // 2J 按协议清掉屏幕上的图（部分实现连同数据）：重置后全部按未上传处理，强制重传。
-    if (fullRefresh) this.resetInlineImageScreen();
-    // 内联图同步层：文本层画完后，把可见图的 kitty placement 对齐到本帧屏幕位置。
-    // 无图或位置未变时零输出，不增加常规帧的负担。
-    frame += this.syncInlineImages({
+    this.flushScreen({
+      width,
+      height,
+      screenRows,
+      chatRegionStart,
+      chatHeight,
+      chatPadding,
       visibleStart,
       visibleEnd,
-      chatRegionStart,
-      chatPadding,
-      suppressed: Boolean(this.contextInspector),
+      cursorState,
+      hasOverlayCard: Boolean(contextCard),
     });
-    frame += cursorState;
-    frame += "\x1b[?2026l";
-    const accepted = stdout.write(frame);
-    this.renderedScreenRows = screenRows;
-    this.renderedScreenWidth = width;
-    this.renderedScreenHeight = height;
-    this.renderedCursorState = cursorState;
-    this.renderedChatVisibleStart = visibleStart;
-    this.renderedChatRegionStart = chatRegionStart;
-    this.renderedChatRegionHeight = chatHeight;
-    if (!accepted) this.stdoutBackpressured = true;
   }
 
   private finishInput(error?: Error): void {
@@ -4767,7 +4692,7 @@ export class TerminalUI {
       return;
     }
 
-    const selected = this.selectionItems(activeSelection)[activeSelection.selectedIndex];
+    const selected = filterSelectionItems(activeSelection)[activeSelection.selectedIndex];
     if (!error && !selected) return;
     const selectedSecondary =
       activeSelection.options.secondary?.items[activeSelection.secondaryIndex];
@@ -4875,94 +4800,33 @@ export class TerminalUI {
 
   private readonly handleSelectionKeypress = (value: string, key: readline.Key) => {
     const activeSelection = this.activeSelection;
-    if (!activeSelection) {
-      return;
-    }
-    if (isRealCtrlC(value, key) && this.copyChatSelection()) {
-      return;
-    }
-    if (isRealCtrlC(value, key)) {
-      this.finishSelection(new TerminalInputCancelledError());
-      return;
-    }
-    if (key.name === "escape") {
-      this.finishSelection(new TerminalInputCancelledError());
-      this.onEscCallback?.();
-      return;
-    }
-    if (key.name === "pageup" || key.name === "pagedown") {
-      this.scrollChat(key.name === "pageup" ? this.chatPageSize : -this.chatPageSize);
-      return;
-    }
-    if (key.ctrl && key.name === "end") {
-      this.scrollChat(-this.chatScrollOffset);
-      return;
-    }
-    // Tab 在选择器里循环切换次级轴（授权卡的永久允许作用域 本项目 ⇄ 全局）。
-    if ((key.name === "tab" && !key.shift) || key.name === "backtab" || value === "\x1b[Z") {
-      if (activeSelection.options.secondary) {
-        const itemCount = activeSelection.options.secondary.items.length;
-        const backward =
-          key.name === "backtab" || value === "\x1b[Z" || (key.shift && key.name === "tab");
-        if (backward) {
-          activeSelection.secondaryIndex =
-            (activeSelection.secondaryIndex - 1 + itemCount) % itemCount;
-        } else {
-          activeSelection.secondaryIndex = (activeSelection.secondaryIndex + 1) % itemCount;
-        }
+    if (!activeSelection) return;
+    switch (applySelectionKey(activeSelection, value, key)) {
+      case "ctrl-c":
+        // 有对话区选区时 Ctrl+C 先复制，不关选择器。
+        if (!this.copyChatSelection()) this.finishSelection(new TerminalInputCancelledError());
+        return;
+      case "escape":
+        this.finishSelection(new TerminalInputCancelledError());
+        this.onEscCallback?.();
+        return;
+      case "page-up":
+        this.scrollChat(this.chatPageSize);
+        return;
+      case "page-down":
+        this.scrollChat(-this.chatPageSize);
+        return;
+      case "jump-end":
+        this.scrollChat(-this.chatScrollOffset);
+        return;
+      case "confirm":
+        this.finishSelection();
+        return;
+      case "changed":
         this.scheduleRender(true);
-      }
-      return;
-    }
-    const confirmLocked =
-      Date.now() - (activeSelection.openedAt ?? 0) < (activeSelection.options.confirmDelayMs ?? 0);
-    if (key.name === "return" || key.name === "enter") {
-      if (confirmLocked) return;
-      this.finishSelection();
-      return;
-    }
-    if (
-      activeSelection.options.searchable &&
-      !key.ctrl &&
-      !key.meta &&
-      (key.name === "backspace" || (value && !/[\x00-\x1f\x7f]/u.test(value)))
-    ) {
-      const current = activeSelection.query ?? "";
-      activeSelection.query =
-        key.name === "backspace"
-          ? splitGraphemes(current).slice(0, -1).join("")
-          : (current + value).slice(0, 200);
-      activeSelection.selectedIndex = 0;
-      this.scheduleRender(true);
-      return;
-    }
-    const hotkeyIndex =
-      value && !key.ctrl && !key.meta
-        ? activeSelection.options.items.findIndex(
-            (item) => item.hotkey && item.hotkey.toLowerCase() === value.toLowerCase(),
-          )
-        : -1;
-    if (hotkeyIndex >= 0) {
-      if (confirmLocked) return;
-      activeSelection.selectedIndex = hotkeyIndex;
-      this.finishSelection();
-      return;
-    }
-    if (key.name === "up" || key.name === "down") {
-      const direction = key.name === "up" ? -1 : 1;
-      const itemCount = this.selectionItems(activeSelection).length;
-      if (itemCount === 0) return;
-      activeSelection.selectedIndex =
-        (activeSelection.selectedIndex + direction + itemCount) % itemCount;
-      this.scheduleRender(true);
-      return;
-    }
-    if ((key.name === "left" || key.name === "right") && activeSelection.options.secondary) {
-      const direction = key.name === "left" ? -1 : 1;
-      const itemCount = activeSelection.options.secondary.items.length;
-      activeSelection.secondaryIndex =
-        (activeSelection.secondaryIndex + direction + itemCount) % itemCount;
-      this.scheduleRender(true);
+        return;
+      case "none":
+        return;
     }
   };
 
