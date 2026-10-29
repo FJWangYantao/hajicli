@@ -136,14 +136,8 @@ import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./con
 import { CostTracker, type CostUsage, formatCostCny, type TurnMetric } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
-import { startMcpStdio } from "./driver/index.js";
-import { DriverServer } from "./driver/server.js";
-import type {
-  DriverPatch,
-  DriverSelectionRequest,
-  DriverStatus,
-  DriverTurnResult,
-} from "./driver/types.js";
+import type { DriverServer } from "./driver/server.js";
+import type { DriverSelectionRequest } from "./driver/types.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
 import {
@@ -197,7 +191,8 @@ import {
   VOLCENGINE_MODELS,
 } from "./provider-models.js";
 import { runReloadProcess, supportsProcessReload } from "./reload.js";
-import { parseServeArgs } from "./serve-args.js";
+import { parseServeArgs, type ServeRequest } from "./serve-args.js";
+import { lastAssistantText, runServeMode } from "./serve-mode.js";
 import {
   handleClearCommand,
   handleForkCommand,
@@ -274,21 +269,6 @@ import {
   worktreeTargetCwd,
 } from "./worktree.js";
 import { handleWorktreeCommand } from "./worktree-commands.js";
-
-/** 驱动事件里的工具入参摘要：截断避免长参数把事件撑爆。 */
-function summarizeDriverArgs(args: Record<string, unknown>): string {
-  try {
-    const json = JSON.stringify(args);
-    return json.length > 200 ? `${json.slice(0, 200)}…` : json;
-  } catch {
-    return "(无法序列化)";
-  }
-}
-
-/** 驱动事件里的工具输出摘要：只要开头一段，完整结果模型仍能在会话里读到。 */
-function summarizeDriverOutput(output: string): string {
-  return output.length > 300 ? `${output.slice(0, 300)}…` : output;
-}
 
 async function main() {
   // 启动耗时埋点：仅当 HAJI_STARTUP_PROFILE=1 时向 stderr 输出 [startup] 阶段标记，
@@ -3508,170 +3488,47 @@ async function main() {
     },
   };
 
-  /**
-   * 驱动服务（haji mcp-serve）：把本进程当作常驻 haji，经 MCP stdio 对外提供
-   * 「发消息 + 调整 + 查状态」工具面。复用上面全部接线，只替换授权通道与输出出口。
-   */
-  const runServeMode = async (): Promise<void> => {
-    if (!serveRequest) return;
-
-    // 工具执行进度：包一层 executor，把 start/end 发成事件（不改引擎本身）。
-    const toolEventExecutor = (() => {
-      const proxy = Object.create(toolExecutor) as typeof toolExecutor;
-      proxy.execute = async (toolName, args, context) => {
-        driverServerRef?.emit({
-          type: "tool_start",
-          name: toolName,
-          args: summarizeDriverArgs(args),
-        });
-        const startedAt = Date.now();
-        const result = await toolExecutor.execute(toolName, args, context);
-        driverServerRef?.emit({
-          type: "tool_end",
-          name: toolName,
-          ok: !result.blocked && !result.rejected,
-          durationMs: Date.now() - startedAt,
-          summary: summarizeDriverOutput(result.output),
-        });
-        return result;
-      };
-      return proxy;
-    })();
-
-    let lastOutcome: TurnOutcome | undefined;
-
-    const driverTurnDeps: TurnDeps = {
-      ...turnDeps,
-      // 授权卡片 / 计划审批 / 受控申请一律走事件，等外部 haji_approve。
-      readSelectionSafely: askSelection,
-      toolExecutor: toolEventExecutor,
-      onTurnSettled: (outcome) => {
-        lastOutcome = outcome;
+  /** 驱动服务（haji mcp-serve）：复用上面全部接线，只替换授权通道与输出出口（见 serve-mode.ts）。 */
+  const startServeMode = async (request: ServeRequest): Promise<void> =>
+    runServeMode({
+      serveRequest: request,
+      turnDeps,
+      toolExecutor,
+      costTracker,
+      sessionManager,
+      askSelection,
+      getChatLength: () => ui.getChatLength(),
+      requestAbort: () => ui.requestAbort(),
+      getSelectedModel: () => selectedModel,
+      getReasoningEffort: () => reasoningEffort,
+      getPermissionMode: () => permissionMode,
+      getProviderLabel: () => providerPlainLabel(currentProviderName),
+      getMessageCount: () => messages.length,
+      switchModel: (model) => {
+        if (!availableModels.some((item) => item.value === model)) return undefined;
+        const nextProvider = detectProviderForModel(model, providerConfig, currentProviderName);
+        // 换模型就重建 provider 实例；在飞回合持有的是旧快照，不受影响。
+        if (model !== selectedModel || nextProvider !== currentProviderName) {
+          provider = buildProvider(model, undefined, currentProviderName);
+          currentProviderName = nextProvider;
+        }
+        selectedModel = model;
+        return currentProviderName;
       },
-    };
-
-    const driver = new DriverServer(
-      {
-        runTurn: async (text) => {
-          lastOutcome = undefined;
-          const startedAt = Date.now();
-          const before = costTracker.getSummary();
-          await runAgentTurn(driverTurnDeps, {
-            forwardedPrompt: text,
-            commandInput: text,
-            manualSkillExchange: undefined,
-            promptDisplayStartOffset: ui.getChatLength(),
-          });
-          const finalMessages = turnDeps.getMessages();
-          const lastAssistant = [...finalMessages]
-            .reverse()
-            .find(
-              (message) =>
-                message.role === "assistant" &&
-                typeof message.content === "string" &&
-                message.content.trim().length > 0,
-            );
-          const after = costTracker.getSummary();
-          const session = sessionManager.getCurrentSession();
-          const outcome = lastOutcome ?? { aborted: false, failed: true, toolCalls: 0 };
-          return {
-            ok: !outcome.aborted && !outcome.failed,
-            text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
-            sessionId: session.id,
-            model: selectedModel,
-            permissionMode,
-            toolCalls: outcome.toolCalls,
-            durationMs: Date.now() - startedAt,
-            usage: {
-              requests: after.requests - before.requests,
-              promptTokens: after.promptTokens - before.promptTokens,
-              completionTokens: after.completionTokens - before.completionTokens,
-              estimatedCostCny: Number((after.totalCostCny - before.totalCostCny).toFixed(6)),
-            },
-          } satisfies DriverTurnResult;
-        },
-        status: (): DriverStatus => {
-          const cost = costTracker.getSummary();
-          const session = sessionManager.getCurrentSession();
-          return {
-            sessionId: session.id,
-            sessionTitle: session.title,
-            model: selectedModel,
-            provider: providerPlainLabel(currentProviderName),
-            effort: reasoningEffort,
-            permissionMode,
-            cwd: process.cwd(),
-            running: false,
-            messageCount: messages.length,
-            usage: {
-              requests: cost.requests,
-              promptTokens: cost.promptTokens,
-              completionTokens: cost.completionTokens,
-              estimatedCostCny: Number(cost.totalCostCny.toFixed(6)),
-            },
-          };
-        },
-        adjust: async (patch: DriverPatch) => {
-          const applied: Record<string, unknown> = {};
-          const errors: string[] = [];
-          if (patch.model !== undefined) {
-            if (!availableModels.some((item) => item.value === patch.model)) {
-              errors.push(`未知模型：${patch.model}`);
-            } else {
-              const nextProvider = detectProviderForModel(
-                patch.model,
-                providerConfig,
-                currentProviderName,
-              );
-              // 换模型就重建 provider 实例；在飞回合持有的是旧快照，不受影响。
-              if (patch.model !== selectedModel || nextProvider !== currentProviderName) {
-                provider = buildProvider(patch.model, undefined, currentProviderName);
-                currentProviderName = nextProvider;
-              }
-              selectedModel = patch.model;
-              applied.model = patch.model;
-              applied.provider = currentProviderName;
-            }
-          }
-          if (patch.effort !== undefined) {
-            reasoningEffort = patch.effort;
-            applied.effort = patch.effort;
-          }
-          if (patch.thinkingVisible !== undefined) {
-            showThinking = patch.thinkingVisible;
-            applied.thinkingVisible = patch.thinkingVisible;
-          }
-          if (patch.permissionMode !== undefined) {
-            await applyPermissionMode(patch.permissionMode, { persist: false });
-            applied.permissionMode = permissionMode;
-          }
-          if (patch.plan !== undefined) {
-            await applyPermissionMode(patch.plan ? "plan" : "default", { persist: false });
-            applied.plan = patch.plan;
-            applied.permissionMode = permissionMode;
-          }
-          if (errors.length === 0) {
-            await requestPromptRefresh();
-            updateStatusUI();
-          }
-          return { applied, errors };
-        },
-        cancel: () => {
-          return ui.requestAbort();
-        },
-        close: async () => {
-          await sessionManager.flush();
-        },
+      setReasoningEffort: (effort) => {
+        reasoningEffort = effort;
       },
-      { waitMs: serveRequest.waitMs, approval: serveRequest.approval },
-    );
-
-    driverServerRef = driver;
-    // 启动期（服务就绪前）攒下的输出补发成 notice 事件。
-    for (const line of serveOutputBuffer.splice(0)) driver.emit({ type: "notice", text: line });
-    await startMcpStdio(driver);
-    driverServerRef = undefined;
-  };
+      setThinkingVisible: (visible) => {
+        showThinking = visible;
+      },
+      applyPermissionMode,
+      requestPromptRefresh,
+      updateStatusUI,
+      takeBufferedOutput: () => serveOutputBuffer.splice(0),
+      setDriverServer: (server) => {
+        driverServerRef = server;
+      },
+    });
 
   let fatalExit: unknown;
   let reloadRequested = false;
@@ -3694,7 +3551,7 @@ async function main() {
     while (true) {
       // 驱动服务：进入 MCP stdio 循环；客户端关闭 stdin 后收尾退出（走统一清理）。
       if (serveRequest) {
-        await runServeMode();
+        await startServeMode(serveRequest);
         break;
       }
       // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理。
@@ -3720,15 +3577,6 @@ async function main() {
         if (!headlessOk) process.exitCode = 1;
         if (headlessRequest.outputFormat === "json") {
           // JSON 模式：stdout 全程静音，这里统一输出结构化结果（正文取最后一条助手消息）。
-          const finalMessages = turnDeps.getMessages();
-          const lastAssistant = [...finalMessages]
-            .reverse()
-            .find(
-              (message) =>
-                message.role === "assistant" &&
-                typeof message.content === "string" &&
-                message.content.trim().length > 0,
-            );
           const cost = costTracker.getSummary();
           const currentSession = sessionManager.getCurrentSession();
           process.stdout.write(
@@ -3738,7 +3586,7 @@ async function main() {
                 ok: headlessOk,
                 prompt: headlessRequest.prompt,
                 model: selectedModel,
-                text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
+                text: lastAssistantText(turnDeps.getMessages()),
                 toolCalls: headlessOutcome?.toolCalls ?? 0,
                 sessionId: currentSession.id,
                 sessionTitle: currentSession.title,

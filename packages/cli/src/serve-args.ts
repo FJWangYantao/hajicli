@@ -10,7 +10,8 @@ export interface ServeRequest {
   /**
    * 授权策略：
    * - `ask`（默认）：需要授权时发 `selection_request` 事件并挂起，等 `haji_approve`。
-   * - `auto`：沿用无头模式的默认选项（首个选项）直接放行，适合完全无人值守。
+   * - `auto`：无人值守。普通授权只放行本次，受保护目标、加工作区目录、临时提权一律拒绝，
+   *   计划审批批准后只切到 [默认]（见 DriverSelectionRequest.autoValue / fallbackValue）。
    */
   approval: "ask" | "auto";
   /** 单次 `haji_send` 的默认等待时长（毫秒）；超时返回 running + taskId。 */
