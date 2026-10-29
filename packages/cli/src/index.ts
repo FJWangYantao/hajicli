@@ -35,7 +35,6 @@ import {
   normalizePathKey,
   normalizeSubagentInstructions,
   ObservableModelProvider,
-  PERMISSION_MODES,
   PermissionEngine,
   type PermissionMode,
   type ProtectedLevel,
@@ -140,6 +139,7 @@ import type { DriverServer } from "./driver/server.js";
 import type { DriverSelectionRequest } from "./driver/types.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
+import { handleSkillsCommand, showMcpStatus } from "./extension-commands.js";
 import {
   expandFileMentions,
   inspectFileMentions,
@@ -153,15 +153,14 @@ import { resolveModelPricing } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import { createParallelClassifier } from "./parallel-policy.js";
+import { handlePermissionCommand } from "./permission-commands.js";
 import {
   isToolAllowedPersistently,
   type LoadedPermissionRules,
   loadAllPermissionRules,
   loadUserPathRules,
   type PermissionPathRules,
-  type PermissionRuleEntry,
   type PermissionRuleScope,
-  removePermissionRule,
   removeUserPathRule,
   savePermissionRule,
   saveUserPathRule,
@@ -3763,117 +3762,19 @@ async function main() {
           break;
         }
         if (command === "mcp") {
-          const statuses = mcpManager.getServerStatuses();
-          if (statuses.length === 0) {
-            ui.writeLine(
-              colors.gray(
-                "未配置 MCP server。在 .haji/config.json（用户级 ~/.haji/ 或项目级）添加 mcpServers 字段：",
-              ),
-            );
-            ui.writeChat(
-              `${colors.gray(
-                JSON.stringify(
-                  {
-                    mcpServers: {
-                      example: {
-                        command: "npx",
-                        args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
-                      },
-                    },
-                  },
-                  null,
-                  2,
-                ),
-              )}\n`,
-            );
-            ui.writeLine(
-              colors.gray(
-                "可选字段：env（环境变量）、readOnly: true（工具视为只读，免审批）、enabled: false（禁用）、callTimeoutMs。",
-              ),
-            );
-          } else {
-            const stateLabel = (s: (typeof statuses)[number]) =>
-              s.state === "running"
-                ? colors.green("running")
-                : s.state === "disabled"
-                  ? colors.gray("disabled")
-                  : colors.red("failed");
-            const lines = [colors.bold(`MCP servers（${statuses.length}）`)];
-            for (const status of statuses) {
-              const ro =
-                status.state === "running" && mcpConfigs[status.name]?.readOnly
-                  ? colors.gray(" · 只读")
-                  : "";
-              lines.push(
-                `  ${colors.purple(status.name.padEnd(20))} ${stateLabel(status)}${ro} · ${status.toolCount} 个工具`,
-              );
-              if (status.state === "failed" && status.error)
-                lines.push(colors.muted(`    ${status.error.replace(/\s+/g, " ").slice(0, 160)}`));
-              for (const tool of status.tools) lines.push(colors.gray(`    ${tool}`));
-            }
-            ui.writeChat(`${lines.join("\n")}\n`);
-          }
+          showMcpStatus(ui, mcpManager.getServerStatuses(), mcpConfigs);
           continue;
         }
         if (command === "skills") {
-          if (parts[1]?.toLowerCase() === "validate") {
-            // 扫描 + 资源校验要读整个 Skill 目录：先让输入行可用，避免看起来卡死。
-            startBackgroundInput();
-            await skillRegistry.scan();
-            const result = await skillRegistry.validate();
-            await refreshSystemPromptPreservingContext();
-            sessionManager.saveCurrentSession(messages);
-            const summary = `${result.checkedSkills} 个 Skill，${result.checkedResources} 个资源`;
-            ui.writeLine(
-              result.valid
-                ? colors.okLine(`Skill 校验通过：${summary}。`)
-                : colors.failLine(`Skill 校验失败：${summary}。`),
-            );
-            for (const issue of result.issues) {
-              const scope = issue.skill ? `[${issue.skill}] ` : "";
-              ui.writeLine(
-                issue.severity === "error"
-                  ? colors.failLine(`${scope}${issue.message}`)
-                  : colors.warnLine(`${scope}${issue.message}`),
-              );
-            }
-            continue;
-          }
-          if (parts[1]?.toLowerCase() === "reload") {
-            startBackgroundInput();
-            const result = await skillRegistry.scan();
-            await refreshSystemPromptPreservingContext();
-            sessionManager.saveCurrentSession(messages);
-            ui.writeLine(colors.okLine(`已重新扫描 ${result.skills.length} 个 Skill。`));
-            for (const warning of result.warnings) ui.writeLine(colors.warnLine(warning));
-          }
-          const loaded = new Map(
-            skillRegistry.getLoaded("main").map((skill) => [skill.name, skill]),
-          );
-          const skills = skillRegistry.list();
-          if (skills.length === 0) {
-            ui.writeLine(
-              colors.gray(
-                "暂无 Skill。项目目录：.haji/skills；用户目录：%USERPROFILE%/.haji/skills。",
-              ),
-            );
-          } else {
-            ui.writeChat(
-              `${[
-                colors.bold(`Skills (${skills.length})`),
-                ...skills.map((skill) => {
-                  const state = loaded.get(skill.name);
-                  const status = state
-                    ? state.resident
-                      ? "loaded"
-                      : "reload needed"
-                    : "available";
-                  const invocation = skill.userInvocable ? "" : " · model-only";
-                  return `  ${colors.purple(skill.name.padEnd(22))} ${colors.gray(`[${skill.source}] ${status}${invocation}`)}\n    ${skill.description}`;
-                }),
-              ].join("\n")}\n`,
-            );
-          }
+          await handleSkillsCommand(parts.slice(1), {
+            ui,
+            skillRegistry,
+            startBackgroundInput: () => startBackgroundInput(),
+            refreshAfterScan: async () => {
+              await refreshSystemPromptPreservingContext();
+              sessionManager.saveCurrentSession(messages);
+            },
+          });
           continue;
         }
         if (command === "skill") {
@@ -4054,105 +3955,24 @@ async function main() {
           continue;
         }
         if (command === "permission") {
-          if (parts[1]?.toLowerCase() === "rules") {
-            // /permission rules（原 /permissions）：永久放行规则管理，选中即删除。
-            const rules = loadAllPermissionRules();
-            const entries: Array<{ scopeLevel: PermissionRuleScope; entry: PermissionRuleEntry }> =
-              [
-                ...rules.project.map((entry) => ({ scopeLevel: "project" as const, entry })),
-                ...rules.user.map((entry) => ({ scopeLevel: "user" as const, entry })),
-              ];
-            if (entries.length === 0) {
-              ui.writeLine(colors.gray("暂无永久放行规则。授权卡片中选择「永久允许」即可添加。"));
-              continue;
-            }
-            try {
-              const selection = await readSelectionSafely({
-                title: "永久放行规则（选中即删除，Esc 退出）",
-                items: [
-                  ...entries.map(({ scopeLevel, entry }) => ({
-                    value: `${scopeLevel}::${entry.key}`,
-                    label: entry.key,
-                    description: `${scopeLevel === "project" ? "本项目" : "全局"} · ${entry.scope}`,
-                  })),
-                  { value: "__done__", label: "完成（不删除）", hotkey: "q" },
-                ],
-                selectedValue: "__done__",
-              });
-              if (selection.value === "__done__") continue;
-              const separatorIndex = selection.value.indexOf("::");
-              const scopeLevel = selection.value.slice(0, separatorIndex) as PermissionRuleScope;
-              const ruleKey = selection.value.slice(separatorIndex + 2);
-              const removed = removePermissionRule(ruleKey, scopeLevel);
-              if (removed) {
-                permissionRules = loadRules();
-                sessionToolGrants.keys.delete(ruleKey);
-                ui.writeLine(
-                  colors.okLine(
-                    `已删除永久放行规则：${ruleKey}（${scopeLevel === "project" ? "本项目" : "全局"}）。`,
-                  ),
-                );
-              } else {
-                ui.writeLine(colors.warnLine(`未找到规则：${ruleKey}（可能已被其他会话删除）。`));
-              }
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) continue;
-              throw error;
-            }
-            continue;
-          }
-          let reqMode = parts[1]?.toLowerCase();
-          if (!reqMode) {
-            try {
-              const selection = await readSelectionSafely({
-                title: "选择权限档次",
-                items: PERMISSION_MODES,
-                selectedValue: permissionMode,
-                secondary: {
-                  label: "规则回退阈值（分类器不可用时）",
-                  items: [
-                    { value: "low", label: "LOW", description: "严苛（允许无副作用命令）" },
-                    { value: "medium", label: "MEDIUM", description: "标准（推荐，阻止高危操作）" },
-                    { value: "high", label: "HIGH", description: "宽松（仅阻止极危险破坏命令）" },
-                  ],
-                  selectedValue: riskThreshold,
-                },
-              });
-              reqMode = selection.value;
-              if (
-                selection.secondaryValue &&
-                ["low", "medium", "high"].includes(selection.secondaryValue)
-              ) {
-                riskThreshold = selection.secondaryValue as RiskLevel;
-              }
-            } catch (error) {
-              if (error instanceof TerminalInputCancelledError) {
-                ui.writeLine(colors.gray("已取消切换权限模式。"));
-                continue;
-              }
-              throw error;
-            }
-          }
-
-          if (!isPermissionMode(reqMode)) {
-            ui.writeLine(colors.failLine(`无效权限模式：${reqMode}`));
-            ui.writeLine(colors.gray("可选：plan、default、accept-edit、auto、bypass-permissions"));
-            continue;
-          }
-
-          await applyPermissionMode(reqMode);
-          planReadyForReview = false;
-          planReviewSummaryRequested = false;
-          ui.writeLine(
-            colors.okLine(
-              permissionMode === "auto"
-                ? "系统权限已设置为 [auto]（LLM 安全分类器；判定失败或超时一律拒绝）"
-                : `系统权限已设置为 [${permissionMode}] (规则回退阈值: ${riskThreshold})`,
-            ),
-          );
-          if (permissionMode === "plan") {
-            ui.writeLine(colors.gray("Plan 模式只允许只读调研；计划提交后会等待你的批准。"));
-          }
+          await handlePermissionCommand(parts.slice(1), {
+            ui,
+            readSelectionSafely: (options) => readSelectionSafely(options),
+            getPermissionMode: () => permissionMode,
+            getRiskThreshold: () => riskThreshold,
+            setRiskThreshold: (level) => {
+              riskThreshold = level;
+            },
+            applyPermissionMode: (mode) => applyPermissionMode(mode),
+            resetPlanReview: () => {
+              planReadyForReview = false;
+              planReviewSummaryRequested = false;
+            },
+            onRuleRemoved: (key) => {
+              permissionRules = loadRules();
+              sessionToolGrants.keys.delete(key);
+            },
+          });
           continue;
         }
         if (command === "sidebar") {

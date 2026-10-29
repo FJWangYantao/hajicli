@@ -660,7 +660,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。
 - 纯逻辑优先抽成可测函数放进现有 `*-config.ts` / `*-policy.ts` 一类模块，`index.ts` 的 `main()` 只做编排。
-  斜杠命令按家族放 `provider-commands.ts` / `subagent-commands.ts` / `session-commands.ts`，经 `*CommandContext`
+  斜杠命令按家族放 `provider-commands.ts` / `subagent-commands.ts` / `session-commands.ts` /
+  `permission-commands.ts`（`/permission`）/ `extension-commands.ts`（`/mcp`、`/skills`）/
+  `serve-mode.ts`（`haji mcp-serve` 的回合与调整），经 `*CommandContext`
   访问器注入会话状态（可变 let 绑定必须走 getter/setter，不能拷贝值）；新增命令族时照此模式新建模块。
   带内部状态的命令族用工厂（`pricing-commands.ts` 的 `createPricingCommands(ctx)`：查询是否在跑、
   过程日志、已提醒模型留在模块内）；会话级编排用类（`PostEditVerifier`）。TerminalUI 里的纯状态

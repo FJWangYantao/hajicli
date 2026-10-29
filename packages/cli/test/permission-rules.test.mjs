@@ -256,7 +256,7 @@ test("index.ts wires persistent rules into the PreToolUse hook and the card", ()
     "permissionRules 刷新必须经 loadRules()",
   );
   assert.ok(source.includes("permissionRules = loadRules()"));
-  // /permission rules 管理入口存在且删除后同步撤销会话授权
-  assert.ok(source.includes('parts[1]?.toLowerCase() === "rules"'));
-  assert.ok(source.includes("sessionToolGrants.keys.delete(ruleKey)"));
+  // /permission rules 删除后同步刷新视图并撤销会话授权（行为见 permission-commands.test.mjs）
+  assert.ok(source.includes("handlePermissionCommand(parts.slice(1)"));
+  assert.ok(source.includes("sessionToolGrants.keys.delete(key)"));
 });
