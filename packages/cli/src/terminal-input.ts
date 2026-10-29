@@ -294,6 +294,8 @@ export interface TerminalSelectionAxis {
 }
 
 export interface TerminalSelectionOptions {
+  /** 输入关键词筛选选项，仅供显式开启的列表使用。 */
+  searchable?: boolean;
   title: string;
   items: readonly TerminalSelectionItem[];
   selectedValue?: string;
@@ -328,6 +330,7 @@ interface ActiveInput {
 }
 
 interface ActiveSelection {
+  query?: string;
   options: TerminalSelectionOptions;
   openedAt?: number;
   selectedIndex: number;
@@ -691,6 +694,87 @@ export class TerminalUI {
   private escHandlerStack: Array<() => void> = [];
   private queueText = "";
   private queuedInputs: string[] = [];
+  private queueSteerCallback?: (index: number, text: string) => boolean;
+  private steerEnabled = false;
+  private queueSteerHits: Array<{
+    row: number;
+    left: number;
+    right: number;
+    index: number;
+    text: string;
+  }> = [];
+  private pendingQueueSteer?: {
+    row: number;
+    left: number;
+    right: number;
+    index: number;
+    text: string;
+  };
+
+  onQueueSteer(callback: (index: number, text: string) => boolean): void {
+    this.queueSteerCallback = callback;
+  }
+
+  setSteerEnabled(enabled: boolean): void {
+    this.steerEnabled = enabled;
+    this.queueSteerHits = [];
+    this.pendingQueueSteer = undefined;
+    this.scheduleRender(true);
+  }
+
+  private steerQueueItem(index: number, text: string): void {
+    if (
+      !this.steerEnabled ||
+      this.inputManager?.draft ||
+      this.queuedInputs[index] !== text ||
+      text.trimStart().startsWith("/")
+    )
+      return;
+    if (this.queueSteerCallback?.(index, text)) {
+      this.setQueue(this.queuedInputs);
+      this.showTransientHint("steer 已提交，将在安全点应用");
+    }
+  }
+
+  private getQueueRows(width: number, maxItems: number): string[] {
+    if (!this.queuedInputs.length || maxItems <= 0) return [];
+    const rows = [
+      truncateText(`待发送 (${this.queuedInputs.length} 条 · Alt+Q 管理 · 本轮结束后发送)`, width),
+    ];
+    for (let index = 0; index < Math.min(maxItems, this.queuedInputs.length); index++) {
+      const text = this.queuedInputs[index];
+      const button = this.steerEnabled && !text.trimStart().startsWith("/") ? "[steer] " : "";
+      rows.push(
+        truncateText(
+          ` ${button}${index + 1}. ${redactSensitiveCommand(sanitizeTerminalText(text)).replace(/\s*\n\s*/g, " ")}`,
+          width,
+        ),
+      );
+    }
+    if (this.queuedInputs.length > maxItems) rows.push(truncateText("… Alt+Q 查看其余消息", width));
+    return rows;
+  }
+
+  private updateQueueSteerHits(rows: string[], screenTop: number): void {
+    this.queueSteerHits = [];
+    if (!this.steerEnabled || this.activeSelection || this.inputManager?.draft) return;
+    for (let offset = 0; offset < rows.length; offset++) {
+      const plain = rows[offset].replace(/\x1b\[[0-9;]*m/g, "");
+      const match = /^\s*›?\s*\[steer\] (\d+)\./u.exec(plain);
+      if (!match) continue;
+      const index = Number(match[1]) - 1;
+      const text = this.queuedInputs[index];
+      if (text === undefined) continue;
+      const left = plain.indexOf("[steer]") + 1;
+      this.queueSteerHits.push({ row: screenTop + offset, left, right: left + 6, index, text });
+    }
+  }
+
+  private queueSteerHitAt(column: number, row: number) {
+    return this.queueSteerHits.find(
+      (hit) => hit.row === row && column >= hit.left && column <= hit.right,
+    );
+  }
   private inputManager?: {
     kind: "queue" | "attachments";
     selected: number;
@@ -788,7 +872,11 @@ export class TerminalUI {
         ? this.queuedInputs.length
         : this.getFileAttachments().length + this.pendingImages.length;
     manager.selected = Math.max(0, Math.min(manager.selected, count - 1));
-    if (key.name === "up" || key.name === "down") {
+    if (value === "s" && manager.kind === "queue" && count > 0) {
+      this.steerQueueItem(manager.selected, this.queuedInputs[manager.selected]);
+      if (!this.queuedInputs.length) this.closeInputManager();
+      else manager.selected = Math.min(manager.selected, this.queuedInputs.length - 1);
+    } else if (key.name === "up" || key.name === "down") {
       manager.selected =
         (manager.selected + (key.name === "up" ? -1 : 1) + count) % Math.max(1, count);
     } else if (key.name === "delete" || key.name === "backspace" || value === "d") {
@@ -835,7 +923,7 @@ export class TerminalUI {
     const hint = manager.draft
       ? "编辑待发送消息 · Enter 保存 · Esc 取消"
       : manager.kind === "queue"
-        ? "待发送 · ↑↓ 选择 · Enter 编辑 · Del 撤回 · Esc 返回"
+        ? "待发送 · ↑↓ 选择 · s steer · Enter 编辑 · Del 撤回 · Esc 返回"
         : "附件 · ↑↓ 选择 · Del 移除 · Esc 返回";
     const items =
       manager.kind === "queue"
@@ -854,7 +942,7 @@ export class TerminalUI {
     for (let i = start; i < Math.min(items.length, start + budget); i++) {
       rows.push(
         truncateText(
-          `${i === manager.selected ? "›" : " "} ${i + 1}. ${redactSensitiveCommand(sanitizeTerminalText(items[i])).replace(/\n/g, " ↵ ")}`,
+          `${i === manager.selected ? "›" : " "} ${manager.kind === "queue" && this.steerEnabled && !items[i].trimStart().startsWith("/") ? "[steer] " : ""}${i + 1}. ${redactSensitiveCommand(sanitizeTerminalText(items[i])).replace(/\n/g, " ↵ ")}`,
           width,
         ),
       );
@@ -1656,6 +1744,8 @@ export class TerminalUI {
 
   setQueue(items: string[]): void {
     this.queuedInputs = items;
+    this.queueSteerHits = [];
+    this.pendingQueueSteer = undefined;
     if (items.length === 0) {
       this.queueText = "";
     } else {
@@ -1779,6 +1869,10 @@ export class TerminalUI {
 
   cancelInput(): string | undefined {
     return this.abortInput(new TerminalInputCancelledError());
+  }
+
+  cancelSelection(): void {
+    this.finishSelection(new TerminalInputCancelledError());
   }
 
   /**
@@ -2710,6 +2804,8 @@ export class TerminalUI {
   }
 
   private readonly handleResize = () => {
+    this.queueSteerHits = [];
+    this.pendingQueueSteer = undefined;
     this.cachedContentWithStatus = "";
     this.cachedWrappedWidth = 0;
     this.stableWrapPrefixWidth = 0;
@@ -3160,6 +3256,8 @@ export class TerminalUI {
    */
   private handleLeftButtonDown(event: TerminalMouseEvent): void {
     this.pendingChatHintClick = undefined;
+    this.pendingQueueSteer = this.queueSteerHitAt(event.column, event.row);
+    if (this.pendingQueueSteer) return;
     // 输入框正文：鼠标跟踪下原生拖选拿不到输入行，这里开一条自己的选区通道。
     const inputRow = this.inputRowIndexAt(event.row);
     if (inputRow !== undefined) {
@@ -3285,6 +3383,20 @@ export class TerminalUI {
 
   /** 左键松开：按下时登记的待定状态在这里结算（同一处按下松开才算点击）。 */
   private handleLeftButtonUp(event: TerminalMouseEvent): void {
+    if (this.pendingQueueSteer) {
+      const pressed = this.pendingQueueSteer;
+      this.pendingQueueSteer = undefined;
+      const hit = this.queueSteerHitAt(event.column, event.row);
+      if (
+        hit &&
+        hit.row === pressed.row &&
+        hit.index === pressed.index &&
+        hit.text === pressed.text
+      ) {
+        this.steerQueueItem(hit.index, hit.text);
+      }
+      return;
+    }
     if (this.pendingInputSelection) {
       // 按下后没拖动：只是点了输入框，不产生选区，也不复制。
       this.pendingInputSelection = undefined;
@@ -3758,6 +3870,14 @@ export class TerminalUI {
     activeInput.commandNavigated = false;
   }
 
+  private selectionItems(selection: ActiveSelection): readonly TerminalSelectionItem[] {
+    const query = selection.options.searchable ? selection.query?.trim().toLowerCase() : "";
+    if (!query) return selection.options.items;
+    return selection.options.items.filter((item) =>
+      `${item.label} ${item.value} ${item.description ?? ""}`.toLowerCase().includes(query),
+    );
+  }
+
   private getSelectionRows(width: number, maxRows: number): string[] {
     const activeSelection = this.activeSelection;
     if (!activeSelection || maxRows <= 0) {
@@ -3765,6 +3885,7 @@ export class TerminalUI {
     }
 
     const { options } = activeSelection;
+    const items = this.selectionItems(activeSelection);
     const navigation =
       options.hint ??
       (options.secondary
@@ -3795,9 +3916,16 @@ export class TerminalUI {
       }
     }
 
+    if (options.searchable) {
+      rows.push(
+        `${SEQ.muted}${truncateText(`搜索：${activeSelection.query || "输入关键词"} · ${items.length}/${options.items.length} · 退格删除`, width)}${SEQ.reset}`,
+      );
+      if (items.length === 0) rows.push(`${SEQ.muted}没有匹配的选项${SEQ.reset}`);
+    }
+
     if (options.preview?.length) {
       // 至少给选项留出三行（或全部选项），其余高度给预览。
-      const reservedItemRows = Math.min(options.items.length, 3);
+      const reservedItemRows = Math.min(items.length, 3);
       const previewBudget = Math.max(0, maxRows - rows.length - reservedItemRows);
       const bar = `${SEQ.muted}│${SEQ.reset} `;
       const lineWidth = Math.max(1, width - 2);
@@ -3815,12 +3943,9 @@ export class TerminalUI {
     const availableItemRows = Math.max(1, maxRows - rows.length);
     const firstVisibleIndex = Math.min(
       Math.max(0, activeSelection.selectedIndex - availableItemRows + 1),
-      Math.max(0, options.items.length - availableItemRows),
+      Math.max(0, items.length - availableItemRows),
     );
-    const visibleItems = options.items.slice(
-      firstVisibleIndex,
-      firstVisibleIndex + availableItemRows,
-    );
+    const visibleItems = items.slice(firstVisibleIndex, firstVisibleIndex + availableItemRows);
 
     rows.push(
       ...formatMenuRows(
@@ -4497,7 +4622,12 @@ export class TerminalUI {
     let inputBlock: string[];
     let inputCursorOffset = 0;
     const leadingInputRows: string[] = [];
-    if (this.queueText) leadingInputRows.push(truncateAnsiText(this.queueText, width));
+    leadingInputRows.push(
+      ...this.getQueueRows(
+        width,
+        emergencyMinimal ? 0 : Math.max(1, Math.min(3, Math.floor(height / 6))),
+      ),
+    );
     const emergencyLeadingBudget = Math.max(0, height - 2);
     const visibleLeadingInputRows = emergencyMinimal
       ? emergencyLeadingBudget === 0
@@ -4586,6 +4716,7 @@ export class TerminalUI {
   }
 
   private renderFrame(): void {
+    this.queueSteerHits = [];
     if (this.streamRenderTimer) {
       clearTimeout(this.streamRenderTimer);
       this.streamRenderTimer = null;
@@ -4905,6 +5036,7 @@ export class TerminalUI {
     const leftRows = emergencyMinimal
       ? [...composedChatRows, ...inputBlock]
       : [...topRows, divider, ...composedChatRows, ...inputBlock];
+    this.updateQueueSteerHits(inputBlock, leftRows.length - inputBlock.length + 1);
     // 复制角标贴在顶行右端（标题行）；头部隐藏时改走底栏提示。
     // 先贴再合成侧栏，避免角标把贯穿的竖线切断。
     if (topRows.length > 0) this.overlayCopiedNotice(leftRows, leftAreaWidth);
@@ -5035,7 +5167,8 @@ export class TerminalUI {
       return;
     }
 
-    const selected = activeSelection.options.items[activeSelection.selectedIndex];
+    const selected = this.selectionItems(activeSelection)[activeSelection.selectedIndex];
+    if (!error && !selected) return;
     const selectedSecondary =
       activeSelection.options.secondary?.items[activeSelection.secondaryIndex];
     this.activeSelection = undefined;
@@ -5188,6 +5321,21 @@ export class TerminalUI {
       this.finishSelection();
       return;
     }
+    if (
+      activeSelection.options.searchable &&
+      !key.ctrl &&
+      !key.meta &&
+      (key.name === "backspace" || (value && !/[\x00-\x1f\x7f]/u.test(value)))
+    ) {
+      const current = activeSelection.query ?? "";
+      activeSelection.query =
+        key.name === "backspace"
+          ? splitGraphemes(current).slice(0, -1).join("")
+          : (current + value).slice(0, 200);
+      activeSelection.selectedIndex = 0;
+      this.scheduleRender(true);
+      return;
+    }
     const hotkeyIndex =
       value && !key.ctrl && !key.meta
         ? activeSelection.options.items.findIndex(
@@ -5202,7 +5350,8 @@ export class TerminalUI {
     }
     if (key.name === "up" || key.name === "down") {
       const direction = key.name === "up" ? -1 : 1;
-      const itemCount = activeSelection.options.items.length;
+      const itemCount = this.selectionItems(activeSelection).length;
+      if (itemCount === 0) return;
       activeSelection.selectedIndex =
         (activeSelection.selectedIndex + direction + itemCount) % itemCount;
       this.scheduleRender(true);

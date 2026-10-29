@@ -7,6 +7,7 @@
  * permissionMode / riskThreshold 用访问器（Plan 审批会在回合中切换档位），
  * provider / selectedModel / reasoningEffort 快照即可（只在回合之间变化）。
  */
+
 import {
   type AgentManager,
   type BaseTool,
@@ -42,6 +43,7 @@ import {
   shouldShowToolThinkingSummary,
 } from "./markdown-renderer.js";
 import { FoldStatsCollector } from "./process-fold.js";
+import { appendSteering, skipSteeredCalls } from "./steering.js";
 import {
   type FoldGroupHandle,
   TerminalInputCancelledError,
@@ -125,6 +127,8 @@ export interface TurnDeps {
   deferredInputDrafts: string[];
   /** 待处理输入队列（const 数组引用）。 */
   pendingInputs: string[];
+  /** 用户主动从队列提升的当前回合补充指令。 */
+  steeringInputs?: string[];
   updateStatusUI(): void;
   applyPermissionMode(mode: PermissionMode): Promise<void>;
   readSelectionSafely: (
@@ -414,7 +418,24 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   let turnToolCalls = 0;
   let turnFailed = false;
   const repeatedFailures = new RepeatedFailureTracker();
+  const applySteering = (): boolean => {
+    if (isTurnAborted || turnFailed || !deps.steeringInputs?.length) return false;
+    const inputs = appendSteering(messages, deps.steeringInputs);
+    for (const content of inputs) ui.writeLine(colors.accent(`› steer: ${content}`));
+    deps.setLastUserMessageForRecall(inputs[inputs.length - 1]);
+    sessionManager.saveCurrentSession(messages);
+    deps.updateStatusUI();
+    return true;
+  };
   while (keepCalling) {
+    if (applySteering()) {
+      await sessionManager.flush();
+      if (sessionManager.hasPendingWrites()) {
+        turnFailed = true;
+        ui.writeLine(colors.failLine("steer 消息尚未保存，已停止后续请求。"));
+        break;
+      }
+    }
     const repairedMessages = repairToolCallPairs(messages, { preserveIncomplete: true });
     if (repairedMessages !== messages) {
       // 静默修复：历史配对不完整通常来自被中止的回合，属于内部卫生问题，
@@ -809,6 +830,10 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       toolCallDraftHandedOver = true;
 
       for (const batch of batches) {
+        if (!isTurnAborted && deps.steeringInputs?.length) {
+          skipSteeredCalls(messages, batch.calls);
+          continue;
+        }
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
         if (turnFailed || stoppedByRepeatedFailure) {
           for (const tc of batch.calls) {
@@ -1204,7 +1229,22 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         }
       }
     }
+    if (applySteering()) {
+      await sessionManager.flush();
+      if (sessionManager.hasPendingWrites()) {
+        turnFailed = true;
+        keepCalling = false;
+        ui.writeLine(colors.failLine("steer 消息尚未保存，已停止后续请求。"));
+      } else keepCalling = true;
+    }
     sessionManager.saveCurrentSession(messages);
+  }
+  // 进入异步落盘前关闭按钮，避免收尾期间收到无人处理的 steer。
+  ui.setSteerEnabled?.(false);
+  // 中止或失败时尚未应用的 steer 放回普通队列，避免丢失用户消息。
+  if (deps.steeringInputs?.length) {
+    pendingInputs.unshift(...deps.steeringInputs.splice(0));
+    ui.setQueue(pendingInputs);
   }
   stopActiveTurnVisuals();
   // 包括网络失败、取消和停止分支；返回输入框前完成本轮快照写入。

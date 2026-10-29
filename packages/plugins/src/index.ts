@@ -1,3 +1,4 @@
+export * from "./ask-question-tool.js";
 export * from "./bash-tool.js";
 export * from "./deepseek.js";
 export * from "./edit-tool.js";

@@ -62,6 +62,7 @@ import {
   wrapExperienceRecall,
 } from "@hajicli/core";
 import {
+  AskQuestionTool,
   BashTool,
   DeepSeekProvider,
   EditFileTool,
@@ -196,6 +197,7 @@ import {
 } from "./session-commands.js";
 import { runShutdownSteps } from "./shutdown.js";
 import { buildSessionProgress } from "./startup-home.js";
+import { takeQueuedSteer } from "./steering.js";
 import {
   handleAgentsCommand,
   handlePresetCommand,
@@ -235,6 +237,7 @@ import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
 import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
 import { loadUserModels } from "./user-models.js";
+import { askUserQuestion } from "./user-question.js";
 import { handleWorkspaceCommand, type WorkspaceCommandContext } from "./workspace-commands.js";
 import {
   addWorkspaceRoot,
@@ -1034,6 +1037,21 @@ async function main() {
     new ProjectInfoTool(),
     new SelfStateTool(() => buildSelfStateSnapshot()),
     new RequestTool({ approve: (spec) => approveAgentRequest(spec) }),
+    new AskQuestionTool((question, context) =>
+      askUserQuestion(
+        {
+          ui,
+          notify: notifyUserAttention,
+          blocked: () => agentStatus.blocked("question", "等待用户回答"),
+          resume: (draft) => {
+            agentStatus.working("继续执行");
+            startBackgroundInput(draft);
+          },
+        },
+        question,
+        context,
+      ),
+    ),
     new HistoryTool({
       current: () => ({
         id: sessionManager.getCurrentSession().id,
@@ -2003,6 +2021,14 @@ async function main() {
 
   // 待处理并发消息队列
   const pendingInputs: string[] = [];
+  const steeringInputs: string[] = [];
+  ui.onQueueSteer((index, text) => {
+    if (!foregroundAbortSignal || foregroundAbortSignal.aborted) return false;
+    const input = takeQueuedSteer(pendingInputs, index, text);
+    if (input === undefined) return false;
+    steeringInputs.push(input);
+    return true;
+  });
   const deferredInputDrafts: string[] = [];
   /**
    * 鼠标交互（目前是侧栏「费用」点击）排队到主循环执行的动作。
@@ -2617,6 +2643,7 @@ async function main() {
     try {
       const selection = await readSelectionSafely({
         title: "选择模型",
+        searchable: true,
         items: availableModels,
         selectedValue: selectedModel,
         secondary: {
@@ -3223,7 +3250,9 @@ async function main() {
     },
     setForegroundAbortSignal: (signal) => {
       foregroundAbortSignal = signal;
+      ui.setSteerEnabled(Boolean(signal && !signal.aborted));
     },
+    steeringInputs,
     setLastToolBatchOutputs: (outputs) => {
       lastToolBatchOutputs = outputs;
     },

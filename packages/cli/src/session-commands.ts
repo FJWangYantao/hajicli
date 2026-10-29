@@ -557,6 +557,7 @@ export async function handleResumeCommand(ctx: SessionCommandContext, keyword = 
       title: keyword
         ? `选择要恢复的历史对话（匹配「${keyword}」，共 ${sessions.length} 个）`
         : "选择要恢复的历史对话 (按最近时间排序)",
+      searchable: true,
       items,
       selectedValue: sessionManager.getCurrentSession().id,
     });

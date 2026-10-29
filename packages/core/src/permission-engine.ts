@@ -389,6 +389,7 @@ export class PermissionEngine {
       "find_files",
       "projectinfo",
       "selfstate",
+      "askquestion",
       "history",
       // 内置网络工具的实际名字没有下划线；带下划线的写法保留兼容旧别名。
       "websearch",
