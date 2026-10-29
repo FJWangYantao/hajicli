@@ -1,5 +1,51 @@
 # 更新记录
 
+## 1.6.0（2026-10-29）
+
+### 新功能
+
+- **用户 Hooks**：`~/.haji/hooks.json` / `.haji/hooks.json` 配置 `PreToolUse`、`PostToolUse`、
+  `UserPromptSubmit`、`Stop` 四个时机的 shell 命令。退出码 2 时 `PreToolUse` 拦下工具调用（原因回给模型）、
+  `PostToolUse` 把 stderr 回注；`UserPromptSubmit` 的 stdout 作补充上下文。Hook 只能拦、不能替用户放行。
+  项目级 hooks 必须经 `/hooks trust` 按内容哈希信任后才执行（CI 用 `HAJI_TRUST_PROJECT_HOOKS=1`）。
+- **自定义斜杠命令**：`.haji/commands/<名称>.md` 写提示词模板（`$ARGUMENTS`、`$1`…`$9`），
+  `/<名称> 参数` 展开发送；进补全，`haji -p "/review …"` 与 mcp-serve 同样可用。
+- **驱动进程 `haji mcp-serve`**：把 haji 当成 MCP 工具给外部 Agent 用（`haji_send` / `wait` / `events` /
+  `adjust` / `approve` / `cancel` / `status`）；授权卡与计划审批走 `selection_request` 事件。
+  接入文档与最小客户端在 `examples/`。
+- **无人值守硬上限**：`-p` 与 `mcp-serve` 支持 `--max-cost <元>`、`--max-turns <n>`，命中即停，
+  结果带 `stopReason`。
+- **无头模式 `--allow <键>`**：预放行已知安全的命令（如 `--allow "bash:npm test"`），只对本次进程生效。
+- **会话**：`/fork` 复制当前对话为新会话；`/reload` 保存后原位重启（保留 PID 与前台进程组）。
+- **输入**：`@` 引用支持中文与带空格的路径；`Alt+A` 管理附件、`Alt+Q` 管理待发送消息；
+  回合进行中可把排队消息提升为当前回合的补充指令（steer）；模型可向用户提问，长列表支持搜索。
+- **渠道单价**：同名模型走 CN 中转 / 自建代理时可按 `<渠道>/<模型>` 单独定价，不再按官方价估算；
+  `scripts/token-breakdown.mjs` 按主线 / 标题 / 压缩 / 提炼拆解 token 去向。
+
+### 行为变化
+
+- `haji -p` 回合失败（模型请求失败、被中止、触发硬上限、会话落盘失败）时**退出码为 1**，
+  此前一律为 0。CI 脚本若依赖旧行为需要调整。
+- `haji mcp-serve --approval ask` 下授权卡 5 分钟无人回复**按拒绝处理**（此前会回落到默认放行）；
+  拒绝与计划修改意见经 `haji_approve.reason` 回传给模型。
+- `/cost` 计入子代理、上下文压缩、会话标题、经验提炼、Auto 权限判定与后台查价的模型调用，
+  总额会比旧版本高（旧版本偏低）。
+
+### 修复
+
+- 编辑后验证发现问题时，诊断消息被插在工具调用与结果之间，下一轮把真实的编辑回执换成了
+  「工具执行状态未知」；现在回注排在工具结果之后。
+- 会话恢复：同 id 多副本取最新有效副本，加载前校验消息结构；断流 / 提前 EOF 时保留已收到的内容，
+  执行工具前与每批结果后落盘，强退后恢复不会重复执行写操作。
+- 会话保存加锁并校验基线，多进程同时写同一会话时报冲突而不是静默覆盖。
+- mcp-serve：`haji_send` 返回的游标改为回合开始前，不再错过回包前就发出的授权卡。
+
+### 开发者
+
+- `index.ts` 拆出 `serve-mode.ts`、`permission-commands.ts`、`extension-commands.ts`；
+  `terminal-input.ts` 拆出 `frame-compose.ts`、`selection-picker.ts` 等无状态模块，`renderFrame` 按阶段拆分。
+- `scripts/ab-run.mjs` 修正 `-p` JSON 结果解析（此前每次运行都记成失败）。
+
 ## 1.5.0（2026-10-28）
 
 1.4.0 之后的第一次版本号同步，覆盖此前累积的全部改动。
