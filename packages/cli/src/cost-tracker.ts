@@ -267,6 +267,11 @@ export class CostTracker {
   private currentTurn = 0;
   /** 已声明开新轮、但还没产生过记账：真正记账时再递增，避免空轮留下编号空洞。 */
   private turnPending = false;
+  /**
+   * 本轮问题摘要还没落到任何记录上。和 turnPending 分开记：标题、权限判定这类杂活可能先于主线
+   * 请求记账，它们不带问题摘要，不能把「本轮第一条」的位置占掉。
+   */
+  private turnPromptPending = false;
 
   /**
    * 金额按调用时刻的单价解析结果即时计算（不落盘），
@@ -283,6 +288,7 @@ export class CostTracker {
    */
   beginTurn(): void {
     this.turnPending = true;
+    this.turnPromptPending = true;
   }
 
   record(
@@ -299,7 +305,6 @@ export class CostTracker {
   ): void {
     if (!Number.isFinite(usage.total_tokens) || usage.total_tokens <= 0) return;
     // 本轮第一次真正记账：现在才把编号落定（见 beginTurn 说明）。
-    const firstOfTurn = this.turnPending;
     if (this.turnPending) {
       this.currentTurn += 1;
       this.turnPending = false;
@@ -313,11 +318,14 @@ export class CostTracker {
       extra.reasoningTokens !== undefined && Number.isFinite(extra.reasoningTokens)
         ? Math.max(0, Math.round(extra.reasoningTokens))
         : undefined;
-    // 用户问题只在每轮第一条记录上落一次：同一段文字不必在每条调用里重复存。
+    // 用户问题每轮只落一次（落在第一条带问题的记录上）：同一段文字不必在每条调用里重复存。
     const turnPrompt =
-      firstOfTurn && typeof extra.turnPrompt === "string" && extra.turnPrompt.trim().length > 0
+      this.turnPromptPending &&
+      typeof extra.turnPrompt === "string" &&
+      extra.turnPrompt.trim().length > 0
         ? truncateTurnPrompt(extra.turnPrompt)
         : undefined;
+    if (turnPrompt !== undefined) this.turnPromptPending = false;
     this.records.push({
       model,
       ...(extra.provider ? { provider: extra.provider } : {}),

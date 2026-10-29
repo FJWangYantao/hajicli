@@ -101,7 +101,17 @@ export type SubagentEvent =
       agentId: string;
       role: SubagentRole;
       taskId?: string;
-      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+      usage: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+        prompt_cache_hit_tokens?: number;
+      };
+      /** 本次请求用的模型与渠道（费用按它们定价）；渠道缺省表示跟随主会话。 */
+      model: string;
+      provider?: string;
+      /** usage 是 provider 上报的（false 为本地估算，只用于预算，不计费）。 */
+      reported: boolean;
     }
   | { type: "warning"; agentId: string; role: SubagentRole; taskId?: string; message: string }
   | { type: "done"; agentId: string; role: SubagentRole; taskId?: string; result: SubagentResult };
@@ -282,7 +292,12 @@ export class SubagentRunner {
         let text = "";
         let finishReason: string | undefined;
         let turnUsage:
-          | { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+          | {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+              prompt_cache_hit_tokens?: number;
+            }
           | undefined;
         const estimatedPromptTokens = estimateMessagesTokens(messages, { includeSystem: true });
         for await (const chunk of provider.completeStream(messages, {
@@ -336,7 +351,13 @@ export class SubagentRunner {
               prompt_tokens: Math.max(0, Math.trunc(turnUsage.prompt_tokens || 0)),
               completion_tokens: Math.max(0, Math.trunc(turnUsage.completion_tokens || 0)),
               total_tokens: reportedTotalTokens,
+              ...(turnUsage.prompt_cache_hit_tokens !== undefined
+                ? { prompt_cache_hit_tokens: turnUsage.prompt_cache_hit_tokens }
+                : {}),
             },
+            model,
+            ...(request.provider ? { provider: request.provider } : {}),
+            reported: true,
           });
         } else {
           const estimatedCompletionTokens = estimateMessagesTokens(
@@ -364,6 +385,9 @@ export class SubagentRunner {
               completion_tokens: estimatedCompletionTokens,
               total_tokens: estimatedTotalTokens,
             },
+            model,
+            ...(request.provider ? { provider: request.provider } : {}),
+            reported: false,
           });
           if (!usageFallbackWarned) {
             usageFallbackWarned = true;

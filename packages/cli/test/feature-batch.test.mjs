@@ -371,7 +371,8 @@ test("index.ts wires the new feature batch end to end", () => {
   // utility 路由
   assert.ok(source.includes("resolveUtilityModel("), "杂活模型解析");
   assert.ok(source.includes("getTitleUtility: getUtilityRuntime"), "标题走杂活模型");
-  assert.ok(source.includes("getUtilityRuntime()?.provider ?? provider"), "distill/压缩走杂活模型");
+  assert.ok(source.includes("utility?.provider ?? provider"), "distill/压缩走杂活模型");
+  assert.ok(source.includes('utilityCall("上下文压缩")'), "压缩记账");
   // 无头 v2
   assert.ok(source.includes('headlessRequest?.outputFormat === "json"'), "JSON 模式静音");
   assert.ok(source.includes("JSON.stringify("), "JSON 输出");

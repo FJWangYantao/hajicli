@@ -8,13 +8,20 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DistillEngine, type ExperienceStore, type Memory } from "@hajicli/core";
+import {
+  DistillEngine,
+  type DistillEngineOptions,
+  type ExperienceStore,
+  type Memory,
+} from "@hajicli/core";
 
 export interface ExperienceCommandContext {
   store: ExperienceStore;
   /** 构造 DistillEngine 所需的 provider/model 闭包。 */
   provider: () => { complete: unknown } | null;
   model: () => string;
+  /** 手动提炼的 LLM 用量回调（记进 /cost）；测试与无头场景可不注入。 */
+  onUsage?: DistillEngineOptions["onUsage"];
   /** 当前会话的待提炼观测（用于 /instinct distill）。 */
   pendingObservations: () => ReturnType<ExperienceStore["getPendingObservations"]>;
   /** 提炼后的消息写入通道。 */
@@ -267,6 +274,7 @@ export async function handleInstinctCommand(
       store: ctx.store,
       provider: () => provider as never,
       model: ctx.model,
+      onUsage: ctx.onUsage,
     });
     const obs = ctx.pendingObservations();
     if (obs.length === 0) {

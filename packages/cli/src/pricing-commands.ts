@@ -16,7 +16,7 @@ import type {
 } from "@hajicli/core";
 import { formatOffPeakWindow, type OffPeakPricing, parseOffPeakWindow } from "@hajicli/plugins";
 import { loadPreference, saveUserPreference } from "./cli-runtime.js";
-import type { CostTracker } from "./cost-tracker.js";
+import type { CostTracker, CostUsage } from "./cost-tracker.js";
 import {
   channelPricingKey,
   describeCurrentTier,
@@ -56,7 +56,11 @@ export interface PricingCommandContext {
   getCurrentProviderName(): string;
   getPermissionMode(): PermissionMode;
   getRiskThreshold(): RiskLevel;
-  getUtilityRuntime(): { provider: ObservableModelProvider; model: string } | undefined;
+  getUtilityRuntime():
+    | { provider: ObservableModelProvider; model: string; providerName: string }
+    | undefined;
+  /** 查价 agent 自己的模型调用也要记账（渠道按实际请求的那个）。 */
+  recordSideCost(purpose: string, model: string, usage: CostUsage, providerName: string): void;
   /** 费用信息唯一出口：单价变了要刷新侧栏。 */
   publishCostInfo(): void;
   startBackgroundInput(draft?: string): void;
@@ -224,6 +228,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
       const utility = ctx.getUtilityRuntime();
       const agentProvider = utility?.provider ?? ctx.getProvider();
       const agentModel = utility?.model ?? ctx.getSelectedModel();
+      const agentProviderName = utility?.providerName ?? ctx.getCurrentProviderName();
       const controller = new AbortController();
       try {
         const outcome = await runPricingAgent({
@@ -274,6 +279,8 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
               maxTokens: 1200,
               tools: agentTools.map((tool) => tool.definition),
               abortSignal: controller.signal,
+              onUsage: (usage) =>
+                ctx.recordSideCost("查询单价", agentModel, usage, agentProviderName),
               onToolCall: (calls) => {
                 toolCalls = calls;
               },

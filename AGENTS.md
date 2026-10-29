@@ -77,6 +77,10 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
   走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
   内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
+  **主线以外的调用也记账**：子代理（只记 provider 上报的用量，估算值只管预算）、上下文压缩、
+  会话标题、经验提炼、Auto 权限判定、后台查价都按各自实际模型与渠道记一笔（`purpose` 区分），
+  index.ts 里统一走 `utilityCall(purpose)` / `recordSideCost`；新增模型调用点必须接上，
+  否则 `/cost` 会偏低（测试：`side-cost.test.mjs`）。
 - **单价解析优先级**（`model-pricing.ts` 的 `resolveModelPricing(model, provider?)`）：
   渠道覆盖 `<provider>/<model>` > 内置注册表 > 模型覆盖 `<model>`。渠道覆盖必须压过内置价，
   否则「同名模型走 CN 中转」永远按官方价估算（费用归属错、显示为 null 或明显偏低）。

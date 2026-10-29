@@ -133,7 +133,7 @@ import {
 } from "./cli-runtime.js";
 import { buildContextBreakdown, buildContextItemGroups } from "./context-breakdown.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
-import { CostTracker, formatCostCny, type TurnMetric } from "./cost-tracker.js";
+import { CostTracker, type CostUsage, formatCostCny, type TurnMetric } from "./cost-tracker.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { startMcpStdio } from "./driver/index.js";
@@ -702,9 +702,11 @@ async function main() {
 
   // 杂活模型运行时（压缩摘要/会话标题/经验提炼共用）：按单价自动挑最便宜的，
   // 偏好 utilityModel 显式指定时优先。跨 provider 时按需构建独立 provider 实例。
-  let utilityProviderCache: { model: string; instance: ObservableModelProvider } | undefined;
+  let utilityProviderCache:
+    | { model: string; providerName: string; instance: ObservableModelProvider }
+    | undefined;
   const getUtilityRuntime = ():
-    | { provider: ObservableModelProvider; model: string }
+    | { provider: ObservableModelProvider; model: string; providerName: string }
     | undefined => {
     const utilityModel = resolveUtilityModel(
       typeof savedPreference?.utilityModel === "string" && savedPreference.utilityModel.trim()
@@ -715,7 +717,12 @@ async function main() {
     if (!utilityModel || utilityModel === selectedModel) return undefined;
     if (utilityProviderCache?.model !== utilityModel) {
       try {
-        utilityProviderCache = { model: utilityModel, instance: buildProvider(utilityModel) };
+        utilityProviderCache = {
+          model: utilityModel,
+          // 与 buildProvider(utilityModel) 的渠道推断同一口径（费用按它定价）。
+          providerName: detectProviderForModel(utilityModel, providerConfig),
+          instance: buildProvider(utilityModel),
+        };
       } catch {
         // 杂活模型构建失败（如 Key 失效）时回退主模型，不阻断主流程。
         utilityProviderCache = undefined;
@@ -723,8 +730,26 @@ async function main() {
       }
     }
     return utilityProviderCache
-      ? { provider: utilityProviderCache.instance, model: utilityProviderCache.model }
+      ? {
+          provider: utilityProviderCache.instance,
+          model: utilityProviderCache.model,
+          providerName: utilityProviderCache.providerName,
+        }
       : undefined;
+  };
+  /**
+   * 杂活调用的运行时：有更便宜的杂活模型就走它，否则走主模型。
+   * 返回的 onUsage 把这次调用按用途记进 /cost（压缩、权限判定、经验提炼都要算钱）。
+   */
+  const utilityCall = (purpose: string) => {
+    const utility = getUtilityRuntime();
+    const model = utility?.model ?? selectedModel;
+    const providerName = utility?.providerName ?? currentProviderName;
+    return {
+      provider: utility?.provider ?? provider,
+      model,
+      onUsage: (usage: CostUsage) => recordSideCost(purpose, model, usage, providerName),
+    };
   };
 
   // 当前模型上下文窗口：provider 配置按模型声明优先于内置注册表；环境变量始终最高。
@@ -747,6 +772,17 @@ async function main() {
   const costTracker = new CostTracker((model, provider) =>
     resolveModelPricing(model, provider ?? currentProviderName),
   );
+  /** 主线以外的模型调用（子代理、压缩、标题、提炼、权限判定、查价）也记账，否则 /cost 偏低。 */
+  const recordSideCost = (
+    purpose: string,
+    model: string,
+    usage: CostUsage,
+    providerName: string,
+  ): void => {
+    costTracker.record(model, usage, purpose, Date.now(), { provider: providerName });
+    publishCostInfo();
+    syncSessionUsage();
+  };
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   // 无头模式的 --allow 键并入同一视图（只在本进程生效，不落盘）：CI / 评测里没有交互确认的机会，
@@ -1017,14 +1053,15 @@ async function main() {
 
     activityIndicator.start("compacting", "压缩上下文", "正在生成结构化摘要");
     try {
-      const utility = getUtilityRuntime();
-      const summary = await (utility?.provider ?? provider).complete(
+      const utility = utilityCall("上下文压缩");
+      const summary = await utility.provider.complete(
         [
           { role: "system", content: summaryInstruction },
           { role: "user", content: `以下是待压缩的完整 JSONL 对话记录：\n\n${transcript}` },
         ],
         {
-          model: utility?.model ?? selectedModel,
+          model: utility.model,
+          onUsage: utility.onUsage,
           reasoningEffort: "low",
           thinking: false,
           maxTokens: 6000,
@@ -1480,14 +1517,15 @@ async function main() {
   // 判定状态挂在对话区该工具格上（◈ 判定中 → 结论），不占用底栏状态行，也不写对话正文。
   permissionEngine.configureAuto({
     judge: async ({ system, user, signal }) => {
-      const utility = getUtilityRuntime();
-      return (utility?.provider ?? provider).complete(
+      const utility = utilityCall("权限判定");
+      return utility.provider.complete(
         [
           { role: "system", content: system },
           { role: "user", content: user },
         ],
         {
-          model: utility?.model ?? selectedModel,
+          model: utility.model,
+          onUsage: utility.onUsage,
           reasoningEffort: "low",
           thinking: false,
           maxTokens: 400,
@@ -1764,6 +1802,16 @@ async function main() {
       }
       if (event.type === "usage") {
         agentManager.addUsage(event.agentId, event.usage);
+        // 本地估算的用量只用于预算，不当成账单；渠道推断与 getProvider 同一口径。
+        if (event.reported) {
+          recordSideCost(
+            "子代理",
+            event.model,
+            event.usage,
+            event.provider ||
+              detectProviderForModel(event.model, providerConfig, currentProviderName),
+          );
+        }
         return;
       }
       if (event.type === "warning") {
@@ -2605,6 +2653,8 @@ async function main() {
     store: experienceStore,
     provider: () => provider,
     model: () => selectedModel,
+    onUsage: (model: string, usage: CostUsage) =>
+      recordSideCost("经验提炼", model, usage, currentProviderName),
     pendingObservations: () => experienceStore.getPendingObservations(),
     writeLine: (line: string) => ui.writeLine(line),
     writeChat: (content: string) => ui.writeChat(content),
@@ -3321,6 +3371,7 @@ async function main() {
     getPermissionMode: () => permissionMode,
     getRiskThreshold: () => riskThreshold,
     getUtilityRuntime,
+    recordSideCost,
     publishCostInfo,
     startBackgroundInput,
     readSelectionSafely,
@@ -3375,7 +3426,7 @@ async function main() {
     recordCost: (model, usage, purpose, extra) => {
       costTracker.record(model, usage, purpose, Date.now(), {
         ...extra,
-        provider: currentProviderName,
+        provider: extra?.provider ?? currentProviderName,
         ...(currentTurnPrompt ? { turnPrompt: currentTurnPrompt } : {}),
       });
       publishCostInfo();
@@ -4555,10 +4606,12 @@ async function main() {
             await experienceStore.flushObservations();
             signal.throwIfAborted();
             // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选（LLM 路径走杂活模型）
+            const distillRuntime = utilityCall("经验提炼");
             const distillEngine = new DistillEngine({
               store: experienceStore,
-              provider: () => getUtilityRuntime()?.provider ?? provider,
-              model: () => getUtilityRuntime()?.model ?? selectedModel,
+              provider: () => distillRuntime.provider,
+              model: () => distillRuntime.model,
+              onUsage: (_model, usage) => distillRuntime.onUsage(usage),
               logger: (msg) => progressLog(colors.gray(`  ${msg}`)),
             });
             const distillSummary = await distillEngine.runDistill(sessionObs, {

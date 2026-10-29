@@ -118,12 +118,20 @@ export interface TurnDeps {
     model: string,
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
     purpose?: string,
-    extra?: { durationMs?: number; reasoningTokens?: number; turnPrompt?: string },
+    extra?: {
+      durationMs?: number;
+      reasoningTokens?: number;
+      turnPrompt?: string;
+      /** 记账渠道；缺省为当前主会话渠道（杂活模型可能在别的渠道上）。 */
+      provider?: string;
+    },
   ) => void;
   /** 每轮开始时通知费用记账开新轮（轮次编号用于侧栏按轮次展开）。 */
   beginTurn?: (prompt?: string) => void;
   /** 会话标题生成用的杂活模型运行时；缺省退回主模型。 */
-  getTitleUtility?: () => { provider: ObservableModelProvider; model: string } | undefined;
+  getTitleUtility?: () =>
+    | { provider: ObservableModelProvider; model: string; providerName?: string }
+    | undefined;
   getPermissionMode(): PermissionMode;
   getRiskThreshold(): RiskLevel;
   getMessages(): ChatMessage[];
@@ -321,11 +329,19 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           let fullTitleText = "";
           // 标题是低价值杂活，优先走便宜的 utility 模型。
           const utility = deps.getTitleUtility?.();
+          const titleModel = utility?.model ?? selectedModel;
           const titleStream = (utility?.provider ?? provider).completeStream(
             [{ role: "user", content: prompt }],
             {
-              model: utility?.model ?? selectedModel,
+              model: titleModel,
               reasoningEffort: "low",
+              onUsage: (usage) =>
+                deps.recordCost?.(
+                  titleModel,
+                  usage,
+                  "会话标题",
+                  utility?.providerName ? { provider: utility.providerName } : undefined,
+                ),
             },
           );
           for await (const chunk of titleStream) fullTitleText += chunk;

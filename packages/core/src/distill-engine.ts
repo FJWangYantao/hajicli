@@ -6,7 +6,7 @@ import type {
   Memory,
   ToolObservation,
 } from "./experience-types.js";
-import type { ChatMessage, ModelProvider } from "./types.js";
+import type { ChatMessage, CompletionOptions, ModelProvider } from "./types.js";
 
 /**
  * 模式提炼引擎（文章的 Instinct Engine）。
@@ -50,6 +50,11 @@ export interface DistillEngineOptions {
   model: () => string;
   /** 可选日志回调（用于向用户反馈提炼进度）。 */
   logger?: (message: string) => void;
+  /** LLM 路径的 token 用量回调（费用记账用）；参数里带上实际请求的模型名。 */
+  onUsage?: (
+    model: string,
+    usage: Parameters<NonNullable<CompletionOptions["onUsage"]>>[0],
+  ) => void;
 }
 
 export class DistillEngine {
@@ -363,6 +368,7 @@ export class DistillEngine {
 
     const userContent = `## 工具调用观测（共 ${obs.length} 条，失败 ${obs.filter((o) => o.failed).length} 条）\n${obsDigest}\n\n## 最近对话摘要\n${recentMessages}`;
 
+    const model = this.options.model();
     const raw = await withTimeout(
       provider.complete(
         [
@@ -370,7 +376,8 @@ export class DistillEngine {
           { role: "user", content: userContent },
         ],
         {
-          model: this.options.model(),
+          model,
+          onUsage: (usage) => this.options.onUsage?.(model, usage),
           temperature: 0.2,
           reasoningEffort: "low",
           thinking: false,
