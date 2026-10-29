@@ -95,6 +95,7 @@ import {
   TaskListTool,
   UpdateTaskTool,
   VerifyAgentTool,
+  VisualizeTool,
   VolcengineProvider,
   WebFetchTool,
   WebSearchTool,
@@ -1225,6 +1226,7 @@ async function main() {
     new GoalFinishTool((evidence) => finishGoal(evidence)),
     subagentTool,
     verifyAgentTool,
+    new VisualizeTool(),
   ];
 
   const toolsMap = new Map(tools.map((t) => [t.name, t]));

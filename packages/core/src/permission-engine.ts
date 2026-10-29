@@ -399,6 +399,8 @@ export class PermissionEngine {
       "loadskill",
       "listskillresources",
       "readskillresource",
+      // 只画图、不落盘：计划模式与只读子代理里同样允许。
+      "visualize",
     ];
     return (
       readOnlyTools.includes(toolName.toLowerCase()) ||

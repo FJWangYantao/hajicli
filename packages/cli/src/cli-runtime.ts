@@ -21,6 +21,7 @@ import {
   SHELL_PREVIEW_LINES,
   SHELL_PREVIEW_MAX_CHARS,
 } from "./tool-output.js";
+import { visualizePreview, visualizeTitle } from "./visualize-view.js";
 
 /** 用户级偏好（跨项目默认值）：~/.haji/preferences.json。 */
 function userPreferencesPath(): string {
@@ -223,6 +224,8 @@ export function summarizeToolCall(toolName: string, args: Record<string, unknown
       return joinParts(textArg(args, "taskId"), textArg(args, "status"));
     case "taskfinish":
       return textArg(args, "taskId");
+    case "visualize":
+      return visualizeTitle(args);
     default:
       return formatToolArgs(args, 160);
   }
@@ -566,6 +569,20 @@ export function summarizeToolResult(
   }
   const head = firstLine(body);
   if (DISPLAY_FAILURE_RE.test(head)) return { status: "failed", text: oneLine(head) };
+
+  // visualize：图从入参现算（不看输出正文），预览行宽度按对话区实际内容宽扣掉
+  // 工具块缩进（`  └ `）与预览行缩进（4 格）后给出——放不下就退回源码，绝不折行。
+  if (toolName === "visualize") {
+    const previewWidth = Math.max(8, (uiContentWidth ?? preferredDiffWidth()) - 8);
+    const view = visualizePreview(args, previewWidth);
+    if (view) {
+      return {
+        status: "success",
+        text: view.text,
+        ...(view.preview?.length ? { preview: view.preview } : {}),
+      };
+    }
+  }
 
   const readRange = body.match(/总行数=(\d+)；返回=([\d-]+)/);
   if (readRange) {

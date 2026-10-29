@@ -41,6 +41,9 @@ importers:
       '@hajicli/core':
         specifier: workspace:^
         version: link:../core
+      lovely-mermaid:
+        specifier: 0.3.3
+        version: 0.3.3
       undici:
         specifier: ^7.28.0
         version: 7.28.0
@@ -111,6 +114,10 @@ packages:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
     engines: {node: '>=0.3.1'}
 
+  lovely-mermaid@0.3.3:
+    resolution: {integrity: sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==}
+    engines: {node: '>=18'}
+
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
@@ -170,6 +177,8 @@ snapshots:
       undici-types: 6.21.0
 
   diff@8.0.4: {}
+
+  lovely-mermaid@0.3.3: {}
 
   typescript@5.9.3: {}
 

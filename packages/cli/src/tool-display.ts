@@ -40,7 +40,13 @@ export interface ToolDisplay {
 }
 
 /** 结果本身就是“内容体积”的工具，完成后按块渲染。 */
-const BLOCK_TOOLS: ReadonlySet<string> = new Set(["bash", "write", "edit", "apply_patch"]);
+const BLOCK_TOOLS: ReadonlySet<string> = new Set([
+  "bash",
+  "write",
+  "edit",
+  "apply_patch",
+  "visualize",
+]);
 
 /** `summarizeToolCall` 里有专属主语规则的工具；其余走通用兜底。 */
 const TITLED_TOOLS: ReadonlySet<string> = new Set([
@@ -60,6 +66,7 @@ const TITLED_TOOLS: ReadonlySet<string> = new Set([
   "taskcreate",
   "updatetask",
   "taskfinish",
+  "visualize",
 ]);
 
 /**
