@@ -8,19 +8,7 @@ import { type AgentPanelItem, buildAgentPanelRows } from "./agent-panel.js";
 import { matchSlashCommands } from "./cli-help.js";
 import { captureClipboardImage, type PastedImage } from "./clipboard-image.js";
 import type { ContextBreakdown, ContextItemGroup } from "./context-breakdown.js";
-import {
-  buildContextInspectorFrame,
-  CONTEXT_INSPECTOR_MIN_COLUMNS,
-  CONTEXT_INSPECTOR_MIN_ROWS,
-  type ContextInspectorFrame,
-} from "./context-inspector.js";
-import {
-  buildCostLogFrame,
-  COST_LOG_MIN_COLUMNS,
-  COST_LOG_MIN_ROWS,
-  type CostLogFrame,
-  type CostLogSort,
-} from "./cost-log-page.js";
+import type { CostLogSort } from "./cost-log-page.js";
 import type { RequestCostDetail } from "./cost-tracker.js";
 import {
   type FileMentionPreview,
@@ -58,6 +46,7 @@ import {
   selectCostLogItem,
   selectInspectorItem,
 } from "./overlay-navigation.js";
+import { costLogHit, inspectorHit, requestDetailHit, resolveOverlayPage } from "./overlay-page.js";
 import { paperSidebarEnabled } from "./paper-sidebar.js";
 import {
   buildFoldHeader,
@@ -66,12 +55,6 @@ import {
   renderSegmentText,
   splitBlankEdges,
 } from "./process-fold.js";
-import {
-  buildRequestDetailFrame,
-  REQUEST_DETAIL_MIN_COLUMNS,
-  REQUEST_DETAIL_MIN_ROWS,
-  type RequestDetailFrame,
-} from "./request-detail-page.js";
 import { buildStartupHome, type RecentSessionEntry, startupActions } from "./startup-home.js";
 import {
   buildStartupLauncher,
@@ -157,12 +140,6 @@ import {
   type SidebarPricingAgentState,
   type SidebarState,
 } from "./tui-sidebar.js";
-import {
-  buildTurnDetailFrame,
-  TURN_DETAIL_MIN_COLUMNS,
-  TURN_DETAIL_MIN_ROWS,
-  type TurnDetailFrame,
-} from "./turn-detail-page.js";
 import type { WorkspaceStatus } from "./workspace-status.js";
 
 export { type AgentPanelItem, buildAgentPanelRows, formatAgentElapsed } from "./agent-panel.js";
@@ -4221,148 +4198,40 @@ export class TerminalUI {
     height: number,
     screenTop: number,
   ): string[] | undefined {
-    // 整页视图（上下文详情 / 费用日志）：整块替换对话区
-    // （活动行、折叠段、悬停卡片都不参与本帧）。
-    const inspectorFrame: ContextInspectorFrame | undefined = this.contextInspector
-      ? buildContextInspectorFrame(
-          {
-            groups: this.contextInspector.groups,
-            categoryIndex: this.contextInspector.categoryIndex,
-            selectedIndex: this.contextInspector.selectedIndex,
-            scroll: this.contextInspector.scroll,
-          },
-          width,
-          height,
-        )
-      : undefined;
-    // 费用页有两个层次：列表，以及按 Enter 进去的回合详情。详情页盖在列表之上，
-    // 同一时刻只排一帧，命中表也随当前这一帧重建。
+    const page = resolveOverlayPage(this.contextInspector, this.costLog, width, height);
     const turnDetailView = this.costLog?.turnDetail;
-    const requestFrame: RequestDetailFrame | undefined =
-      this.costLog && turnDetailView?.openDetail
-        ? buildRequestDetailFrame(
-            {
-              details: this.costLog.details,
-              turn: turnDetailView.turn,
-              selectedIndex: turnDetailView.selectedIndex,
-              sort: this.costLog.sort,
-            },
-            width,
-            height,
-          )
-        : undefined;
-    const turnFrame: TurnDetailFrame | undefined =
-      this.costLog && turnDetailView && !requestFrame
-        ? buildTurnDetailFrame(
-            {
-              details: this.costLog.details,
-              turn: turnDetailView.turn,
-              selectedIndex: turnDetailView.selectedIndex,
-            },
-            width,
-            height,
-          )
-        : undefined;
-    const costLogFrame: CostLogFrame | undefined =
-      this.costLog && !turnFrame
-        ? buildCostLogFrame(
-            {
-              details: this.costLog.details,
-              sort: this.costLog.sort,
-              selectedIndex: this.costLog.selectedIndex,
-            },
-            width,
-            height,
-          )
-        : undefined;
-    const pageMinColumns = requestFrame
-      ? REQUEST_DETAIL_MIN_COLUMNS
-      : turnFrame
-        ? TURN_DETAIL_MIN_COLUMNS
-        : costLogFrame
-          ? COST_LOG_MIN_COLUMNS
-          : CONTEXT_INSPECTOR_MIN_COLUMNS;
-    const pageMinRows = requestFrame
-      ? REQUEST_DETAIL_MIN_ROWS
-      : turnFrame
-        ? TURN_DETAIL_MIN_ROWS
-        : costLogFrame
-          ? COST_LOG_MIN_ROWS
-          : CONTEXT_INSPECTOR_MIN_ROWS;
-    const pageName = requestFrame
-      ? "请求详情页"
-      : turnFrame
-        ? "回合详情页"
-        : costLogFrame
-          ? "费用日志页"
-          : "上下文详情页";
-    // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
-    const pageTooSmall = Boolean(
-      (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
-        (width < pageMinColumns || height < pageMinRows),
-    );
-    // 命中区域按屏幕坐标（1 基）换算：frame 内行号是 0 基，列号也是 0 基。
-    if (inspectorFrame && !pageTooSmall) {
-      this.inspectorMaxScroll = inspectorFrame.maxScroll;
-      this.contextInspectorHit = {
-        listTop: screenTop + inspectorFrame.listTop,
-        listHeight: inspectorFrame.listHeight,
-        listLeft: inspectorFrame.listLeft + 1,
-        listWidth: inspectorFrame.listWidth,
-        listOffset: inspectorFrame.listOffset,
-        backRow: screenTop + inspectorFrame.back.row,
-        backLeft: inspectorFrame.back.left + 1,
-        backWidth: inspectorFrame.back.width,
-      };
+    // 整页视图整块替换对话区（活动行、折叠段、悬停卡片都不参与本帧）。
+    if (page.inspector && !page.tooSmall) {
+      this.inspectorMaxScroll = page.inspector.maxScroll;
+      this.contextInspectorHit = inspectorHit(page.inspector, screenTop);
       if (this.contextInspector) {
         // 内容变短（换分类/换条目）时把滚动位置夹回有效范围，避免“滚过头”卡住。
         this.contextInspector.scroll = Math.min(
           this.contextInspector.scroll,
-          inspectorFrame.maxScroll,
+          page.inspector.maxScroll,
         );
       }
     } else {
       this.contextInspectorHit = undefined;
     }
-    // 请求详情页没有列表：只登记返回按钮，列表区域留空（点击一律落到空）。
-    if (requestFrame && !pageTooSmall && turnDetailView) {
-      this.costLogHit = {
-        listTop: 0,
-        listHeight: 0,
-        listLeft: 0,
-        listWidth: 0,
-        listOffset: 0,
-        itemHeight: 1,
-        backRow: screenTop + requestFrame.back.row,
-        backLeft: requestFrame.back.left + 1,
-        backWidth: requestFrame.back.width,
-      };
+    if (page.request && !page.tooSmall && turnDetailView) {
+      this.costLogHit = requestDetailHit(page.request, screenTop);
       // 渲染时夹紧的下标回写，保证 ←→ 换页时和回合页光标一致。
-      turnDetailView.selectedIndex = requestFrame.selectedIndex;
+      turnDetailView.selectedIndex = page.request.selectedIndex;
     }
-    // 列表页与回合详情页共用一张命中表结构：谁在画就用谁的几何。
-    const activeCostFrame = requestFrame ? undefined : (turnFrame ?? costLogFrame);
-    if (activeCostFrame && !pageTooSmall && this.costLog) {
-      this.costLogHit = {
-        listTop: screenTop + activeCostFrame.listTop,
-        listHeight: activeCostFrame.listHeight,
-        listLeft: activeCostFrame.listLeft + 1,
-        listWidth: activeCostFrame.listWidth,
-        listOffset: activeCostFrame.listOffset,
-        itemHeight: activeCostFrame.itemHeight,
-        backRow: screenTop + activeCostFrame.back.row,
-        backLeft: activeCostFrame.back.left + 1,
-        backWidth: activeCostFrame.back.width,
-      };
+    const activeCostFrame = page.request ? undefined : (page.turn ?? page.costLog);
+    if (activeCostFrame && !page.tooSmall && this.costLog) {
+      this.costLogHit = costLogHit(activeCostFrame, screenTop);
       // 渲染时会把超出范围的下标夹紧（比如详情页打开期间记录被清空），这里回写。
-      if (turnFrame && turnDetailView) turnDetailView.selectedIndex = turnFrame.selectedIndex;
-      else if (costLogFrame) this.costLog.selectedIndex = costLogFrame.selectedIndex;
-    } else if (!requestFrame) {
+      if (page.turn && turnDetailView) turnDetailView.selectedIndex = page.turn.selectedIndex;
+      else if (page.costLog) this.costLog.selectedIndex = page.costLog.selectedIndex;
+    } else if (!page.request) {
       // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
       this.costLogHit = undefined;
     }
-    if (pageTooSmall) return [`${SEQ.muted}终端太小，放不下${pageName}（Esc 返回）${SEQ.reset}`];
-    return inspectorFrame?.rows ?? requestFrame?.rows ?? turnFrame?.rows ?? costLogFrame?.rows;
+    if (page.tooSmall)
+      return [`${SEQ.muted}终端太小，放不下${page.pageName}（Esc 返回）${SEQ.reset}`];
+    return page.rows;
   }
 
   /**
