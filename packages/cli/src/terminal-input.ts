@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { stderr, stdin, stdout } from "node:process";
 import readline from "node:readline";
 import readlinePromises from "node:readline/promises";
@@ -89,6 +88,14 @@ import {
   type InlinePlacementSpec,
 } from "./terminal-image.js";
 import {
+  closeTrailingStyle,
+  enableWindowsVirtualTerminalInput,
+  ensureTrailingNewline,
+  TerminalInputBusyError,
+  TerminalInputCancelledError,
+  TerminalInputTakenOverError,
+} from "./terminal-input-support.js";
+import {
   isRealCtrlC,
   isRealCtrlD,
   isRealCtrlE,
@@ -177,6 +184,9 @@ export {
   wrapAnsiWithStateFallback,
 } from "./terminal-text.js";
 
+// 错误类型原本定义在本文件，外部大量按 terminal-input.js 导入；拆分后在此保持原导出路径。
+export { TerminalInputBusyError, TerminalInputCancelledError, TerminalInputTakenOverError };
+
 /** 拆分转义序列（鼠标/粘贴）等待后续字节的上限，宽松一些以兼容慢速链路。 */
 const PROTOCOL_FLUSH_MS = 80;
 /** 单独 Esc 的确认窗口：只等可能紧跟的 Alt 组合键，等太久会让中止明显迟滞。 */
@@ -186,36 +196,6 @@ const CHAT_ACTIVITY_ROWS = 2;
 /** 详情页里 PgUp/PgDn 与滚轮一次翻多少行原文（按屏高太小、按行太碎）。 */
 /** 滚轮一格对应的原文行数。 */
 const INSPECTOR_WHEEL_ROWS = 3;
-
-function enableWindowsVirtualTerminalInput(): boolean {
-  if (process.platform !== "win32") {
-    return true;
-  }
-
-  const script = [
-    `Add-Type -Namespace Haji -Name ConsoleMode -MemberDefinition '${[
-      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern System.IntPtr GetStdHandle(int nStdHandle);',
-      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleMode(System.IntPtr handle, out uint mode);',
-      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleMode(System.IntPtr handle, uint mode);',
-    ].join(" ")}'`,
-    "$handle = [Haji.ConsoleMode]::GetStdHandle(-10)",
-    "[uint32]$mode = 0",
-    "if (-not [Haji.ConsoleMode]::GetConsoleMode($handle, [ref]$mode)) { exit 1 }",
-    "$virtualTerminalInput = [uint32]0x0200",
-    "if (-not [Haji.ConsoleMode]::SetConsoleMode($handle, ($mode -bor $virtualTerminalInput))) { exit 1 }",
-  ].join("; ");
-
-  const result = spawnSync(
-    "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      stdio: ["inherit", "ignore", "ignore"],
-      windowsHide: true,
-    },
-  );
-
-  return result.status === 0;
-}
 
 /** 全屏查看图片的状态：序列已按终端协议编码好，TUI 只负责贴到屏幕上。 */
 export interface ImageOverlayView {
@@ -438,29 +418,6 @@ export interface ChatSegmentPiece {
   blocks?: readonly ToolBlockWrite[];
 }
 
-/** 段尾统一补换行：封口片段必须整行结束，拼接时才不会和下一段粘在一起。 */
-function ensureTrailingNewline(raw: string): string {
-  if (raw.length === 0) return raw;
-  return raw.endsWith("\n") ? raw : `${raw}\n`;
-}
-
-/**
- * 段尾若残留未复位的 SGR，在最后一个换行前补一个 reset。
- * 否则段尾的颜色会漏到下一段（各段独立换行再拼接就不再等价于整串换行）。
- */
-function closeTrailingStyle(raw: string): string {
-  const pattern = /\x1b\[([0-9;]*)m/g;
-  let active = false;
-  let match = pattern.exec(raw);
-  while (match !== null) {
-    const params = match[1];
-    active = !(params === "" || params === "0");
-    match = pattern.exec(raw);
-  }
-  if (!active) return raw;
-  return raw.endsWith("\n") ? `${raw.slice(0, -1)}\x1b[0m\n` : `${raw}\x1b[0m`;
-}
-
 function segmentView(segment: ChatSegment): ChatSegmentView {
   return {
     // 图片段不走文本折行路径（renderSegmentRows 已提前分支），这里按 plain 兜底。
@@ -469,37 +426,6 @@ function segmentView(segment: ChatSegment): ChatSegmentView {
     stats: segment.stats,
     expanded: segment.expanded,
   };
-}
-
-export class TerminalInputCancelledError extends Error {
-  constructor() {
-    super("Terminal input cancelled");
-    this.name = "TerminalInputCancelledError";
-  }
-}
-
-/**
- * 输入行被鼠标交互（侧栏点击等）临时接管。
- * 刻意不继承 TerminalInputCancelledError：用户取消（Ctrl+D）会让主循环退出，
- * 而接管只是换一个交互继续，主循环必须继续等下一轮输入而不是收摊。
- */
-export class TerminalInputTakenOverError extends Error {
-  constructor() {
-    super("Terminal input taken over");
-    this.name = "TerminalInputTakenOverError";
-  }
-}
-
-/**
- * 输入行已被占用：另一个输入请求或选择器还没结束。
- * 单独成类是为了让主循环能把「偶发竞态」和真正的编码错误区分开——
- * 前者等空闲后重取输入，不该把整场会话崩掉。
- */
-export class TerminalInputBusyError extends Error {
-  constructor() {
-    super("已有输入请求正在等待处理");
-    this.name = "TerminalInputBusyError";
-  }
 }
 
 export class TerminalUI {
