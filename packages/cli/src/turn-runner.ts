@@ -76,6 +76,22 @@ import {
 } from "./tool-display.js";
 import type { SharedToolExecutor } from "./tool-executor.js";
 
+/**
+ * 无人值守（mcp-serve 驱动模式）时选择卡片的取值：`fallback` 用于客户端超时 / 服务关闭，
+ * `auto` 用于 `--approval auto`（缺省按 fallback）。授权类卡片的 fallback 必须是拒绝项。
+ */
+export interface UnattendedSelection {
+  fallback: string;
+  auto?: string;
+}
+
+/** 一个回合的收尾结果：toolCalls 只计本回合（不含历史与子代理内部调用）。 */
+export interface TurnOutcome {
+  aborted: boolean;
+  failed: boolean;
+  toolCalls: number;
+}
+
 export interface TurnDeps {
   ui: TerminalUI;
   activityIndicator: ActivityIndicator;
@@ -134,12 +150,15 @@ export interface TurnDeps {
   readSelectionSafely: (
     options: Parameters<TerminalUI["readSelection"]>[0],
     draftHandling?: "queue" | "restore",
+    unattended?: UnattendedSelection,
   ) => ReturnType<TerminalUI["readSelection"]>;
   showRuntimeWarning(warning: string): void;
   refreshAgentVerificationContext(messages: ChatMessage[]): boolean;
   startBackgroundInput(initialValue?: string): void;
   /** 回合小结数据源：会话费用快照（回合前后差值即本回合增量）。 */
   getCostSnapshot?(): { totalCostCny: number; hasUnpriced: boolean };
+  /** 回合收尾时上报本回合结果（无头 JSON / mcp-serve 的 ok 与 toolCalls 取自这里）。 */
+  onTurnSettled?(outcome: TurnOutcome): void;
   /** 回合小结数据源：最近一次编辑后验证结果（sinceMs 之前的旧结果不显示）。 */
   getLastTypeCheck?(sinceMs: number): { ok: boolean } | undefined;
   /** 回合小结数据源：自某时间戳起会话拥有的工作区改动（快照日志口径）。 */
@@ -1142,27 +1161,32 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
           try {
             deps.notifyUserAttention?.();
             agentStatus.blocked("question", "计划待审批");
-            const review = await deps.readSelectionSafely({
-              title: "计划已就绪 · 选择执行方式",
-              items: [
-                {
-                  value: "auto",
-                  label: "批准并自动执行",
-                  description: "切到 [自动]，高风险操作由安全引擎拦截",
-                },
-                {
-                  value: "manual",
-                  label: "批准，逐步审批",
-                  description: "切到 [默认]，每个修改型工具都先询问",
-                },
-                {
-                  value: "no",
-                  label: "修改计划…",
-                  description: "直接输入修改意见，继续留在计划模式",
-                },
-              ],
-              selectedValue: "auto",
-            });
+            const review = await deps.readSelectionSafely(
+              {
+                title: "计划已就绪 · 选择执行方式",
+                items: [
+                  {
+                    value: "auto",
+                    label: "批准并自动执行",
+                    description: "切到 [自动]，高风险操作由安全引擎拦截",
+                  },
+                  {
+                    value: "manual",
+                    label: "批准，逐步审批",
+                    description: "切到 [默认]，每个修改型工具都先询问",
+                  },
+                  {
+                    value: "no",
+                    label: "修改计划…",
+                    description: "直接输入修改意见，继续留在计划模式",
+                  },
+                ],
+                selectedValue: "auto",
+              },
+              undefined,
+              // 无人值守：超时留在计划模式；--approval auto 批准但只切 [默认]，不替客户端提到 [自动]。
+              { fallback: "no", auto: "manual" },
+            );
             deps.setPlanReadyForReview(false);
             deps.setPlanReviewSummaryRequested(false);
             agentStatus.working("继续执行");
@@ -1181,22 +1205,35 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
               keepCalling = true;
             } else {
               ui.writeLine(colors.gray("计划未批准，仍处于计划模式。"));
-              // 直接打开输入框收集修改意见：提交后作为下一条用户消息进入下一轮。
-              const draft = ui.cancelInput();
-              try {
-                const feedback = await ui.readInput({ prompt: "修改意见 › " });
-                const trimmedFeedback = feedback.trim();
-                if (trimmedFeedback) {
-                  pendingInputs.push(trimmedFeedback);
-                  ui.setQueue(pendingInputs);
-                  ui.writeLine(colors.gray("已记录修改意见，下一轮提交给模型（仍处于计划模式）。"));
+              // 驱动模式：修改意见随 haji_approve.reason 到达（stdin 是协议通道，不能开输入框）；
+              // 也没有主循环消费 pendingInputs，意见直接作为用户消息进入本回合，让模型就地改计划。
+              let revising = false;
+              if (review.reason !== undefined) {
+                if (review.reason) {
+                  messages.push({ role: "user", content: `[计划修改意见] ${review.reason}` });
+                  sessionManager.saveCurrentSession(messages);
+                  revising = true;
                 }
-              } catch (inputError) {
-                if (!(inputError instanceof TerminalInputCancelledError)) throw inputError;
-              } finally {
-                deps.startBackgroundInput(draft);
+              } else {
+                // 直接打开输入框收集修改意见：提交后作为下一条用户消息进入下一轮。
+                const draft = ui.cancelInput();
+                try {
+                  const feedback = await ui.readInput({ prompt: "修改意见 › " });
+                  const trimmedFeedback = feedback.trim();
+                  if (trimmedFeedback) {
+                    pendingInputs.push(trimmedFeedback);
+                    ui.setQueue(pendingInputs);
+                    ui.writeLine(
+                      colors.gray("已记录修改意见，下一轮提交给模型（仍处于计划模式）。"),
+                    );
+                  }
+                } catch (inputError) {
+                  if (!(inputError instanceof TerminalInputCancelledError)) throw inputError;
+                } finally {
+                  deps.startBackgroundInput(draft);
+                }
               }
-              keepCalling = false;
+              keepCalling = revising;
             }
           } catch (error) {
             deps.setPlanReadyForReview(false);
@@ -1251,6 +1288,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   sessionManager.saveCurrentSession(messages);
   await sessionManager.flush();
   if (sessionManager.hasPendingWrites()) turnFailed = true;
+  deps.onTurnSettled?.({ aborted: isTurnAborted, failed: turnFailed, toolCalls: turnToolCalls });
   // 终端侧栏状态：正常收尾报 done（Kero 标未读 Done），失败报 error，中止回 idle。
   if (isTurnAborted) {
     agentStatus.idle("已中止");

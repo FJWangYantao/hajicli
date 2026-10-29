@@ -22,7 +22,7 @@ const MAX_TURN_TEXT = 20_000;
 export interface DriverServerOptions {
   /** `haji_send` 未指定 waitMs 时的默认等待时长。 */
   waitMs: number;
-  /** `ask`：需要授权时挂起等 `haji_approve`；`auto`：直接采用默认选项。 */
+  /** `ask`：需要授权时挂起等 `haji_approve`；`auto`：采用请求声明的 autoValue（没有就按拒绝处理）。 */
   approval: "ask" | "auto";
   maxEvents?: number;
   selectionTimeoutMs?: number;
@@ -54,7 +54,12 @@ export class DriverServer {
   private waiters = new Set<() => void>();
   private pendingSelections = new Map<
     string,
-    { resolve: (answer: DriverSelectionAnswer) => void; fallback: DriverSelectionAnswer }
+    {
+      resolve: (answer: DriverSelectionAnswer) => void;
+      fallback: DriverSelectionAnswer;
+      values: Set<string>;
+      secondaryValues: Set<string>;
+    }
   >();
   private selectionSeq = 0;
 
@@ -290,17 +295,26 @@ export class DriverServer {
 
   /**
    * 需要用户决策时由 turnDeps.readSelectionSafely 调用。
-   * `auto` 策略直接返回默认选项（与无头模式的非交互降级一致）；
-   * `ask` 策略发事件并挂起，等 `haji_approve`，超时按默认选项放行。
+   * `auto` 策略直接返回请求声明的 autoValue（没声明就按 fallbackValue，即拒绝）；
+   * `ask` 策略发事件并挂起，等 `haji_approve`，超时同样按 fallbackValue 处理——
+   * 没人回复不等于同意，授权卡片的 fallbackValue 是拒绝项。
    */
   async requestSelection(request: DriverSelectionRequest): Promise<DriverSelectionAnswer> {
-    const fallback: DriverSelectionAnswer = {
-      value: request.selectedValue ?? request.items[0]?.value ?? "",
-      ...(request.secondary?.selectedValue !== undefined
+    const secondaryDefault =
+      request.secondary?.selectedValue !== undefined
         ? { secondaryValue: request.secondary.selectedValue }
-        : {}),
+        : {};
+    const fallbackValue =
+      request.fallbackValue ?? request.selectedValue ?? request.items[0]?.value ?? "";
+    const fallback: DriverSelectionAnswer = {
+      value: fallbackValue,
+      ...secondaryDefault,
+      reason: "",
     };
-    if (this.options.approval === "auto" || request.items.length === 0) return fallback;
+    if (request.items.length === 0) return fallback;
+    if (this.options.approval === "auto") {
+      return { value: request.autoValue ?? fallbackValue, ...secondaryDefault, reason: "" };
+    }
 
     const requestId = `p${++this.selectionSeq}`;
     this.emit({
@@ -310,18 +324,22 @@ export class DriverServer {
       items: request.items,
       ...(request.preview ? { preview: request.preview } : {}),
       ...(request.secondary ? { secondary: request.secondary } : {}),
-      default: fallback,
+      ...(request.selectedValue !== undefined ? { selected: request.selectedValue } : {}),
+      /** 超时或服务关闭时采用的值。 */
+      default: { value: fallback.value, ...secondaryDefault },
     });
 
     const answer = await new Promise<DriverSelectionAnswer>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingSelections.delete(requestId);
-        this.emit({ type: "selection_resolved", requestId, ...fallback, timedOut: true });
+        this.emit({ type: "selection_resolved", requestId, value: fallback.value, timedOut: true });
         resolve(fallback);
       }, this.selectionTimeoutMs);
       timer.unref?.();
       this.pendingSelections.set(requestId, {
         fallback,
+        values: new Set(request.items.map((item) => item.value)),
+        secondaryValues: new Set(request.secondary?.items.map((item) => item.value) ?? []),
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -331,17 +349,48 @@ export class DriverServer {
     return answer;
   }
 
-  answerSelection(requestId: string, value: string, secondaryValue?: string): boolean {
+  /**
+   * 回复挂起的选择请求。value / secondaryValue 必须是请求里列出的选项，
+   * 否则不结案（未知值落到调用方的兜底分支，可能被当成放行）。
+   */
+  answerSelection(
+    requestId: string,
+    value: string,
+    secondaryValue?: string,
+    reason?: string,
+  ): { accepted: true } | { accepted: false; error: string } {
     const pending = this.pendingSelections.get(requestId);
-    if (!pending) return false;
+    if (!pending) return { accepted: false, error: "请求不存在或已超时" };
+    if (!pending.values.has(value)) {
+      return { accepted: false, error: `value 必须是以下之一：${[...pending.values].join(" / ")}` };
+    }
+    if (secondaryValue !== undefined && !pending.secondaryValues.has(secondaryValue)) {
+      return {
+        accepted: false,
+        error: pending.secondaryValues.size
+          ? `secondaryValue 必须是以下之一：${[...pending.secondaryValues].join(" / ")}`
+          : "该请求没有 secondary 选项",
+      };
+    }
     this.pendingSelections.delete(requestId);
     const answer: DriverSelectionAnswer = {
       value,
-      ...(secondaryValue !== undefined ? { secondaryValue } : {}),
+      ...(secondaryValue !== undefined
+        ? { secondaryValue }
+        : pending.fallback.secondaryValue !== undefined
+          ? { secondaryValue: pending.fallback.secondaryValue }
+          : {}),
+      reason: reason?.trim() ?? "",
     };
     pending.resolve(answer);
-    this.emit({ type: "selection_resolved", requestId, value, secondaryValue });
-    return true;
+    this.emit({
+      type: "selection_resolved",
+      requestId,
+      value,
+      ...(answer.secondaryValue !== undefined ? { secondaryValue: answer.secondaryValue } : {}),
+      ...(answer.reason ? { reason: answer.reason } : {}),
+    });
+    return { accepted: true };
   }
 
   /** 当前挂起的选择请求（便于状态查询与排障）。 */

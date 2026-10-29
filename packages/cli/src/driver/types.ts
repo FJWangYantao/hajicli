@@ -32,11 +32,20 @@ export interface DriverSelectionRequest {
     items: DriverSelectionItem[];
     selectedValue?: string;
   };
+  /**
+   * 无人决策时的取值（`ask` 超时、服务关闭）。授权类卡片必须给拒绝项：
+   * 客户端没回复不等于同意。缺省时退回 selectedValue（仅限无副作用的普通选择）。
+   */
+  fallbackValue?: string;
+  /** `--approval auto` 下直接采用的值；缺省时按 fallbackValue 处理（受保护目标、提级申请不自动放行）。 */
+  autoValue?: string;
 }
 
 export interface DriverSelectionAnswer {
   value: string;
   secondaryValue?: string;
+  /** 外部决策方随选择给出的说明（`haji_approve.reason`），驱动模式下恒有值（可能为空串）。 */
+  reason?: string;
 }
 
 export interface DriverUsage {

@@ -268,6 +268,11 @@ export interface TerminalSelectionOptions {
 export interface TerminalSelectionResult {
   value: string;
   secondaryValue?: string;
+  /**
+   * 外部决策方随选择给出的说明（仅 mcp-serve 驱动模式，来自 `haji_approve.reason`）。
+   * 有值（含空串）表示说明已经收齐，调用方不能再开输入框——驱动模式的 stdin 是协议通道。
+   */
+  reason?: string;
 }
 
 interface ActiveInput {

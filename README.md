@@ -192,7 +192,7 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
 ```
 
 - `--cwd`：切换工作目录（默认沿用启动目录，含自动 worktree 的结果）。
-- `--approval ask|auto`：需要授权时的策略。`ask`（默认）把选择卡发成 `selection_request` 事件挂起，等客户端调 `haji_approve`；`auto` 按无头模式的默认选项直接放行，适合完全无人值守。
+- `--approval ask|auto`：需要授权时的策略。`ask`（默认）把选择卡发成 `selection_request` 事件挂起，等客户端调 `haji_approve`，5 分钟没回复**按拒绝处理**（事件里的 `default` 就是兜底值）；`auto` 只替客户端放行普通授权（仅本次），受保护目标（授权配置、凭据等）、加工作区根、临时提权一律拒绝，Plan 审批批准后切到 [默认] 而不是 [自动]。
 - `--wait-ms`：单次 `haji_send` 的默认等待时长，默认 25000，上限 600000。
 
 工具面（MCP `tools/list`）：
@@ -205,7 +205,7 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
 | `haji_events` | 按 `sinceSeq` 增量拉事件（正文增量、`tool_start`/`tool_end`、`selection_request`、`turn_end`） |
 | `haji_adjust` | 改模型、思考强度、权限档、思维链显示、Plan 模式（下个回合生效） |
 | `haji_cancel` | 中止正在执行的回合（等价于 Esc） |
-| `haji_approve` | 回复一条 `selection_request` |
+| `haji_approve` | 回复一条 `selection_request`；`value` 必须是卡片里的选项，选「拒绝并说明」或「修改计划」时用 `reason` 带上理由（回传给模型） |
 
 协议细节：stdin 每行一条 JSON-RPC 消息，stdout **只**写协议回包（Logo、进度、诊断信息都不会混进去，`--output-format` 之类的交互输出全部走事件流）；长回合不阻塞其他请求，`haji_cancel` / `haji_status` 随时可处理。stdin 关闭或收到 `SIGINT`/`SIGTERM` 时正常退出。
 

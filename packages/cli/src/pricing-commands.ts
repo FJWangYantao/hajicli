@@ -106,10 +106,10 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
     );
   };
 
-  /** 把单价写进 ~/.haji/pricing.json，并按新单价立刻重算本会话已发生的调用。 */
   /**
    * 单价写盘键：内置 provider 用模型名，自定义渠道用 `<provider>/<model>`。
    * 同名模型可能同时由官方与中转渠道提供，只按模型名落盘会把两个渠道的价串在一起。
+   * 查价失败记录也用同一个键，否则自定义渠道下成功后清不掉失败记录。
    */
   const pricingStorageKey = (model: string): string => {
     const providerName = ctx.getCurrentProviderName();
@@ -117,6 +117,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
     return channelPricingKey(model, providerName) ?? model;
   };
 
+  /** 把单价写进 ~/.haji/pricing.json，并按新单价立刻重算本会话已发生的调用。 */
   const savePricingFor = (
     model: string,
     inputPerMTokens: number,
@@ -203,7 +204,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
       );
       return;
     }
-    const recentFailure = recentPricingFailure(model);
+    const recentFailure = recentPricingFailure(pricingStorageKey(model));
     if (recentFailure) {
       ctx.ui.writeLine(
         colors.warnLine(
@@ -290,7 +291,7 @@ export function createPricingCommands(ctx: PricingCommandContext): PricingComman
           },
         });
         if (!outcome.ok) {
-          recordPricingAttempt(model, outcome.reason);
+          recordPricingAttempt(pricingStorageKey(model), outcome.reason);
           ctx.ui.setPricingAgentState({ status: "failed", model, detail: outcome.reason });
           ctx.ui.writeLine(
             colors.warnLine(`定价查询未成功：${outcome.reason}。可用 /cost config 手动输入单价。`),

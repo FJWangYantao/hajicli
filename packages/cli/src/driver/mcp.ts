@@ -106,13 +106,17 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "haji_approve",
     description:
-      "回复一条 selection_request：按 requestId 提交选择。value 取该请求 items 里的某个 value；有 secondary 时一并给出 secondaryValue。超时未回复按默认选项处理。",
+      "回复一条 selection_request：按 requestId 提交选择。value 必须是该请求 items 里的某个 value；有 secondary 时可给出 secondaryValue。选「拒绝并说明」类选项时用 reason 带上理由（会回传给模型）。超时未回复按事件里的 default 处理（授权类请求为拒绝）。",
     inputSchema: {
       type: "object",
       properties: {
         requestId: { type: "string", description: "selection_request 事件里的 requestId。" },
         value: { type: "string", description: "选项值（items[].value）。" },
         secondaryValue: { type: "string", description: "次级选项值（secondary.items[].value）。" },
+        reason: {
+          type: "string",
+          description: "拒绝原因或修改意见（选 deny-reason / 修改计划时回传给模型）。",
+        },
       },
       required: ["requestId", "value"],
       additionalProperties: false,
@@ -256,12 +260,9 @@ async function callTool(
         if (!requestId || !value) return textResult({ error: "requestId 与 value 必填" }, true);
         const secondaryValue =
           typeof args.secondaryValue === "string" ? args.secondaryValue : undefined;
-        const accepted = server.answerSelection(requestId, value, secondaryValue);
-        return textResult({
-          accepted,
-          requestId,
-          ...(accepted ? {} : { error: "请求不存在或已超时" }),
-        });
+        const reason = typeof args.reason === "string" ? args.reason : undefined;
+        const outcome = server.answerSelection(requestId, value, secondaryValue, reason);
+        return textResult({ requestId, ...outcome }, !outcome.accepted);
       }
       default:
         return textResult({ error: `未知工具：${name || "(空)"}` }, true);

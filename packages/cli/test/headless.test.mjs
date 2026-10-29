@@ -107,6 +107,15 @@ test("parseHeadlessArgs 拒绝非法 --allow 键", () => {
   );
 });
 
+test("parseHeadlessArgs 拒绝永远不生效的 --allow 用法", () => {
+  // bash 的授权键只有 bash:<前缀> 一种形态，裸 bash 能过正则却匹配不到任何命令。
+  assert.match(parseHeadlessArgs(["-p", "hi", "--allow", "bash"]).error ?? "", /bash:<命令前缀>/);
+  assert.match(parseHeadlessArgs(["-p", "hi", "--allow=Bash"]).error ?? "", /bash:<命令前缀>/);
+  // 没有 -p 时 --allow 不会被使用，报错而不是静默忽略。
+  assert.match(parseHeadlessArgs(["--allow", "write"]).error ?? "", /只在无头模式/);
+  assert.deepEqual(parseHeadlessArgs(["--allow", "write", "-p", "hi"]).request?.allow, ["write"]);
+});
+
 test("index.ts wires the headless branch end to end", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.ok(source.includes("parseHeadlessArgs(cliArgs)"), "启动时解析 -p 参数");
@@ -121,7 +130,7 @@ test("index.ts wires the headless branch end to end", () => {
   const loopStart = source.indexOf("while (true) {");
   const headlessBranch = source.indexOf("if (headlessRequest) {", loopStart);
   assert.ok(loopStart >= 0 && headlessBranch > loopStart, "主循环内有无头分支");
-  const turnCall = source.indexOf("runAgentTurn(turnDeps", headlessBranch);
+  const turnCall = source.indexOf("runAgentTurn(headlessTurnDeps", headlessBranch);
   const loopBreak = source.indexOf("break;", headlessBranch);
   assert.ok(turnCall > headlessBranch && loopBreak > turnCall, "无头分支跑完回合即退出循环");
   // 无头下不挂后台输入 readline

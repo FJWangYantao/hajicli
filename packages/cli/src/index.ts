@@ -249,7 +249,12 @@ import { createToolCallBatches, runToolCallBatch, type ToolBatchOptions } from "
 import { buildToolDisplay } from "./tool-display.js";
 import { SharedToolExecutor } from "./tool-executor.js";
 import { splitPendingUserTurn } from "./turn-lifecycle.js";
-import { runAgentTurn, type TurnDeps } from "./turn-runner.js";
+import {
+  runAgentTurn,
+  type TurnDeps,
+  type TurnOutcome,
+  type UnattendedSelection,
+} from "./turn-runner.js";
 import { loadUserModels } from "./user-models.js";
 import { askUserQuestion } from "./user-question.js";
 import { handleWorkspaceCommand, type WorkspaceCommandContext } from "./workspace-commands.js";
@@ -739,7 +744,9 @@ async function main() {
   const permissionEngine = new PermissionEngine();
   // 会话级费用记账：主线回合的 onUsage 按注册表单价估算（/cost 查看）。
   // 会话级费用记账：单价来自内置注册表 + 本地覆盖表（/cost 查看，费用栏可点进去配置）。
-  const costTracker = new CostTracker((model) => resolveModelPricing(model, currentProviderName));
+  const costTracker = new CostTracker((model, provider) =>
+    resolveModelPricing(model, provider ?? currentProviderName),
+  );
   // 持久化放行规则（~/.haji/permissions.json 与 <cwd>/.haji/permissions.json 的并集视图）。
   // 保存/删除后原地刷新，PreToolUse 命中时直接放行。
   // 无头模式的 --allow 键并入同一视图（只在本进程生效，不落盘）：CI / 评测里没有交互确认的机会，
@@ -2176,9 +2183,12 @@ async function main() {
   const askSelection = async (
     options: Parameters<TerminalUI["readSelection"]>[0],
     draftHandling: "queue" | "restore" = "queue",
+    unattended?: UnattendedSelection,
   ): Promise<ReturnType<TerminalUI["readSelection"]> extends Promise<infer T> ? T : never> => {
     if (driverServerRef) {
       const request: DriverSelectionRequest = {
+        ...(unattended?.fallback !== undefined ? { fallbackValue: unattended.fallback } : {}),
+        ...(unattended?.auto !== undefined ? { autoValue: unattended.auto } : {}),
         title: options.title,
         items: options.items.map((item) => ({
           value: item.value,
@@ -2262,6 +2272,10 @@ async function main() {
       });
       return answer.trim().toLowerCase() === "y" ? null : USER_REJECTED_TOOL_OUTPUT;
     }
+    // 驱动模式 --approval auto 只替客户端放行普通授权；受保护目标与无头模式同口径直接拒绝。
+    if (hardProtected && serveRequest?.approval === "auto") {
+      return "未执行：该操作命中受保护目标，--approval auto 不会自动放行；这不是用户主动拒绝。请改用 --approval ask 由驱动方逐次确认。";
+    }
     notifyUserAttention();
     agentStatus.blocked("permission", `等待授权 · ${permissionVerb(toolName)}`);
     const selection = await askSelection(
@@ -2296,12 +2310,20 @@ async function main() {
         confirmDelayMs: 300,
       },
       "restore",
+      // 无人值守：超时按拒绝；auto 只放行本次（受保护目标上面已拦下）。
+      { fallback: "deny", auto: "once" },
     );
     // 卡片关闭即回到工作态；「拒绝并说明」下面再单独覆盖一次。
     agentStatus.working("继续执行");
     if (selection.value === "deny") return USER_REJECTED_TOOL_OUTPUT;
     if (selection.value === "deny-reason") {
       // 拒绝并说明：理由回传给模型，避免它换个写法重试同一件事。
+      // 驱动模式下理由随 haji_approve 一起到达，不能再读 stdin（那是 MCP 协议通道）。
+      if (selection.reason !== undefined) {
+        return selection.reason
+          ? `${USER_REJECTED_TOOL_OUTPUT}\n用户说明：${selection.reason}`
+          : USER_REJECTED_TOOL_OUTPUT;
+      }
       const draft = ui.cancelInput();
       try {
         agentStatus.blocked("question", "填写拒绝原因");
@@ -2444,10 +2466,15 @@ async function main() {
         confirmDelayMs: 300,
       },
       "restore",
+      // 提级申请（加工作区根 / 临时提权）无人值守时一律不批，--approval auto 也不例外。
+      { fallback: "deny" },
     );
     agentStatus.working("继续执行");
     if (selection.value === "approve") return { approved: true };
     if (selection.value !== "deny-reason") return { approved: false, detail: "用户拒绝。" };
+    if (selection.reason !== undefined) {
+      return { approved: false, detail: selection.reason || "用户拒绝且未说明理由。" };
+    }
 
     const draft = ui.cancelInput();
     try {
@@ -3348,6 +3375,7 @@ async function main() {
     recordCost: (model, usage, purpose, extra) => {
       costTracker.record(model, usage, purpose, Date.now(), {
         ...extra,
+        provider: currentProviderName,
         ...(currentTurnPrompt ? { turnPrompt: currentTurnPrompt } : {}),
       });
       publishCostInfo();
@@ -3459,19 +3487,22 @@ async function main() {
       return proxy;
     })();
 
-    let abortRequested = false;
+    let lastOutcome: TurnOutcome | undefined;
 
     const driverTurnDeps: TurnDeps = {
       ...turnDeps,
       // 授权卡片 / 计划审批 / 受控申请一律走事件，等外部 haji_approve。
       readSelectionSafely: askSelection,
       toolExecutor: toolEventExecutor,
+      onTurnSettled: (outcome) => {
+        lastOutcome = outcome;
+      },
     };
 
     const driver = new DriverServer(
       {
         runTurn: async (text) => {
-          abortRequested = false;
+          lastOutcome = undefined;
           const startedAt = Date.now();
           const before = costTracker.getSummary();
           await runAgentTurn(driverTurnDeps, {
@@ -3491,13 +3522,14 @@ async function main() {
             );
           const after = costTracker.getSummary();
           const session = sessionManager.getCurrentSession();
+          const outcome = lastOutcome ?? { aborted: false, failed: true, toolCalls: 0 };
           return {
-            ok: !abortRequested,
+            ok: !outcome.aborted && !outcome.failed,
             text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
             sessionId: session.id,
             model: selectedModel,
             permissionMode,
-            toolCalls: finalMessages.filter((message) => message.role === "tool").length,
+            toolCalls: outcome.toolCalls,
             durationMs: Date.now() - startedAt,
             usage: {
               requests: after.requests - before.requests,
@@ -3574,7 +3606,6 @@ async function main() {
           return { applied, errors };
         },
         cancel: () => {
-          abortRequested = true;
           return ui.requestAbort();
         },
         close: async () => {
@@ -3618,7 +3649,14 @@ async function main() {
       // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
       if (headlessRequest) {
         const headlessStartedAt = Date.now();
-        await runAgentTurn(turnDeps, {
+        let headlessOutcome: TurnOutcome | undefined;
+        const headlessTurnDeps: TurnDeps = {
+          ...turnDeps,
+          onTurnSettled: (outcome) => {
+            headlessOutcome = outcome;
+          },
+        };
+        await runAgentTurn(headlessTurnDeps, {
           forwardedPrompt: headlessRequest.prompt,
           commandInput: headlessRequest.prompt,
           manualSkillExchange: undefined,
@@ -3640,11 +3678,12 @@ async function main() {
           process.stdout.write(
             `${JSON.stringify(
               {
-                ok: true,
+                // 模型请求失败、会话落盘失败也算失败；-c / -r 续写时 toolCalls 只计本次。
+                ok: Boolean(headlessOutcome && !headlessOutcome.aborted && !headlessOutcome.failed),
                 prompt: headlessRequest.prompt,
                 model: selectedModel,
                 text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",
-                toolCalls: finalMessages.filter((message) => message.role === "tool").length,
+                toolCalls: headlessOutcome?.toolCalls ?? 0,
                 sessionId: currentSession.id,
                 sessionTitle: currentSession.title,
                 usage: {

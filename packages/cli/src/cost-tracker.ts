@@ -10,6 +10,11 @@ export interface CostUsage {
 
 export interface CostRecord {
   model: string;
+  /**
+   * 记账时的渠道（provider 名）。同名模型在官方与中转渠道单价不同，按「现在的渠道」重算
+   * 历史会在切换渠道或 /resume 后算错；老会话文件没有这项，按当前渠道兜底。
+   */
+  provider?: string;
   purpose: string;
   /** 所属轮次（从 1 开始，会话内自增）；0 表示归属未知（老会话文件或缺省）。 */
   turn?: number;
@@ -92,7 +97,7 @@ export interface CostSummary {
 }
 
 /** 定价解析器：内置注册表 + 本地覆盖表（由 CLI 注入，便于测试与热更新）。 */
-export type PricingResolver = (model: string) => ModelPricing | undefined;
+export type PricingResolver = (model: string, provider?: string) => ModelPricing | undefined;
 
 /** 单轮对话的用量/花费汇总（点击侧栏指标行时按轮次展开用）。 */
 export interface TurnCostSummary {
@@ -220,8 +225,9 @@ export function estimateRequestCostCny(
   usage: CostUsage,
   resolvePricing: PricingResolver = getModelPricing,
   atMs: number = Date.now(),
+  provider?: string,
 ): number | null {
-  const pricing = resolvePricing(model);
+  const pricing = resolvePricing(model, provider);
   if (!pricing) return null;
   const tier = effectiveModelPricing(pricing, atMs);
   const promptTokens = Math.max(0, usage.prompt_tokens);
@@ -247,6 +253,7 @@ function recordCostCny(record: CostRecord, resolvePricing: PricingResolver): num
     },
     resolvePricing,
     record.at,
+    record.provider,
   );
 }
 
@@ -283,7 +290,12 @@ export class CostTracker {
     usage: CostUsage,
     purpose = "主线回合",
     at: number = Date.now(),
-    extra: { durationMs?: number; reasoningTokens?: number; turnPrompt?: string } = {},
+    extra: {
+      durationMs?: number;
+      reasoningTokens?: number;
+      turnPrompt?: string;
+      provider?: string;
+    } = {},
   ): void {
     if (!Number.isFinite(usage.total_tokens) || usage.total_tokens <= 0) return;
     // 本轮第一次真正记账：现在才把编号落定（见 beginTurn 说明）。
@@ -308,6 +320,7 @@ export class CostTracker {
         : undefined;
     this.records.push({
       model,
+      ...(extra.provider ? { provider: extra.provider } : {}),
       purpose,
       ...(this.currentTurn > 0 ? { turn: this.currentTurn } : {}),
       at: Number.isFinite(at) ? at : Date.now(),
@@ -360,6 +373,9 @@ export class CostTracker {
       if (turn > maxTurn) maxTurn = turn;
       this.records.push({
         model: record.model,
+        ...(typeof record.provider === "string" && record.provider
+          ? { provider: record.provider }
+          : {}),
         purpose: typeof record.purpose === "string" ? record.purpose : "主线回合",
         ...(turn > 0 ? { turn } : {}),
         at: Number.isFinite(record.at) ? record.at : Date.now(),
@@ -397,7 +413,9 @@ export class CostTracker {
    */
   getRequestDetails(): RequestCostDetail[] {
     return this.records.map((recordItem, index) => {
-      const pricing = recordItem.flatFee ? undefined : this.resolvePricing(recordItem.model);
+      const pricing = recordItem.flatFee
+        ? undefined
+        : this.resolvePricing(recordItem.model, recordItem.provider);
       const tier = pricing ? effectiveModelPricing(pricing, recordItem.at) : undefined;
       const cost = recordCostCny(recordItem, this.resolvePricing);
       return {
@@ -473,7 +491,7 @@ export class CostTracker {
       current.promptTokens += recordItem.promptTokens;
       current.cachedPromptTokens += recordItem.cachedPromptTokens;
       current.completionTokens += recordItem.completionTokens;
-      const pricing = this.resolvePricing(recordItem.model);
+      const pricing = this.resolvePricing(recordItem.model, recordItem.provider);
       if (pricing?.offPeak && isWithinOffPeak(recordItem.at, pricing.offPeak.window)) {
         current.offPeakRequests += 1;
         offPeakRequests += 1;

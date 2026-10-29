@@ -29,6 +29,19 @@ const USAGE_PERMISSION_MODES = "plan | default | accept-edit | auto | bypass-per
  */
 const ALLOW_KEY_PATTERN = /^(?:bash:[^;&|<>`$\r\n]+|[A-Za-z][A-Za-z0-9_.-]*)$/;
 
+/** 校验单个 --allow 键；合法返回 undefined，否则返回给用户看的错误。 */
+function validateAllowKey(raw: string): string | undefined {
+  const key = raw.trim();
+  // bash 的授权键只有 `bash:<前缀>` 一种形态，裸 `bash` 能过正则却永远匹配不到任何命令。
+  if (key.toLowerCase() === "bash") {
+    return '--allow bash 不会放行任何命令：请写成 bash:<命令前缀>，例如 --allow "bash:npm test"';
+  }
+  if (!key || !ALLOW_KEY_PATTERN.test(key)) {
+    return `无效的 --allow 放行键：${raw}（应为 bash:<命令前缀> 或工具名，且不含 ; & | < > \` $）`;
+  }
+  return undefined;
+}
+
 const USAGE_ALLOW = '--allow 需要一个放行键，例如：--allow "bash:npm test" --allow write';
 
 /**
@@ -67,26 +80,19 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
       }
       outputFormat = value;
       index += 1;
-    } else if (arg === "--allow") {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--")) return { error: USAGE_ALLOW };
-      const key = value.trim();
-      if (!ALLOW_KEY_PATTERN.test(key)) {
-        return {
-          error: `无效的 --allow 放行键：${value}（应为 bash:<命令前缀> 或工具名，且不含 ; & | < > \` $）`,
-        };
-      }
-      allow.push(key);
-      index += 1;
-    } else if (arg.startsWith("--allow=")) {
-      const key = arg.slice("--allow=".length).trim();
-      if (!key || !ALLOW_KEY_PATTERN.test(key)) {
-        return {
-          error: `无效的 --allow 放行键：${arg.slice("--allow=".length)}（应为 bash:<命令前缀> 或工具名）`,
-        };
-      }
-      allow.push(key);
+    } else if (arg === "--allow" || arg.startsWith("--allow=")) {
+      const inline = arg.startsWith("--allow=");
+      const value = inline ? arg.slice("--allow=".length) : args[index + 1];
+      if (!inline && (value === undefined || value.startsWith("--"))) return { error: USAGE_ALLOW };
+      const error = validateAllowKey(value ?? "");
+      if (error) return { error };
+      allow.push((value ?? "").trim());
+      if (!inline) index += 1;
     }
+  }
+  // 交互会话有授权卡片，--allow 只服务于无头模式；静默忽略会让人以为已经放行。
+  if (prompt === undefined && allow.length) {
+    return { error: "--allow 只在无头模式（-p）下生效；交互会话请在授权卡片里选择「永久允许」。" };
   }
   if (prompt === undefined) return {};
   return { request: { prompt, permissionMode, outputFormat, ...(allow.length ? { allow } : {}) } };

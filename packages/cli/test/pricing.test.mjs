@@ -940,3 +940,30 @@ test("DeepSeek 峰谷只按星期判定：国庆工作日仍有峰时，调休�
   // 2026-10-10（周六，调休上班）10:00 北京时间：周六全天谷时。
   assert.equal(isWithinOffPeak(Date.parse("2026-10-10T02:00:00Z"), window), true);
 });
+
+test("费用记录带上记账时的渠道：切换渠道或恢复会话后不按新渠道重算历史", () => {
+  const prices = {
+    official: { inputPerMTokens: 1, outputPerMTokens: 0 },
+    relay: { inputPerMTokens: 3, outputPerMTokens: 0 },
+  };
+  let current = "official";
+  const resolver = (_model, provider) => prices[provider ?? current];
+  const usage = { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 };
+
+  const tracker = new CostTracker(resolver);
+  tracker.record("same-model", usage, "主线回合", Date.now(), { provider: "official" });
+  current = "relay";
+  tracker.record("same-model", usage, "主线回合", Date.now(), { provider: "relay" });
+  assert.equal(tracker.getSummary().totalCostCny, 4, "两次调用各按自己的渠道计价");
+
+  // 落盘再读回（/resume）：渠道随记录保留；老记录没有渠道时按当前渠道兜底。
+  const restored = new CostTracker(resolver);
+  const legacy = { ...tracker.getRecords()[0] };
+  delete legacy.provider;
+  restored.loadRecords([...tracker.getRecords(), legacy]);
+  assert.deepEqual(
+    restored.getRecords().map((record) => record.provider),
+    ["official", "relay", undefined],
+  );
+  assert.equal(restored.getSummary().totalCostCny, 1 + 3 + 3);
+});

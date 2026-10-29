@@ -349,3 +349,82 @@ test("关闭时释放挂起的选择请求", async () => {
   assert.equal(answer.value, "once");
   assert.deepEqual(server.pendingSelectionIds(), []);
 });
+
+const PERMISSION_CARD = {
+  title: "需要授权",
+  items: [
+    { value: "once", label: "允许" },
+    { value: "deny", label: "拒绝" },
+    { value: "deny-reason", label: "拒绝并说明…" },
+  ],
+  selectedValue: "once",
+  fallbackValue: "deny",
+  autoValue: "once",
+};
+
+test("授权卡片超时按 fallbackValue（拒绝）处理，而不是界面默认项", async () => {
+  const { server } = createServer({ selectionTimeoutMs: 20 });
+  // 服务端计时器是 unref 的，测试里另挂一个保活计时器，免得事件循环提前退出。
+  const keepAlive = setTimeout(() => {}, 1000);
+  const answer = await server
+    .requestSelection(PERMISSION_CARD)
+    .finally(() => clearTimeout(keepAlive));
+  assert.equal(answer.value, "deny");
+  const events = server.history(0).events;
+  const request = events.find((event) => event.type === "selection_request");
+  assert.equal(request.default.value, "deny", "事件里的 default 应如实告知兜底值");
+  const resolved = events.find((event) => event.type === "selection_resolved");
+  assert.equal(resolved.timedOut, true);
+  assert.equal(resolved.value, "deny");
+});
+
+test("关闭服务时挂起的授权卡片按拒绝结案", async () => {
+  const { server } = createServer();
+  const pending = server.requestSelection(PERMISSION_CARD);
+  await server.close();
+  assert.equal((await pending).value, "deny");
+});
+
+test("approval=auto 只采用 autoValue；没声明的请求按 fallbackValue 拒绝", async () => {
+  const { server } = createServer({ approval: "auto" });
+  assert.equal((await server.requestSelection(PERMISSION_CARD)).value, "once");
+  const escalation = await server.requestSelection({
+    title: "Agent 申请 · 加入工作区根",
+    items: [
+      { value: "approve", label: "批准" },
+      { value: "deny", label: "拒绝" },
+    ],
+    fallbackValue: "deny",
+  });
+  assert.equal(escalation.value, "deny", "提级申请不能被 auto 自动批准");
+});
+
+test("haji_approve 校验选项值，并把 reason 交给调用方", async () => {
+  const { server } = createServer();
+  const pending = server.requestSelection(PERMISSION_CARD);
+  const request = server.history(0).events.find((event) => event.type === "selection_request");
+
+  const bad = await callTool(server, "haji_approve", { requestId: request.requestId, value: "y" });
+  assert.equal(bad.result.isError, true);
+  assert.equal(parseContent(bad).accepted, false);
+  assert.deepEqual(server.pendingSelectionIds(), [request.requestId], "非法值不应结案");
+
+  const badSecondary = parseContent(
+    await callTool(server, "haji_approve", {
+      requestId: request.requestId,
+      value: "once",
+      secondaryValue: "global",
+    }),
+  );
+  assert.equal(badSecondary.accepted, false, "没有 secondary 的请求不接受 secondaryValue");
+
+  const ok = parseContent(
+    await callTool(server, "haji_approve", {
+      requestId: request.requestId,
+      value: "deny-reason",
+      reason: "  先跑测试  ",
+    }),
+  );
+  assert.equal(ok.accepted, true);
+  assert.deepEqual(await pending, { value: "deny-reason", reason: "先跑测试" });
+});
