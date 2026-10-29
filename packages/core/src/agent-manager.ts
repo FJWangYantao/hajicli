@@ -9,6 +9,7 @@ import {
   normalizeSubagentInstructions,
   normalizeSubagentMaxTokens,
   normalizeSubagentMaxToolCalls,
+  type SubagentExecution,
   type SubagentResult,
   type SubagentRole,
 } from "./subagent-runner.js";
@@ -55,6 +56,7 @@ export interface AgentRecord {
   toolCalls: number;
   usage: AgentUsage;
   result?: SubagentResult;
+  execution?: SubagentExecution[];
   verification?: {
     verdict: "verified" | "rejected";
     evidence: string;
@@ -74,7 +76,7 @@ export function formatPendingAgentVerificationContext(records: readonly AgentRec
   if (pending.length === 0) return "";
   return [
     AGENT_VERIFICATION_CONTEXT_START,
-    "以下子代理结果尚未验证。父 Agent 必须独立调用 read、grep、bash 等工具检查关键结论，再使用工具结果中明确给出的 verification_evidence_id 调用 verifyagent。",
+    "以下子代理结果尚未验证。父 Agent 必须独立调用 read、grep、bash 等工具检查关键结论，再使用工具结果中明确给出的 verification_evidence_id 调用 verifyagent。partial 仅代表部分进展，任务尚未完成；验证后必须继续未完成事项，不可将 partial 作为关联任务完成的依据。",
     ...pending.map((record) =>
       [
         `Agent ${record.id}（${record.role}）：${record.description}`,
@@ -170,7 +172,7 @@ function isParentEvidence(value: unknown): value is ParentEvidence {
 export interface AgentNotification {
   id: string;
   agentId: string;
-  type: "completed" | "failed" | "aborted" | "verified" | "rejected";
+  type: "completed" | "partial" | "failed" | "aborted" | "verified" | "rejected";
   message: string;
   createdAt: number;
   background: boolean;
@@ -409,6 +411,14 @@ export class AgentManager {
     return record ? this.copy(record) : undefined;
   }
 
+  recordExecution(agentId: string, entry: SubagentExecution): void {
+    const record = this.records.get(agentId);
+    if (record?.status !== "running") return;
+    record.execution ||= [];
+    record.execution.push(structuredClone(entry));
+    this.persistAndEmit();
+  }
+
   updateTool(agentId: string, toolName: string): void {
     const record = this.records.get(agentId);
     if (record?.status !== "running") return;
@@ -578,7 +588,11 @@ export class AgentManager {
         verification: [],
         unresolved: ["timeout"],
       };
-      this.finishRuntime(record, runtime, "aborted", result);
+      // 先让 runner 响应 AbortSignal 并交回执行记录；不响应中止的 provider 仍会被兜底结束。
+      runtime.timeoutHandle = setTimeout(() => {
+        if (this.runtimes.get(agentId) === runtime)
+          this.finishRuntime(record, runtime, "aborted", result);
+      }, 250);
     }, runtime.timeoutMs);
     void runtime
       .executor({
@@ -592,7 +606,7 @@ export class AgentManager {
         const aborted = runtime.controller.signal.aborted || result.status === "aborted";
         const status: AgentStatus = aborted
           ? "aborted"
-          : result.status === "completed"
+          : result.status === "completed" || result.status === "partial"
             ? "awaiting_verification"
             : "failed";
         this.finishRuntime(record, runtime, status, result);
@@ -626,7 +640,24 @@ export class AgentManager {
     record.activity = undefined;
     record.preview = undefined;
     this.progressEmittedAt.delete(record.id);
-    if (result) record.result = result;
+    if (result) {
+      result.execution ||= record.execution || [];
+      result.filesChanged = [
+        ...new Set([
+          ...result.filesChanged,
+          ...result.execution
+            .filter(
+              (entry) =>
+                ["write", "edit"].includes(entry.toolName) &&
+                /^\[文件(?:写入|精准编辑)成功\]/.test(entry.output) &&
+                typeof entry.arguments.path === "string",
+            )
+            .map((entry) => String(entry.arguments.path)),
+        ]),
+      ];
+      record.result = result;
+      record.execution = undefined;
+    }
     if (runtime.timeoutHandle) clearTimeout(runtime.timeoutHandle);
     if (runtime.parentSignal && runtime.parentAbort)
       runtime.parentSignal.removeEventListener("abort", runtime.parentAbort);
@@ -634,7 +665,9 @@ export class AgentManager {
     runtime.resolve(this.copy(record));
     const type =
       status === "awaiting_verification"
-        ? "completed"
+        ? result?.status === "partial"
+          ? "partial"
+          : "completed"
         : status === "aborted"
           ? "aborted"
           : "failed";
@@ -642,7 +675,9 @@ export class AgentManager {
       record,
       type,
       status === "awaiting_verification"
-        ? "子代理已完成，等待父 Agent 独立验证"
+        ? result?.status === "partial"
+          ? "子代理仅取得部分进展，任务未完成；等待父 Agent 独立验证，并继续未完成事项，不可据此完成关联任务"
+          : "子代理已完成，等待父 Agent 独立验证"
         : result?.summary || status,
     );
     this.persistAndEmit();

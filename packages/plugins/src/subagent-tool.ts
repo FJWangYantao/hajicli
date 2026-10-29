@@ -31,7 +31,7 @@ export class SubagentTool implements BaseTool {
     function: {
       name: "subagent",
       description:
-        "将一个边界清晰的复杂子任务委派给独立上下文的子代理，只返回最终结论。适合调研、实现或审查；不要用于简单的一步操作。",
+        "将一个边界清晰的复杂子任务委派给独立上下文的子代理。适合调研、实现或审查；不要用于简单的一步操作。partial 表示任务未完成，父代理必须独立验证已有进展并继续未完成事项，不可据此完成关联任务。",
       parameters: {
         type: "object",
         properties: {
@@ -69,7 +69,8 @@ export class SubagentTool implements BaseTool {
             type: "integer",
             minimum: MIN_SUBAGENT_MAX_TOKENS,
             maximum: MAX_SUBAGENT_MAX_TOKENS,
-            description: "可选：整个子代理累计 Token 上限；默认 100000",
+            description:
+              "可选：所有轮次输入与输出累计 Token 上限，含每轮重复历史和缓存输入；不是上下文窗口或单次输出额度；默认 100000。复杂实现任务避免设置小额度",
           },
           maxToolCalls: {
             type: "integer",

@@ -221,12 +221,12 @@ export class ToolsPromptPart implements SystemPromptPart {
     }
     if (activeTools.includes("subagent")) {
       rules.push(
-        "- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。research/review 子代理默认只读，需要子代理改文件时必须显式传 role=implement；可按需指定 model、匹配的 provider、reasoningEffort 和追加 instructions；也可通过 timeoutMs、maxTokens、maxToolCalls 限制运行时间和资源消耗；可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。",
+        "- subagent：仅将边界清晰、可独立完成的复杂调研、实现或审查任务交给独立上下文；简单操作直接完成。research/review 子代理默认只读，需要子代理改文件时必须显式传 role=implement；可按需指定 model、匹配的 provider、reasoningEffort 和追加 instructions；也可通过 timeoutMs、maxTokens、maxToolCalls 限制运行时间和资源消耗；maxTokens 是所有轮次输入与输出累计上限，包含每轮重复历史和缓存输入，不是上下文窗口或单次输出额度，复杂实现任务避免设置小额度；可关联 taskId，但任务状态和最终验证仍由主 Agent 负责。",
       );
     }
     if (activeTools.includes("verifyagent")) {
       rules.push(
-        "- verifyagent：子代理完成后，其报告仅是未验证线索。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果仍在等待验证时禁止 taskfinish；子代理失败、中止或被拒时没有可验证的结果，可带说明收尾。",
+        "- verifyagent：子代理返回 completed 或 partial 后，其报告均仅是未验证线索。partial 表示任务未完成，必须独立验证已有进展并继续未完成事项，不可将 partial 作为 taskfinish 的完成依据。你必须亲自调用 read、grep、bash 等工具取得独立证据，再把工具结果末尾明确显示的 verification_evidence_id 填入 evidenceToolCallIds 调用 verifyagent；证据会绑定该 Agent 且只能使用一次。关联结果仍在等待验证时禁止 taskfinish；子代理失败、中止或被拒时没有可验证的结果，可带说明收尾。",
       );
     }
     if (activeTools.includes("loadskill")) {
