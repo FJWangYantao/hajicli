@@ -1008,7 +1008,7 @@ ${colors.bold("选项:")}
   -h, --help          显示帮助手册
   -c, --continue      继续最近一次会话（交互模式）
   -r, --resume [关键词]  恢复历史会话：唯一命中直接载入，多命中进入选择器（交互模式）
-  -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文；prompt 传 "-" 从 stdin 管道读取）
+  -p, --print <prompt>  无头单次执行：跑完一个回合输出结果并退出（stdout 只含正文；prompt 传 "-" 从 stdin 管道读取；模型请求失败时退出码 1）
   --permission-mode <mode>  无头模式的权限档位：plan|default|accept-edit|auto|bypass-permissions
   --output-format <format>  无头输出格式：text（默认）或 json（stdout 只输出一个结构化 JSON）
   --allow <键>        无头模式的额外放行键（可重复）：bash:<命令前缀> 或工具名，仅本次进程生效、不落盘

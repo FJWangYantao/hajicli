@@ -3697,7 +3697,8 @@ async function main() {
         await runServeMode();
         break;
       }
-      // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理（退出码 0）。
+      // 无头单次模式：跑完一个回合后直接跳出循环进入退出清理。
+      // 回合成功退出码 0；模型请求失败或被中止为 1，CI 才能据此判失败。
       if (headlessRequest) {
         const headlessStartedAt = Date.now();
         let headlessOutcome: TurnOutcome | undefined;
@@ -3713,6 +3714,10 @@ async function main() {
           manualSkillExchange: undefined,
           promptDisplayStartOffset: ui.getChatLength(),
         });
+        const headlessOk = Boolean(
+          headlessOutcome && !headlessOutcome.aborted && !headlessOutcome.failed,
+        );
+        if (!headlessOk) process.exitCode = 1;
         if (headlessRequest.outputFormat === "json") {
           // JSON 模式：stdout 全程静音，这里统一输出结构化结果（正文取最后一条助手消息）。
           const finalMessages = turnDeps.getMessages();
@@ -3730,7 +3735,7 @@ async function main() {
             `${JSON.stringify(
               {
                 // 模型请求失败、会话落盘失败也算失败；-c / -r 续写时 toolCalls 只计本次。
-                ok: Boolean(headlessOutcome && !headlessOutcome.aborted && !headlessOutcome.failed),
+                ok: headlessOk,
                 prompt: headlessRequest.prompt,
                 model: selectedModel,
                 text: typeof lastAssistant?.content === "string" ? lastAssistant.content : "",

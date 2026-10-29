@@ -238,7 +238,8 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
 - `default` / `accept-edit` / `auto` 档都会弹出授权卡，可以「允许本次」「本会话内总是允许该目录」或「永久允许该目录」（路径授权只写用户级 `permissions.json`，不会写进项目）；
 - `plan` 档的越界读取同样需要授权，越界写入按计划模式拦截；
 - `bypass-permissions` 与 `HAJI_ALLOW_OUTSIDE_WORKSPACE=1` 跳过授权（后者供可信会话临时使用）；
-- 无头模式（`haji -p`）没有人可确认，越界调用会被拒绝，除非命中用户级路径规则、命令行 `--allow` 预放行或设置了上面的环境变量。
+- 无头模式（`haji -p`）回合成功退出码为 0；模型请求失败或回合被中止时退出码为 1（`--output-format json` 的 `ok` 同为 `false`），CI 可直接据此判失败。
+- 无头模式没有人可确认，越界调用会被拒绝，除非命中用户级路径规则、命令行 `--allow` 预放行或设置了上面的环境变量。
   无头 / CI 场景用 `--allow "bash:npm test"`（键形态与 `permissions.json` 的 `key` 一致，可重复）把已知安全的验证命令预先放行，只对本次进程生效、不写盘。
 
 路径规则写在用户级 `~/.haji/permissions.json` 的 `paths` 段，`deny` 优先于 `allow`；项目级文件的 `paths` 段不会生效，避免克隆仓库自带扩权配置：
