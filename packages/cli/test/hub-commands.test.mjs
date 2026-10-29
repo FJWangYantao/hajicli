@@ -20,6 +20,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
   const commands = getTopLevelSlashCommands().map((entry) => entry.command);
   assert.deepEqual(commands, [
     "/help",
+    "/reload",
     "/model",
     "/config",
     "/agents",
@@ -31,6 +32,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/view",
     "/clear",
     "/resume",
+    "/fork",
     "/undo",
     "/rewind",
     "/exit",

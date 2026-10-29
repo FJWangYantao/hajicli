@@ -113,6 +113,37 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ui.writeLine(colors.okLine("已开启全新对话并重置上下文。"));
 }
 
+/** /fork [名称]：复制历史并切换；任务、Agent 与代码修改归属从新作用域开始。 */
+export async function handleForkCommand(ctx: SessionCommandContext, title?: string): Promise<void> {
+  ctx.saveSession();
+  let fork: ReturnType<SessionManager["getCurrentSession"]>;
+  try {
+    fork = await ctx.sessionManager.forkCurrentSession(title);
+  } catch (error) {
+    ctx.ui.writeLine(colors.failLine(error instanceof Error ? error.message : String(error)));
+    return;
+  }
+  ctx.taskStore.setTaskScope(fork.id);
+  ctx.snapshotEngine.setScope(fork.id);
+  ctx.agentManager.setScope(fork.id);
+  ctx.resetPlanReviewState();
+  ctx.setMessages(fork.messages);
+  ctx.skillRegistry.restoreScopeFromMessages("main", fork.messages);
+  ctx.applySessionUsage(fork.usage);
+  ctx.syncTaskPlanUI();
+  await ctx.refreshSystemPrompt();
+  ctx.refreshAgentVerificationContext(ctx.getMessages());
+  ctx.saveSession();
+  ctx.updateStatusUI();
+  renderSessionHistory(ctx);
+  ctx.ui.writeLine(
+    colors.okLine(`已分叉并切换至「${fork.title}」。原会话已保留，可用 /resume 切回。`),
+  );
+  ctx.ui.writeLine(
+    colors.gray("共用当前工作目录；费用、任务和代码回退从分叉后开始，历史回退节点不继承。"),
+  );
+}
+
 /** 压缩记录里的时间戳；与 /resume 选择器用同一套时间格式。 */
 function formatCompactionStamp(iso: string): string {
   const time = new Date(iso);
@@ -183,21 +214,15 @@ async function loadAndRenderSession(
     ui.writeLine(colors.warnLine("选中的会话为空或加载失败。"));
     return false;
   }
-  if (archived) {
-    // 原工作树已移除：会话复制回当前目录续写（loadSession 负责复制），归档副本不动。
-    ui.writeLine(
-      colors.gray(
-        `已从归档取回会话（原工作树 ${path.basename(path.dirname(storeDir))}），在当前目录继续。`,
-      ),
-    );
-  } else if (path.resolve(sessionManager.getSessionsDir()) !== path.resolve(previousStoreDir)) {
+  if (
+    !archived &&
+    path.resolve(sessionManager.getSessionsDir()) !== path.resolve(previousStoreDir)
+  ) {
     const worktreeRoot = path.resolve(sessionManager.getSessionsDir(), "..", "..");
     if (ctx.enterSessionWorktree && fs.existsSync(path.join(worktreeRoot, ".git"))) {
       ctx.enterSessionWorktree(worktreeRoot);
-      ui.writeLine(colors.gray(`已切换到会话所在的工作树：${worktreeRoot}`));
     }
   }
-  const thinkingVisible = ctx.isThinkingVisible?.() !== false;
   taskStore.setTaskScope(loaded.id);
   snapshotEngine.setScope(loaded.id);
   agentManager.setScope(loaded.id);
@@ -211,6 +236,32 @@ async function loadAndRenderSession(
   ctx.applySessionUsage(loaded.usage);
   ctx.saveSession();
   ctx.updateStatusUI();
+  renderSessionHistory(
+    ctx,
+    colors.okLine(`已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
+    loaded.messages,
+  );
+  if (archived) {
+    ui.writeLine(colors.gray("归档会话已取回，在当前目录继续。"));
+  } else if (path.resolve(sessionManager.getSessionsDir()) !== path.resolve(previousStoreDir)) {
+    ui.writeLine(
+      colors.gray(
+        `已切换到会话所在的工作树：${path.resolve(sessionManager.getSessionsDir(), "..", "..")}`,
+      ),
+    );
+  }
+  return true;
+}
+
+/** 只重建显示，不重新读取磁盘或切换作用域；messages 缺省取当前内存上下文。 */
+function renderSessionHistory(
+  ctx: SessionCommandContext,
+  heading?: string,
+  messages: ChatMessage[] = ctx.getMessages(),
+): void {
+  const { ui } = ctx;
+  const loaded = { ...ctx.sessionManager.getCurrentSession(), messages };
+  const thinkingVisible = ctx.isThinkingVisible?.() !== false;
   const pieces: ChatSegmentPiece[] = [];
   let plain = "";
   let group = "";
@@ -264,9 +315,7 @@ async function loadAndRenderSession(
     if (groupOpen) group += `${value}\n`;
     else plain += `${value}\n`;
   };
-  appendHistoryLine(
-    colors.okLine(`已恢复会话：「${loaded.title}」 (${loaded.messages.length} 条上下文)`),
-  );
+  if (heading) appendHistoryLine(heading);
   // 压缩记录：摘要与「压缩前完整记录」路径只写在 system 消息里，而下面的渲染会跳过
   // system；不显式回放的话，恢复后看起来就像历史莫名少了一截（压缩提示原本也只写终端缓冲）。
   const compactionSystemContent = loaded.messages.find(
@@ -442,7 +491,6 @@ async function loadAndRenderSession(
   flushPlain();
   ui.replaceChatSegments(pieces);
   ui.dismissStartupHeader();
-  return true;
 }
 
 /** 首屏按稳定 ID 恢复，标题相同的会话也不会串选。 */
@@ -611,11 +659,15 @@ async function rewindToNode(ctx: SessionCommandContext, targetMsgIndex: number):
   // 1. 截断消息历史（丢弃该节点之后的所有消息与回复）
   ctx.setMessages(messages.slice(0, targetMsgIndex));
   skillRegistry.restoreScopeFromMessages("main", ctx.getMessages());
+  ctx.resetPlanReviewState();
+  await ctx.refreshSystemPrompt();
+  ctx.refreshAgentVerificationContext(ctx.getMessages());
+  ctx.syncTaskPlanUI();
   ctx.saveSession();
   ctx.updateStatusUI();
 
-  // 2. 清理聊天重置界面提示
-  ui.clearChat();
+  // 2. 回放保留的消息，使页面与实际上下文一致。
+  renderSessionHistory(ctx);
   const rollbackSummary =
     rollbackResult.revertedPaths.length > 0
       ? `，并撤销了本会话修改的 ${rollbackResult.revertedPaths.length} 个文件`

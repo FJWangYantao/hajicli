@@ -6,10 +6,13 @@ import {
   buildSessionHelpLines,
   buildSlashCommandCatalog,
   COMMAND_SURFACE,
+  classifyCommandTiming,
   expandCommandInput,
   findAliasSkillConflicts,
+  findSlashArgHint,
   getCommandAliases,
   getTopLevelSlashCommands,
+  matchSlashCommands,
   resolveCanonicalCommand,
   suggestSimilarCommand,
 } from "../dist/cli-help.js";
@@ -83,6 +86,54 @@ test("别名表全部指向真实指令，且键值头词不相等", () => {
     assert.ok(canonicalNames.has(canonical), `别名 ${alias} → ${canonical} 不是已知指令`);
     assert.notEqual(alias, canonical.split(" ")[0], `别名 ${alias} 不应与规范指令头词相同`);
   }
+});
+
+test("别名搜索命中规范指令，不生成重复条目或覆盖参数", () => {
+  const catalog = buildSlashCommandCatalog();
+  for (const input of ["/ne", "/new", "/NEW"]) {
+    const result = matchSlashCommands(input, catalog);
+    assert.equal(result[0].command, "/clear");
+    assert.match(result[0].description, /别名 \/new/);
+    assert.equal(result.filter((entry) => entry.command === "/clear").length, 1);
+  }
+  for (const [alias, canonical] of getCommandAliases()) {
+    assert.equal(matchSlashCommands(`/${alias}`, catalog)[0]?.command, `/${canonical}`);
+  }
+  assert.deepEqual(matchSlashCommands("/new some text", catalog), []);
+  assert.equal(
+    matchSlashCommands("/", catalog).filter((entry) => entry.command === "/clear").length,
+    1,
+  );
+});
+
+test("所有别名的子命令补全、参数提示和执行时机与规范指令一致", () => {
+  const catalog = buildSlashCommandCatalog();
+  for (const [alias, canonical] of getCommandAliases()) {
+    for (const suffix of [" ", " r", " add", " search", " --role research"]) {
+      const input = `/${alias}${suffix}`;
+      const expanded = `/${canonical}${suffix}`;
+      assert.deepEqual(
+        matchSlashCommands(input, catalog),
+        matchSlashCommands(expanded, catalog),
+        input,
+      );
+      assert.deepEqual(
+        findSlashArgHint(input, catalog),
+        findSlashArgHint(expanded, catalog),
+        input,
+      );
+      assert.equal(classifyCommandTiming(input), classifyCommandTiming(expanded), input);
+    }
+  }
+  assert.ok(
+    matchSlashCommands("/perm r", catalog).some((entry) => entry.command === "/permission rules"),
+  );
+  assert.equal(findSlashArgHint("/history search", catalog)?.command, "/resume");
+  assert.ok(
+    matchSlashCommands("/instinct ", catalog).some(
+      (entry) => entry.command === "/memory rules distill",
+    ),
+  );
 });
 
 test("别名不出现在补全目录、顶层列表与 /help", () => {

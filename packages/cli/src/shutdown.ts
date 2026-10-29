@@ -4,6 +4,8 @@ export async function runShutdownSteps(
     name: string;
     run: (signal: AbortSignal) => unknown | Promise<unknown>;
     timeoutMs?: number;
+    /** 辅助维护失败仅告警；关键保存与钩子默认影响退出状态。 */
+    affectsExitCode?: boolean;
   }[],
   warn: (message: string) => void,
 ): Promise<boolean> {
@@ -22,7 +24,7 @@ export async function runShutdownSteps(
         }),
       ]);
     } catch (error) {
-      ok = false;
+      if (step.affectsExitCode !== false) ok = false;
       warn(`${step.name}失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       if (timer) clearTimeout(timer);

@@ -104,6 +104,63 @@ test("退出钩子异常或挂起后仍保存并清理", async () => {
   assert.equal(warnings.length, 2);
 });
 
+test("经验维护异常或超时只告警，关键保存与退出钩子仍决定失败", async () => {
+  for (const timeout of [false, true]) {
+    const warnings = [];
+    let saved = false;
+    let signal;
+    const ok = await runShutdownSteps(
+      [
+        {
+          name: "经验提炼",
+          affectsExitCode: false,
+          timeoutMs: 10,
+          run: (value) => {
+            signal = value;
+            if (timeout) return new Promise(() => {});
+            throw new Error("maintenance fault");
+          },
+        },
+        {
+          name: "最终保存",
+          run: () => {
+            saved = true;
+          },
+        },
+      ],
+      (warning) => warnings.push(warning),
+    );
+    assert.equal(ok, true);
+    assert.equal(saved, true);
+    assert.equal(warnings.length, 1);
+    assert.equal(signal.aborted, timeout);
+  }
+  for (const name of ["会话保存", "退出钩子", "会话最终保存"]) {
+    assert.equal(
+      await runShutdownSteps(
+        [
+          {
+            name: "经验提炼",
+            affectsExitCode: false,
+            run: () => {
+              throw new Error("optional");
+            },
+          },
+          {
+            name,
+            run: () => {
+              throw new Error("critical");
+            },
+          },
+        ],
+        () => {},
+      ),
+      false,
+      name,
+    );
+  }
+});
+
 test("替换失败保留旧会话和待保存数据，恢复后可重试", async (t) => {
   const dir = temporary(t);
   const warnings = [];

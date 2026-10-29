@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START,
@@ -185,8 +186,10 @@ import {
   resolveUtilityModel,
   VOLCENGINE_MODELS,
 } from "./provider-models.js";
+import { runReloadProcess, supportsProcessReload } from "./reload.js";
 import {
   handleClearCommand,
+  handleForkCommand,
   handleResumeCommand,
   handleRewindCommand,
   handleUndoCommand,
@@ -281,7 +284,17 @@ async function main() {
   }
   const headlessRequest = headlessParse.request;
   // 会话恢复参数（haji -c / haji -r）：只在交互模式生效，无头 -p 时忽略。
-  const sessionResumeRequest = headlessRequest ? undefined : parseSessionResumeArgs(cliArgs);
+  const reloadSessionIndex = cliArgs.indexOf("--reload-session");
+  const reloadSessionId = reloadSessionIndex >= 0 ? cliArgs[reloadSessionIndex + 1] : undefined;
+  if (reloadSessionIndex >= 0 && (!reloadSessionId || reloadSessionId.startsWith("-"))) {
+    console.error(colors.failLine("--reload-session 需要会话 ID。"));
+    process.exit(1);
+  }
+  const sessionResumeRequest = headlessRequest
+    ? undefined
+    : reloadSessionId
+      ? { mode: "search" as const, keyword: reloadSessionId }
+      : parseSessionResumeArgs(cliArgs);
   // 追加工作区根（--add-dir，可重复）：只影响本次进程，不写配置。
   const addDirParse = parseAddDirArgs(cliArgs);
   if (addDirParse.error) {
@@ -976,7 +989,7 @@ async function main() {
   let sigintHandling = false;
   // sessionManager 在后面才创建；SIGINT 也要把防抖中的会话写盘冲掉，避免丢最后一次保存。
   let sigintSessionFlush: (() => Promise<void>) | undefined;
-  process.on("SIGINT", async () => {
+  const handleSigint = async () => {
     // 第二次 Ctrl+C：flush 可能挂住（如上游重试），直接强制退出。
     if (sigintHandling) process.exit(130);
     sigintHandling = true;
@@ -990,15 +1003,19 @@ async function main() {
       /* 静默 */
     }
     process.exit(130);
-  });
+  };
+  process.on("SIGINT", handleSigint);
   const skillRegistry = new SkillRegistry({ cwd: process.cwd() });
   const initialSkillScan = await skillRegistry.scan();
   markStartupStage("skill_scan");
   // 在进入全屏 TUI 前启动服务，避免后台日志破坏固定布局。
-  await startTraceServer(3000, false, false, 10, progressLog).catch((error) => {
-    const detail = error instanceof Error ? error.message : String(error);
-    startupWarnings.push(`Trace 观测服务器启动失败：${detail}`);
-  });
+  const traceServerController = new AbortController();
+  await startTraceServer(3000, false, false, 10, progressLog, traceServerController.signal).catch(
+    (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      startupWarnings.push(`Trace 观测服务器启动失败：${detail}`);
+    },
+  );
   markStartupStage("trace_server");
 
   // 注册并实例化所有已实现的系统工具
@@ -2128,8 +2145,9 @@ async function main() {
     if (!ui.isInteractive()) {
       // 无头且 stdin 非 TTY（管道/CI）时没有交互确认的机会，自动拒绝并把原因反馈给模型。
       if (headlessRequest && !process.stdin.isTTY) {
-        if (!hardProtected) return USER_REJECTED_TOOL_OUTPUT;
-        return `${USER_REJECTED_TOOL_OUTPUT}\n该操作命中受保护目标，无头模式无法确认。请在交互会话中执行，或显式设置 HAJI_ALLOW_PROTECTED=1（会跳过整层保护，仅建议在受控环境使用）。`;
+        if (!hardProtected)
+          return "未执行：当前为无头非交互模式，无法取得本次操作所需的授权。这不是用户主动拒绝。请使用已明确授权的工具继续；需要此操作时，在交互会话中配置对应命令或目录的授权后重试，不要换写法绕过。";
+        return "未执行：该操作命中受保护目标，无头非交互模式无法取得确认；这不是用户主动拒绝。请在交互会话中执行并逐次确认。";
       }
       const answer = await ui.readInput({
         prompt: `${requester} 请求${permissionVerb(toolName)}${outsideHint}${protectedHint}：${summarizeToolCall(toolName, args)}，授权？(y/N) › `,
@@ -3302,11 +3320,17 @@ async function main() {
   };
 
   let fatalExit: unknown;
+  let reloadRequested = false;
   try {
     markStartupStage("ready");
     // 启动参数 -c / -r：进入主循环前恢复历史会话（-c 最近一个；-r 唯一命中直载，否则选择器）。
     if (sessionResumeRequest) {
-      if (sessionResumeRequest.mode === "latest") {
+      if (reloadSessionId) {
+        if (!(await resumeSessionById(sessionCommandContext, reloadSessionId))) {
+          throw new Error(`重新加载失败：无法恢复会话 ${reloadSessionId}。可用 haji -c 重试。`);
+        }
+        ui.writeLine(colors.okLine("haji 已重新加载，当前会话已恢复。"));
+      } else if (sessionResumeRequest.mode === "latest") {
         await resumeLatestSession(sessionCommandContext);
       } else {
         await resumeByKeyword(sessionCommandContext, sessionResumeRequest.keyword);
@@ -3488,6 +3512,29 @@ async function main() {
           continue;
         }
 
+        if (command === "reload") {
+          if (parts.length > 1) {
+            ui.writeLine(colors.warnLine("用法: /reload（保存会话并重新启动 haji）"));
+            continue;
+          }
+          if (!supportsProcessReload()) {
+            ui.writeLine(
+              colors.warnLine(
+                "当前平台或 Node 不支持原位重载。请使用非 Windows 的 Node 22.15+ / 24+，或手动退出并重启 haji。",
+              ),
+            );
+            continue;
+          }
+          sessionManager.saveCurrentSession(messages);
+          await sessionManager.flush();
+          if (sessionManager.hasPendingWrites()) {
+            ui.writeLine(colors.failLine("会话保存失败，未重新加载。请检查磁盘后重试。"));
+            continue;
+          }
+          reloadRequested = true;
+          ui.writeLine(colors.gray("正在保存会话并重新加载 haji…"));
+          break;
+        }
         if (command === "exit") {
           const abortedAgents = agentManager.abortAll();
           if (abortedAgents > 0)
@@ -3704,6 +3751,10 @@ async function main() {
         }
         if (command === "clear") {
           await handleClearCommand(sessionCommandContext);
+          continue;
+        }
+        if (command === "fork") {
+          await handleForkCommand(sessionCommandContext, parts.slice(1).join(" ").trim());
           continue;
         }
         if (command === "resume") {
@@ -4165,14 +4216,9 @@ async function main() {
           },
         },
         {
-          name: "经验与退出钩子",
+          name: "退出钩子",
           timeoutMs: 3000,
           run: async (signal) => {
-            // 经验系统：先取出会话内累积的观测（flush 会清空缓冲，必须在此之前取）
-            const sessionObs = experienceStore.getPendingObservations();
-            // flush 观测样本落盘（提炼引擎用的是上面取出的副本，顺序不能反）
-            await experienceStore.flushObservations();
-            signal.throwIfAborted();
             // 关键会话已先保存；Stop hook 的变更由后续最终保存处理。
             await hookEngine.trigger("Stop", {
               messages,
@@ -4181,6 +4227,16 @@ async function main() {
               cwd: process.cwd(),
               abortSignal: signal,
             });
+            signal.throwIfAborted();
+          },
+        },
+        {
+          name: "经验提炼",
+          affectsExitCode: false,
+          timeoutMs: 3000,
+          run: async (signal) => {
+            const sessionObs = experienceStore.getPendingObservations();
+            await experienceStore.flushObservations();
             signal.throwIfAborted();
             // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选（LLM 路径走杂活模型）
             const distillEngine = new DistillEngine({
@@ -4245,8 +4301,31 @@ async function main() {
     // 退出，崩溃路径此时句柄已释放，自然退出也不会被挂住。
     agentManager.abortAll();
     mcpManager.stopAll();
+    traceServerController.abort();
   }
   if (fatalExit !== undefined) throw fatalExit;
+  if (reloadRequested && !process.exitCode) {
+    process.off("SIGINT", handleSigint);
+    try {
+      process.exitCode = await runReloadProcess({
+        entryPath: fileURLToPath(import.meta.url),
+        sessionId: messages.some(
+          (message) => message.role === "user" || message.role === "assistant",
+        )
+          ? sessionManager.getCurrentSession().id
+          : undefined,
+        workspaceRoots,
+        cwd: process.cwd(),
+      });
+    } catch (error) {
+      console.error(
+        `重新加载失败：${error instanceof Error ? error.message : String(error)}。可用 haji -c 恢复会话。`,
+      );
+      process.exitCode = 1;
+    }
+  } else if (reloadRequested) {
+    console.error("退出保存未全部成功，已取消重新加载。修复错误后可用 haji -c 恢复会话。");
+  }
   process.exit(process.exitCode ?? 0);
 }
 

@@ -267,6 +267,8 @@ export interface ReadInputOptions {
 export interface SlashCommand {
   command: string;
   description: string;
+  /** 搜索用的兼容别名；候选仍显示并填入规范指令。 */
+  aliases?: readonly string[];
   /** 所属枢纽名（如“模型与配置”），模糊搜索命中非顶层条目时作为来源标签显示。 */
   group?: string;
   /** 参数格式提示（如 `<id>`），显示在补全标签之后。 */

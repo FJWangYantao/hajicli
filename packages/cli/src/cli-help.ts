@@ -106,6 +106,7 @@ const PERMISSION_SUBCOMMANDS: readonly CommandSurfaceEntry[] = [
  */
 export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
   { command: "/help", description: "显示帮助手册", immediate: {} },
+  { command: "/reload", description: "保存当前会话并重启，加载更新或构建后的 haji" },
   { command: "/model", description: "选择模型与思考强度（含价格与窗口）", immediate: {} },
   {
     command: "/config",
@@ -400,6 +401,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     argHint: "[标题关键词]",
     aliases: ["history", "sessions"],
   },
+  {
+    command: "/fork",
+    description: "复制当前对话为新会话并切换（共用工作目录）",
+    argHint: "[名称]",
+  },
   { command: "/undo", description: "撤销上一轮的代码与消息（/rewind 的一键版）" },
   { command: "/rewind", description: "历史节点撤销与代码回退" },
   { command: "/exit", description: "退出 haji", aliases: ["quit", "q"] },
@@ -414,7 +420,7 @@ let aliasIndexCache: ReadonlyMap<string, string> | undefined;
 
 /**
  * 构建“别名 → 规范指令”索引（键与值均不含斜杠且小写；值可为多词，如
- * "permissions" → "permission rules"）。别名只参与解析，不进补全、不进 /help、
+ * "permissions" → "permission rules"）。别名参与解析与补全搜索，不单独进入菜单或 /help，
  * 不参与未知指令纠错，因此同一个动作在界面上始终只展示规范名。
  * 建表即做冲突检测：别名不得与任何现有指令的头词同名、不得重复登记。
  * 导出以便测试注入自定义指令面验证冲突检测。
@@ -602,12 +608,16 @@ export function getTopLevelSlashCommands(): ReadonlyArray<{
 export function buildSlashCommandCatalog(skills: readonly HubSkillEntry[] = []): SlashCommand[] {
   const catalog: SlashCommand[] = [];
   const seen = new Set<string>();
+  const aliases = getCommandAliases();
   const add = (entry: CommandSurfaceEntry, group: string | undefined, topLevel: boolean): void => {
     if (seen.has(entry.command)) return;
     seen.add(entry.command);
     catalog.push({
       command: entry.command,
       description: entry.description,
+      aliases: [...aliases]
+        .filter(([, target]) => `/${target}` === entry.command)
+        .map(([alias]) => `/${alias}`),
       group,
       argHint: entry.argHint,
       argRequired: entry.argRequired,
@@ -646,6 +656,13 @@ function isSubsequence(needle: string, haystack: string): boolean {
   return false;
 }
 
+/** 补全也展开别名；尾随空格表示用户正准备输入子命令或参数，必须保留。 */
+function normalizeCompletionInput(input: string): string {
+  const normalized = input.toLowerCase().replace(/\s+/g, " ");
+  if (!normalized.includes(" ")) return normalized;
+  return expandCommandInput(normalized) + (normalized.endsWith(" ") ? " " : "");
+}
+
 /**
  * 斜杠补全的匹配与排序：
  * - 只输入 `/`：列出顶层指令；
@@ -659,7 +676,7 @@ export function matchSlashCommands(
   catalog: readonly SlashCommand[],
 ): SlashCommand[] {
   if (!input.startsWith("/") || input.includes("\n")) return [];
-  const typed = input.toLowerCase().replace(/\s+/g, " ");
+  const typed = normalizeCompletionInput(input);
   if (typed === "/") {
     // 未标注顶层条目的简单列表（如测试或外部调用方）整体视为顶层。
     const topLevel = catalog.filter((entry) => entry.topLevel);
@@ -671,6 +688,17 @@ export function matchSlashCommands(
   catalog.forEach((entry, order) => {
     const command = entry.command.toLowerCase();
     let score: number | undefined;
+    const matchedAlias =
+      entry.aliases?.find((alias) => alias.toLowerCase() === typed) ??
+      entry.aliases?.find((alias) => alias.toLowerCase().startsWith(typed));
+    if (matchedAlias) {
+      scored.push({
+        entry: { ...entry, description: `${entry.description}（别名 ${matchedAlias}）` },
+        score: matchedAlias.toLowerCase() === typed ? -1 : 1,
+        order,
+      });
+      return;
+    }
     if (lastSpace >= 0) {
       const head = typed.slice(0, lastSpace + 1);
       const tail = typed.slice(lastSpace + 1);
@@ -707,7 +735,7 @@ export function findSlashArgHint(
   catalog: readonly SlashCommand[],
 ): SlashCommand | undefined {
   if (!input.startsWith("/") || input.includes("\n")) return undefined;
-  const typed = input.toLowerCase().replace(/\s+/g, " ");
+  const typed = normalizeCompletionInput(input);
   let best: SlashCommand | undefined;
   for (const entry of catalog) {
     if (!entry.argHint) continue;

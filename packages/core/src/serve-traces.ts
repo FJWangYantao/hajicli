@@ -23,6 +23,7 @@ export async function startTraceServer(
   keepAlive: boolean = true,
   maxPortSearch: number = 10,
   logger: (message: string) => void = (message) => console.log(message),
+  signal?: AbortSignal,
 ): Promise<number> {
   const tracesDir = path.join(process.cwd(), ".haji", "traces");
 
@@ -122,6 +123,13 @@ export async function startTraceServer(
     }
 
     const { server, boundPort } = bound;
+    const close = () => {
+      server.close();
+      server.closeAllConnections();
+    };
+    if (signal?.aborted) close();
+    else signal?.addEventListener("abort", close, { once: true });
+    server.once("close", () => signal?.removeEventListener("abort", close));
     if (!keepAlive) {
       server.unref();
     }

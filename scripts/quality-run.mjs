@@ -9,6 +9,7 @@ export function runProcess(command, args, options = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     let output = "";
+    let stderr = "";
     let timedOut = false;
     let settled = false;
     const child = spawn(command, args, {
@@ -21,7 +22,7 @@ export function runProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, error, timedOut, wallMs: Date.now() - started, output });
+      resolve({ code, error, timedOut, wallMs: Date.now() - started, output, stderr });
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -41,7 +42,9 @@ export function runProcess(command, args, options = {}) {
     child.stdout.on("data", (chunk) => {
       output = (output + chunk).slice(-1000000);
     });
-    child.stderr.on("data", () => {});
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk).slice(-1000000);
+    });
     child.on("error", (error) => finish(null, error.message));
     child.on("close", (code) => finish(code));
   });

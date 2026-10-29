@@ -4,7 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { replaceFileAtomically } from "./atomic-file.js";
 import { performanceMonitor } from "./performance-monitor.js";
-import { acquireFileLock } from "./persistence-file.js";
+import { acquireFileLock, writeFileAtomicallySync } from "./persistence-file.js";
 import type { ChatMessage } from "./types.js";
 
 const SESSION_FLUSH_DELAY_MS = 120;
@@ -604,6 +604,35 @@ export class SessionManager {
       } catch {}
     }
     return sessions;
+  }
+
+  /** Persist the fork before switching; inherited history cannot roll back the source's files. */
+  public async forkCurrentSession(title?: string): Promise<StoredSession> {
+    await this.flush();
+    if (this.hasPendingWrites()) throw new Error("当前会话仍有未保存数据，未创建分叉。");
+    if (!this.hasEffectiveMessages(this.currentSession.messages)) {
+      throw new Error("当前会话暂无可分叉的对话。");
+    }
+    const source = this.currentSession;
+    const fork: StoredSession = structuredClone(source);
+    fork.id = crypto.randomUUID();
+    fork.title = title?.trim() || `${source.title}（分叉）`;
+    fork.createdAt = fork.updatedAt = new Date().toISOString();
+    for (const message of fork.messages) delete message.snapshotId;
+    // Historical requests belong to the source; retain only context compaction metadata.
+    if (fork.usage) {
+      fork.usage.costRecords = [];
+      fork.usage.lastTurnMs = 0;
+    }
+    const filePath = this.getSessionPath(fork.id);
+    writeFileAtomicallySync(filePath, JSON.stringify(fork, null, 2));
+    this.diskVersions.set(filePath, this.diskVersion(filePath));
+    this.currentSession = fork;
+    this.lastQueuedMessages = [];
+    this.lastQueuedTitle = "";
+    this.lastQueuedUsage = "null";
+    this.lastQueuedGoal = "null";
+    return fork;
   }
 
   public startNewSession(): StoredSession {
