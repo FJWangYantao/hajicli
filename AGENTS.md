@@ -285,6 +285,8 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   一键跑：`node scripts/ab-run.mjs --experiment read_symbol --arms baseline,symbol --tasks 5,7,10
   --rounds 2`（任务原文取自 `data/2026-10-27-batch-only.json`，arm 每轮交替顺序；汇总里的
   `symbol 调用/提示` 由 `ab-metrics.mjs` 的 `symbolReads` / `symbolHints` 统计）。
+  脚本已用假模型把「运行 → trace → 汇总」整条链路跑通（`-p` 的 JSON 是多行排版，
+  `parseHeadlessOk` 必须整段解析，旧实现只看最后一行，每次都记成失败）；真实 A/B 仍待有 key 时跑。
 - 子代理：工具触发的 `research` / `review` 默认只读（`subagent_access=role`），
   `implement` 才 workspace-write；子代理内部复用同一批处理（`subagent_batch`），
   写入型子代理仍然独占。

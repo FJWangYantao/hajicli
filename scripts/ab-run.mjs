@@ -72,6 +72,18 @@ export function buildRunPlan(tasks, arms, rounds) {
   return plan;
 }
 
+/**
+ * `haji -p --output-format json` 的结果是缩进排版的多行 JSON：必须整段解析。
+ * 旧实现只解析最后一行（恒为 `}`），每次运行都被记成失败。
+ */
+export function parseHeadlessOk(stdout) {
+  try {
+    return JSON.parse(stdout.trim()).ok === true;
+  } catch {
+    return false;
+  }
+}
+
 function runOne(bin, prompt, env, timeoutMs) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -88,12 +100,7 @@ function runOne(bin, prompt, env, timeoutMs) {
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("close", (code) => {
       clearTimeout(timer);
-      let ok = false;
-      try {
-        ok = JSON.parse(stdout.trim().split("\n").pop() ?? "{}").ok === true;
-      } catch {
-        ok = false;
-      }
+      const ok = parseHeadlessOk(stdout);
       resolve({
         code,
         ok,

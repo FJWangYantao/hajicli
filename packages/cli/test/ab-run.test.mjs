@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { sessionMetrics } from "../../../scripts/ab-metrics.mjs";
-import { buildRunPlan, loadTaskPrompts } from "../../../scripts/ab-run.mjs";
+import { buildRunPlan, loadTaskPrompts, parseHeadlessOk } from "../../../scripts/ab-run.mjs";
 
 /** 一键 A/B：运行计划交替 arm 抵消顺序效应；指标统计 symbol 调用与提示。 */
 test("buildRunPlan：奇数轮正序、偶数轮倒序，覆盖每个任务 × arm", () => {
@@ -49,4 +49,11 @@ test("sessionMetrics 统计 read symbol 调用与 grep 回执里的 symbol 提�
   ]);
   assert.equal(metrics.symbolHints, 1);
   assert.equal(metrics.symbolReads, 1);
+});
+
+test("parseHeadlessOk 解析 -p 的多行 JSON 结果", () => {
+  const output = `${JSON.stringify({ ok: true, text: "完成" }, null, 2)}\n`;
+  assert.equal(parseHeadlessOk(output), true, "缩进排版的 JSON 要整段解析");
+  assert.equal(parseHeadlessOk(JSON.stringify({ ok: false }, null, 2)), false);
+  assert.equal(parseHeadlessOk("不是 JSON"), false);
 });
