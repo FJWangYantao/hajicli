@@ -71,7 +71,9 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 跨会话持久授权在 `permission-rules.ts`（`.haji/permissions.json` / `~/.haji/permissions.json`），
   键形态复用 `getPermissionGrant`（`bash:npm test` 前缀 / 工具名）；PreToolUse 早查命中即放行，
   但 plan / bypass 两档不查表。管理入口 `/permissions`（列表+删除）。
-  无头模式 `haji -p "<prompt>"`（`--permission-mode`、`--output-format json`、prompt `-` 读 stdin）复用同一套放行逻辑。
+  无头模式 `haji -p "<prompt>"`（`--permission-mode`、`--output-format json`、prompt `-` 读 stdin）复用同一套放行逻辑；
+  无头/CI 用 `--allow <键>`（可重复）把键并入**内存**规则视图（`withCliAllowKeys`，不落盘），
+  `index.ts` 里所有 `permissionRules = loadAllPermissionRules()` 都必须走 `loadRules()`，否则刷新会丢掉 `--allow`。
 - 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
   走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
   内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
@@ -158,6 +160,17 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   没有 `activeInput` 就会吞掉所有字符。回车进 `pendingInputs`，草稿由主循环 `cancelInput()` 取回；
   新增此类命令必须照此处理（同步阻塞的 git/文件操作除外，那是事件循环被占住，另需拆分）。
 - 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
+
+## 驱动进程（`haji mcp-serve`）
+
+`haji mcp-serve` 把本进程当成常驻 haji，经 MCP stdio 对外提供「派活 + 跟进 + 调整」的工具面（`haji_status` / `send` / `wait` / `events` / `adjust` / `cancel` / `approve`）。方向与「MCP 外部工具」相反：那里是 haji 调别人的工具，这里是别人把 haji 当工具。
+
+- **分层**：`serve-args.ts`（纯函数解析，不读环境、不退出进程）→ `driver/types.ts`（协议面类型）→ `driver/server.ts`（事件日志 + 选择请求代理 + 回合串行队列，只做编排）→ `driver/mcp.ts`（JSON-RPC 方法分发）→ `driver/index.ts`（`startMcpStdio`：逐行读 stdin、串行写 stdout）。真正的回合执行由 `index.ts` 里的 `DriverHost` 闭包注入，引擎本身不感知驱动模式。
+- **接线点全在 `index.ts`**：启动早期 `parseServeArgs(cliArgs)`（出错 `exit(1)`）→ `serveRequest`；`quietMode = headlessRequest || serveRequest` 决定不打印 Logo、不弹配置向导、不启动交互输入；`TerminalUI` 传 `outputSink` / `errorSink` 把输出改道成事件；主循环顶部 `if (serveRequest) { await runServeMode(); break; }`；`runServeMode()` 里构造 `DriverServer` 并 `await startMcpStdio(driver)`。
+- **硬约束**：`startMcpStdio` 之前就产生的输出必须先缓冲到 `serveOutputBuffer`，等 `driverServerRef` 就绪后补发成 `notice` 事件——否则启动期的报错会直接写进 stdout 打断协议帧。stdout 只允许出现协议回包。
+- **授权通道**：`ask` 模式下选择卡不走终端，改由 `DriverServer.requestSelection()` 发 `selection_request` 并挂起，等 `haji_approve` 或超时回落默认项；`auto` 直接取默认选项。新增「需要用户决策」的入口必须同时处理这两条通道。
+- **历史坑**：曾有一次提交（`b5fd389`）把 `index.ts` 接到从未提交的 `driver/`、`serve-args` 上，导致 tsc 与全部测试无法运行，只能用 `dee4b18` 摘掉接线恢复构建。改动这条链路时，源码、`index.ts` 接线、测试必须在同一提交里齐活，别让 master 依赖未提交文件。
+- 测试：`packages/cli/test/driver.test.mjs`（协议与队列的单测）、`packages/cli/test/mcp-serve.test.mjs`（起真实子进程发 `initialize` / `tools/list`、参数错误与 `--cwd` 失败路径）、`serve-args` 的解析断言在同文件内。
 
 ## 并行工具批与 A/B 实验（parallel-batch / experiments）
 

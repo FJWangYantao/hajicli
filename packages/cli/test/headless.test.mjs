@@ -56,17 +56,62 @@ test("parseHeadlessArgs rejects missing prompt and invalid modes", () => {
   assert.equal(parseHeadlessArgs(["-p", "hi", "--permission-mode", "plan"]).error, undefined);
 });
 
+test("parseHeadlessArgs 接受 --allow 放行键（可重复、不落盘）", () => {
+  assert.deepEqual(
+    parseHeadlessArgs(["-p", "hi", "--allow", "bash:npm test", "--allow=write"]).request,
+    {
+      prompt: "hi",
+      permissionMode: undefined,
+      outputFormat: undefined,
+      allow: ["bash:npm test", "write"],
+    },
+  );
+  // 与权限档位同时使用、顺序无关
+  assert.deepEqual(
+    parseHeadlessArgs([
+      "--allow",
+      "bash:node verify.js",
+      "-p",
+      "hi",
+      "--permission-mode",
+      "accept-edit",
+    ]).request,
+    {
+      prompt: "hi",
+      permissionMode: "accept-edit",
+      outputFormat: undefined,
+      allow: ["bash:node verify.js"],
+    },
+  );
+  // 没写 --allow 时字段缺省，保持既有断言与调用方行为不变
+  assert.deepEqual(parseHeadlessArgs(["-p", "hi"]).request, {
+    prompt: "hi",
+    permissionMode: undefined,
+    outputFormat: undefined,
+  });
+});
+
+test("parseHeadlessArgs 拒绝非法 --allow 键", () => {
+  // 缺参数
+  assert.match(parseHeadlessArgs(["-p", "hi", "--allow"]).error ?? "", /需要一个放行键/);
+  assert.match(parseHeadlessArgs(["-p", "hi", "--allow", "--x"]).error ?? "", /需要一个放行键/);
+  // 组合命令拿不到 grant，写进来只会是永远不命中的死规则
+  assert.match(
+    parseHeadlessArgs(["-p", "hi", "--allow", "bash:npm test && rm -rf ."]).error ?? "",
+    /无效的 --allow 放行键/,
+  );
+  assert.match(parseHeadlessArgs(["-p", "hi", "--allow=*"]).error ?? "", /无效的 --allow 放行键/);
+  assert.match(
+    parseHeadlessArgs(["-p", "hi", "--allow=bash:"]).error ?? "",
+    /无效的 --allow 放行键/,
+  );
+});
+
 test("index.ts wires the headless branch end to end", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.ok(source.includes("parseHeadlessArgs(cliArgs)"), "启动时解析 -p 参数");
-  assert.ok(
-    source.includes("forceNonInteractive: Boolean(headlessRequest)"),
-    "TerminalUI 强制非交互",
-  );
-  assert.ok(
-    source.includes('compactHeader: headlessRequest ? "" :'),
-    "无头模式下不在 stdout 打印头部",
-  );
+  assert.ok(source.includes("forceNonInteractive: quietMode"), "TerminalUI 强制非交互");
+  assert.ok(source.includes('compactHeader: quietMode ? "" :'), "无头模式下不在 stdout 打印头部");
   assert.ok(source.includes("无头模式不支持 Plan 审批"), "plan 档自动升级为 default");
   assert.ok(
     source.includes("headlessRequest && !process.stdin.isTTY"),
@@ -85,7 +130,7 @@ test("index.ts wires the headless branch end to end", () => {
       source.indexOf("const startBackgroundInput"),
       source.indexOf("const startBackgroundInput") + 300,
     ),
-    /if \(headlessRequest\) return;/,
+    /if \(quietMode\) return;/,
   );
 });
 

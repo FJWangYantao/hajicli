@@ -203,3 +203,30 @@ export function removePermissionRule(key: string, scope: PermissionRuleScope): b
   document.allow = next;
   return writeRulesDocument(document, scope);
 }
+
+/**
+ * 把命令行给的放行键（无头模式 `--allow`）并入内存规则视图：**只作用于本次进程，不落盘**。
+ *
+ * 键形态与持久化规则完全一致（`getPermissionGrant` 的产物）：`bash:<命令前缀>` 或工具名。
+ * 归一化时整体转小写——`getPermissionGrant` 对 bash 前缀做小写化，工具名本身也全是小写，
+ * 这样 `--allow "bash:NPM test"` 与 `bash:npm test` 等价。空键与非法键直接忽略（解析层已校验）。
+ */
+export function withCliAllowKeys(
+  rules: LoadedPermissionRules,
+  keys: readonly string[],
+): LoadedPermissionRules {
+  if (keys.length === 0) return rules;
+  const createdAt = new Date().toISOString();
+  const extra: PermissionRuleEntry[] = [];
+  for (const raw of keys) {
+    const key = raw.trim().toLowerCase();
+    if (!key) continue;
+    const scope = key.startsWith("bash:") ? `${key.slice("bash:".length)} 开头的命令` : key;
+    if (rules.project.some((entry) => entry.key === key)) continue;
+    if (extra.some((entry) => entry.key === key)) continue;
+    extra.push({ key, scope: `命令行 --allow：${scope}`, createdAt });
+  }
+  if (extra.length === 0) return rules;
+  // 放进 project 桶（isToolAllowedPersistently 先查它）：命令行授权优先于用户级规则。
+  return { ...rules, project: [...extra, ...rules.project] };
+}

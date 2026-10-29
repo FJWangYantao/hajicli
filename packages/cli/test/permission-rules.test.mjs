@@ -14,6 +14,7 @@ import {
   removePermissionRule,
   savePermissionRule,
   userPermissionRulesPath,
+  withCliAllowKeys,
 } from "../dist/permission-rules.js";
 
 /**
@@ -201,6 +202,35 @@ test("permission card items expose persistent options only with a grant", () => 
   );
 });
 
+test("withCliAllowKeys 把命令行放行键并入内存视图且不落盘", () => {
+  withIsolatedPaths(() => {
+    const rules = withCliAllowKeys(loadAllPermissionRules(), [
+      "bash:npm test",
+      "bash:NODE",
+      "write",
+      "  ",
+      "bash:npm test",
+    ]);
+    // 键归一化（bash 前缀小写）后命中，等价于持久化规则的匹配口径
+    assert.equal(
+      isToolAllowedPersistently("bash", { command: "npm test -- --run" }, rules)?.scope,
+      "project",
+    );
+    // 非 SUBCOMMAND_CLIS 的命令（node/python 等）键只到可执行文件名
+    assert.ok(isToolAllowedPersistently("bash", { command: "node verify.js" }, rules));
+    assert.ok(isToolAllowedPersistently("write", { path: "a.txt" }, rules));
+    // 去重：同一 key 只留一条
+    assert.equal(rules.project.filter((entry) => entry.key === "bash:npm test").length, 1);
+    // 没有 grant 的组合命令仍然不命中
+    assert.equal(
+      isToolAllowedPersistently("bash", { command: "npm test && rm -rf ." }, rules),
+      undefined,
+    );
+    // 只在内存里：磁盘上没有任何规则
+    assert.deepEqual(loadAllPermissionRules(), { user: [], project: [] });
+  });
+});
+
 test("index.ts wires persistent rules into the PreToolUse hook and the card", () => {
   const source = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   // hook 早查在权限引擎评估之前，plan/bypass 两档不查持久规则
@@ -218,7 +248,14 @@ test("index.ts wires persistent rules into the PreToolUse hook and the card", ()
   assert.ok(source.includes("isPathScopedGrant(grant)"));
   assert.ok(source.includes('selection.value === "deny-reason"'));
   assert.ok(source.includes("savePermissionRule"));
-  assert.ok(source.includes("permissionRules = loadAllPermissionRules()"));
+  assert.ok(source.includes("withCliAllowKeys(loadAllPermissionRules(), cliAllowKeys)"));
+  // 任何刷新都必须走 loadRules()，否则会把 --allow 丢掉
+  assert.equal(
+    source.match(/permissionRules = loadAllPermissionRules\(\)/g),
+    null,
+    "permissionRules 刷新必须经 loadRules()",
+  );
+  assert.ok(source.includes("permissionRules = loadRules()"));
   // /permission rules 管理入口存在且删除后同步撤销会话授权
   assert.ok(source.includes('parts[1]?.toLowerCase() === "rules"'));
   assert.ok(source.includes("sessionToolGrants.keys.delete(ruleKey)"));

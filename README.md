@@ -66,17 +66,22 @@ git push origin v1.0.0
 
 ## 斜杠指令
 
-会话内按 `/` 列出 12 个顶层指令：5 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作（含 `/model`）直接保留在顶层。进入枢纽后用方向键选择细分项，选中后立即执行。
+会话内按 `/` 列出 17 个顶层指令：4 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作（含 `/model`）直接保留在顶层。进入枢纽后用方向键选择细分项，选中后立即执行。
 
 | 枢纽 | 细分项 |
 |---|---|
-| `/config` 模型与配置 | `/permission`、`/provider` |
-| `/agent` 子代理管理 | `/subagent`、`/preset`、`/agents` |
-| `/skill` Skill 管理 | 可用 Skill（动态列出，选中即加载）、`/skills`、`/skills reload`、`/skills validate` |
-| `/memory` 经验系统 | `/memory list`、`/instinct`、`/instinct distill`、`/instinct stats` |
-| `/diag` 诊断与观测 | `/perf`、`/viewer`、`/mcp` |
+| `/config` 模型与配置 | `/permission`、`/workspace`、`/worktree`、`/provider`、`/effort`、`/theme`、`/appearance`、`/sidebar`、`/fold`、`/think` |
+| `/agents` 子代理管理 | `/agents new`、`/agents presets`（旧 `/subagent`、`/preset`、`/agent` 仍可用） |
+| `/memory` 经验系统 | `/memory list`、`/memory rules`（`/instinct` 系列经别名转入） |
+| `/diag` 诊断与观测 | `/perf`、`/cost`、`/diff`、`/output`、`/doctor`、`/viewer`、`/mcp` |
 
-顶层直接保留：`/help`、`/model`、`/compact`、`/clear`、`/resume`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。`/effort` 与 `/model` 的思考强度轴重复，不再出现在菜单中，但仍可直接输入或补全。
+顶层直接保留：`/help`、`/reload`、`/model`、`/skills`、`/compact`、`/image`、`/view`、`/clear`、`/resume`、`/fork`、`/undo`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。`/effort` 与 `/model` 的思考强度轴重复，收纳在 `/config` 下但仍可直接输入或补全。
+
+会话相关的几条常用指令：
+
+- `/reload`：保存当前会话后原地重启进程（保留 PID 与终端前台进程组），用于加载更新或重新构建后的 haji。
+- `/fork`：把当前对话复制成新会话并切过去，源会话文件保持原样；之后的快照、任务、子代理都记在新会话下。
+- `/undo` / `/rewind`：撤销上一轮（消息 + 代码）或在历史节点里挑一个点回退；回退后对话区会重放恢复出的历史。
 
 补全规则：
 
@@ -178,6 +183,32 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 - `/mcp`：查看各 server 状态（running/failed/disabled）、挂载的工具与失败原因
 - 启动时并行连接，单个 server 失败不影响其余与 CLI 本身；MCP 工具失败输出与内置工具同格式（`错误:` 前缀），会被经验系统纳入失败观测
 
+## 驱动进程：`haji mcp-serve`
+
+把 haji 变成常驻的**驱动进程**：挂在 stdio 上按 MCP 协议对外提供「派活 + 跟进 + 调整」的工具面，供外部 Agent（Hermes 等）或任意 MCP 客户端调用。与上一节的「MCP 外部工具」方向相反——那里是 haji 调别人的工具，这里是别人把 haji 当工具用。
+
+```bash
+haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
+```
+
+- `--cwd`：切换工作目录（默认沿用启动目录，含自动 worktree 的结果）。
+- `--approval ask|auto`：需要授权时的策略。`ask`（默认）把选择卡发成 `selection_request` 事件挂起，等客户端调 `haji_approve`；`auto` 按无头模式的默认选项直接放行，适合完全无人值守。
+- `--wait-ms`：单次 `haji_send` 的默认等待时长，默认 25000，上限 600000。
+
+工具面（MCP `tools/list`）：
+
+| 工具 | 作用 |
+|---|---|
+| `haji_status` | 会话 id/标题、模型、思考强度、权限档、工作目录、是否在跑回合、上下文消息数与本会话费用 |
+| `haji_send` | 派一个完整回合（读代码、改文件、跑命令）；超时返回 `running` + `taskId` |
+| `haji_wait` | 阻塞等下一个关键进度（工具结束 / 需要授权 / 回合结束），比轮询省调用 |
+| `haji_events` | 按 `sinceSeq` 增量拉事件（正文增量、`tool_start`/`tool_end`、`selection_request`、`turn_end`） |
+| `haji_adjust` | 改模型、思考强度、权限档、思维链显示、Plan 模式（下个回合生效） |
+| `haji_cancel` | 中止正在执行的回合（等价于 Esc） |
+| `haji_approve` | 回复一条 `selection_request` |
+
+协议细节：stdin 每行一条 JSON-RPC 消息，stdout **只**写协议回包（Logo、进度、诊断信息都不会混进去，`--output-format` 之类的交互输出全部走事件流）；长回合不阻塞其他请求，`haji_cancel` / `haji_status` 随时可处理。stdin 关闭或收到 `SIGINT`/`SIGTERM` 时正常退出。
+
 ## 并行工具批与 A/B 实验
 
 同一条模型回复里，**连续的只读调用**会并行执行（默认最多 5 个）；`edit` / `write` / 写型 `bash` / `subagent` / `task*` 仍然是串行屏障。只读 bash 与只读 MCP 是否加入并行白名单由实验开关控制。
@@ -207,7 +238,8 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 - `default` / `accept-edit` / `auto` 档都会弹出授权卡，可以「允许本次」「本会话内总是允许该目录」或「永久允许该目录」（路径授权只写用户级 `permissions.json`，不会写进项目）；
 - `plan` 档的越界读取同样需要授权，越界写入按计划模式拦截；
 - `bypass-permissions` 与 `HAJI_ALLOW_OUTSIDE_WORKSPACE=1` 跳过授权（后者供可信会话临时使用）；
-- 无头模式（`haji -p`）没有人可确认，越界调用会被拒绝，除非命中用户级路径规则或设置了上面的环境变量。
+- 无头模式（`haji -p`）没有人可确认，越界调用会被拒绝，除非命中用户级路径规则、命令行 `--allow` 预放行或设置了上面的环境变量。
+  无头 / CI 场景用 `--allow "bash:npm test"`（键形态与 `permissions.json` 的 `key` 一致，可重复）把已知安全的验证命令预先放行，只对本次进程生效、不写盘。
 
 路径规则写在用户级 `~/.haji/permissions.json` 的 `paths` 段，`deny` 优先于 `allow`；项目级文件的 `paths` 段不会生效，避免克隆仓库自带扩权配置：
 

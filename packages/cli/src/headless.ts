@@ -7,6 +7,11 @@ export interface HeadlessRequest {
   permissionMode?: PermissionMode;
   /** 输出格式（--output-format）：text 直写正文（默认）；json 静音正文、结束时输出结构化结果。 */
   outputFormat?: "text" | "json";
+  /**
+   * 本次进程额外的放行键（--allow，可重复）。形态与 `.haji/permissions.json` 的 `key` 一致：
+   * `bash:<命令前缀>`（如 `bash:npm test`）或工具名（如 `write`）。只作用于本次进程，不落盘。
+   */
+  allow?: string[];
 }
 
 export interface HeadlessParseResult {
@@ -19,7 +24,15 @@ export interface HeadlessParseResult {
 const USAGE_PERMISSION_MODES = "plan | default | accept-edit | auto | bypass-permissions";
 
 /**
- * 解析无头单次执行参数（`haji -p "prompt" [--permission-mode <mode>]`）。
+ * `--allow` 的键形态校验：`bash:<命令前缀>`（前缀内允许空格，但不允许 shell 元字符——
+ * 组合命令本来也拿不到 grant，写进来只会是永远不命中的死规则）或单个工具名。
+ */
+const ALLOW_KEY_PATTERN = /^(?:bash:[^;&|<>`$\r\n]+|[A-Za-z][A-Za-z0-9_.-]*)$/;
+
+const USAGE_ALLOW = '--allow 需要一个放行键，例如：--allow "bash:npm test" --allow write';
+
+/**
+ * 解析无头单次执行参数（`haji -p "prompt" [--permission-mode <mode>] [--allow <key>]...`）。
  * 纯函数：不读环境、不退出进程，错误以 error 字段返回。
  * 其余旗标忽略（-v/-h 已由 handleEarlyCliArgs 处理）。
  */
@@ -27,6 +40,7 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
   let prompt: string | undefined;
   let permissionMode: PermissionMode | undefined;
   let outputFormat: "text" | "json" | undefined;
+  const allow: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "-p" || arg === "--print") {
@@ -53,10 +67,29 @@ export function parseHeadlessArgs(args: readonly string[]): HeadlessParseResult 
       }
       outputFormat = value;
       index += 1;
+    } else if (arg === "--allow") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) return { error: USAGE_ALLOW };
+      const key = value.trim();
+      if (!ALLOW_KEY_PATTERN.test(key)) {
+        return {
+          error: `无效的 --allow 放行键：${value}（应为 bash:<命令前缀> 或工具名，且不含 ; & | < > \` $）`,
+        };
+      }
+      allow.push(key);
+      index += 1;
+    } else if (arg.startsWith("--allow=")) {
+      const key = arg.slice("--allow=".length).trim();
+      if (!key || !ALLOW_KEY_PATTERN.test(key)) {
+        return {
+          error: `无效的 --allow 放行键：${arg.slice("--allow=".length)}（应为 bash:<命令前缀> 或工具名）`,
+        };
+      }
+      allow.push(key);
     }
   }
   if (prompt === undefined) return {};
-  return { request: { prompt, permissionMode, outputFormat } };
+  return { request: { prompt, permissionMode, outputFormat, ...(allow.length ? { allow } : {}) } };
 }
 
 /**
