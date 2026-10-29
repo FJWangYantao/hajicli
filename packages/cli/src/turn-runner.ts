@@ -714,6 +714,20 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     // 执行工具前保留调用意图；强退后至少能判断哪些操作需要核实。
     await sessionManager.flush();
     deps.updateStatusUI();
+    if (sessionManager.hasPendingWrites()) {
+      turnFailed = true;
+      ui.writeLine(
+        colors.failLine("会话尚未保存，已停止本轮工具执行。请先处理磁盘故障或会话写入冲突。"),
+      );
+      for (const tc of assistantMessage.tool_calls ?? []) {
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: "错误: 会话保存失败，本工具未执行。",
+        });
+      }
+      break;
+    }
 
     if (invalidToolCall) {
       malformedToolRecoveryAttempts += 1;
@@ -796,16 +810,18 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
 
       for (const batch of batches) {
         // 已判定停止后不再执行同一条消息里剩余的工具：只补工具结果，保持消息拓扑完整。
-        if (stoppedByRepeatedFailure) {
+        if (turnFailed || stoppedByRepeatedFailure) {
           for (const tc of batch.calls) {
             messages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: concurrentWriteTarget
-                ? buildConcurrentWriteSkipMessage(concurrentWriteTarget)
-                : noopEditTarget
-                  ? buildNoopEditSkipMessage()
-                  : buildRepeatedFailureSkipMessage(),
+              content: turnFailed
+                ? "错误: 会话保存失败，本工具未执行。"
+                : concurrentWriteTarget
+                  ? buildConcurrentWriteSkipMessage(concurrentWriteTarget)
+                  : noopEditTarget
+                    ? buildNoopEditSkipMessage()
+                    : buildRepeatedFailureSkipMessage(),
             });
           }
           continue;
@@ -1044,6 +1060,12 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
         // 每批结果落盘后再进入下一批或请求，避免已完成的写操作失去恢复依据。
         sessionManager.saveCurrentSession(messages);
         await sessionManager.flush();
+        if (sessionManager.hasPendingWrites()) {
+          turnFailed = true;
+          ui.writeLine(
+            colors.failLine("工具结果尚未保存，已停止后续工具与请求；请先处理保存失败。"),
+          );
+        }
       }
       // 工具调用块后空一行：与下方思考/正文分隔
       ui.writeLine();
@@ -1057,6 +1079,8 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
       }
       if (isTurnAborted) {
         showAbortNotice();
+        keepCalling = false;
+      } else if (turnFailed) {
         keepCalling = false;
       } else if (stoppedByRepeatedFailure) {
         ui.writeLine(
@@ -1186,6 +1210,7 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
   // 包括网络失败、取消和停止分支；返回输入框前完成本轮快照写入。
   sessionManager.saveCurrentSession(messages);
   await sessionManager.flush();
+  if (sessionManager.hasPendingWrites()) turnFailed = true;
   // 终端侧栏状态：正常收尾报 done（Kero 标未读 Done），失败报 error，中止回 idle。
   if (isTurnAborted) {
     agentStatus.idle("已中止");

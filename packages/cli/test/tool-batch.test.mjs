@@ -293,7 +293,7 @@ test("turn-runner skips the remaining tool calls once the repeated-failure limit
   const source = fs.readFileSync(new URL("../src/turn-runner.ts", import.meta.url), "utf8");
   assert.match(
     source,
-    /if \(stoppedByRepeatedFailure\) \{\s*\n\s*for \(const tc of batch\.calls\)/,
+    /if \(turnFailed \|\| stoppedByRepeatedFailure\) \{\s*\n\s*for \(const tc of batch\.calls\)/,
     "停止后跳过同一条消息里剩余的批次",
   );
   assert.ok(source.includes("buildRepeatedFailureSkipMessage()"), "为跳过的调用补上工具结果");

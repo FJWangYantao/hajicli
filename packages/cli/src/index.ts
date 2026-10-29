@@ -136,7 +136,11 @@ import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
-import { expandFileMentions, matchFileMentionCandidates } from "./file-mentions.js";
+import {
+  expandFileMentions,
+  inspectFileMentions,
+  matchFileMentionCandidates,
+} from "./file-mentions.js";
 import { GoalPromptPart } from "./goal-prompt.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
@@ -190,6 +194,7 @@ import {
   resumeSessionById,
   type SessionCommandContext,
 } from "./session-commands.js";
+import { runShutdownSteps } from "./shutdown.js";
 import { buildSessionProgress } from "./startup-home.js";
 import {
   handleAgentsCommand,
@@ -1252,6 +1257,7 @@ async function main() {
     return fileMentionCache.files;
   };
   ui.setFileMentionProvider((query) => matchFileMentionCandidates(listWorkspaceFiles(), query));
+  ui.setAttachmentInspector((input) => inspectFileMentions(input, process.cwd(), workspaceRoots));
   // 别名优先于同名 Skill：启动时把这类遮蔽关系显式告知用户。
   const aliasSkillWarnings = findAliasSkillConflicts(
     skillRegistry.list().map((skill) => skill.name),
@@ -3332,6 +3338,8 @@ async function main() {
       await flushImmediateEffects();
       // /skills reload 等操作会改变可调用的 Skill，每轮刷新补全目录。
       slashCommands = buildSlashCommandCatalog(skillRegistry.list());
+      // 管理面板不阻塞当前回合；回合结束后等待编辑完成再取下一条。
+      await ui.waitForInputManagement();
       let userInput: string;
       let forwardedFromHub = false;
       if (pendingUiAction) {
@@ -4116,59 +4124,92 @@ async function main() {
   } finally {
     activityIndicator.stop();
     ui.close();
-    try {
-      // 经验系统：先取出会话内累积的观测（flush 会清空缓冲，必须在此之前取）
-      const sessionObs = experienceStore.getPendingObservations();
-      // flush 观测样本落盘（提炼引擎用的是上面取出的副本，顺序不能反）
-      await experienceStore.flushObservations();
-      // 触发 Stop hook（此时 messages 完整、尚未落盘）
-      await hookEngine.trigger("Stop", {
-        messages,
-        permissionMode,
-        sessionId: sessionManager.getCurrentSession().id,
-        cwd: process.cwd(),
-      });
-      // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选（LLM 路径走杂活模型）
-      const distillEngine = new DistillEngine({
-        store: experienceStore,
-        provider: () => getUtilityRuntime()?.provider ?? provider,
-        model: () => getUtilityRuntime()?.model ?? selectedModel,
-        logger: (msg) => progressLog(colors.gray(`  ${msg}`)),
-      });
-      const distillSummary = await distillEngine.runDistill(sessionObs, {
-        messages,
-        cwd: process.cwd(),
-        sessionId: sessionManager.getCurrentSession().id,
-      });
-      if (
-        distillSummary.statisticalInstincts > 0 ||
-        distillSummary.llmInstincts > 0 ||
-        distillSummary.memoryCandidates > 0
-      ) {
-        const parts = [
-          `统计 ${distillSummary.statisticalInstincts}`,
-          `LLM ${distillSummary.llmInstincts}`,
-          `强化 ${distillSummary.reinforced}`,
-        ];
-        if (distillSummary.memoryCandidates > 0)
-          parts.push(`记忆候选 ${distillSummary.memoryCandidates}`);
-        progressLog(
-          colors.gray(
-            `经验提炼：${parts.join(" / ")}${distillSummary.llmTriggered ? "" : "（LLM 未触发）"}`,
-          ),
-        );
-        if (distillSummary.memoryCandidates > 0) {
-          progressLog(colors.gray(`   使用 /memory confirm <id> 确认候选记忆`));
-        }
-      }
-      await sessionManager.flush();
-      const tracePath = await tracker.save();
-      progressLog(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
-    } catch (e) {
-      console.error("无法保存 Trace 轨迹数据:", e);
-    } finally {
-      performanceMonitor.stop();
-    }
+    const shutdownOk = await runShutdownSteps(
+      [
+        {
+          name: "会话保存",
+          run: async () => {
+            sessionManager.saveCurrentSession(messages);
+            await sessionManager.flush();
+            if (sessionManager.hasPendingWrites())
+              throw new Error("仍有未保存数据，请检查磁盘后重试");
+          },
+        },
+        {
+          name: "经验与退出钩子",
+          timeoutMs: 3000,
+          run: async (signal) => {
+            // 经验系统：先取出会话内累积的观测（flush 会清空缓冲，必须在此之前取）
+            const sessionObs = experienceStore.getPendingObservations();
+            // flush 观测样本落盘（提炼引擎用的是上面取出的副本，顺序不能反）
+            await experienceStore.flushObservations();
+            signal.throwIfAborted();
+            // 关键会话已先保存；Stop hook 的变更由后续最终保存处理。
+            await hookEngine.trigger("Stop", {
+              messages,
+              permissionMode,
+              sessionId: sessionManager.getCurrentSession().id,
+              cwd: process.cwd(),
+              abortSignal: signal,
+            });
+            signal.throwIfAborted();
+            // 经验提炼：双路径分析本会话观测，产出/演化规则与记忆候选（LLM 路径走杂活模型）
+            const distillEngine = new DistillEngine({
+              store: experienceStore,
+              provider: () => getUtilityRuntime()?.provider ?? provider,
+              model: () => getUtilityRuntime()?.model ?? selectedModel,
+              logger: (msg) => progressLog(colors.gray(`  ${msg}`)),
+            });
+            const distillSummary = await distillEngine.runDistill(sessionObs, {
+              messages,
+              cwd: process.cwd(),
+              sessionId: sessionManager.getCurrentSession().id,
+              abortSignal: signal,
+            });
+            if (
+              distillSummary.statisticalInstincts > 0 ||
+              distillSummary.llmInstincts > 0 ||
+              distillSummary.memoryCandidates > 0
+            ) {
+              const parts = [
+                `统计 ${distillSummary.statisticalInstincts}`,
+                `LLM ${distillSummary.llmInstincts}`,
+                `强化 ${distillSummary.reinforced}`,
+              ];
+              if (distillSummary.memoryCandidates > 0)
+                parts.push(`记忆候选 ${distillSummary.memoryCandidates}`);
+              progressLog(
+                colors.gray(
+                  `经验提炼：${parts.join(" / ")}${distillSummary.llmTriggered ? "" : "（LLM 未触发）"}`,
+                ),
+              );
+              if (distillSummary.memoryCandidates > 0) {
+                progressLog(colors.gray(`   使用 /memory confirm <id> 确认候选记忆`));
+              }
+            }
+          },
+        },
+        {
+          name: "会话最终保存",
+          run: async () => {
+            sessionManager.saveCurrentSession(messages);
+            await sessionManager.flush();
+            if (sessionManager.hasPendingWrites())
+              throw new Error("仍有未保存数据，退出后可能无法恢复最新进度");
+          },
+        },
+        {
+          name: "Trace 保存",
+          run: async () => {
+            const tracePath = await tracker.save();
+            progressLog(`\n💾 会话 Trace 数据已保存至: ${colors.blue(tracePath)}`);
+          },
+        },
+      ],
+      (message) => console.error(message),
+    );
+    if (!shutdownOk) process.exitCode = 1;
+    performanceMonitor.stop();
     // 确定性关机：MCP 子进程等句柄会阻止 Node 自然退出，而 process.on("exit")
     // 的清理只在进程真正退出时才触发——自然退出被挂住时两者互相等待，进程会
     // 永久残留并占用 Trace 端口。因此退出前必须显式清理；正常路径随后强制
@@ -4177,7 +4218,7 @@ async function main() {
     mcpManager.stopAll();
   }
   if (fatalExit !== undefined) throw fatalExit;
-  process.exit(0);
+  process.exit(process.exitCode ?? 0);
 }
 
 main();

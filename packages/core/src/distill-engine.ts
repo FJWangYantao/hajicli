@@ -61,7 +61,7 @@ export class DistillEngine {
    */
   async runDistill(
     sessionObservations: ToolObservation[],
-    context: { messages: ChatMessage[]; cwd: string; sessionId: string },
+    context: { messages: ChatMessage[]; cwd: string; sessionId: string; abortSignal?: AbortSignal },
   ): Promise<DistillSummary> {
     const notes: string[] = [];
     if (sessionObservations.length === 0) {
@@ -83,7 +83,12 @@ export class DistillEngine {
     if (shouldTriggerLLM) {
       llmTriggered = true;
       try {
-        const result = await this.analyzeWithLLM(sessionObservations, context.messages);
+        context.abortSignal?.throwIfAborted();
+        const result = await this.analyzeWithLLM(
+          sessionObservations,
+          context.messages,
+          context.abortSignal,
+        );
         llmInstincts = result.instincts;
         memoryCandidates = result.memories;
         notes.push(
@@ -99,12 +104,14 @@ export class DistillEngine {
       );
     }
 
+    context.abortSignal?.throwIfAborted();
     // 合并两条路径的规则，做语义去重后演化
     const allDetected = this.deduplicateInstincts([...statisticalInstincts, ...llmInstincts]);
     const { reinforced } = await this.options.store.evolveInstincts(allDetected);
 
     // 记忆候选写入 staging（等用户 /memory confirm）
     for (const mem of memoryCandidates) {
+      context.abortSignal?.throwIfAborted();
       await this.options.store.stageMemory(mem);
     }
 
@@ -331,6 +338,7 @@ export class DistillEngine {
   private async analyzeWithLLM(
     obs: ToolObservation[],
     messages: ChatMessage[],
+    abortSignal?: AbortSignal,
   ): Promise<{ instincts: Instinct[]; memories: Memory[] }> {
     const provider = this.options.provider();
     if (!provider) return { instincts: [], memories: [] };
@@ -367,6 +375,7 @@ export class DistillEngine {
           reasoningEffort: "low",
           thinking: false,
           maxTokens: 4000,
+          abortSignal,
         },
       ),
       LLM_TIMEOUT_MS,

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -38,6 +40,61 @@ function fakeTerminal(answers) {
   });
   return { stream, output };
 }
+
+test("本地服务首次配置成功，失败不落盘且再次启动可重试", async () => {
+  const bodies = [];
+  let fail = true;
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    bodies.push(JSON.parse(body));
+    res.writeHead(fail ? 400 : 200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        fail
+          ? { error: { message: "invalid model" } }
+          : { choices: [{ message: { content: "ok" } }] },
+      ),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    await withIsolatedPaths(async () => {
+      const answers = [
+        "3",
+        "localtest",
+        `http://127.0.0.1:${server.address().port}/v1`,
+        "test-private-key",
+        "test-model",
+      ];
+      const failed = fakeTerminal(answers);
+      assert.equal((await runProviderOnboarding(failed.stream, failed.output)).configured, false);
+      assert.equal(configExists(), false);
+      fail = false;
+      const terminal = fakeTerminal(answers);
+      let output = "";
+      terminal.output.on("data", (chunk) => {
+        output += chunk;
+      });
+      assert.deepEqual(await runProviderOnboarding(terminal.stream, terminal.output), {
+        configured: true,
+        providerName: "localtest",
+      });
+      const config = JSON.parse(
+        fs.readFileSync(path.join(os.homedir(), ".haji", "config.json"), "utf8"),
+      );
+      assert.equal(config.providers.localtest.apiKey, "test-private-key");
+      assert.equal(config.providers.localtest.model, "test-model");
+      assert.equal(output.includes("test-private-key"), false);
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies[1].model, "test-model");
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 function configExists() {
   return fs.existsSync(path.join(os.homedir(), ".haji", "config.json"));

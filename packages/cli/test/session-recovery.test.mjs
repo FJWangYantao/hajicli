@@ -74,6 +74,31 @@ function context(manager) {
   };
 }
 
+test("保存失败时 clear 和 resume 保留当前会话与消息", async (t) => {
+  const { manager, primary } = fixture(t);
+  manager.setWarningHandler(() => {});
+  const ctx = context(manager);
+  const messages = [{ role: "user", content: "尚未保存的工作" }];
+  ctx.setMessages(messages);
+  manager.saveCurrentSession(messages);
+  writeSession(primary, "other");
+  const id = manager.getCurrentSession().id;
+  const original = fs.promises.rename;
+  fs.promises.rename = async () => {
+    throw new Error("disk fault");
+  };
+  try {
+    await handleClearCommand(ctx);
+    assert.equal(await resumeSessionById(ctx, "other"), false);
+    assert.equal(manager.getCurrentSession().id, id);
+    assert.equal(ctx.getMessages(), messages);
+    assert.deepEqual(ctx.effects, []);
+  } finally {
+    fs.promises.rename = original;
+  }
+  await manager.flush();
+});
+
 test("/clear 后下一轮提示词不携带旧目标、技能或压缩摘要", async (t) => {
   const { manager } = fixture(t);
   manager.setGoal({ text: "旧目标", status: "active", createdAt: new Date().toISOString() });

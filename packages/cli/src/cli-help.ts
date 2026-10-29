@@ -811,7 +811,9 @@ export const SESSION_SHORTCUTS: ReadonlyArray<{ keys: string; description: strin
   { keys: "Ctrl+T", description: "展开 / 收起任务面板" },
   { keys: "Ctrl+E", description: "展开 / 收起侧栏费用明细" },
   { keys: "Ctrl+O", description: "展开 / 收起最近一段过程（工具调用与思考）" },
-  { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行）" },
+  { keys: "Tab", description: "补全斜杠指令 / @ 文件（不执行，空格路径自动加引号）" },
+  { keys: "Alt+A", description: "管理本条消息附件，Del 移除，Esc 返回" },
+  { keys: "Alt+Q", description: "管理待发送消息，Enter 编辑，Del 撤回，Esc 返回" },
   {
     keys: "鼠标拖选 + Ctrl+C",
     description: "复制选中文本；无选中时 Ctrl+C 中止/清草稿，2 秒内两次退出",

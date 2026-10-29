@@ -29,6 +29,42 @@ function obs(overrides = {}) {
   };
 }
 
+test("退出取消后不继续演化或写入提炼结果", async () => {
+  const controller = new AbortController();
+  let evolved = false;
+  let receivedSignal;
+  const engine = new DistillEngine({
+    store: {
+      evolveInstincts: async () => {
+        evolved = true;
+        return { reinforced: new Set() };
+      },
+    },
+    provider: () => ({
+      complete: async (_messages, options) => {
+        receivedSignal = options.abortSignal;
+        controller.abort();
+        return '{"instincts":[],"memories":[]}';
+      },
+    }),
+    model: () => "test",
+  });
+  await assert.rejects(
+    engine.runDistill(
+      Array.from({ length: 20 }, () => obs({ failed: true })),
+      {
+        messages: [],
+        cwd: ".",
+        sessionId: "test",
+        abortSignal: controller.signal,
+      },
+    ),
+    /abort/i,
+  );
+  assert.equal(receivedSignal, controller.signal);
+  assert.equal(evolved, false);
+});
+
 // ─── 路径 A：统计模式检测 ─────────────────────────────────────────────────────
 
 test("runDistill detects edit-before-read pattern when Read is missing", async () => {

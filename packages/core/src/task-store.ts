@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomicallySync } from "./persistence-file.js";
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
 export type TaskAgentStatus =
@@ -236,7 +237,7 @@ export class TaskStore {
 
   private writePlan(plan: TaskPlan): void {
     fs.mkdirSync(this.tasksDir, { recursive: true });
-    fs.writeFileSync(this.getFilePath(), JSON.stringify(plan, null, 2), "utf8");
+    writeFileAtomicallySync(this.getFilePath(), JSON.stringify(plan, null, 2));
   }
 
   private getFilePath(): string {

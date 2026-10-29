@@ -14,26 +14,117 @@ export interface FileMentionExpansion {
   skipped: string[];
 }
 
-const MENTION_TOKEN_RE = /(^|\s)@([\w./\\:-]+)/g;
+export interface FileMention {
+  path: string;
+  start: number;
+  end: number;
+}
+
+export interface FileMentionPreview extends FileMention {
+  status: "ready" | "truncated" | "skipped";
+  note?: string;
+}
+
+/** 带空格路径使用单双引号；引号内保留 Windows 反斜杠。 */
+export function parseFileMentions(input: string): FileMention[] {
+  return [...input.matchAll(/(^|\s)@(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'<>，。；！？]+))/gu)].map(
+    (match) => ({
+      path: match[2] ?? match[3] ?? match[4],
+      start: match.index + match[1].length,
+      end: match.index + match[0].length,
+    }),
+  );
+}
+
+export function formatFileMention(file: string): string {
+  if (!/[\s"'<>，。；！？]/u.test(file)) return `@${file}`;
+  return file.includes('"') ? `@'${file}'` : `@"${file}"`;
+}
+
+export function removeFileMention(input: string, file: string): string {
+  let result = input;
+  for (const mention of parseFileMentions(input).reverse()) {
+    if (mention.path === file) result = result.slice(0, mention.start) + result.slice(mention.end);
+  }
+  return result;
+}
+
+/** 未闭合的引号也参与补全，跨度使用 UTF-16，光标转换由输入框负责。 */
+export function fileMentionQuery(input: string): { start: number; query: string } | undefined {
+  const match = /(?:^|\s)@(?:"([^"\r\n]*)|'([^'\r\n]*)|([^\s"'<>，。；！？]*))$/u.exec(input);
+  if (!match) return undefined;
+  return { start: match.index + match[0].indexOf("@"), query: match[1] ?? match[2] ?? match[3] };
+}
 
 function isWithinCwd(resolvedPath: string, cwd: string): boolean {
   const relative = path.relative(cwd, resolvedPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function readAttachment(resolvedPath: string): { content: string; note?: string } {
-  const raw = fs.readFileSync(resolvedPath, "utf8");
-  const binary = raw.includes("\0");
-  if (binary) return { content: "", note: "二进制文件" };
-  let content = raw;
-  let note: string | undefined;
-  const lineCount = content.split("\n").length;
-  if (raw.length > MAX_BYTES || lineCount > MAX_LINES) {
-    content = content.split("\n").slice(0, MAX_LINES).join("\n");
-    if (content.length > MAX_BYTES) content = content.slice(0, MAX_BYTES);
-    note = `文件过大已截断（原始 ${lineCount} 行 / ${raw.length} 字符）`;
+function readAttachment(
+  file: string,
+  roots: readonly string[],
+): {
+  content: string;
+  status: FileMentionPreview["status"];
+  note?: string;
+} {
+  let fd: number | undefined;
+  try {
+    const resolved = fs.realpathSync(file);
+    if (
+      !roots.some((root) => {
+        try {
+          return isWithinCwd(resolved, fs.realpathSync(root));
+        } catch {
+          return false;
+        }
+      })
+    )
+      return { content: "", status: "skipped", note: "超出工作区" };
+    if (!fs.statSync(resolved).isFile())
+      return { content: "", status: "skipped", note: "不是普通文件" };
+    fd = fs.openSync(resolved, "r");
+    const buffer = Buffer.alloc(MAX_BYTES + 1);
+    const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    if (buffer.subarray(0, size).includes(0))
+      return { content: "", status: "skipped", note: "二进制文件" };
+    const limited = buffer.subarray(0, Math.min(size, MAX_BYTES));
+    // 流式解码避免字节上限切断一个中文字符。
+    const raw = new TextDecoder().decode(limited, { stream: size > MAX_BYTES });
+    const lines = raw.split("\n");
+    const truncated = size > MAX_BYTES || lines.length > MAX_LINES;
+    return {
+      content: lines.slice(0, MAX_LINES).join("\n"),
+      status: truncated ? "truncated" : "ready",
+      ...(truncated ? { note: `文件过大已截断（最多 ${MAX_LINES} 行 / ${MAX_BYTES} 字节）` } : {}),
+    };
+  } catch {
+    return { content: "", status: "skipped", note: "不存在或无法读取" };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
-  return { content, note };
+}
+
+export function inspectFileMentions(
+  input: string,
+  cwd: string,
+  extraRoots: readonly string[] = [],
+): FileMentionPreview[] {
+  const seen = new Set<string>();
+  return parseFileMentions(input)
+    .filter((mention) => {
+      if (seen.has(mention.path)) return false;
+      seen.add(mention.path);
+      return true;
+    })
+    .map((mention) => {
+      const { status, note } = readAttachment(path.resolve(cwd, mention.path), [
+        cwd,
+        ...extraRoots,
+      ]);
+      return { ...mention, status, note };
+    });
 }
 
 /**
@@ -48,9 +139,9 @@ export function expandFileMentions(
 ): FileMentionExpansion {
   const roots = [cwd, ...extraRoots];
   const tokens: string[] = [];
-  for (const match of input.matchAll(MENTION_TOKEN_RE)) {
-    const token = match[2];
-    if (token && !tokens.includes(token)) tokens.push(token);
+  const mentions = parseFileMentions(input);
+  for (const mention of mentions) {
+    if (!tokens.includes(mention.path)) tokens.push(mention.path);
   }
   if (tokens.length === 0) return { prompt: input, attached: [], skipped: [] };
 
@@ -59,24 +150,9 @@ export function expandFileMentions(
   const blocks: string[] = [];
   for (const token of tokens) {
     const resolved = path.resolve(cwd, token);
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(resolved);
-    } catch {
-      skipped.push(`${token}（不存在）`);
-      continue;
-    }
-    if (!stat.isFile()) {
-      skipped.push(`${token}（不是普通文件）`);
-      continue;
-    }
-    if (!roots.some((root) => isWithinCwd(resolved, root))) {
-      skipped.push(`${token}（超出工作区）`);
-      continue;
-    }
-    const { content, note } = readAttachment(resolved);
-    if (!content) {
-      skipped.push(`${token}（${note ?? "无法读取"}）`);
+    const { content, note, status } = readAttachment(resolved, roots);
+    if (status === "skipped") {
+      skipped.push(`${token}（${note}）`);
       continue;
     }
     attached.push(token);
@@ -91,11 +167,10 @@ export function expandFileMentions(
 
   // 去掉已成功附加 token 的 @ 前缀；skipped 的保留原样（用户可见原因）。
   let prompt = input;
-  for (const token of attached) {
-    prompt = prompt.replace(
-      new RegExp(`(^|\\s)@(${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "g"),
-      "$1$2",
-    );
+  for (const mention of mentions.reverse()) {
+    if (attached.includes(mention.path)) {
+      prompt = prompt.slice(0, mention.start) + mention.path + prompt.slice(mention.end);
+    }
   }
   if (blocks.length > 0) {
     prompt = `${prompt}\n\n${blocks.join("\n\n")}`;

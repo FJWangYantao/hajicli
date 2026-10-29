@@ -99,6 +99,7 @@ function createHarness(executor, { stream } = {}) {
     sessionManager: {
       saveCurrentSession() {},
       flush: async () => {},
+      hasPendingWrites: () => false,
       generateTitleAsync: async () => {},
     },
     skillRegistry: { restoreScopeFromMessages() {} },

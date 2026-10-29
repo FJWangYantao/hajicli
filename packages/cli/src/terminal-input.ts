@@ -23,6 +23,12 @@ import {
   type CostLogSort,
 } from "./cost-log-page.js";
 import type { RequestCostDetail } from "./cost-tracker.js";
+import {
+  type FileMentionPreview,
+  fileMentionQuery,
+  formatFileMention,
+  removeFileMention,
+} from "./file-mentions.js";
 import { ClipboardWriter, InputHistoryBuffer } from "./input-history.js";
 import {
   buildInputSelectionGeometry,
@@ -684,6 +690,177 @@ export class TerminalUI {
   /** 被 pushEscHandler 临时压栈的上层处理器，弹出时原样恢复。 */
   private escHandlerStack: Array<() => void> = [];
   private queueText = "";
+  private queuedInputs: string[] = [];
+  private inputManager?: {
+    kind: "queue" | "attachments";
+    selected: number;
+    draft?: ActiveInput;
+    original?: string;
+  };
+  private inputManagerWaiters: Array<() => void> = [];
+  private attachmentInspector?: (input: string) => FileMentionPreview[];
+  private attachmentCache?: { input: string; at: number; items: FileMentionPreview[] };
+
+  setAttachmentInspector(inspect: (input: string) => FileMentionPreview[]): void {
+    this.attachmentInspector = inspect;
+    this.attachmentCache = undefined;
+  }
+
+  /** 队列编辑期间延后取出下一条消息，避免编辑到已开始执行的项。 */
+  waitForInputManagement(): Promise<void> {
+    if (!this.inputManager) return Promise.resolve();
+    return new Promise((resolve) => this.inputManagerWaiters.push(resolve));
+  }
+
+  private closeInputManager(): void {
+    if (this.inputManager?.draft) this.activeInput = this.inputManager.draft;
+    this.inputManager = undefined;
+    for (const resolve of this.inputManagerWaiters.splice(0)) resolve();
+    this.scheduleRender(true);
+  }
+
+  private getFileAttachments(): FileMentionPreview[] {
+    const input = this.activeInput?.graphemes.join("") ?? "";
+    if (!this.activeInput || this.activeInput.sensitive || input.trimStart().startsWith("/"))
+      return [];
+    if (
+      !this.attachmentCache ||
+      this.attachmentCache.input !== input ||
+      Date.now() - this.attachmentCache.at > 1000
+    ) {
+      this.attachmentCache = {
+        input,
+        at: Date.now(),
+        items: this.attachmentInspector?.(input) ?? [],
+      };
+    }
+    return this.attachmentCache.items;
+  }
+
+  private openInputManager(kind: "queue" | "attachments"): void {
+    if (!this.activeInput || this.activeInput.sensitive) return;
+    if (this.inputManager) {
+      this.closeInputManager();
+      return;
+    }
+    if (kind === "queue" && this.queuedInputs.length === 0) {
+      this.showTransientHint("暂无待发送消息");
+      return;
+    }
+    if (
+      kind === "attachments" &&
+      this.getFileAttachments().length === 0 &&
+      this.pendingImages.length === 0
+    ) {
+      this.showTransientHint("暂无附件 · 使用 @路径 或粘贴图片");
+      return;
+    }
+    this.inputManager = { kind, selected: 0 };
+    this.scheduleRender(true);
+  }
+
+  private handleInputManagerKey(value: string, key: readline.Key): boolean {
+    const manager = this.inputManager;
+    if (!manager) return false;
+    if (key.name === "escape" || isRealCtrlC(value, key)) {
+      this.closeInputManager();
+      return true;
+    }
+    if (manager.draft) {
+      if ((key.name === "return" || key.name === "enter") && !key.shift && !key.meta) {
+        const edited = this.activeInput?.graphemes.join("").trim() ?? "";
+        if (!edited) {
+          this.showTransientHint("消息不能为空 · Esc 取消编辑");
+          return true;
+        }
+        // 授权等交互可能接管输入；旧项已变化时不覆盖其他消息。
+        if (this.queuedInputs[manager.selected] === manager.original) {
+          this.queuedInputs[manager.selected] = edited;
+          this.setQueue(this.queuedInputs);
+        }
+        this.closeInputManager();
+        return true;
+      }
+      return false;
+    }
+    const count =
+      manager.kind === "queue"
+        ? this.queuedInputs.length
+        : this.getFileAttachments().length + this.pendingImages.length;
+    manager.selected = Math.max(0, Math.min(manager.selected, count - 1));
+    if (key.name === "up" || key.name === "down") {
+      manager.selected =
+        (manager.selected + (key.name === "up" ? -1 : 1) + count) % Math.max(1, count);
+    } else if (key.name === "delete" || key.name === "backspace" || value === "d") {
+      if (manager.kind === "queue") {
+        this.queuedInputs.splice(manager.selected, 1);
+        this.setQueue(this.queuedInputs);
+      } else {
+        const files = this.getFileAttachments();
+        const file = files[manager.selected];
+        if (file && this.activeInput) {
+          this.activeInput.graphemes = splitGraphemes(
+            removeFileMention(this.activeInput.graphemes.join(""), file.path),
+          );
+          this.activeInput.cursorIndex = this.activeInput.graphemes.length;
+          this.attachmentCache = undefined;
+        } else this.pendingImages.splice(manager.selected - files.length, 1);
+      }
+      if (count <= 1) this.closeInputManager();
+      else manager.selected = Math.min(manager.selected, count - 2);
+    } else if (
+      (key.name === "return" || key.name === "enter" || value === "e") &&
+      manager.kind === "queue" &&
+      count > 0 &&
+      this.activeInput
+    ) {
+      const text = this.queuedInputs[manager.selected];
+      manager.draft = this.activeInput;
+      manager.original = text;
+      this.activeInput = {
+        ...this.activeInput,
+        graphemes: splitGraphemes(text),
+        cursorIndex: splitGraphemes(text).length,
+        slashCommands: [],
+        historyNavigationActive: false,
+      };
+    }
+    this.scheduleRender(true);
+    return true;
+  }
+
+  private getInputManagerRows(width: number, maxRows: number): string[] {
+    const manager = this.inputManager;
+    if (!manager || maxRows <= 0) return [];
+    const hint = manager.draft
+      ? "编辑待发送消息 · Enter 保存 · Esc 取消"
+      : manager.kind === "queue"
+        ? "待发送 · ↑↓ 选择 · Enter 编辑 · Del 撤回 · Esc 返回"
+        : "附件 · ↑↓ 选择 · Del 移除 · Esc 返回";
+    const items =
+      manager.kind === "queue"
+        ? this.queuedInputs
+        : [
+            ...this.getFileAttachments().map((item) => `${item.path} · ${item.note ?? "就绪"}`),
+            ...this.pendingImages.map((item) => `${item.displayName} · 图片`),
+          ];
+    const rows = [truncateText(hint, width)];
+    if (manager.draft) return rows;
+    const budget = Math.max(0, maxRows - 1);
+    const start = Math.max(
+      0,
+      Math.min(manager.selected - Math.floor(budget / 2), items.length - budget),
+    );
+    for (let i = start; i < Math.min(items.length, start + budget); i++) {
+      rows.push(
+        truncateText(
+          `${i === manager.selected ? "›" : " "} ${i + 1}. ${redactSensitiveCommand(sanitizeTerminalText(items[i])).replace(/\n/g, " ↵ ")}`,
+          width,
+        ),
+      );
+    }
+    return rows.map((row) => `${SEQ.muted}${row}${SEQ.reset}`);
+  }
   private cachedContentWithStatus = "";
   private cachedWrappedWidth = 0;
   private cachedWrappedChat: string[] = [];
@@ -1478,6 +1655,7 @@ export class TerminalUI {
   }
 
   setQueue(items: string[]): void {
+    this.queuedInputs = items;
     if (items.length === 0) {
       this.queueText = "";
     } else {
@@ -1488,7 +1666,7 @@ export class TerminalUI {
         })
         .join("  ");
       // 保留原始队列内容，实际截断在 render 时按最新终端宽度计算。
-      this.queueText = ` ${SEQ.accent}待处理队列 (${items.length} 条):${SEQ.reset} ${SEQ.muted}${formatted}${SEQ.reset}`;
+      this.queueText = ` ${SEQ.accent}待发送 (${items.length} 条 · Alt+Q 管理 · 本轮结束后发送):${SEQ.reset} ${SEQ.muted}${formatted}${SEQ.reset}`;
     }
     this.scheduleRender();
   }
@@ -1612,6 +1790,7 @@ export class TerminalUI {
   }
 
   private abortInput(error: Error): string | undefined {
+    if (this.inputManager) this.closeInputManager();
     if (!this.activeInput) return undefined;
     const draft = this.activeInput.graphemes.join("");
     this.pendingImages = [];
@@ -3267,6 +3446,13 @@ export class TerminalUI {
       this.closeImageOverlay();
       return;
     }
+    // 输入管理优先接收 Esc / Ctrl+C，绝不透传给回合中止或其他浮层。
+    if (!this.activeSelection && this.inputManager && this.handleInputManagerKey(value, key))
+      return;
+    if (!this.activeSelection && key.meta && !key.ctrl && (key.name === "q" || key.name === "a")) {
+      this.openInputManager(key.name === "q" ? "queue" : "attachments");
+      return;
+    }
     if (this.toggleTaskPanel(value, key)) return;
     // Ctrl+E：侧栏费用明细的键盘入口。与鼠标点「▸ 明细」走同一条路径，
     // 没有已计费调用时什么都不做（不白刷一帧）。
@@ -3369,11 +3555,19 @@ export class TerminalUI {
 
   /** 输入框上方的粘贴图片 chip 行：每张图显示为 [文件名]，Backspace 逐张移除。 */
   private buildPastedImageRows(width: number): string[] {
-    if (this.pendingImages.length === 0 || !this.activeInput) return [];
-    const chips = this.pendingImages.map(
-      (image) => `${SEQ.softAccent}[${image.displayName}]${SEQ.reset}`,
-    );
-    return wrapAnsi(`  ${chips.join(" ")}`, width);
+    if (!this.activeInput || this.activeInput.sensitive || this.inputManager?.draft) return [];
+    const files = this.getFileAttachments();
+    const chips = [
+      ...files.map((file) => `[${file.path} · ${file.note ?? "就绪"}]`),
+      ...this.pendingImages.map((image) => `[${image.displayName}]`),
+    ];
+    if (chips.length === 0) return [];
+    return [
+      truncateText(
+        `附件 ${chips.length} · Alt+A 管理 ${sanitizeTerminalText(chips.join(" "))}`,
+        width,
+      ),
+    ];
   }
 
   private getInputLayout(width: number, maxRows: number): VisibleInputLayout {
@@ -3456,7 +3650,7 @@ export class TerminalUI {
 
   /** 当前输入尾部的 @ 文件引用词（如 "src/te"）；不在引用状态时返回 undefined。 */
   private detectFileMentionQuery(text: string): string | undefined {
-    return /(?:^|\s)@([\w./\\:-]*)$/.exec(text)?.[1];
+    return fileMentionQuery(text)?.query;
   }
 
   /** 依据当前输入刷新 @ 文件补全状态（候选变化时重置选中项）。 */
@@ -3470,7 +3664,9 @@ export class TerminalUI {
     }
     const query = activeInput.historyNavigationActive
       ? undefined
-      : this.detectFileMentionQuery(activeInput.graphemes.join(""));
+      : this.detectFileMentionQuery(
+          activeInput.graphemes.slice(0, activeInput.cursorIndex).join(""),
+        );
     if (query === undefined) {
       this.fileMentionQuery = "";
       this.fileMentionCandidates = [];
@@ -3488,15 +3684,15 @@ export class TerminalUI {
   private applyFileMentionCompletion(): boolean {
     const activeInput = this.activeInput;
     if (!activeInput) return false;
-    const text = activeInput.graphemes.join("");
-    const match = /(?:^|\s)(@[\w./\\:-]*)$/.exec(text.slice(0, activeInput.cursorIndex));
+    const prefix = activeInput.graphemes.slice(0, activeInput.cursorIndex).join("");
+    const match = fileMentionQuery(prefix);
     const candidate = this.fileMentionCandidates[this.fileMentionSelectedIndex];
     if (!match || !candidate) return false;
-    const replaceFrom = match.index + (match[0].startsWith(" ") ? 1 : 0);
-    const before = text.slice(0, replaceFrom);
-    const after = text.slice(activeInput.cursorIndex);
-    activeInput.graphemes = splitGraphemes(`${before}@${candidate} ${after}`);
-    activeInput.cursorIndex = splitGraphemes(`${before}@${candidate} `).length;
+    const before = prefix.slice(0, match.start);
+    const after = activeInput.graphemes.slice(activeInput.cursorIndex).join("");
+    const completed = `${before}${formatFileMention(candidate)} `;
+    activeInput.graphemes = splitGraphemes(`${completed}${after}`);
+    activeInput.cursorIndex = splitGraphemes(completed).length;
     activeInput.preferredColumn = undefined;
     activeInput.selectedCommandIndex = 0;
     activeInput.commandNavigated = false;
@@ -3508,6 +3704,7 @@ export class TerminalUI {
   }
 
   private getCommandSuggestionRows(width: number, maxRows: number): string[] {
+    if (this.inputManager) return this.getInputManagerRows(width, maxRows);
     const activeInput = this.activeInput;
     if (!activeInput || maxRows <= 0) {
       return [];

@@ -87,6 +87,13 @@ export interface SessionCommandContext {
 /** 分发 /clear 指令；调用方负责其后的主循环 continue。 */
 export async function handleClearCommand(ctx: SessionCommandContext): Promise<void> {
   const { ui, sessionManager, taskStore, snapshotEngine, agentManager, skillRegistry } = ctx;
+  await sessionManager.flush();
+  if (sessionManager.hasPendingWrites()) {
+    ui.writeLine(
+      colors.warnLine("当前会话仍有未保存数据，暂不清空。请先处理保存失败并备份当前内容。"),
+    );
+    return;
+  }
   sessionManager.startNewSession();
   taskStore.setTaskScope(sessionManager.getCurrentSession().id);
   snapshotEngine.setScope(sessionManager.getCurrentSession().id);
@@ -155,6 +162,12 @@ async function loadAndRenderSession(
 ): Promise<boolean> {
   const { ui, sessionManager, taskStore, snapshotEngine, agentManager, skillRegistry } = ctx;
   await sessionManager.flush();
+  if (sessionManager.hasPendingWrites()) {
+    ui.writeLine(
+      colors.warnLine("当前会话仍有未保存数据，暂不切换会话。请先处理保存失败并备份当前内容。"),
+    );
+    return false;
+  }
   // 会话可能住在别的 worktree（并行会话各占一棵树）：按文件所在目录把进程切过去，
   // 任务计划、/rewind 快照与后续写盘才和会话待在同一棵树里。
   const storeDir = sessionManager.locateSessionDir(sessionId);

@@ -4,6 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { replaceFileAtomically } from "./atomic-file.js";
 import { performanceMonitor } from "./performance-monitor.js";
+import { acquireFileLock } from "./persistence-file.js";
 import type { ChatMessage } from "./types.js";
 
 const SESSION_FLUSH_DELAY_MS = 120;
@@ -175,6 +176,22 @@ export class SessionManager {
   private lastQueuedUsage = "";
   private readonly pendingWrites = new Map<string, PendingSessionWrite>();
   private writeChain: Promise<void> = Promise.resolve();
+  private readonly diskVersions = new Map<string, string | null>();
+  private readonly loadedVersions = new WeakMap<StoredSession, string>();
+  private activeWrites = 0;
+
+  public hasPendingWrites(): boolean {
+    return this.pendingWrites.size > 0 || this.activeWrites > 0;
+  }
+
+  private diskVersion(filePath: string): string | null {
+    try {
+      return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
   private flushTimer: NodeJS.Timeout | null = null;
   private warningHandler?: (message: string) => void;
   private readonly pendingWarnings: string[] = [];
@@ -273,7 +290,8 @@ export class SessionManager {
   /** 先校验可恢复性，避免加载失败时已经切换目录或替换当前会话。 */
   private readSession(dir: string, id: string): StoredSession | null {
     try {
-      const session = JSON.parse(fs.readFileSync(this.getSessionPathFor(dir, id), "utf8"));
+      const content = fs.readFileSync(this.getSessionPathFor(dir, id), "utf8");
+      const session = JSON.parse(content);
       if (
         !session ||
         session.id !== id ||
@@ -291,6 +309,7 @@ export class SessionManager {
       }
       // 同时验证工具调用可被快照复制；失败时不接纳这个副本。
       session.messages.map(cloneMessage);
+      this.loadedVersions.set(session, crypto.createHash("sha256").update(content).digest("hex"));
       return session as StoredSession;
     } catch {
       return null;
@@ -376,6 +395,8 @@ export class SessionManager {
     this.currentSession.messages = messages;
     this.currentSession.updatedAt = new Date().toISOString();
     const filePath = this.getSessionPath(this.currentSession.id);
+    // 新会话只允许创建新文件；恢复会话的基线在 loadSession 时记录。
+    if (!this.diskVersions.has(filePath)) this.diskVersions.set(filePath, null);
     // Keep one immutable snapshot for both duplicate detection and the
     // pending write. Cloning twice noticeably stalls long conversations.
     const snapshot = messages.map(cloneMessage);
@@ -433,33 +454,57 @@ export class SessionManager {
     const operations = [...this.pendingWrites.entries()];
     this.pendingWrites.clear();
     let writeFailed = false;
+    const completed = new Set<string>();
     if (operations.length > 0) {
+      this.activeWrites++;
       this.writeChain = this.writeChain
         .then(async () => {
           const startedAt = performance.now();
           await fs.promises.mkdir(this.sessionsDir, { recursive: true });
           for (const [filePath, operation] of operations) {
-            if (operation.remove) {
-              await fs.promises.rm(filePath, { force: true });
-              continue;
+            const unlock = acquireFileLock(filePath);
+            const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+            try {
+              const currentVersion = this.diskVersion(filePath);
+              if (currentVersion !== this.diskVersions.get(filePath)) {
+                throw new Error(
+                  "会话写入冲突：文件已被其他进程更新；未覆盖磁盘数据，请先备份当前内容再恢复最新会话",
+                );
+              }
+              if (operation.remove) {
+                await fs.promises.rm(filePath, { force: true });
+                this.diskVersions.set(filePath, null);
+              } else if (operation.session) {
+                const content = JSON.stringify(operation.session, null, 2);
+                await fs.promises.writeFile(tempPath, content, "utf8");
+                await replaceFileAtomically(tempPath, filePath);
+                this.diskVersions.set(
+                  filePath,
+                  crypto.createHash("sha256").update(content).digest("hex"),
+                );
+              }
+              // 已完成的操作不因后续文件写入失败而重新入队。
+              completed.add(filePath);
+            } finally {
+              try {
+                await fs.promises.rm(tempPath, { force: true });
+              } finally {
+                unlock();
+              }
             }
-            if (!operation.session) continue;
-            const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-            await fs.promises.writeFile(
-              tempPath,
-              JSON.stringify(operation.session, null, 2),
-              "utf8",
-            );
-            await replaceFileAtomically(tempPath, filePath);
           }
           performanceMonitor.record("session.flush", performance.now() - startedAt);
         })
         .catch((error) => {
           writeFailed = true;
           for (const [filePath, operation] of operations) {
-            if (!this.pendingWrites.has(filePath)) this.pendingWrites.set(filePath, operation);
+            if (!completed.has(filePath) && !this.pendingWrites.has(filePath))
+              this.pendingWrites.set(filePath, operation);
           }
           this.warn("会话持久化失败，数据已保留并将在下次保存时重试", error);
+        })
+        .finally(() => {
+          this.activeWrites--;
         });
     }
     await this.writeChain;
@@ -484,6 +529,7 @@ export class SessionManager {
         // 命中附加目录（其他 worktree 的会话）：主目录跟着切过去，后续保存写回原处。
         this.setSessionsDir(dir);
       }
+      this.diskVersions.set(this.getSessionPath(id), this.loadedVersions.get(session) ?? null);
       this.currentSession = session;
       this.lastQueuedMessages = snapshot;
       this.lastQueuedTitle = session.title;

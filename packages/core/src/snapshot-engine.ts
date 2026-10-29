@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomicallySync } from "./persistence-file.js";
 
 interface SnapshotFile {
   path: string;
@@ -234,7 +235,7 @@ export class SnapshotEngine {
         description,
         files,
       };
-      fs.writeFileSync(this.getManifestPath(id), JSON.stringify(manifest, null, 2), "utf8");
+      writeFileAtomicallySync(this.getManifestPath(id), JSON.stringify(manifest, null, 2));
       return id;
     } catch (error) {
       this.warn("工作区快照创建失败，本次修改可能无法通过 /rewind 自动回退", error);
@@ -568,7 +569,8 @@ export class SnapshotEngine {
       .update(content)
       .digest("hex");
     const blobPath = this.getBlobPath(hash);
-    if (!fs.existsSync(blobPath)) fs.writeFileSync(blobPath, content, { flag: "wx" });
+    // 内容寻址的 blob 同样先写临时文件，避免强退留下半个 blob 被后续快照复用。
+    if (!fs.existsSync(blobPath)) writeFileAtomicallySync(blobPath, content);
     return hash;
   }
 
@@ -632,7 +634,7 @@ export class SnapshotEngine {
 
   private writeJournal(records: MutationRecord[]): void {
     fs.mkdirSync(this.journalsDir, { recursive: true });
-    fs.writeFileSync(this.getJournalPath(), JSON.stringify(records, null, 2), "utf8");
+    writeFileAtomicallySync(this.getJournalPath(), JSON.stringify(records, null, 2));
   }
 
   private removeEmptyParents(startPath: string): void {
