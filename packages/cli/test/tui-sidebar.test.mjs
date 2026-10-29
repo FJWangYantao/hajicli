@@ -55,6 +55,31 @@ function sidebarState(overrides = {}) {
   };
 }
 
+test("extension status and detail entrances survive compact layouts", () => {
+  const extensions = {
+    mcp: [
+      { name: "good", state: "running", toolCount: 3 },
+      { name: "broken", state: "failed", toolCount: 0 },
+      { name: "off", state: "disabled", toolCount: 0 },
+    ],
+    skills: [
+      { name: "review", resident: true },
+      { name: "old", resident: false },
+    ],
+  };
+  for (const height of [18, 24, 40]) {
+    const frame = buildSidebarFrame(sidebarState({ extensions }), 32, height);
+    const text = frame.rows.map(stripAnsi).join("\n");
+    assert.match(text, /1\/2 就绪 · 1 异常/);
+    assert.match(text, /1 已加载/);
+    assert.match(text, /上下文/);
+    assert.match(text, /费用/);
+    assert.ok(frame.regions.some((region) => region.id === "extensions.mcp"));
+    assert.ok(frame.regions.some((region) => region.id === "extensions.skills"));
+    if (height === 40) assert.ok(text.indexOf("broken") < text.indexOf("good"));
+  }
+});
+
 test("sidebar only resolves on wide terminals and can be disabled", () => {
   assert.ok(resolveSidebarWidth(120, 30, true) >= 24);
   assert.equal(resolveSidebarWidth(120, 30, false), 0);

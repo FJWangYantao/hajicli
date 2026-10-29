@@ -215,6 +215,7 @@ export interface TerminalUIOptions {
   errorSink?: (text: string) => void;
   /** 点击侧栏里某个可交互区域：id 见 tui-sidebar.ts 的 SidebarRegionId，映射由调用方负责。 */
   onSidebarAction?: (id: string) => void;
+  sidebarExtensions?: () => SidebarState["extensions"];
   /** 首屏选中历史会话，由主循环安全接管并恢复。 */
   onResumeSession?: (id: string) => void;
   /**
@@ -3792,6 +3793,7 @@ export class TerminalUI {
       usedTokens: this.usedTokens,
       maxTokens: this.maxTokens,
       workspace: this.workspaceStatus,
+      extensions: this.options.sidebarExtensions?.(),
       ...(this.contextBreakdown ? { breakdown: this.contextBreakdown } : {}),
       ...(this.sidebarGoal ? { goal: this.sidebarGoal } : {}),
       costCny: this.costCny,

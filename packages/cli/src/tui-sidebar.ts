@@ -35,6 +35,10 @@ import type { WorkspaceStatus } from "./workspace-status.js";
 /** 右侧信息栏显示所需状态（TerminalUI 持有，渲染时快照传入）。 */
 export interface SidebarState {
   workspace?: WorkspaceStatus;
+  extensions?: {
+    mcp: readonly { name: string; state: "running" | "failed" | "disabled"; toolCount: number }[];
+    skills: readonly { name: string; resident: boolean }[];
+  };
   usedTokens: number;
   maxTokens: number;
   /** 上下文按类别的估算占用（系统/工具/记忆/文件/结果/对话）；缺省时只画圆环与总量。 */
@@ -108,6 +112,8 @@ export type SidebarRingGeometry = SidebarHitArea;
  * 新增可点区域时先在这里登记，再由 buildSidebarFrame 产出几何。
  */
 export type SidebarRegionId =
+  | "extensions.mcp"
+  | "extensions.skills"
   | "context.ring"
   | "context.usage"
   | "cost.summary"
@@ -600,7 +606,7 @@ export function buildSidebarFrame(
   // 顺序即优先级：当前在做什么（目标/任务/代理）在前，资源与账单在后；
   // 下部两块按 CONTEXT_MIN_ROWS / COST_MIN_ROWS 预留行数，避免长目标或长任务
   // 把它们整块顶出可见区域——宁可让上部先收成摘要。
-  const reservedTailRows = CONTEXT_MIN_ROWS + COST_MIN_ROWS;
+  const reservedTailRows = CONTEXT_MIN_ROWS + COST_MIN_ROWS + (state.extensions ? 4 : 0);
   /** 扣除给上下文与费用的预留额度后，上部区块还能用几行。 */
   const upperBudget = (): number => Math.max(0, maxRows - rows.length - reservedTailRows);
   // 高度决定档位：矮屏上每一行都要么是主指标，要么是可操作入口。
@@ -658,7 +664,51 @@ export function buildSidebarFrame(
     (state.costRequests ?? 0) === 0 &&
     noConversation &&
     (state.compactionCount ?? 0) === 0;
+  const renderExtensions = (): void => {
+    if (!state.extensions) return;
+    const servers = state.extensions.mcp
+      .filter((server) => server.state !== "disabled")
+      .slice()
+      .sort((a, b) => Number(b.state === "failed") - Number(a.state === "failed"));
+    const skills = state.extensions.skills;
+    const ready = servers.filter((server) => server.state === "running").length;
+    const failed = servers.length - ready;
+    section("扩展");
+    let top = rows.length;
+    tableRow(
+      "MCP",
+      `${ready}/${servers.length} 就绪${failed ? ` · ${failed} 异常` : ""} ›`,
+      isHovered("extensions.mcp") ? SEQ.accent : SEQ.reset,
+    );
+    register("extensions.mcp", top, 1, "text");
+    const spare = (): number => maxRows - rows.length - CONTEXT_MIN_ROWS - COST_MIN_ROWS - 1;
+    if (density === "full") {
+      const count = Math.min(3, servers.length, Math.max(0, spare()));
+      for (const server of servers.slice(0, count)) {
+        const name = sanitizeTerminalText(server.name).replace(/\s+/g, " ");
+        push(
+          `${SEQ.muted}  ${server.state === "failed" ? "!" : "●"} ${truncateText(name, Math.max(1, contentW - 12))} ${server.state === "failed" ? "异常" : `${server.toolCount} 工具`}${SEQ.reset}`,
+        );
+      }
+    }
+    top = rows.length;
+    tableRow(
+      "Skills",
+      `${skills.filter((skill) => skill.resident).length} 已加载 ›`,
+      isHovered("extensions.skills") ? SEQ.accent : SEQ.reset,
+    );
+    register("extensions.skills", top, 1, "text");
+    if (density === "full") {
+      const loaded = skills.filter((skill) => skill.resident);
+      for (const skill of loaded.slice(0, Math.min(3, Math.max(0, spare() + 1)))) {
+        push(
+          `${SEQ.muted}  ◆ ${sanitizeTerminalText(skill.name).replace(/\s+/g, " ")}${SEQ.reset}`,
+        );
+      }
+    }
+  };
   if (freshSession) {
+    renderExtensions();
     if (paper) push(`${SEQ.muted}SESSION${SEQ.reset}`);
     const usedC = Math.max(0, state.usedTokens);
     const maxC = Math.max(1, state.maxTokens);
@@ -754,6 +804,8 @@ export function buildSidebarFrame(
       for (const row of agentRows.slice(0, available)) push(row);
     }
   }
+
+  renderExtensions();
 
   // ── 上下文：整栏唯一的大图形，百分比压中心、用量紧贴其下居中，形成一条中线 ──
   const used = Math.max(0, state.usedTokens);

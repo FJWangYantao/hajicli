@@ -1365,9 +1365,21 @@ async function main() {
     startupMotion: !quietMode,
     muteNonInteractiveOutput: headlessRequest?.outputFormat === "json",
     ...(serveRequest ? { outputSink: serveSink, errorSink: serveErrorSink } : {}),
+    sidebarExtensions: () => ({
+      mcp: mcpManager.getServerStatuses(),
+      skills: skillRegistry.getLoaded("main"),
+    }),
     // 侧栏区域 id → 动作。上下文详情页由 TerminalUI 自己打开，不会走到这里。
     onSidebarAction: (id) => {
-      if (id === "cost.summary") openCostDetailsRef();
+      if (id === "extensions.mcp") showMcpStatus(ui, mcpManager.getServerStatuses(), mcpConfigs);
+      else if (id === "extensions.skills") {
+        void handleSkillsCommand([], {
+          ui,
+          skillRegistry,
+          startBackgroundInput: () => {},
+          refreshAfterScan: async () => {},
+        });
+      } else if (id === "cost.summary") openCostDetailsRef();
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
       else if (id.startsWith("cost.turn.")) {
