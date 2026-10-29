@@ -92,7 +92,7 @@ export class SharedToolExecutor {
       }),
     );
     if (preHookResult) {
-      await this.post(toolName, args, preHookResult, context);
+      await this.post(toolName, args, preHookResult, context, true);
       return { output: preHookResult, duration: 0, blocked: true, rejected: true };
     }
     if (context.abortSignal?.aborted) {
@@ -234,12 +234,14 @@ export class SharedToolExecutor {
     args: Record<string, unknown>,
     output: string,
     context: ToolExecutionContext,
+    blocked = false,
   ): Promise<void> {
     await this.options.hookEngine.trigger("PostToolUse", {
       toolCallId: context.toolCallId,
       toolName,
       args,
       toolOutput: output,
+      ...(blocked ? { blocked } : {}),
       agentId: context.agentId,
       parentAgentId: context.parentAgentId,
       depth: context.depth,

@@ -139,7 +139,12 @@ import type { DriverServer } from "./driver/server.js";
 import type { DriverSelectionRequest } from "./driver/types.js";
 import { handleInstinctCommand, handleMemoryCommand } from "./experience-commands.js";
 import { ExperimentRegistry, resolveMaxParallelTools } from "./experiments.js";
-import { handleSkillsCommand, showMcpStatus } from "./extension-commands.js";
+import {
+  describeHookLoadWarnings,
+  handleHooksCommand,
+  handleSkillsCommand,
+  showMcpStatus,
+} from "./extension-commands.js";
 import {
   expandFileMentions,
   inspectFileMentions,
@@ -249,6 +254,7 @@ import {
   type TurnOutcome,
   type UnattendedSelection,
 } from "./turn-runner.js";
+import { UserHookRunner } from "./user-hooks.js";
 import { loadUserModels } from "./user-models.js";
 import { askUserQuestion } from "./user-question.js";
 import { handleWorkspaceCommand, type WorkspaceCommandContext } from "./workspace-commands.js";
@@ -874,6 +880,30 @@ async function main() {
     };
   };
 
+  // 0. 用户 Hook（~/.haji/hooks.json + 已信任的 .haji/hooks.json）：PreToolUse 先于权限引擎，
+  // 拦下了就不必再弹授权卡；其余事件挂在内置处理器之后，只产生副作用。
+  const userHookRunner = new UserHookRunner({
+    warn: (message) => {
+      if (headlessRequest) console.error(colors.warnLine(message));
+      else ui.writeLine(colors.warnLine(message));
+    },
+    inject: (content, event, ctx) => {
+      if (event === "UserPromptSubmit" && ctx.messages) {
+        ctx.messages.push({ role: "system", content });
+        return;
+      }
+      // 子代理的工具反馈不该混进主对话，只给用户看。
+      if (ctx.agentId) {
+        ui.writeLine(colors.muted(`[${ctx.agentId}] ${content}`));
+        return;
+      }
+      pendingToolNotices.push(content);
+    },
+    getSessionId: () => sessionManager.getCurrentSession().id,
+  });
+  userHookRunner.reload();
+  userHookRunner.registerPreToolUse(hookEngine);
+
   // 1. 注册 PreToolUse Hook：用于安全权限判断与用户授权确认
   hookEngine.register("PreToolUse", async (ctx) => {
     const mode = ctx.permissionMode as PermissionMode;
@@ -1019,6 +1049,7 @@ async function main() {
       }
     }
   });
+  userHookRunner.registerAfterBuiltins(hookEngine);
 
   let provider = buildProvider(selectedModel, undefined, currentProviderName);
   let foregroundAbortSignal: AbortSignal | undefined;
@@ -1424,7 +1455,14 @@ async function main() {
       ...(lastCompaction ? { lastCompaction } : {}),
     });
   };
-  for (const warning of [...mcpStartupWarnings, ...aliasSkillWarnings]) {
+  for (const warning of [
+    ...mcpStartupWarnings,
+    ...aliasSkillWarnings,
+    ...describeHookLoadWarnings(
+      userHookRunner.getLoaded(),
+      Boolean(headlessRequest || serveRequest),
+    ),
+  ]) {
     // 无头模式下提示走 stderr，避免污染脚本消费的 stdout。
     if (headlessRequest) console.error(colors.warnLine(warning));
     else ui.writeLine(colors.warnLine(warning));
@@ -3230,6 +3268,7 @@ async function main() {
       taskStore.retarget(worktreeCwd);
       snapshotEngine.retarget(worktreeCwd);
       syncPathScope();
+      userHookRunner.reload(worktreeCwd);
     },
   };
 
@@ -3768,6 +3807,14 @@ async function main() {
         }
         if (command === "mcp") {
           showMcpStatus(ui, mcpManager.getServerStatuses(), mcpConfigs);
+          continue;
+        }
+        if (command === "hooks") {
+          await handleHooksCommand(parts.slice(1), {
+            ui,
+            runner: userHookRunner,
+            readSelectionSafely,
+          });
           continue;
         }
         if (command === "skills") {

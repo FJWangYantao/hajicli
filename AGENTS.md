@@ -173,6 +173,26 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   新增此类命令必须照此处理（同步阻塞的 git/文件操作除外，那是事件循环被占住，另需拆分）。
 - 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
 
+## 用户 Hooks（user-hooks.ts）
+
+- core 的 `HookEngine` 原来只有 index.ts 内部在注册；`UserHookRunner` 把 `~/.haji/hooks.json` 与**已信任的**
+  `.haji/hooks.json` 里的 shell 命令挂上去。处理器只注册一次、每次触发读最新集合，`reload()` 在
+  `/hooks trust|reload` 与 `enterSessionWorktree` 时调用。
+- **注册顺序是语义的一部分**：`HookEngine.trigger` 遇到第一个非空返回值就停。用户 `PreToolUse` 必须先于
+  内置权限处理器注册（拦下了就不弹授权卡），且只能拦不能放行；其余事件挂在内置处理器之后、不返回值，
+  否则会截断 trace 记录与自动压缩。
+- 退出码 2 = 拦截 / 回注（PreToolUse 返回原因、PostToolUse 回注 stderr），0 = 放行（UserPromptSubmit 的
+  stdout 作上下文），其他非 0 / 超时只告警且同类问题只提示一次。`HookContext.blocked` 标记工具在执行前
+  被拦下，此时不跑 PostToolUse。
+- 项目级按**文件内容 sha256** 信任（`~/.haji/hooks-trust.json`，键复用 `workspaceProjectKey`）；
+  `HAJI_TRUST_PROJECT_HOOKS=1` 显式信任。`hooks.json` / `hooks-trust.json` 已加入 `protected-targets.ts`
+  的 hard 级——模型写用户级 hooks 等于绕过授权执行任意命令。
+- **工具执行期间不能直接 `messages.push`**：此时 assistant(tool_calls) 已入列、工具结果还没写，夹进去的
+  system 消息会让下一轮 `repairToolCallPairs` 把真实结果换成「工具执行状态未知」。编辑后诊断与 Hook 反馈
+  都进 `pendingToolNotices`，由 turn-runner 每次请求前经 `drainToolNotices()` 追加在结果之后
+  （修复前编辑后验证一发现问题，模型就看不到那次编辑的真实回执）。新增回注同样走这个队列。
+- 测试：`user-hooks.test.mjs`（解析、信任、语义、超时杀进程组；假模型 e2e 验证拦截、回注顺序、上下文、未信任不执行）。
+
 ## 驱动进程（`haji mcp-serve`）
 
 `haji mcp-serve` 把本进程当成常驻 haji，经 MCP stdio 对外提供「派活 + 跟进 + 调整」的工具面（`haji_status` / `send` / `wait` / `events` / `adjust` / `cancel` / `approve`）。方向与「MCP 外部工具」相反：那里是 haji 调别人的工具，这里是别人把 haji 当工具。

@@ -169,6 +169,15 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         ],
       },
       {
+        command: "/hooks",
+        description: "用户 Hook：工具前后、提交消息、退出时跑自定义命令",
+        argHint: "[trust|reload]",
+        subcommands: [
+          { command: "/hooks trust", description: "审阅并信任项目级 .haji/hooks.json" },
+          { command: "/hooks reload", description: "重新读取 hooks 配置" },
+        ],
+      },
+      {
         command: "/provider",
         description: "查看 / 切换 / 添加 / 配置提供商",
         argHint: "[名称|add|set|unset]",

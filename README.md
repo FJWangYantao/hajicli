@@ -70,7 +70,7 @@ git push origin v1.0.0
 
 | 枢纽 | 细分项 |
 |---|---|
-| `/config` 模型与配置 | `/permission`、`/workspace`、`/worktree`、`/provider`、`/effort`、`/theme`、`/appearance`、`/sidebar`、`/fold`、`/think` |
+| `/config` 模型与配置 | `/permission`、`/workspace`、`/worktree`、`/hooks`、`/provider`、`/effort`、`/theme`、`/appearance`、`/sidebar`、`/fold`、`/think` |
 | `/agents` 子代理管理 | `/agents new`、`/agents presets`（旧 `/subagent`、`/preset`、`/agent` 仍可用） |
 | `/memory` 经验系统 | `/memory list`、`/memory rules`（`/instinct` 系列经别名转入） |
 | `/diag` 诊断与观测 | `/perf`、`/cost`、`/diff`、`/output`、`/doctor`、`/viewer`、`/mcp` |
@@ -182,6 +182,37 @@ HAJI 可接入任意 MCP（Model Context Protocol）server，把其工具作为 
 
 - `/mcp`：查看各 server 状态（running/failed/disabled）、挂载的工具与失败原因
 - 启动时并行连接，单个 server 失败不影响其余与 CLI 本身；MCP 工具失败输出与内置工具同格式（`错误:` 前缀），会被经验系统纳入失败观测
+
+## 用户 Hooks
+
+在工具调用前后、提交消息时、退出时跑自己的命令（格式化、拦危险操作、补上下文、发通知）。配置在
+`~/.haji/hooks.json`（用户级，直接生效）或项目 `.haji/hooks.json`：
+
+```json
+{
+  "PreToolUse": [{ "matcher": "bash", "command": "./scripts/guard.sh", "timeoutMs": 10000 }],
+  "PostToolUse": [{ "matcher": "write|edit", "command": "npx prettier --write \"$HAJI_TOOL_PATH\"" }],
+  "UserPromptSubmit": [{ "command": "git status --short" }],
+  "Stop": [{ "command": "notify-send haji 回合结束" }]
+}
+```
+
+| 事件 | 退出码 0 | 退出码 2 | 其他非 0 / 超时 |
+|---|---|---|---|
+| `PreToolUse` | 照常走权限判定 | **拦下这次调用**，stderr 作为原因回给模型 | 告警，不拦截 |
+| `PostToolUse` | 无事 | stderr 作为反馈回注给模型（排在工具结果之后） | 告警 |
+| `UserPromptSubmit` | stdout 作为补充上下文注入本轮 | — | 告警 |
+| `Stop` | 无事 | — | 告警 |
+
+- `matcher` 是工具名正则（整名匹配、不分大小写），缺省或 `*` 匹配全部；只对工具类事件有意义。
+  默认超时 30 秒。Hook 只能拦，**不能替用户放行**——放行仍走权限档与授权卡。
+- 命令经系统 shell 执行，stdin 收到上下文 JSON（`event`、`toolName`、`args`、`toolOutput`、`prompt`、
+  `sessionId`、`cwd`），另有环境变量 `HAJI_HOOK_EVENT`、`HAJI_TOOL_NAME`、`HAJI_TOOL_PATH`（`args.path`
+  的绝对路径）、`HAJI_PROJECT_DIR`、`HAJI_SESSION_ID`。工具被权限或 Hook 拦下时不跑 `PostToolUse`。
+- **项目级 hooks 默认不执行**：它可能随仓库克隆而来。`/hooks trust` 先列出每条命令，确认后按文件内容
+  哈希记到 `~/.haji/hooks-trust.json`，文件一改就要重新信任；CI 里可设 `HAJI_TRUST_PROJECT_HOOKS=1`。
+- `/hooks` 查看生效情况与配置错误，`/hooks reload` 重新读取。`hooks.json` 与信任表属于受保护目标，
+  模型改写它们必须逐次确认。
 
 ## 驱动进程：`haji mcp-serve`
 

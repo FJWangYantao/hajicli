@@ -66,7 +66,15 @@ function pathRules(cwd: string): PathRule[] {
 
   // 授权与运行配置：改它等于改「谁能做什么」，一律 hard。
   for (const dir of [projectHaji, homeHaji]) {
-    for (const file of ["permissions.json", "config.json", "workspaces.json", "preferences.json"]) {
+    for (const file of [
+      "permissions.json",
+      "config.json",
+      "workspaces.json",
+      "preferences.json",
+      // hooks 里的命令不经授权直接执行；信任表决定项目级 hooks 是否生效。
+      "hooks.json",
+      "hooks-trust.json",
+    ]) {
       rules.push({
         level: "hard",
         access: "write",
@@ -85,7 +93,7 @@ function pathRules(cwd: string): PathRule[] {
 
   // Agent 的自我定义：技能、记忆、本能规则。
   for (const dir of [projectHaji, homeHaji]) {
-    for (const sub of ["skills", "memory", "instincts", "agents"]) {
+    for (const sub of ["skills", "memory", "instincts", "agents", "commands"]) {
       rules.push({
         level: "hard",
         access: "write",

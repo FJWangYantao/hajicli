@@ -26,6 +26,8 @@ export interface HookContext {
   cwd?: string;
   /** 当前回合的中止信号（PreToolUse 用来取消 Auto 分类器判定）。 */
   abortSignal?: AbortSignal;
+  /** PostToolUse：工具调用在执行前就被拦下（权限 / Hook），没有真正执行。 */
+  blocked?: boolean;
 }
 
 /** Hook 处理器函数定义：返回 string 代表拦截或修改，返回 void/null/undefined 代表放行 */
