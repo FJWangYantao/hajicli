@@ -15,7 +15,7 @@
 | 独立质量评测 | scripts/quality-run.mjs 与 quality-tasks.mjs、quality-benchmark测试。8个固定任务与独立断言；默认dry-run，真实运行需--run。详见quality-evaluation.md。 |
 | 首次配置成功与重试 | onboarding测试使用本地HTTP服务和隔离HOME，检查失败不写盘、再次配置成功、配置字段与输出不含测试key。 |
 | 真实CLI首任务、退出与继续 | pnpm run first-use:smoke：本地HTTP、隔离HOME、真实CLI子进程；首任务退出后-c恢复，再输入消息，服务端确认旧上下文，第二次退出保存至同一个会话。输出ok=true、四阶段通过、4次本地请求。 |
-| 发布产物离线验收 | scripts/first-use-pack.mjs 已实现：pnpm pack三个包，临时目录解包，复制冻结本地第三方依赖，运行上述smoke。执行被自动审批拒绝，尚未运行，不能认定通过。待批准运行 pnpm run first-use:pack。 |
+| 发布产物离线验收 | scripts/first-use-pack.mjs：pnpm pack三个包，临时目录解包，复制冻结本地第三方依赖，运行上述smoke。2026-10-28 已实际运行并通过：输出 `{"ok":true,"stages":["first-task","exit-save","resume-context","continue-save"],"requests":4,"packageInstall":"local-tarballs","thirdPartyDependencies":"frozen-local-copy"}`，退出码0，全程不读 registry。 |
 
 ## 已执行检查
 
@@ -30,7 +30,8 @@
 - 最终补充 state-consistency、session-recovery、quality-benchmark：15/15通过，包含费用汇总与显式失败不计成功的断言。
 - scripts/first-use-pack.mjs 的 node --check：通过；仅语法检查，没有执行被拒绝的验收动作。
 - git diff --check：通过；haji --version 与 CLI package.json 均为1.5.0。
-- 已审查生产代码差异与新增脚本/测试；未提交、未发布。first-use任务及最终完成审计保留待办，等待离线发布包验收获准并实际通过。
+- 已审查生产代码差异与新增脚本/测试；未提交、未发布。
+- pnpm run first-use:pack（2026-10-28）：退出码0，ok=true，四阶段通过、4 次本地请求，打包→解包→冻结依赖复制→smoke 全链路走通；离线发布包验收自此视为通过。
 
 ## 保证边界与后续
 

@@ -23,6 +23,7 @@ CLI费用估算合计0.203118元，但CLI按deepseek-v4-flash标识计价，实�
 
 1. 无头输出与退出状态一致性：5项输出ok=true却最终退出1，导致自动化调用失败。index.ts退出清理失败会设置退出码1，是待验证线索；本轮原runProcess丢弃stderr，尚不能断定具体失败步骤。已补stderr捕获，下一次针对单任务复现应检查退出警告，不应直接忽略非零退出码。
 2. 无头验证权限：sum和clamp的输出明确表示node验证被拒；本次accept-edit允许修改，但不保证模型能执行测试。应验证适合无人值守评测的最小测试授权，不应因此放开所有命令。
+   **已处理（2026-10-28）**：无头模式新增 `--allow <键>`（可重复），键形态复用 `permissions.json` 的 `key`（`bash:<命令前缀>` / 工具名），只并入本次进程的内存规则、不落盘，命中即放行且优先于权限引擎。评测/CI 建议用 `--allow "bash:node" --allow "bash:npm test"` 这类最小集合，不要直接切 `bypass-permissions`。回归见 `packages/cli/test/headless.test.mjs`（解析与非法键）与 `packages/cli/test/permission-rules.test.mjs`（`withCliAllowKeys` 命中与不落盘）。
 3. 评测可观测性与费用归属：保留stderr、源码、进程结果、上游usage，使用实际模型身份计价。简单任务也用了4.1万至6.3万累计token，后续可拆分主线、辅助请求及重复读取成本。
 
 ## 复核与局限

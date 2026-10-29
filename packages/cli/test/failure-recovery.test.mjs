@@ -112,6 +112,87 @@ test("HTTP 503 在收到正文前自动重试且只提交一次用户输入", as
   assert.equal(restored.getCurrentSession().messages.at(-1).content, "重试成功");
 });
 
+test("对端不可达（连接被拒绝）触发重试，中止后用户输入只提交一次且可恢复", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-offline-recovery-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // 先绑定再释放，保证 127.0.0.1:<port> 无人监听 —— 真实 ECONNREFUSED，不是模拟异常。
+  const probe = http.createServer();
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+
+  const offline = new OpenAICompatibleProvider({
+    apiKey: "test-only",
+    baseUrl: `http://127.0.0.1:${port}`,
+    defaultModel: "test",
+  });
+  // 第一次重试即中止（等价于用户看到断网后按 Esc），避免等满 5 次指数退避。
+  const controller = new AbortController();
+  let retryAttempt = 0;
+  const abortingProvider = {
+    async *completeStream(messages, options) {
+      yield* offline.completeStream(messages, {
+        ...options,
+        abortSignal: controller.signal,
+        onRetry: ({ attempt }) => {
+          retryAttempt = attempt;
+          controller.abort();
+        },
+      });
+    },
+  };
+
+  const manager = new SessionManager(dir);
+  const harness = recoveryHarness(manager, abortingProvider);
+  let finished = 0;
+  harness.deps.onTurnFinished = () => finished++;
+  await harness.run("断网时的工作");
+  await manager.flush();
+
+  assert.equal(retryAttempt, 1, "连接被拒绝应判定为可重试并进入第一次重试");
+  assert.equal(finished, 0, "中止的回合不能报告完成");
+  const stored = manager.getCurrentSession().messages;
+  assert.equal(stored.filter((m) => m.role === "user").length, 1, "用户输入只提交一次");
+  assert.equal(stored.some((m) => m.role === "assistant"), false, "没有正文就不该落 assistant 消息");
+
+  // 网络恢复（同一端口重新监听）后从磁盘恢复同一会话继续。
+  let resumedMessages;
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    resumedMessages = JSON.parse(body).messages;
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(`${event({ content: "网络恢复后继续完成" }, "stop")}data: [DONE]\n\n`);
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  const restored = new SessionManager(dir);
+  assert.ok(restored.loadSession(manager.getCurrentSession().id));
+  const healthy = new OpenAICompatibleProvider({
+    apiKey: "test-only",
+    baseUrl: `http://127.0.0.1:${port}`,
+    defaultModel: "test",
+  });
+  await recoveryHarness(restored, healthy).run("继续");
+  await restored.flush();
+
+  assert.ok(
+    resumedMessages.some((m) => m.role === "user" && m.content === "断网时的工作"),
+    "恢复后模型应看到断网前那条输入（且只有一条）",
+  );
+  assert.equal(
+    resumedMessages.filter((m) => m.role === "user" && m.content === "断网时的工作").length,
+    1,
+  );
+  assert.equal(restored.getCurrentSession().messages.at(-1).content, "网络恢复后继续完成");
+});
+
 for (const boundary of ["second-tool", "next-request", "turn-finished"]) {
   test(`强杀进程 ${boundary} 边界后恢复已完成进度`, { timeout: 15000 }, async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haji-crash-recovery-"));
