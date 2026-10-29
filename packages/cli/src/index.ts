@@ -1119,6 +1119,17 @@ async function main() {
     process.exit(130);
   };
   process.on("SIGINT", handleSigint);
+  const { installTerminalShutdown } = await import("./terminal-shutdown.js");
+  const removeTerminalShutdown = installTerminalShutdown({
+    signals: process,
+    input: process.stdin.isTTY ? process.stdin : undefined,
+    output: process.stdout,
+    flush: async () => {
+      await sigintSessionFlush?.();
+      await experienceStore.flushObservations();
+    },
+    exit: (code) => process.exit(code),
+  });
   const skillRegistry = new SkillRegistry({ cwd: process.cwd() });
   const initialSkillScan = await skillRegistry.scan();
   markStartupStage("skill_scan");
@@ -1550,6 +1561,11 @@ async function main() {
   tracker.setWarningHandler(showRuntimeWarning);
   sessionManager.setWarningHandler(showRuntimeWarning);
   snapshotEngine.setWarningHandler(showRuntimeWarning);
+  if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {
+    ui.writeLine(
+      "SSH 会话：断线后可在同一目录运行 haji -c 恢复已保存的对话；需要任务持续运行请使用 tmux。恢复后请先核对中断工具的执行结果。",
+    );
+  }
   for (const warning of startupWarnings) showRuntimeWarning(warning);
   for (const warning of initialSkillScan.warnings) ui.writeLine(colors.warnLine(warning));
 
@@ -4463,6 +4479,7 @@ async function main() {
   if (fatalExit !== undefined) throw fatalExit;
   if (reloadRequested && !process.exitCode) {
     process.off("SIGINT", handleSigint);
+    removeTerminalShutdown();
     try {
       process.exitCode = await runReloadProcess({
         entryPath: fileURLToPath(import.meta.url),

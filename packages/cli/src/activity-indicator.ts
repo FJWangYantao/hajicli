@@ -5,6 +5,7 @@ import {
   type ToolCellStatus,
   type ToolResultSummary,
 } from "./cli-runtime.js";
+import { liteDisplay } from "./remote-terminal.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import {
   TOOL_BLOCK_OUTPUT_MAX_CHARS,
@@ -142,7 +143,7 @@ export class ActivityIndicator {
   constructor(options: ActivityIndicatorOptions) {
     this.renderFrame = options.render;
     this.now = options.now || Date.now;
-    this.intervalMs = Math.max(80, options.intervalMs || 140);
+    this.intervalMs = Math.max(80, options.intervalMs || (liteDisplay() ? 1000 : 140));
     this.waitingAfterMs = Math.max(1_000, options.waitingAfterMs || DEFAULT_ACTIVITY_WAITING_MS);
     this.stalledAfterMs = Math.max(
       this.waitingAfterMs + 1_000,

@@ -70,6 +70,7 @@ import {
   renderSegmentText,
   splitBlankEdges,
 } from "./process-fold.js";
+import { liteDisplay, renderDelay } from "./remote-terminal.js";
 import {
   applySelectionKey,
   buildSelectionRows,
@@ -2345,7 +2346,7 @@ export class TerminalUI {
       this.renderPendingAfterDrain = true;
       return;
     }
-    const delayMs = interactive ? 8 : 16;
+    const delayMs = renderDelay(interactive);
     if (this.renderScheduled && delayMs >= this.scheduledRenderDelayMs) return;
     this.renderScheduled = true;
     if (this.streamRenderTimer) {
@@ -3926,7 +3927,8 @@ export class TerminalUI {
 
   /** 启动动效已播放的毫秒数：首次画首屏时起算；关闭动效时返回 undefined（静止画面）。 */
   private startupMotionElapsed(): number | undefined {
-    if (!this.options.startupMotion || process.env.HAJI_REDUCED_MOTION === "1") return undefined;
+    if (!this.options.startupMotion || process.env.HAJI_REDUCED_MOTION === "1" || liteDisplay())
+      return undefined;
     this.startupMotionStartedAt ??= Date.now();
     const elapsed = Date.now() - this.startupMotionStartedAt;
     return elapsed < STARTUP_MOTION_MS ? elapsed : undefined;

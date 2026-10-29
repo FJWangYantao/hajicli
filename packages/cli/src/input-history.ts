@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { stdout } from "node:process";
+import { clipboardSequence } from "./remote-terminal.js";
 
 export class InputHistoryBuffer {
   private readonly entries: string[] = [];
@@ -102,8 +103,16 @@ export class ClipboardWriter {
   write(text: string): Promise<boolean> {
     if (!text) return Promise.resolve(false);
     if (process.platform !== "win32") {
-      stdout.write(`\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`);
-      return Promise.resolve(true);
+      if (!stdout.isTTY) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        try {
+          stdout.write(clipboardSequence(text, Boolean(process.env.TMUX)), (error) =>
+            resolve(!error),
+          );
+        } catch {
+          resolve(false);
+        }
+      });
     }
 
     this.start();

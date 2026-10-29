@@ -739,9 +739,18 @@ test("glow paints only on truecolor with a known background; motion settles into
 });
 
 test("startup motion is opt-in, schedules frames while playing and honors HAJI_REDUCED_MOTION", (t) => {
+  const keys = ["HAJI_REDUCED_MOTION", "HAJI_DISPLAY", "SSH_CONNECTION", "SSH_TTY"];
+  const saved = keys.map((key) => [key, process.env[key]]);
   t.after(() => {
-    delete process.env.HAJI_REDUCED_MOTION;
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
+  // 轻量显示（SSH 会话或 HAJI_DISPLAY=lite）会关掉启动动效，这里先固定成全量显示。
+  process.env.HAJI_DISPLAY = "full";
+  delete process.env.SSH_CONNECTION;
+  delete process.env.SSH_TTY;
   withUI(140, 40, (ui) => {
     assert.equal(ui.startupMotionTimer, null);
     ui.options.startupMotion = true;
@@ -759,6 +768,15 @@ test("startup motion is opt-in, schedules frames while playing and honors HAJI_R
     ui.options.startupMotion = true;
     ui.renderFrame();
     assert.equal(ui.startupMotionTimer, null);
+  });
+  // 轻量显示（远端 SSH / HAJI_DISPLAY=lite）不开启动动效，画面直接静止。
+  delete process.env.HAJI_REDUCED_MOTION;
+  process.env.HAJI_DISPLAY = "lite";
+  withUI(140, 40, (ui) => {
+    ui.options.startupMotion = true;
+    ui.renderFrame();
+    assert.equal(ui.startupMotionTimer, null);
+    assert.ok(hasTagline(ui.renderedScreenRows.map(strip)));
   });
 });
 
