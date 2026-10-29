@@ -107,6 +107,7 @@ import {
   buildLogo,
   buildSessionHelpLines,
   buildSlashCommandCatalog,
+  builtinCommandHeads,
   classifyCommandTiming,
   expandCommandInput,
   findAliasSkillConflicts,
@@ -133,6 +134,7 @@ import {
 import { buildContextBreakdown, buildContextItemGroups } from "./context-breakdown.js";
 import { getModelContextWindowTokens, normalizeContextWindowTokens } from "./context-policy.js";
 import { CostTracker, type CostUsage, formatCostCny, type TurnMetric } from "./cost-tracker.js";
+import { loadCustomCommands, matchCustomCommand } from "./custom-commands.js";
 import { buildWriteDiff, formatDiffHeader } from "./diff-preview.js";
 import { collectDoctorChecks, renderDoctorReport } from "./doctor-commands.js";
 import type { DriverServer } from "./driver/server.js";
@@ -1399,7 +1401,10 @@ async function main() {
   // 排序视角归页面自己处理，这里只负责把当前记录整份交出去。
   ui.setCostLogProvider(() => costTracker.getRequestDetails());
   // 底栏补全目录：只输入 “/” 时展示顶层指令，继续输入后模糊搜索全部指令、子命令与 Skill。
-  let slashCommands = buildSlashCommandCatalog(skillRegistry.list());
+  // 自定义命令（.haji/commands/*.md）：每轮重新扫描，新建文件不用重启；与内置重名的跳过。
+  const reservedCommandHeads = builtinCommandHeads();
+  let customCommandScan = loadCustomCommands(reservedCommandHeads);
+  let slashCommands = buildSlashCommandCatalog(skillRegistry.list(), customCommandScan.commands);
   // @ 文件补全：工作区文件列表缓存（60 秒刷新），输入 @ 时弹出模糊搜索。
   const fileMentionCache = { files: [] as string[], loadedAt: 0 };
   const listWorkspaceFiles = (): string[] => {
@@ -1459,6 +1464,7 @@ async function main() {
   for (const warning of [
     ...mcpStartupWarnings,
     ...aliasSkillWarnings,
+    ...customCommandScan.warnings,
     ...describeHookLoadWarnings(
       userHookRunner.getLoaded(),
       Boolean(headlessRequest || serveRequest),
@@ -3561,6 +3567,8 @@ async function main() {
   const startServeMode = async (request: ServeRequest): Promise<void> =>
     runServeMode({
       serveRequest: request,
+      expandPrompt: (text) =>
+        matchCustomCommand(text, loadCustomCommands(reservedCommandHeads).commands)?.prompt ?? text,
       getRunCostCny,
       turnDeps,
       toolExecutor,
@@ -3637,7 +3645,10 @@ async function main() {
           },
         };
         await runAgentTurn(headlessTurnDeps, {
-          forwardedPrompt: headlessRequest.prompt,
+          // 无头也认自定义命令：haji -p "/review src/a.ts"。
+          forwardedPrompt:
+            matchCustomCommand(headlessRequest.prompt, customCommandScan.commands)?.prompt ??
+            headlessRequest.prompt,
           commandInput: headlessRequest.prompt,
           manualSkillExchange: undefined,
           promptDisplayStartOffset: ui.getChatLength(),
@@ -3682,7 +3693,8 @@ async function main() {
       // 上一轮里执行的立即指令（/model 等）留下的收尾：提示与 system prompt 重建。
       await flushImmediateEffects();
       // /skills reload 等操作会改变可调用的 Skill，每轮刷新补全目录。
-      slashCommands = buildSlashCommandCatalog(skillRegistry.list());
+      customCommandScan = loadCustomCommands(reservedCommandHeads);
+      slashCommands = buildSlashCommandCatalog(skillRegistry.list(), customCommandScan.commands);
       // 管理面板不阻塞当前回合；回合结束后等待编辑完成再取下一条。
       await ui.waitForInputManagement();
       let userInput: string;
@@ -4294,7 +4306,15 @@ async function main() {
           continue;
         }
 
-        if (!forwardedPrompt || !manualSkillExchange) {
+        // 内置分支都没命中：再看是不是自定义命令（展开成本轮用户消息）。
+        const customMatch =
+          forwardedPrompt && manualSkillExchange
+            ? undefined
+            : matchCustomCommand(trimmedInput, customCommandScan.commands);
+        if (customMatch) {
+          forwardedPrompt = customMatch.prompt;
+          ui.dismissStartupHeader();
+        } else if (!forwardedPrompt || !manualSkillExchange) {
           const suggestion = suggestSimilarCommand(command, slashCommands);
           ui.writeLine(
             colors.failLine(

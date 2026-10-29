@@ -19,6 +19,8 @@ export interface ServeModeContext {
   serveRequest: ServeRequest;
   /** 本进程启动以来的估算费用（--max-cost 口径）。 */
   getRunCostCny(): number;
+  /** `/名称 参数` 形式的自定义命令展开成提示词；不是自定义命令时原样返回。 */
+  expandPrompt(text: string): string;
   turnDeps: TurnDeps;
   toolExecutor: SharedToolExecutor;
   costTracker: CostTracker;
@@ -176,7 +178,7 @@ export async function runServeMode(ctx: ServeModeContext): Promise<void> {
           } satisfies DriverTurnResult;
         }
         await runAgentTurn(driverTurnDeps, {
-          forwardedPrompt: text,
+          forwardedPrompt: ctx.expandPrompt(text),
           commandInput: text,
           manualSkillExchange: undefined,
           promptDisplayStartOffset: ctx.getChatLength(),

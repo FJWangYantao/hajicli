@@ -614,7 +614,33 @@ export function getTopLevelSlashCommands(): ReadonlyArray<{
  * 补全目录：把顶层指令、枢纽成员、子命令与可手动调用的 Skill 展平成一张表。
  * 顶层条目标记 topLevel；其余条目带上所属分组名，补全时作为来源标签显示。
  */
-export function buildSlashCommandCatalog(skills: readonly HubSkillEntry[] = []): SlashCommand[] {
+/**
+ * 内置指令占用的头词（含别名、枢纽名，小写、不含斜杠）：自定义命令不能与它们重名。
+ * 有几条只在主循环里分发、没进指令面（如 /instinct 的旧入口经别名转入），一并列出。
+ */
+export function builtinCommandHeads(): Set<string> {
+  const heads = new Set<string>(["exit", "reload", "help", "viewer", "skill"]);
+  const collect = (entry: CommandSurfaceEntry): void => {
+    heads.add(normalizeCommandName(entry.command).split(" ")[0]);
+    for (const member of entry.members ?? []) collect(member);
+    for (const sub of entry.subcommands ?? []) collect(sub);
+  };
+  for (const entry of COMMAND_SURFACE) collect(entry);
+  for (const alias of getCommandAliases().keys()) heads.add(alias);
+  return heads;
+}
+
+/** 补全目录里的自定义命令（`.haji/commands/*.md`）。 */
+export interface CatalogCustomCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+}
+
+export function buildSlashCommandCatalog(
+  skills: readonly HubSkillEntry[] = [],
+  customCommands: readonly CatalogCustomCommand[] = [],
+): SlashCommand[] {
   const catalog: SlashCommand[] = [];
   const seen = new Set<string>();
   const aliases = getCommandAliases();
@@ -647,6 +673,17 @@ export function buildSlashCommandCatalog(skills: readonly HubSkillEntry[] = []):
     add(
       { command: `/skill ${skill.name}`, description: skill.description, argHint: "[任务]" },
       "Skill",
+      false,
+    );
+  }
+  for (const custom of customCommands) {
+    add(
+      {
+        command: `/${custom.name}`,
+        description: custom.description || "自定义命令",
+        argHint: custom.argumentHint ?? "[参数]",
+      },
+      "自定义命令",
       false,
     );
   }

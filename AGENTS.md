@@ -173,6 +173,18 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   新增此类命令必须照此处理（同步阻塞的 git/文件操作除外，那是事件循环被占住，另需拆分）。
 - 测试：`packages/cli/test/immediate-command.test.mjs`（判定口径、别名、参数白名单、目录标记）。
 
+## 自定义斜杠命令（custom-commands.ts）
+
+- `.haji/commands/<名称>.md`（项目级覆盖用户级 `~/.haji/commands/`）是提示词模板，展开成本轮用户消息；
+  可选 frontmatter 只读 `description` / `argument-hint` 两个 `key: value`（cli 包没有 yaml 依赖，别引）。
+- **内置优先**：`builtinCommandHeads()`（cli-help.ts）收集指令面所有头词 + 别名 + 只在主循环分发的
+  `exit/reload/help/viewer/skill`，重名文件扫描时就跳过并报告。主循环里自定义命令的匹配放在**所有内置分支之后**、
+  未知指令提示之前；新增只在主循环分发、不进指令面的内置指令时，记得加进 `builtinCommandHeads`。
+- 每轮主循环重新扫描（两次 readdir），补全目录随之重建；`-p` 与 mcp-serve 的 `runTurn` 也经
+  `matchCustomCommand` 展开。项目级命令只产生提示词、不执行东西，所以不走 hooks 那套信任；
+  但 `commands/` 已列入受保护目标（属于 Agent 的自我定义，模型改写要确认）。
+- 测试：`custom-commands.test.mjs`（解析、占位符、覆盖与重名、补全、`-p` e2e）。
+
 ## 用户 Hooks（user-hooks.ts）
 
 - core 的 `HookEngine` 原来只有 index.ts 内部在注册；`UserHookRunner` 把 `~/.haji/hooks.json` 与**已信任的**
@@ -685,7 +697,7 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 注释与用户可见文案用中文；标识符与既有文件保持一致（camelCase，模块内工具函数不加 `export` 除非有测试需要）。
 - 纯逻辑优先抽成可测函数放进现有 `*-config.ts` / `*-policy.ts` 一类模块，`index.ts` 的 `main()` 只做编排。
   斜杠命令按家族放 `provider-commands.ts` / `subagent-commands.ts` / `session-commands.ts` /
-  `permission-commands.ts`（`/permission`）/ `extension-commands.ts`（`/mcp`、`/skills`）/
+  `permission-commands.ts`（`/permission`）/ `extension-commands.ts`（`/mcp`、`/skills`、`/hooks`）/
   `serve-mode.ts`（`haji mcp-serve` 的回合与调整），经 `*CommandContext`
   访问器注入会话状态（可变 let 绑定必须走 getter/setter，不能拷贝值）；新增命令族时照此模式新建模块。
   带内部状态的命令族用工厂（`pricing-commands.ts` 的 `createPricingCommands(ctx)`：查询是否在跑、
