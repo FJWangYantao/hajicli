@@ -428,3 +428,45 @@ test("haji_approve 校验选项值，并把 reason 交给调用方", async () =>
   assert.equal(ok.accepted, true);
   assert.deepEqual(await pending, { value: "deny-reason", reason: "先跑测试" });
 });
+
+test("haji_send 回 running 时 lastSeq 停在回合开始前，不会越过本回合早到的授权卡", async (t) => {
+  let server;
+  ({ server } = createServer(
+    { waitMs: 100 },
+    {
+      runTurn: async () => {
+        // 回合一开始就要授权，早于 haji_send 回包。
+        const answer = await server.requestSelection({
+          title: "需要授权",
+          items: [
+            { value: "once", label: "仅本次允许" },
+            { value: "deny", label: "拒绝" },
+          ],
+          fallbackValue: "deny",
+        });
+        return {
+          ok: true,
+          text: answer.value,
+          sessionId: "s1",
+          model: "m",
+          permissionMode: "default",
+          toolCalls: 0,
+          durationMs: 1,
+        };
+      },
+    },
+  ));
+  // 服务端定时器都 unref 了，靠它撑住事件循环直到用例结束。
+  const keepAlive = setTimeout(() => {}, 5000);
+  t.after(() => clearTimeout(keepAlive));
+  const sent = parseContent(await callTool(server, "haji_send", { text: "要授权" }));
+  assert.equal(sent.status, "running");
+  const waited = parseContent(
+    await callTool(server, "haji_wait", { sinceSeq: sent.lastSeq, timeoutMs: 1000 }),
+  );
+  const card = waited.events.find((event) => event.type === "selection_request");
+  assert.ok(card, "从 send 返回的 lastSeq 等待必须能看到这张卡");
+  await callTool(server, "haji_approve", { requestId: card.requestId, value: "once" });
+  const end = await server.wait(card.seq, 1000);
+  assert.equal(end.events.find((event) => event.type === "turn_end").text, "once");
+});

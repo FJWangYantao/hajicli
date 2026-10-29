@@ -9,6 +9,7 @@
     "includes": [
       "packages/**/*.{ts,tsx,mjs,cjs,json}",
       "scripts/**/*.mjs",
+      "examples/**/*.mjs",
       "package.json",
       "pnpm-workspace.yaml"
     ]

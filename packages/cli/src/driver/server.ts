@@ -212,6 +212,9 @@ export class DriverServer {
   /** 投递一条消息；最多等 waitMs，没跑完就返回 running + taskId。 */
   async send(text: string, waitMs = this.options.waitMs): Promise<DriverSendOutcome> {
     if (this.closed) throw new Error("驱动服务已关闭");
+    // 回合开始前的游标：等待期间本回合可能已经发出 selection_request，
+    // 回 running 时若给「现在」的 lastSeq，客户端从它 haji_wait 会错过那张卡、干等到超时拒绝。
+    const startSeq = this.lastSeq;
     const taskId = `t${++this.taskSeq}`;
     const done = this.enqueueTurn(taskId, text);
     const outcome = await Promise.race([
@@ -224,8 +227,8 @@ export class DriverServer {
     return {
       status: "running",
       taskId,
-      lastSeq: this.lastSeq,
-      hint: "回合仍在进行：用 haji_wait 继续等待，或用 haji_events 拉增量事件。",
+      lastSeq: startSeq,
+      hint: "回合仍在进行：以 lastSeq 为 sinceSeq 调 haji_wait 继续等待（含本回合全部事件），或用 haji_events 拉增量事件。",
     };
   }
 

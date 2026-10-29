@@ -207,6 +207,8 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>]
 | `haji_cancel` | 中止正在执行的回合（等价于 Esc） |
 | `haji_approve` | 回复一条 `selection_request`；`value` 必须是卡片里的选项，选「拒绝并说明」或「修改计划」时用 `reason` 带上理由（回传给模型） |
 
+接入配置（Hermes 等）、推荐的调用顺序和一个可直接运行的最小客户端见 [examples/README.md](examples/README.md)。
+
 协议细节：stdin 每行一条 JSON-RPC 消息，stdout **只**写协议回包（Logo、进度、诊断信息都不会混进去，`--output-format` 之类的交互输出全部走事件流）；长回合不阻塞其他请求，`haji_cancel` / `haji_status` 随时可处理。stdin 关闭或收到 `SIGINT`/`SIGTERM` 时正常退出。
 
 ## 并行工具批与 A/B 实验

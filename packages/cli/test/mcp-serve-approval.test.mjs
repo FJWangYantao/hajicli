@@ -17,7 +17,11 @@ const cliEntry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const sse = (delta, finish) =>
   `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish ?? null }] })}\n\n`;
 
-/** 按最后一条用户消息里的关键词决定假模型的回应。 */
+/**
+ * 按最后一条用户消息里的关键词决定假模型的回应。
+ * Plan 流程：PLAN → taskcreate(finalize) → 审阅要求 → 方案正文 → 审批；
+ * 修改意见到达后再出一版计划（t2），批准后的工作流通知直接收尾。
+ */
 const TOOL_CALLS = {
   BASH: { name: "bash", args: { command: "touch made-by-driver.txt" } },
   PROTECT: {
@@ -26,7 +30,21 @@ const TOOL_CALLS = {
   },
 };
 
+const textReply = (res, text) => res.end(`${sse({ content: text }, "stop")}data: [DONE]\n\n`);
+
+const toolReply = (res, name, args) => {
+  const toolCall = {
+    index: 0,
+    id: `call_${Date.now()}`,
+    type: "function",
+    function: { name, arguments: JSON.stringify(args) },
+  };
+  res.end(`${sse({ tool_calls: [toolCall] })}${sse({}, "tool_calls")}data: [DONE]\n\n`);
+};
+
 async function startFakeModel() {
+  /** 每次带工具的请求里最后一条用户消息（断言修改意见确实送到了模型）。 */
+  const userTexts = [];
   const server = http.createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -42,27 +60,45 @@ async function startFakeModel() {
       return;
     }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (payload.tools) userTexts.push(userText);
     if (last?.role === "tool") {
-      res.end(`${sse({ content: `工具结果：${String(last.content)}` }, "stop")}data: [DONE]\n\n`);
+      textReply(res, `工具结果：${String(last.content)}`);
       return;
+    }
+    if (payload.tools && last?.role === "user") {
+      if (userText.includes("[系统计划审阅要求]")) {
+        textReply(res, "方案：先改登录逻辑，再跑测试验证。");
+        return;
+      }
+      if (userText.includes("[系统工作流通知]")) {
+        textReply(res, "已按计划执行完毕。");
+        return;
+      }
+      if (userText.includes("[计划修改意见]")) {
+        toolReply(res, "taskcreate", { id: "t2", content: "补回归测试", finalize: true });
+        return;
+      }
+      if (userText.includes("PLAN")) {
+        toolReply(res, "taskcreate", {
+          title: "改登录",
+          id: "t1",
+          content: "改登录逻辑",
+          finalize: true,
+        });
+        return;
+      }
     }
     const key = Object.keys(TOOL_CALLS).find((name) => userText.includes(name));
     if (payload.tools && key) {
-      const call = TOOL_CALLS[key];
-      const toolCall = {
-        index: 0,
-        id: `call_${Date.now()}`,
-        type: "function",
-        function: { name: call.name, arguments: JSON.stringify(call.args) },
-      };
-      res.end(`${sse({ tool_calls: [toolCall] })}${sse({}, "tool_calls")}data: [DONE]\n\n`);
+      toolReply(res, TOOL_CALLS[key].name, TOOL_CALLS[key].args);
       return;
     }
-    res.end(`${sse({ content: "你好，我是假模型。" }, "stop")}data: [DONE]\n\n`);
+    textReply(res, "你好，我是假模型。");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}`,
+    userTexts,
     close: () => {
       server.closeAllConnections();
       server.close();
@@ -199,7 +235,7 @@ async function withServe(args, body) {
     });
     // 全新 HOME 的默认档不一定会弹授权卡，统一切到 default。
     await serve.call("haji_adjust", { permissionMode: "default" });
-    await body(serve, sandbox);
+    await body(serve, sandbox, model);
     assert.deepEqual(serve.nonJson, [], "stdout 只能是 JSON-RPC 帧");
     assert.equal(await serve.close(), 0, `stdin 关闭后应正常退出，stderr：${serve.stderrText()}`);
   } finally {
@@ -275,4 +311,102 @@ test("mcp-serve：模型请求失败时 turn 结果 ok=false", async () => {
     assert.equal(sent.status, "done");
     assert.equal(sent.result.ok, false);
   });
+});
+
+test("mcp-serve ask：计划审批——修改意见经 reason 送回模型，再批准后切到 [默认] 执行", async () => {
+  await withServe([], async (serve, _sandbox, model) => {
+    await serve.call("haji_adjust", { permissionMode: "plan" });
+    const sent = await serve.call("haji_send", { text: "PLAN 改一下登录", waitMs: 0 });
+
+    const review = await serve.nextSelection();
+    assert.deepEqual(
+      review.items.map((item) => item.value),
+      ["auto", "manual", "no"],
+    );
+    assert.equal(review.default.value, "no", "无人回复时留在计划模式，不能默认批准");
+    const revise = await serve.call("haji_approve", {
+      requestId: review.requestId,
+      value: "no",
+      reason: "加上回归测试",
+    });
+    assert.equal(revise.accepted, true);
+
+    // 修改意见在本回合内直接送给模型，模型改完计划后再次请求审批。
+    const second = await serve.nextSelection();
+    assert.ok(
+      model.userTexts.some((text) => text.includes("[计划修改意见] 加上回归测试")),
+      "修改意见应作为用户消息送到模型",
+    );
+    const approved = await serve.call("haji_approve", {
+      requestId: second.requestId,
+      value: "manual",
+    });
+    assert.equal(approved.accepted, true);
+
+    const end = await serve.waitTurnEnd(sent.taskId);
+    assert.equal(end.ok, true);
+    assert.match(end.text, /已按计划执行完毕/);
+    assert.equal(
+      (await serve.call("haji_status")).permissionMode,
+      "default",
+      "manual 批准切到 [默认]",
+    );
+  });
+});
+
+test("mcp-serve auto：计划自动批准只切到 [默认]，不替客户端提到 [自动]", async () => {
+  await withServe(["--approval", "auto"], async (serve) => {
+    await serve.call("haji_adjust", { permissionMode: "plan" });
+    const sent = await serve.call("haji_send", { text: "PLAN 改一下登录", waitMs: 15_000 });
+    assert.equal(sent.status, "done");
+    assert.match(sent.result.text, /已按计划执行完毕/);
+    assert.equal(sent.result.permissionMode, "default");
+  });
+});
+
+test("examples/mcp-serve-client.mjs 按策略回复授权卡与计划审批", async () => {
+  const model = await startFakeModel();
+  const sandbox = makeSandbox(model.baseUrl);
+  const example = fileURLToPath(new URL("../../../examples/mcp-serve-client.mjs", import.meta.url));
+  const run = (args) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [example, "--mode", "default", ...args], {
+        cwd: sandbox.cwd,
+        env: { ...sandbox.env, HAJI_BIN: cliEntry },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`示例客户端超时；stderr：${stderr}`));
+      }, 30_000);
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        resolve({ code, stdout, stderr });
+      });
+    });
+  try {
+    const target = path.join(sandbox.cwd, "made-by-driver.txt");
+    const denied = await run(["BASH 建个文件"]);
+    assert.equal(denied.code, 0, denied.stderr);
+    assert.match(denied.stdout, /客户端策略未放行/, "默认策略拒绝并说明，理由回传给模型");
+    assert.equal(fs.existsSync(target), false);
+
+    const allowed = await run(["--yes", "BASH 建个文件"]);
+    assert.equal(allowed.code, 0, allowed.stderr);
+    assert.ok(fs.existsSync(target), "--yes 时仅本次允许");
+
+    const planned = await run(["--plan", "PLAN 改一下登录"]);
+    assert.equal(planned.code, 0, planned.stderr);
+    assert.match(planned.stdout, /已按计划执行完毕/);
+  } finally {
+    model.close();
+    fs.rmSync(sandbox.root, { recursive: true, force: true });
+  }
 });
