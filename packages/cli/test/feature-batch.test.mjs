@@ -136,7 +136,8 @@ test("expandFileMentions attaches in-workspace files and strips the @ prefix", (
     fs.writeFileSync(path.join(root, "outside", "secret.txt"), "S", "utf8");
     const result = expandFileMentions("看看 @notes.md 和 @sub/a.txt 以及 @missing.txt", root);
     assert.deepEqual(result.attached, ["notes.md", "sub/a.txt"]);
-    assert.deepEqual(result.skipped, ["missing.txt（不存在）"]);
+    // 读失败的原因不止「不存在」：权限、目录、非法路径都会走到同一分支，文案保持合并描述。
+    assert.deepEqual(result.skipped, ["missing.txt（不存在或无法读取）"]);
     assert.ok(!result.prompt.includes("@notes.md"), "前缀已去掉");
     assert.ok(result.prompt.includes('<attached_file path="notes.md">'));
     assert.ok(result.prompt.includes("# 标题"));

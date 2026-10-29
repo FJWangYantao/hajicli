@@ -154,7 +154,11 @@ test("对端不可达（连接被拒绝）触发重试，中止后用户输入�
   assert.equal(finished, 0, "中止的回合不能报告完成");
   const stored = manager.getCurrentSession().messages;
   assert.equal(stored.filter((m) => m.role === "user").length, 1, "用户输入只提交一次");
-  assert.equal(stored.some((m) => m.role === "assistant"), false, "没有正文就不该落 assistant 消息");
+  assert.equal(
+    stored.some((m) => m.role === "assistant"),
+    false,
+    "没有正文就不该落 assistant 消息",
+  );
 
   // 网络恢复（同一端口重新监听）后从磁盘恢复同一会话继续。
   let resumedMessages;

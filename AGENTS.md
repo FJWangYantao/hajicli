@@ -77,6 +77,14 @@ node -e "console.log(require('./packages/cli/package.json').version)"
 - 模型单价/档位在 `model-registry.ts`（估算值），`/cost` 查会话费用；杂活（压缩/标题/distill）
   走 `resolveUtilityModel` 自动挑最便宜，偏好 `utilityModel` 可覆盖。
   内置 provider 上新模型先登记 `~/.haji/models.json`（user-models.ts），不必等发版。
+- **单价解析优先级**（`model-pricing.ts` 的 `resolveModelPricing(model, provider?)`）：
+  渠道覆盖 `<provider>/<model>` > 内置注册表 > 模型覆盖 `<model>`。渠道覆盖必须压过内置价，
+  否则「同名模型走 CN 中转」永远按官方价估算（费用归属错、显示为 null 或明显偏低）。
+  自定义渠道（非内置 provider）的单价由 `/cost` 写入 `<provider>/<model>` 键，内置 provider
+  仍写模型名（内置价不被本地文件悄悄改掉）。新增读取单价的入口都要把当前 provider 传进去。
+- **token 去向拆解**：`node scripts/token-breakdown.mjs <trace 目录>` 按主线 / 标题 / 压缩 / 提炼
+  分类统计请求数、输入输出与缓存命中，并统计重复读；口径与一次实测结论见
+  `design/token-cost-breakdown.md`（8 个基础任务：主线占 99.6%，标题 0.4%，辅助请求不是瓶颈）。
 - **经验召回位置（experience_recall，已切默认 message）**：经验分片原本注册在 system prompt 里，
   但 system prompt 只在启动/切模型/切权限/`/skills reload` 时重建，**普通回合不重建**，
   所以召回一直用启动时的兜底词表（`workflow edit read test git error prevention`），与当前任务无关。
