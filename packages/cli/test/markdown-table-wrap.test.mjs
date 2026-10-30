@@ -21,9 +21,9 @@ test("组合重音与 ZWJ Emoji 折行后所有边框保持对齐", () => {
 });
 
 import {
-  resetActiveTheme,
   resetThemeAppearance,
   setActiveColorLevel,
+  setThemePreset,
   themeReset,
 } from "../dist/theme.js";
 
@@ -131,7 +131,7 @@ const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta
 function renderTable(markdown, width = CONTENT_WIDTH) {
   setActiveColorLevel("truecolor");
   resetThemeAppearance();
-  resetActiveTheme();
+  setThemePreset("kero");
   return new MarkdownStreamRenderer(() => width).render(markdown, true);
 }
 
