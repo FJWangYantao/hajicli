@@ -1844,6 +1844,7 @@ async function main() {
         return;
       }
       if (event.type === "tool_done") {
+        agentManager.recordExecution(event.agentId, event.execution);
         agentManager.updateProgress(
           event.agentId,
           "thinking",
@@ -1884,7 +1885,7 @@ async function main() {
               id: event.agentId,
               role: event.role,
               status:
-                event.result.status === "completed"
+                event.result.status === "completed" || event.result.status === "partial"
                   ? "awaiting_verification"
                   : event.result.status === "max_turns"
                     ? "failed"

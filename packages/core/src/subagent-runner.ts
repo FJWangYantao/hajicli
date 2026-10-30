@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbortError } from "./abort.js";
-import { estimateMessagesTokens } from "./context-compact.js";
+import { estimateMessagesTokens, estimateTextTokens } from "./context-compact.js";
 import { formatSkillsCatalogPrompt } from "./prompt-manager.js";
 import type { SkillCatalogItem } from "./skill-types.js";
 import { validateToolCall } from "./tool-call-validation.js";
@@ -73,9 +73,19 @@ export function normalizeSubagentMaxToolCalls(
   );
 }
 
+export interface SubagentExecution {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  output: string;
+  durationMs: number;
+}
+
 export interface SubagentResult {
   agentId: string;
-  status: "completed" | "failed" | "aborted" | "max_turns";
+  status: "completed" | "partial" | "failed" | "aborted" | "max_turns";
+  execution?: SubagentExecution[];
+  budget?: { limit: number; used: number; estimated: boolean };
   summary: string;
   filesChanged: string[];
   verification: string[];
@@ -95,6 +105,7 @@ export type SubagentEvent =
       toolName: string;
       toolCallId: string;
       durationMs: number;
+      execution: SubagentExecution;
     }
   | {
       type: "usage";
@@ -182,17 +193,6 @@ function parseFinalResult(agentId: string, text: string): SubagentResult {
   }
 }
 
-function resourceLimitResult(agentId: string, summary: string, code: string): SubagentResult {
-  return {
-    agentId,
-    status: "failed",
-    summary,
-    filesChanged: [],
-    verification: [],
-    unresolved: [code],
-  };
-}
-
 export function formatSubagentResult(result: SubagentResult): string {
   return `[SUBAGENT_RESULT - UNVERIFIED]\n${JSON.stringify(result, null, 2)}`;
 }
@@ -273,6 +273,41 @@ export class SubagentRunner {
     let executedToolCalls = 0;
     let malformedToolRecoveryAttempts = 0;
     let usageFallbackWarned = false;
+    const execution: SubagentExecution[] = [];
+    const changedFiles = new Set<string>();
+    const reserve = Math.min(4000, Math.floor(maxTokens * 0.2));
+    let stopCode = "";
+    const finish = (result: SubagentResult): SubagentResult => {
+      result.execution = execution;
+      result.filesChanged = [...new Set([...changedFiles, ...result.filesChanged])];
+      result.budget = { limit: maxTokens, used: totalTokens, estimated: usageFallbackWarned };
+      return result;
+    };
+    const resourceLimitResult = (id: string, summary: string, code: string): SubagentResult =>
+      finish({
+        agentId: id,
+        status: code === "incomplete_tool_call" ? "failed" : "partial",
+        summary,
+        filesChanged: [],
+        verification: [],
+        unresolved:
+          code === "incomplete_tool_call"
+            ? [code]
+            : [code, "阶段结果未完成，父代理须独立验证并继续剩余事项。"],
+      });
+    // 裁剪旧工具输出时保留调用/返回配对；完整执行记录独立保存，不随上下文裁剪丢失。
+    const clip = (text: string, limit: number): string =>
+      text.length <= limit
+        ? text
+        : `${text.slice(0, limit / 2)}\n[历史内容已裁剪，可按路径重新读取]\n${text.slice(-limit / 2)}`;
+    const beginWrapUp = (code: string): void => {
+      stopCode = code;
+      messages.splice(2);
+      messages.push({
+        role: "user",
+        content: `资源即将耗尽（${code}），停止使用工具。仅总结阶段成果、实际改动、验证和未完成事项，不得宣称整个任务完成。\n执行记录：${clip(JSON.stringify(execution.map((item) => ({ ...item, arguments: clip(JSON.stringify(item.arguments), 500), output: clip(item.output, 1000) }))), 6000)}`,
+      });
+    };
 
     this.options.onEvent?.({ type: "start", agentId, role, taskId: request.taskId, description });
     try {
@@ -283,6 +318,48 @@ export class SubagentRunner {
             agentId,
             `子代理已用完 ${maxTokens} Token 预算。`,
             "max_tokens_exceeded",
+          );
+          this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
+          return result;
+        }
+        // 状态放入系统消息，不插入工具调用与返回之间。
+        messages[0] = {
+          role: "system",
+          content: `${systemPrompt}\n[预算] 累计 ${totalTokens}/${maxTokens} Token；剩余 ${Math.max(0, maxTokens - totalTokens)}，含每轮重复历史和缓存输入。工具 ${executedToolCalls}/${maxToolCalls}。接近限制时立即收敛。`,
+        };
+        if (!stopCode && executedToolCalls >= maxToolCalls) beginWrapUp("max_tool_calls_exceeded");
+        if (!stopCode && turn === (this.options.maxTurns || 20) - 1)
+          beginWrapUp("max_turns_reached");
+        if (!stopCode) {
+          for (let index = 2; index < messages.length - 4; index += 1) {
+            const message = messages[index];
+            if (!message) continue;
+            if (message.role === "tool" && typeof message.content === "string")
+              message.content = clip(message.content, 2000);
+            if (message.role === "assistant") message.reasoning_content = undefined;
+          }
+        }
+        const toolDefinitions = stopCode ? [] : tools.map((tool) => tool.definition);
+        const estimateInput = (): number =>
+          Math.ceil(
+            (estimateMessagesTokens(messages, { includeSystem: true }) +
+              estimateTextTokens(JSON.stringify(stopCode ? [] : toolDefinitions))) *
+              1.2,
+          ) + 64;
+        let inputTokens = estimateInput();
+        if (!stopCode && inputTokens + reserve + 256 > maxTokens - totalTokens) {
+          beginWrapUp("max_tokens_exceeded");
+          inputTokens = estimateInput();
+        }
+        const outputBudget = Math.min(
+          8000,
+          maxTokens - totalTokens - inputTokens - (stopCode ? 0 : reserve),
+        );
+        if (outputBudget < 128) {
+          const result = resourceLimitResult(
+            agentId,
+            "剩余累计 Token 预算不足以支付下一轮输入与收尾输出，已停止请求。",
+            stopCode || "max_tokens_exceeded",
           );
           this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
           return result;
@@ -299,13 +376,15 @@ export class SubagentRunner {
               prompt_cache_hit_tokens?: number;
             }
           | undefined;
-        const estimatedPromptTokens = estimateMessagesTokens(messages, { includeSystem: true });
+        const estimatedPromptTokens =
+          estimateMessagesTokens(messages, { includeSystem: true }) +
+          estimateTextTokens(JSON.stringify(stopCode ? [] : toolDefinitions));
         for await (const chunk of provider.completeStream(messages, {
           model,
           reasoningEffort,
           thinking: true,
-          maxTokens: Math.min(8000, maxTokens - totalTokens),
-          tools: tools.map((tool) => tool.definition),
+          maxTokens: outputBudget,
+          tools: stopCode ? [] : toolDefinitions,
           abortSignal: parentContext.abortSignal,
           onToolCall: (calls) => {
             toolCalls = calls;
@@ -449,20 +528,25 @@ export class SubagentRunner {
           continue;
         }
 
-        if (toolCalls.length === 0) {
-          const result = parseFinalResult(agentId, text);
+        if (stopCode || toolCalls.length === 0) {
+          const result = finish(parseFinalResult(agentId, text));
+          if (stopCode) {
+            result.status = "partial";
+            result.unresolved = [
+              ...new Set([
+                ...result.unresolved,
+                stopCode,
+                "阶段成果未完成，须独立验证并继续剩余事项。",
+              ]),
+            ];
+          }
           this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
           return result;
         }
 
         if (executedToolCalls + toolCalls.length > maxToolCalls) {
-          const result = resourceLimitResult(
-            agentId,
-            `子代理工具调用将超过 ${maxToolCalls} 次预算，已停止执行。`,
-            "max_tool_calls_exceeded",
-          );
-          this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
-          return result;
+          beginWrapUp("max_tool_calls_exceeded");
+          continue;
         }
 
         const executeOne = async (toolCall: ToolCall): Promise<string> => {
@@ -477,14 +561,29 @@ export class SubagentRunner {
           });
           const toolStartedAt = Date.now();
           let output: string;
+          const args = validateToolCall(toolCall).arguments || {};
           try {
-            const args = validateToolCall(toolCall).arguments || {};
             output = await this.options.executeTool(toolCall, args, childContext);
           } catch (error) {
             output = `执行出错: ${error instanceof Error ? error.message : String(error)}`;
           }
+          const entry: SubagentExecution = {
+            toolCallId: toolCall.id,
+            toolName: toolCall.function.name,
+            arguments: args,
+            output,
+            durationMs: Date.now() - toolStartedAt,
+          };
+          execution.push(entry);
+          if (
+            ["write", "edit"].includes(toolCall.function.name.toLowerCase()) &&
+            /^\[文件(?:写入|精准编辑)成功\]/.test(output) &&
+            typeof args.path === "string"
+          )
+            changedFiles.add(args.path);
           this.options.onEvent?.({
             type: "tool_done",
+            execution: entry,
             agentId,
             role,
             taskId: request.taskId,
@@ -511,14 +610,11 @@ export class SubagentRunner {
         }
       }
 
-      const result: SubagentResult = {
+      const result = resourceLimitResult(
         agentId,
-        status: "max_turns",
-        summary: `子代理达到 ${this.options.maxTurns || 20} 轮安全上限。`,
-        filesChanged: [],
-        verification: [],
-        unresolved: ["max_turns_reached"],
-      };
+        `子代理达到 ${this.options.maxTurns || 20} 轮安全上限。`,
+        "max_turns_reached",
+      );
       this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
       return result;
     } catch (error) {
@@ -538,6 +634,7 @@ export class SubagentRunner {
         verification: [],
         unresolved: [timedOut ? "timeout" : aborted ? "aborted" : "runtime_error"],
       };
+      finish(result);
       this.options.onEvent?.({ type: "done", agentId, role, taskId: request.taskId, result });
       return result;
     }

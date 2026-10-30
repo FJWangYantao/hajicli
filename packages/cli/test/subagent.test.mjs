@@ -233,9 +233,10 @@ test("subagent stops after exceeding its cumulative token budget", async () => {
   });
 
   const result = await runner.runResult({ description: "bounded research", maxTokens: 1000 });
-  assert.equal(requestedMaxTokens, 1000);
-  assert.equal(result.status, "failed");
-  assert.deepEqual(result.unresolved, ["max_tokens_exceeded"]);
+  assert.ok(requestedMaxTokens >= 128 && requestedMaxTokens < 1000);
+  assert.equal(result.status, "partial");
+  assert.ok(result.unresolved.includes("max_tokens_exceeded"));
+  assert.deepEqual(result.budget, { limit: 1000, used: 1001, estimated: false });
   assert.match(result.summary, /1000 Token.*实际 1001/);
   assert.deepEqual(
     events.map((event) => event.type),
@@ -264,6 +265,160 @@ test("subagent estimates usage and warns when a provider omits token statistics"
   assert.equal(events.filter((event) => event.type === "warning").length, 1);
   assert.ok(events.find((event) => event.type === "usage").usage.total_tokens > 0);
   assert.match(events.find((event) => event.type === "warning").message, /估算/);
+});
+
+function budgetRunner(provider, executeTool = async () => "", extra = {}) {
+  return new SubagentRunner({
+    cwd: "C:/repo",
+    getProvider: () => provider,
+    getModel: () => "test-model",
+    getReasoningEffort: () => "low",
+    getTools: () => [],
+    executeTool,
+    ...extra,
+  });
+}
+
+const childCall = (id, name, args = {}) => ({
+  id,
+  type: "function",
+  function: { name, arguments: JSON.stringify(args) },
+});
+
+test("preflight rejects an unaffordable first input including tool definitions without calling provider", async () => {
+  let calls = 0;
+  const runner = budgetRunner({
+    async *completeStream() {
+      calls += 1;
+      yield "unexpected";
+    },
+  });
+  const result = await runner.runResult({ description: "任务".repeat(10000), maxTokens: 1000 });
+  assert.equal(calls, 0);
+  assert.equal(result.status, "partial");
+  assert.equal(result.budget.used, 0);
+  assert.match(result.summary, /不足/);
+});
+
+test("budget wrap-up uses no tools and retains executed writes and unverified command output", async () => {
+  const requests = [];
+  const runner = budgetRunner(
+    {
+      async *completeStream(messages, options) {
+        requests.push({
+          messages: structuredClone(messages),
+          tools: options.tools,
+          output: options.maxTokens,
+        });
+        if (requests.length === 1) {
+          options.onUsage?.({ prompt_tokens: 8000, completion_tokens: 200, total_tokens: 8200 });
+          options.onToolCall?.([
+            childCall("w1", "write", { path: "a.ts", content: "ok" }),
+            childCall("b1", "bash", { command: "node --test" }),
+          ]);
+        } else {
+          options.onUsage?.({ prompt_tokens: 600, completion_tokens: 100, total_tokens: 700 });
+          yield JSON.stringify({
+            summary: "已修改，测试失败，仍需修复",
+            filesChanged: [],
+            verification: [],
+            unresolved: ["修复失败测试"],
+          });
+        }
+      },
+    },
+    async (call) =>
+      call.function.name === "write" ? "[文件写入成功]\n路径: a.ts" : "退出码 1：测试失败",
+  );
+  const result = await runner.runResult({ description: "实现并验证", maxTokens: 10000 });
+  assert.equal(result.status, "partial");
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].tools, []);
+  assert.match(requests[1].messages.at(-1).content, /停止使用工具/);
+  assert.match(requests[1].messages[0].content, /8200\/10000/);
+  assert.deepEqual(result.filesChanged, ["a.ts"]);
+  assert.equal(result.execution.length, 2);
+  assert.match(result.execution[1].output, /测试失败/);
+  assert.deepEqual(result.verification, []);
+  assert.ok(result.unresolved.includes("max_tokens_exceeded"));
+  assert.equal(result.budget.used, 8900);
+});
+
+test("provider failure and cancellation retain prior execution and confirmed file writes", async () => {
+  for (const cancel of [false, true]) {
+    let turns = 0;
+    const controller = new AbortController();
+    const runner = budgetRunner(
+      {
+        async *completeStream(_messages, options) {
+          if (++turns === 1) {
+            options.onToolCall?.([childCall("w1", "edit", { path: "a.ts" })]);
+            return;
+          }
+          throw new Error("provider unavailable");
+        },
+      },
+      async () => {
+        if (cancel) controller.abort();
+        return "[文件精准编辑成功]";
+      },
+    );
+    const result = await runner.runResult(
+      { description: "edit then verify" },
+      { abortSignal: controller.signal },
+    );
+    assert.equal(result.status, cancel ? "aborted" : "failed");
+    assert.deepEqual(result.filesChanged, ["a.ts"]);
+    assert.equal(result.execution.length, 1);
+    assert.equal(result.budget.estimated, true);
+  }
+});
+
+test("old tool history is clipped without breaking tool pairs or losing execution records", async () => {
+  const requests = [];
+  const runner = budgetRunner(
+    {
+      async *completeStream(messages, options) {
+        requests.push(structuredClone(messages));
+        options.onUsage?.({ prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 });
+        if (requests.length <= 5) options.onToolCall?.([childCall(`r${requests.length}`, "read")]);
+        else yield '{"summary":"done"}';
+      },
+    },
+    async () => "x".repeat(12000),
+  );
+  const result = await runner.runResult({ description: "inspect", maxTokens: 100000 });
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution[0].output.length, 12000);
+  const final = requests.at(-1);
+  assert.match(final.find((message) => message.role === "tool").content, /历史内容已裁剪/);
+  for (const message of final.filter((message) => message.role === "tool")) {
+    assert.ok(
+      final.some((candidate) =>
+        candidate.tool_calls?.some((call) => call.id === message.tool_call_id),
+      ),
+    );
+  }
+});
+
+test("turn limit reserves its final turn for a partial summary", async () => {
+  const requests = [];
+  const runner = budgetRunner(
+    {
+      async *completeStream(_messages, options) {
+        requests.push(options.tools);
+        if (requests.length === 1) options.onToolCall?.([childCall("r1", "read")]);
+        else yield '{"summary":"尚有剩余事项"}';
+      },
+    },
+    undefined,
+    { maxTurns: 2 },
+  );
+  const result = await runner.runResult({ description: "bounded" });
+  assert.equal(result.status, "partial");
+  assert.ok(result.unresolved.includes("max_turns_reached"));
+  assert.deepEqual(requests[1], []);
+  assert.equal(result.execution.length, 1);
 });
 
 test("abort helpers normalize DOM and Node abort error shapes without treating timeout as abort", () => {
@@ -298,8 +453,8 @@ test("subagent refuses a tool batch that would exceed its tool-call budget", asy
 
   const result = await runner.runResult({ description: "bounded tools", maxToolCalls: 1 });
   assert.equal(executed, 0);
-  assert.equal(result.status, "failed");
-  assert.deepEqual(result.unresolved, ["max_tool_calls_exceeded"]);
+  assert.equal(result.status, "partial");
+  assert.ok(result.unresolved.includes("max_tool_calls_exceeded"));
 });
 
 test("subagent converts provider stream failures and cancellation into stable results", async () => {

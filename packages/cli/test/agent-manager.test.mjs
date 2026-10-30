@@ -223,8 +223,15 @@ test("running agents time out even when their executor ignores abort", async () 
         access: "readonly",
         timeoutMs: 100,
       },
-      ({ signal }) => {
+      ({ signal, agentId }) => {
         executionSignal = signal;
+        manager.recordExecution(agentId, {
+          toolCallId: "read-before-hang",
+          toolName: "read",
+          arguments: { path: "a.ts" },
+          output: "source",
+          durationMs: 1,
+        });
         return new Promise(() => {});
       },
     );
@@ -235,6 +242,8 @@ test("running agents time out even when their executor ignores abort", async () 
     assert.equal(finished.result.status, "aborted");
     assert.deepEqual(finished.result.unresolved, ["timeout"]);
     assert.match(finished.result.summary, /超过 100ms.*自动中止/);
+    assert.equal(finished.result.execution[0].toolCallId, "read-before-hang");
+    assert.equal(finished.result.execution[0].output, "source");
     assert.equal(executionSignal.aborted, true);
     assert.ok(Date.now() - startedAt < 1000);
   } finally {
@@ -391,6 +400,176 @@ test("verification requires parent evidence collected after child completion", a
     assert.throws(
       () => manager.verify(secondFinished.id, "verified", "尝试复用证据", ["read-parent-1"]),
       /已被 Agent .* 使用/,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("timeout accepts cooperative executor results instead of replacing execution with empty arrays", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-agent-timeout-log-"));
+  try {
+    const manager = new AgentManager({ agentsDir: cwd });
+    manager.setScope("timeout-log");
+    const launch = manager.launch(
+      {
+        role: "implement",
+        description: "edit then wait",
+        background: false,
+        access: "workspace-write",
+        timeoutMs: 100,
+      },
+      ({ agentId, signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                agentId,
+                status: "aborted",
+                summary: "timeout",
+                filesChanged: ["a.ts"],
+                verification: [],
+                unresolved: ["timeout"],
+                execution: [
+                  {
+                    toolCallId: "w1",
+                    toolName: "write",
+                    arguments: { path: "a.ts" },
+                    output: "written",
+                    durationMs: 1,
+                  },
+                ],
+              }),
+            { once: true },
+          );
+        }),
+    );
+    const result = await launch.completion;
+    assert.equal(result.status, "aborted");
+    assert.deepEqual(result.result.filesChanged, ["a.ts"]);
+    assert.equal(result.result.execution.length, 1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("partial results persist execution and budget and require bound parent verification", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-agent-partial-"));
+  try {
+    const notifications = [];
+    const manager = new AgentManager({
+      agentsDir: cwd,
+      onNotification: (item) => notifications.push(item),
+    });
+    manager.setScope("session-a");
+    const launch = manager.launch(
+      {
+        role: "implement",
+        description: "实现并验证",
+        background: false,
+        access: "workspace-write",
+      },
+      async ({ agentId }) => ({
+        ...completed(agentId, "已实现，仍需验证"),
+        status: "partial",
+        filesChanged: ["src/example.ts"],
+        unresolved: ["运行集成测试"],
+        execution: [
+          {
+            toolCallId: "child-edit-1",
+            toolName: "edit",
+            arguments: { path: "src/example.ts" },
+            output: "已修改",
+            durationMs: 12,
+          },
+        ],
+        budget: { limit: 100000, used: 101000, estimated: true },
+      }),
+    );
+    const finished = await launch.completion;
+    assert.equal(finished.status, "awaiting_verification");
+    const [notification] = notifications;
+    assert.equal(notification.type, "partial");
+    assert.match(notification.message, /未完成/);
+    assert.match(notification.message, /独立验证/);
+    assert.match(notification.message, /继续未完成事项/);
+
+    const reloaded = new AgentManager({ agentsDir: cwd });
+    reloaded.setScope("session-a");
+    assert.deepEqual(reloaded.get(finished.id).result, finished.result);
+    assert.equal(reloaded.get(finished.id).status, "awaiting_verification");
+    const context = formatPendingAgentVerificationContext(reloaded.list());
+    assert.match(context, /partial/);
+    assert.match(context, /继续未完成事项/);
+    assert.match(context, /运行集成测试/);
+    assert.throws(
+      () => reloaded.verify(finished.id, "verified", "引用子代理工具", ["child-edit-1"]),
+      /验证证据不存在/,
+    );
+    const another = await reloaded.launch(
+      { role: "review", description: "另一项验证", background: false, access: "readonly" },
+      async ({ agentId }) => completed(agentId),
+    ).completion;
+    reloaded.recordParentEvidence(
+      "parent-read-partial",
+      "read",
+      Math.max(finished.finishedAt, another.finishedAt) + 1,
+    );
+    const verified = reloaded.verify(finished.id, "verified", "父代理重新读取了实现", [
+      "parent-read-partial",
+    ]);
+    assert.equal(verified.status, "verified");
+    assert.equal(verified.result.status, "partial");
+    assert.deepEqual(verified.verification.evidenceToolCallIds, ["parent-read-partial"]);
+    const reloadVerified = new AgentManager({ agentsDir: cwd });
+    reloadVerified.setScope("session-a");
+    assert.deepEqual(reloadVerified.get(finished.id), verified);
+    assert.throws(
+      () => reloadVerified.verify(another.id, "verified", "复用证据", ["parent-read-partial"]),
+      /已被 Agent .* 使用/,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a linked task cannot finish while a partial result awaits verification", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-agent-partial-task-"));
+  try {
+    const store = new TaskStore(cwd);
+    store.setTaskScope("session-a");
+    store.createTask({ title: "实现并验证", id: "implement", content: "实现并运行集成测试" });
+    await new UpdateTaskTool(store).execute({ taskId: "implement", status: "in_progress" });
+    const manager = new AgentManager({ agentsDir: path.join(cwd, "agents") });
+    manager.setScope("session-a");
+    const finished = await manager.launch(
+      {
+        role: "implement",
+        taskId: "implement",
+        description: "实现",
+        background: false,
+        access: "workspace-write",
+      },
+      async ({ agentId }) => ({
+        ...completed(agentId, "仅完成实现"),
+        status: "partial",
+        unresolved: ["集成测试尚未运行"],
+      }),
+    ).completion;
+    store.setTaskAgent(finished.taskId, {
+      id: finished.id,
+      role: finished.role,
+      status: finished.status,
+      summary: finished.result.summary,
+    });
+    assert.equal(finished.status, "awaiting_verification");
+    assert.match(
+      await new TaskFinishTool(store).execute({
+        taskId: "implement",
+        verification: "子代理已修改文件",
+      }),
+      /^错误: 关联子代理/,
     );
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
