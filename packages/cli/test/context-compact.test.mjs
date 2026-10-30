@@ -8,10 +8,12 @@ import {
   AGENT_VERIFICATION_CONTEXT_END,
   AGENT_VERIFICATION_CONTEXT_START,
   AUTO_COMPACTION_TRIGGER_RATIO,
+  buildSummaryTranscript,
   DEFAULT_COMPACTION_TOKEN_THRESHOLD,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   describeSummaryError,
   estimateMessagesTokens,
+  estimateTextTokens,
   getContextCompactionThresholds,
   readCompactedContext,
   repairToolCallPairs,
@@ -544,4 +546,39 @@ test("pipeline 输出的 system 消息能被 readCompactedContext 还原出摘�
     process.chdir(previousCwd);
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("摘要输入按预算裁剪：保留头尾并标注中间省略", () => {
+  const big = [{ role: "system", content: "规则" }];
+  for (let i = 0; i < 400; i++) {
+    big.push({ role: "user", content: `第 ${i} 条：${"测试内容".repeat(200)}` });
+  }
+
+  const transcript = buildSummaryTranscript(big, { budgetTokens: 5_000 });
+  // 完整记录曾达 178 万 tokens 撞上模型 104 万上限，裁剪后必须留在预算内。
+  assert.ok(estimateTextTokens(transcript) <= 5_500, "裁剪后不应再超预算");
+  assert.match(transcript, /第 0 条/);
+  assert.match(transcript, /第 399 条/);
+  assert.match(transcript, /中间省略 \d+ 条较早消息/);
+  assert.doesNotMatch(transcript, /第 200 条/);
+});
+
+test("小历史原样拼 JSONL，不加省略标注", () => {
+  const small = [
+    { role: "user", content: "你好" },
+    { role: "assistant", content: "在" },
+  ];
+  const transcript = buildSummaryTranscript(small, { budgetTokens: 100_000 });
+  assert.equal(transcript.split("\n").length, 2);
+  assert.doesNotMatch(transcript, /中间省略/);
+});
+
+test("单条消息超过预算时截断正文而不是丢掉整条", () => {
+  const huge = [
+    { role: "system", content: "规则" },
+    { role: "tool", content: "日志行".repeat(100_000) },
+  ];
+  const transcript = buildSummaryTranscript(huge, { budgetTokens: 2_000 });
+  assert.match(transcript, /正文已截断/);
+  assert.ok(estimateTextTokens(transcript) <= 2_500);
 });

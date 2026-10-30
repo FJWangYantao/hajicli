@@ -37,6 +37,7 @@ const COMPACTION = {
   layers: ["L1:大结果落盘", "L4:模型结构化摘要"],
   transcriptPath: "/tmp/transcript_9.jsonl",
   summaryMode: "model",
+  summaryModel: "glm-5.2",
 };
 
 function makeTempDir() {
@@ -120,6 +121,8 @@ test("/resume 回放压缩记录：次数/层级/字符/Token/轨迹与摘要", 
   assert.match(text, /L1:大结果落盘 -> L4:模型结构化摘要/);
   assert.match(text, /字符占用: 234,567 ➔ 45,678 \(释放了 80\.5% 空间\)/);
   assert.match(text, /Token 估算: 123,456 ➔ 4,567/);
+  // 「压缩模型」紧跟 Token 估算：摘要由哪个模型生成（杂活模型可能是另一个）。
+  assert.match(text, /Token 估算: 123,456 ➔ 4,567\n.*压缩模型: glm-5\.2/);
   assert.match(text, /压缩前完整记录：\/tmp\/transcript_9\.jsonl/);
   assert.match(text, /压缩摘要（已并入系统提示词）/);
   assert.match(text, /整理分支/);
@@ -139,6 +142,7 @@ test("老会话没有压缩元数据时，用系统提示词里的摘要标记�
   // 没有落盘元数据就不编造字符/Token 估算。
   assert.doesNotMatch(text, /字符占用/);
   assert.doesNotMatch(text, /Token 估算/);
+  assert.doesNotMatch(text, /压缩模型/);
   // 轨迹路径仍能从 system 消息尾部解析出来。
   assert.match(text, /压缩前完整记录：\/tmp\/transcript_9\.jsonl/);
   assert.match(text, /整理分支/);
@@ -159,8 +163,24 @@ test("本地降级摘要在恢复时明确标注", async () => {
 
   const text = await renderResume(dir);
   assert.match(text, /本地降级摘要/);
+  // 降级时「压缩模型」标出是哪个模型失败，方便直接换掉它。
+  assert.match(text, /压缩模型: glm-5\.2（调用失败）/);
   // 跨会话回放也要带上当时的失败原因，否则只能看到「用了降级摘要」这个结论。
   assert.match(text, /模型摘要调用失败：HTTP 402 账户额度不足/);
+});
+
+test("老会话有摘要来源但没记模型名时，压缩模型标为未记录", async () => {
+  const dir = makeTempDir();
+  await seedSession(dir, {
+    usage: {
+      compactionCount: 1,
+      lastCompaction: { ...COMPACTION, summaryModel: undefined },
+    },
+  });
+
+  const text = await renderResume(dir);
+  // 不编造模型名：老数据只能说明「这次摘要用过模型，但没留下是谁」。
+  assert.match(text, /压缩模型: 未记录/);
 });
 
 // /resume 与 /clear 的压缩记录同步是 index.ts 注入的实现，这里守着接线不被改回去。
@@ -170,6 +190,18 @@ test("selfstate 读会话持久化的压缩记录，/resume 与 /clear 跟着会
   assert.match(indexSource, /const persistedCompaction = current\.usage\?\.lastCompaction/);
   assert.match(indexSource, /lastCompaction = usage\?\.lastCompaction/);
   assert.match(indexSource, /\.\.\.\(lastCompaction \? \{ lastCompaction \} : \{\}\)/);
+});
+
+test("压缩提示里的「压缩模型」与摘要流式显示接线", () => {
+  // 摘要模型来自杂活模型注入点，落盘时一并记住，/resume 回放才有据可查。
+  assert.match(indexSource, /lastSummaryModel = utility\.model/);
+  assert.match(indexSource, /summaryModel: lastSummaryModel/);
+  assert.match(indexSource, /压缩模型: \$\{describeCompactionModel\(result\.summaryMode\)\}/);
+  // 流式显示受偏好开关控制，且只在可重绘的交互终端里增量渲染。
+  assert.match(indexSource, /compactStreamEnabled && ui\.isInteractive\(\)/);
+  assert.match(indexSource, /completeStream\(\s*requestMessages,\s*requestOptions,?\s*\)/);
+  assert.match(indexSource, /compactStream: enabled/);
+  assert.match(indexSource, /command === "compact-stream"/);
 });
 
 test("/resume 回放给工具块留渲染配方：区间落在块头上，全文已剥回执外壳", async () => {

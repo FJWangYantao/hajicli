@@ -28,6 +28,8 @@ test("immediate 指令：回合进行中直接执行", () => {
     "/fold on",
     "/think",
     "/think off",
+    "/compact-stream",
+    "/compact-stream off",
   ]) {
     assert.equal(classifyCommandTiming(input), "immediate", `${input} 应可立即执行`);
   }
@@ -90,11 +92,21 @@ test("补全目录带出 immediate 标记（UI 与分发共用同一份元数据
   assert.equal(byCommand.get("/sidebar")?.immediate, true);
   assert.equal(byCommand.get("/fold")?.immediate, true);
   assert.equal(byCommand.get("/think")?.immediate, true);
+  assert.equal(byCommand.get("/compact-stream")?.immediate, true);
 });
 
 test("listImmediateCommands 覆盖声明过的顶层与成员指令", () => {
   const commands = listImmediateCommands();
-  for (const expected of ["/help", "/model", "/effort", "/cost", "/sidebar", "/fold", "/think"]) {
+  for (const expected of [
+    "/help",
+    "/model",
+    "/effort",
+    "/cost",
+    "/sidebar",
+    "/fold",
+    "/think",
+    "/compact-stream",
+  ]) {
     assert.ok(commands.includes(expected), `${expected} 应出现在立即指令清单里`);
   }
 });

@@ -431,6 +431,78 @@ export function readCompactedContext(systemContent: string): CompactedContextRec
 }
 
 /**
+ * 为模型摘要拼 JSONL 记录。
+ *
+ * 完整历史可能远超摘要模型的上下文：实测一次压缩的完整记录约 178 万 tokens，
+ * 而模型上限 104 万，摘要调用直接失败、退化成「本地降级摘要」。这里按预算保留
+ * 「最早的几条（当前目标与最初要求）+ 最近的若干条（最新进展）」，中间用一行
+ * 省略标注代替；完整记录仍由 compactHistory 落盘，摘要丢掉细节可以回查轨迹。
+ */
+export function buildSummaryTranscript(
+  messages: ChatMessage[],
+  options: { budgetTokens?: number } = {},
+): string {
+  const budget = Math.max(2_000, Math.trunc(options.budgetTokens ?? 120_000));
+  // 单条超过预算 1/4（巨型工具结果、整份文件）先截断正文，否则它会把整条记录挤爆。
+  const maxEntryCost = Math.max(200, Math.floor(budget * 0.25));
+  const keepChars = Math.min(4_000, Math.max(200, Math.floor(maxEntryCost / 0.8)));
+  const entries = messages.map((message, index) => {
+    let line = JSON.stringify({ index, ...message });
+    let cost = estimateTextTokens(line) + 4;
+    if (cost > maxEntryCost) {
+      const content =
+        typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content ?? "");
+      line = JSON.stringify({
+        index,
+        role: message.role,
+        content: `${content.slice(0, keepChars)}…（该条过长，正文已截断；完整内容见压缩前轨迹）`,
+      });
+      cost = estimateTextTokens(line) + 4;
+    }
+    return { line, cost };
+  });
+  const totalCost = entries.reduce((sum, entry) => sum + entry.cost, 0);
+  if (totalCost <= budget) return entries.map((entry) => entry.line).join("\n");
+
+  // 头部 25% 给「最初的任务与约束」，尾部 70% 给「最近的进展」，其余留给省略标注。
+  const headBudget = Math.floor(budget * 0.25);
+  const tailBudget = budget - headBudget - 64;
+  const head: string[] = [];
+  let headUsed = 0;
+  let headCount = 0;
+  for (const entry of entries) {
+    if (headUsed + entry.cost > headBudget) break;
+    head.push(entry.line);
+    headUsed += entry.cost;
+    headCount++;
+  }
+
+  const tail: string[] = [];
+  let tailUsed = 0;
+  let tailStart = entries.length;
+  for (let i = entries.length - 1; i >= headCount; i--) {
+    const entry = entries[i]!;
+    if (tailUsed + entry.cost > tailBudget) break;
+    tail.unshift(entry.line);
+    tailUsed += entry.cost;
+    tailStart = i;
+  }
+
+  const omitted = tailStart - headCount;
+  const marker =
+    omitted > 0
+      ? JSON.stringify({
+          index: -1,
+          role: "system",
+          content: `（中间省略 ${omitted} 条较早消息；完整记录已落盘，可用 history 工具按「压缩前」检索）`,
+        })
+      : "";
+  return [...head, ...(marker ? [marker] : []), ...tail].join("\n");
+}
+
+/**
  * L4: compact_history（全量结构化摘要 - 1 API 或本地备份）
  * 完整轨迹存盘至 .haji/transcripts/，并替换为 5 项结构化摘要
  */

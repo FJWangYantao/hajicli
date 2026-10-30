@@ -59,6 +59,11 @@ export interface Preferences {
   foldProcess?: boolean;
   /** 思维链展开；缺省视为开启（true），即完整推理常驻对话区。关闭后只在底部滚动预览。 */
   showThinking?: boolean;
+  /**
+   * 压缩时把摘要正文流式写进对话区；缺省视为开启（true）。
+   * 关闭后摘要只在后台生成，结束时只给压缩前后的统计。
+   */
+  compactStream?: boolean;
   /** Auto 模式的信任边界（自然语言，拼进安全分类器系统提示词）；缺省为工作目录及其 git remote。 */
   autoEnvironment?: string;
   /**
