@@ -6,7 +6,8 @@
  * provider-commands.ts，实例构建在 index.ts 的 buildProvider。
  */
 import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from "@hajicli/core";
-import { getModelPricing, MODEL_REGISTRY } from "@hajicli/plugins";
+import { MODEL_REGISTRY } from "@hajicli/plugins";
+import { resolveModelPricing } from "./model-pricing.js";
 import {
   isBuiltinProvider,
   type ProviderConfig,
@@ -177,12 +178,19 @@ export function normalizeReasoningEffort(value: string | undefined): ReasoningEf
 
 export interface UtilityModelCandidate {
   value: string;
+  /** 声明该模型的 provider：用来取渠道价（`<provider>/<model>`），也是构建实例时的归属依据。 */
+  provider?: string;
 }
 
 /**
  * 解析杂活模型（压缩摘要 / 会话标题 / 经验提炼）：偏好显式指定时优先
- * （不可用则回退主模型，绝不静默换选）；否则在可用模型里按注册表单价
- * 挑最便宜的，无单价信息时按 flash/lite/mini 命名惯例兜底。
+ * （不可用则回退主模型，绝不静默换选）；否则在可用模型里挑最便宜的，
+ * 无单价信息时按 flash/lite/mini 命名惯例兜底。
+ *
+ * 定价必须走 `resolveModelPricing`（渠道覆盖 > 内置注册表 > 模型覆盖）：
+ * 只查内置注册表的话，自建渠道的模型全都「无价」被过滤掉，
+ * 最后往往选中一个归属被误判、渠道又没配 Key 的模型，再静默回退主模型。
+ *
  * 返回 undefined 表示没有合适的杂活模型，调用方直接用主模型。
  */
 export function resolveUtilityModel(
@@ -194,12 +202,12 @@ export function resolveUtilityModel(
   }
   type PricedCandidate = {
     value: string;
-    pricing: NonNullable<ReturnType<typeof getModelPricing>>;
+    pricing: NonNullable<ReturnType<typeof resolveModelPricing>>;
   };
   const priced = availableModels
     .map((model): PricedCandidate | { value: string; pricing: undefined } => ({
       value: model.value,
-      pricing: getModelPricing(model.value),
+      pricing: resolveModelPricing(model.value, model.provider),
     }))
     .filter((entry): entry is PricedCandidate => entry.pricing !== undefined);
   if (priced.length > 0) {

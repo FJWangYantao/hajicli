@@ -697,6 +697,8 @@ async function main() {
   let utilityProviderCache:
     | { model: string; providerName: string; instance: ObservableModelProvider }
     | undefined;
+  /** 已经警告过的杂活模型：同一模型只提醒一次，避免每次压缩都刷一行。 */
+  let utilityFallbackWarnedFor: string | undefined;
   const getUtilityRuntime = ():
     | { provider: ObservableModelProvider; model: string; providerName: string }
     | undefined => {
@@ -708,16 +710,27 @@ async function main() {
     );
     if (!utilityModel || utilityModel === selectedModel) return undefined;
     if (utilityProviderCache?.model !== utilityModel) {
+      // 同名模型可能既在内置注册表、又被自定义渠道声明（如 glm-5.2）：按 availableModels 登记的
+      // 渠道走，否则会抢到内置 provider，最后因为没配那把 Key 而白白回退主模型。
+      const declaredProvider = availableModels.find(
+        (model) => model.value === utilityModel,
+      )?.provider;
       try {
         utilityProviderCache = {
           model: utilityModel,
-          // 与 buildProvider(utilityModel) 的渠道推断同一口径（费用按它定价）。
-          providerName: detectProviderForModel(utilityModel, providerConfig),
-          instance: buildProvider(utilityModel),
+          // 与 buildProvider 的归属同一口径，费用才记到正确的渠道上。
+          providerName: detectProviderForModel(utilityModel, providerConfig, declaredProvider),
+          instance: buildProvider(utilityModel, undefined, declaredProvider),
         };
-      } catch {
-        // 杂活模型构建失败（如 Key 失效）时回退主模型，不阻断主流程。
+      } catch (error) {
+        // 构建失败（Key 失效、渠道没配）时回退主模型，但要说明原因：
+        // 静默回退会让用户以为「最便宜的杂活模型」在用，其实一直是主模型在花钱。
         utilityProviderCache = undefined;
+        if (utilityFallbackWarnedFor !== utilityModel) {
+          utilityFallbackWarnedFor = utilityModel;
+          const reason = error instanceof Error ? error.message : String(error);
+          showRuntimeWarning(`杂活模型 ${utilityModel} 不可用（${reason}），已回退主模型。`);
+        }
         return undefined;
       }
     }
