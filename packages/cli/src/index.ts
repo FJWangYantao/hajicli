@@ -207,6 +207,7 @@ import {
   handleResumeCommand,
   handleRewindCommand,
   handleUndoCommand,
+  renderSessionHistory,
   resumeByKeyword,
   resumeLatestSession,
   resumeSessionById,
@@ -3009,6 +3010,8 @@ async function main() {
     const appearance = arg as ThemeAppearance;
     const changed = setThemeAppearance(appearance);
     persistThemeAppearance(appearance);
+    // 历史行是固化的 SGR 文本，仅 forceRedraw 只刷新新帧、旧行仍是旧配色；按新主题重放历史。
+    if (changed && ui.isInteractive()) renderSessionHistory(sessionCommandContext);
     ui.forceRedraw();
     immediateWriteLine(
       changed
@@ -3049,6 +3052,8 @@ async function main() {
     const preset = presetArg as ThemePresetName;
     const changed = setThemePreset(preset);
     persistThemePreset(preset);
+    // 历史行是固化的 SGR 文本，仅 forceRedraw 只刷新新帧、旧行仍是旧配色；按新主题重放历史。
+    if (changed && ui.isInteractive()) renderSessionHistory(sessionCommandContext);
     ui.forceRedraw();
     immediateWriteLine(
       changed

@@ -19,11 +19,6 @@ test("immediate 指令：回合进行中直接执行", () => {
     "/model glm-5.2",
     "/effort",
     "/effort low",
-    "/theme",
-    "/theme kero",
-    "/appearance",
-    "/appearance light",
-    "/appearance dark",
     "/cost",
     "/cost agent",
     "/help",
@@ -40,6 +35,11 @@ test("immediate 指令：回合进行中直接执行", () => {
 
 test("改动会话状态或发起新回合的指令必须排队", () => {
   for (const input of [
+    "/theme",
+    "/theme kero",
+    "/appearance",
+    "/appearance light",
+    "/appearance dark",
     "/compact",
     "/clear",
     "/resume",
@@ -80,7 +80,7 @@ test("补全目录带出 immediate 标记（UI 与分发共用同一份元数据
   const catalog = buildSlashCommandCatalog();
   const byCommand = new Map(catalog.map((entry) => [entry.command, entry]));
   assert.equal(byCommand.get("/model")?.immediate, true);
-  assert.equal(byCommand.get("/appearance")?.immediate, true);
+  assert.equal(byCommand.get("/appearance")?.immediate, false);
   assert.equal(byCommand.get("/cost")?.immediate, true);
   assert.equal(byCommand.get("/cost agent")?.immediate, true);
   assert.equal(byCommand.get("/cost config")?.immediate, false);
@@ -94,17 +94,7 @@ test("补全目录带出 immediate 标记（UI 与分发共用同一份元数据
 
 test("listImmediateCommands 覆盖声明过的顶层与成员指令", () => {
   const commands = listImmediateCommands();
-  for (const expected of [
-    "/help",
-    "/model",
-    "/effort",
-    "/theme",
-    "/appearance",
-    "/cost",
-    "/sidebar",
-    "/fold",
-    "/think",
-  ]) {
+  for (const expected of ["/help", "/model", "/effort", "/cost", "/sidebar", "/fold", "/think"]) {
     assert.ok(commands.includes(expected), `${expected} 应出现在立即指令清单里`);
   }
 });

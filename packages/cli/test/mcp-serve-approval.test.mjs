@@ -152,7 +152,7 @@ function startServe(sandbox, args = []) {
     pending.get(message.id)?.(message);
     pending.delete(message.id);
   });
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+  const exited = new Promise((resolve) => child.on("close", (code) => resolve(code)));
 
   let nextId = 1;
   const rpc = (method, params = {}, timeoutMs = 20_000) =>
@@ -241,7 +241,12 @@ async function withServe(args, body) {
   } finally {
     await serve.close();
     model.close();
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    await fs.promises.rm(sandbox.root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 }
 
@@ -386,7 +391,7 @@ test("examples/mcp-serve-client.mjs 按策略回复授权卡与计划审批", as
         child.kill("SIGKILL");
         reject(new Error(`示例客户端超时；stderr：${stderr}`));
       }, 30_000);
-      child.on("exit", (code) => {
+      child.on("close", (code) => {
         clearTimeout(timer);
         resolve({ code, stdout, stderr });
       });
@@ -407,6 +412,11 @@ test("examples/mcp-serve-client.mjs 按策略回复授权卡与计划审批", as
     assert.match(planned.stdout, /已按计划执行完毕/);
   } finally {
     model.close();
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    await fs.promises.rm(sandbox.root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });

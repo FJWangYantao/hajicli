@@ -210,13 +210,13 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         command: "/theme",
         description: "切换配色主题（无参列出，/theme kero 应用并记住）",
         argHint: "[preset]",
-        immediate: {},
+        // 切换后重建历史，必须等当前流式回合结束，避免正文偏移失效。
       },
       {
         command: "/appearance",
         description: "切换终端外观并记住：白底终端选 light（近黑文字），黑底选 dark",
         argHint: "[light|dark]",
-        immediate: {},
+        // 与主题切换一样，需要串行重建历史。
       },
       {
         command: "/sidebar",

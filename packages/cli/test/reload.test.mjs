@@ -8,7 +8,20 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager, startTraceServer } from "@hajicli/core";
 import { buildSlashCommandCatalog, classifyCommandTiming } from "../dist/cli-help.js";
-import { buildReloadArgs, runReloadProcess } from "../dist/reload.js";
+import { buildReloadArgs, runReloadProcess, supportsProcessReload } from "../dist/reload.js";
+
+async function checkUnsupportedReload(root) {
+  if (supportsProcessReload()) return false;
+  const cwd = process.cwd();
+  const listeners = process.listenerCount("SIGINT");
+  await assert.rejects(
+    runReloadProcess({ entryPath: fileURLToPath(import.meta.url), cwd: root, workspaceRoots: [] }),
+    /不支持原位重载/,
+  );
+  assert.equal(process.cwd(), cwd);
+  assert.equal(process.listenerCount("SIGINT"), listeners);
+  return true;
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "haji-reload-"));
@@ -24,6 +37,7 @@ test("reload 进入补全且在回合结束后排队执行", () => {
 
 test("新进程读取更新后的代码，并按 ID 恢复同名会话中的正确对话和目标", async (t) => {
   const root = fixture(t);
+  if (await checkUnsupportedReload(root)) return;
   const sessions = path.join(root, ".haji", "sessions");
   const manager = new SessionManager(sessions);
   const messages = [
@@ -74,6 +88,7 @@ test("新进程读取更新后的代码，并按 ID 恢复同名会话中的正�
 
 test("启动失败返回错误，并移除临时信号处理器", async (t) => {
   const root = fixture(t);
+  if (await checkUnsupportedReload(root)) return;
   const listeners = process.listenerCount("SIGINT");
   await assert.rejects(
     runReloadProcess({
@@ -89,6 +104,7 @@ test("启动失败返回错误，并移除临时信号处理器", async (t) => {
 
 test("连续原位重载保持PID且SIGTERM不被忽略", async (t) => {
   const root = fixture(t);
+  if (await checkUnsupportedReload(root)) return;
   const entry = path.join(root, "repeat.mjs");
   const reloadUrl = new URL("../dist/reload.js", import.meta.url).href;
   fs.writeFileSync(
