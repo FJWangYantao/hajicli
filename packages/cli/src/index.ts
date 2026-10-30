@@ -33,10 +33,13 @@ import {
   isPermissionMode,
   isReadOnlyShellCommand,
   isReasoningEffort,
+  isTerminalPatrolStatus,
   MAX_SUBAGENT_INSTRUCTIONS_LENGTH,
   normalizePathKey,
   normalizeSubagentInstructions,
   ObservableModelProvider,
+  type PatrolJob,
+  PatrolStore,
   PermissionEngine,
   type PermissionMode,
   type ProtectedLevel,
@@ -165,8 +168,13 @@ import { resolveModelPricing } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import { createParallelClassifier } from "./parallel-policy.js";
-import { handlePatrolCommand, resolveToken as resolvePatrolToken } from "./patrol/commands.js";
-import { PatrolHint } from "./patrol/hint.js";
+import {
+  handlePatrolCommand,
+  STATUS_LABELS as PATROL_STATUS_LABELS,
+  resolveToken as resolvePatrolToken,
+} from "./patrol/commands.js";
+import { PatrolHint, type PatrolHintState } from "./patrol/hint.js";
+import type { PatrolPageJob, PatrolPageState } from "./patrol-page.js";
 import { handlePermissionCommand } from "./permission-commands.js";
 import {
   isToolAllowedPersistently,
@@ -1485,6 +1493,50 @@ async function main() {
 
   /** 侧栏 PR 巡检入口；非 git 仓库或无法推断仓库时为 null（侧栏不显示）。 */
   let patrolHint: PatrolHint | null = null;
+  /** 最近一次侧栏巡检状态：巡检页顶栏据此显示「运行中 / 未运行」。 */
+  let patrolHintState: PatrolHintState | null = null;
+  /**
+   * 巡检页数据投影：本地 store 读任务 → 页面层的纯标量快照。
+   * 读失败按空列表处理（页面照常打开，只是没有任务），绝不把异常糊到对话区。
+   */
+  const projectPatrolJobs = (): PatrolPageJob[] => {
+    let jobs: PatrolJob[] = [];
+    try {
+      jobs = new PatrolStore(path.join(process.cwd(), ".haji", "patrol")).listJobs();
+    } catch {
+      return [];
+    }
+    return jobs.map((job) => {
+      const lastRun = job.runs[job.runs.length - 1];
+      const lastRunText = lastRun?.summary
+        ? `最近：${lastRun.summary}`
+        : lastRun
+          ? `最近：${lastRun.status}`
+          : undefined;
+      return {
+        prNumber: job.prNumber,
+        branch: job.branch,
+        targetBranch: job.targetBranch,
+        statusLabel: PATROL_STATUS_LABELS[job.status] ?? job.status,
+        terminal: isTerminalPatrolStatus(job.status),
+        headSha: job.version.headSha,
+        fixRounds: job.fixRounds,
+        adjudicationRounds: job.adjudicationRounds,
+        costCny: job.usage.costCny,
+        taskBrief: job.taskBrief,
+        ...(job.terminatedReason ? { terminatedReason: job.terminatedReason } : {}),
+        ...(lastRunText ? { lastRun: lastRunText } : {}),
+      };
+    });
+  };
+  /** 当前巡检页状态：任务列表每次现读，运行标记取最近一次侧栏状态。 */
+  const buildPatrolPageState = (): PatrolPageState => ({
+    jobs: projectPatrolJobs(),
+    selectedIndex: 0,
+    running: patrolHintState?.status === "running",
+    paused: false,
+    ...(patrolHintState?.repo ? { repo: patrolHintState.repo } : {}),
+  });
   const ui = new TerminalUI({
     onResumeSession: (id) => resumeStartupSession(id),
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
@@ -1515,8 +1567,11 @@ async function main() {
       } else if (id === "cost.summary") openCostDetailsRef();
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
-      else if (id === "patrol.entry") void patrolHint?.start();
-      else if (id.startsWith("cost.turn.")) {
+      else if (id === "patrol.entry") {
+        // 就绪时点一下即后台启动；运行中只进页面看任务（不重复打「已在运行」的提示）。
+        if (patrolHintState?.status !== "running") void patrolHint?.start();
+        ui.openPatrolPage(buildPatrolPageState());
+      } else if (id.startsWith("cost.turn.")) {
         openTurnReportRef(id.slice("cost.turn.".length) as TurnMetric);
       }
     },
@@ -1531,7 +1586,12 @@ async function main() {
     const hint = new PatrolHint({
       cwd: process.cwd(),
       resolveToken: () => resolvePatrolToken(),
-      onChange: (state) => ui.setPatrolState(state),
+      onChange: (state) => {
+        patrolHintState = state;
+        ui.setPatrolState(state);
+        // 页面开着时顺带刷新：巡检启动/推进后任务状态与费用会变。
+        if (ui.isPatrolPageOpen()) ui.updatePatrolPage(buildPatrolPageState());
+      },
       log: (line) => ui.writeLine(colors.gray(line)),
     });
     patrolHint = hint;

@@ -137,7 +137,7 @@ const BACK_LABEL = "[Esc 返回]";
 const BACK_LABEL_SHORT = "[返回]";
 
 /** 按可用宽度挑按钮文案；渲染与命中矩形都走这里，保证两者永远一致。 */
-function backLabelFor(width: number): string {
+export function backLabelFor(width: number): string {
   return width >= 68 ? BACK_LABEL : BACK_LABEL_SHORT;
 }
 
