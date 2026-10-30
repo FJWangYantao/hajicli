@@ -67,7 +67,7 @@ haji
 
 1. 一次性准备：注册 npm 账号，生成 **Automation** 类型的 Access Token，存入仓库 Settings → Secrets and variables → Actions → `NPM_TOKEN`
 2. 更新 `packages/*/package.json` 的 `version` 并提交
-3. 推送 `v*` 标签触发 [release 工作流](.github/workflows/release.yml)：GitHub Actions 矩阵编译五个平台的原生模块，汇总校验通过后按依赖顺序发布 `@hajicli/core`、`@hajicli/plugins`、`hajicli`
+3. 推送 `v*` 标签触发 [release 工作流](.github/workflows/release.yml)：GitHub Actions 矩阵编译五个平台的原生模块，汇总校验通过后按依赖顺序发布 `@hajicli/core`、`@hajicli/patrol-github`、`@hajicli/plugins`、`hajicli`（工作流用 `pnpm -r publish`，覆盖全部 workspace 包）
 
 ```powershell
 git tag v1.0.0
@@ -76,16 +76,16 @@ git push origin v1.0.0
 
 ## 斜杠指令
 
-会话内按 `/` 列出 17 个顶层指令：4 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作（含 `/model`）直接保留在顶层。进入枢纽后用方向键选择细分项，选中后立即执行。
+会话内按 `/` 列出 18 个顶层指令：4 个枢纽把低频的配置与管理入口收纳进二级菜单，高频动作（含 `/model`）直接保留在顶层。进入枢纽后用方向键选择细分项，选中后立即执行。
 
 | 枢纽 | 细分项 |
 |---|---|
-| `/config` 模型与配置 | `/permission`、`/workspace`、`/worktree`、`/hooks`、`/provider`、`/effort`、`/theme`、`/appearance`、`/sidebar`、`/fold`、`/think` |
+| `/config` 模型与配置 | `/permission`、`/workspace`、`/worktree`、`/hooks`、`/provider`、`/effort`、`/theme`、`/appearance`、`/sidebar`、`/fold`、`/think`、`/compact-stream` |
 | `/agents` 子代理管理 | `/agents new`、`/agents presets`（旧 `/subagent`、`/preset`、`/agent` 仍可用） |
 | `/memory` 经验系统 | `/memory list`、`/memory rules`（`/instinct` 系列经别名转入） |
 | `/diag` 诊断与观测 | `/perf`、`/cost`、`/diff`、`/output`、`/doctor`、`/viewer`、`/mcp` |
 
-顶层直接保留：`/help`、`/reload`、`/model`、`/skills`、`/compact`、`/image`、`/view`、`/clear`、`/resume`、`/fork`、`/undo`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。`/effort` 与 `/model` 的思考强度轴重复，收纳在 `/config` 下但仍可直接输入或补全。
+顶层直接保留：`/help`、`/reload`、`/model`、`/patrol`、`/skills`、`/compact`、`/image`、`/view`、`/clear`、`/resume`、`/fork`、`/undo`、`/rewind`、`/exit`。`haji --help` 与会话内 `/help` 均从同一份指令表生成，列出完整的枢纽与成员对应关系。`/effort` 与 `/model` 的思考强度轴重复，收纳在 `/config` 下但仍可直接输入或补全。`/patrol` 不占用枢纽，子命令见 [PR 巡检](#pr-巡检patrol)。
 
 会话相关的几条常用指令：
 
@@ -124,7 +124,7 @@ $env:VOLC_API_KEY = '...'
 - `/provider set <name> [--project]`：通过遮罩输入框安全配置 API Key，再设置 Base URL、默认模型与模型列表；默认保存到用户全局配置，附加 `--project` 时保存到当前项目
 - `/provider unset <name> [--project]`：默认清除用户全局配置，附加 `--project` 时仅清除当前项目配置
 
-自定义提供商需提供 OpenAI 兼容的 `POST {baseUrl}/chat/completions` 端点（如 OpenAI、Moonshot、本地 vLLM/Ollama 网关等）；`/subagent` 的 `--provider` 也支持自定义名称。
+自定义提供商需提供 OpenAI 兼容的 `POST {baseUrl}/chat/completions` 端点（如 OpenAI、Moonshot、本地 vLLM/Ollama 网关等）；`/agents new` 的 `--provider` 也支持自定义名称。
 
 配置默认保存到 `~/.haji/config.json`（用户全局，跨项目共用），使用 `--project` 时保存到 `.haji/config.json`（项目级）。项目级覆盖用户全局；环境变量优先级始终最高（环境变量 > 项目级 > 用户全局 > 内置默认值）。API Key 为明文存储，`.haji/` 已被 git 忽略，请勿共享该文件。
 
@@ -293,6 +293,97 @@ haji mcp-serve [--cwd <目录>] [--approval ask|auto] [--wait-ms <毫秒>] [--ma
 - 配置项：`.haji/config.json` 的 `worktree` 字段，支持 `true` / `false` 或 `{ "enabled": true, "root": "~/wt/{repo}/{name}", "copy": [".env.local"] }`
 - 已经在 worktree 里启动、或仓库还没有提交时会跳过，避免嵌套工作树
 
+## PR 巡检（Patrol）
+
+自动接管**已登记来源**的 agent PR：独立审查 → 退回修改 → 争议升级最终裁决 → 合并门禁 → 合并 / 有理由地终止，全程没有人工裁决节点。巡检只作用于当前仓库，状态与日志都在 `.haji/patrol/` 下。
+
+### 前置条件
+
+- **令牌**：`GH_TOKEN` > `GITHUB_TOKEN` > `gh auth token`。没有令牌时只能读公开仓库，评论与合并会失败。
+- **仓库**：`.haji/patrol/config.json` 的 `repo`（`owner/name`）；留空时从 `git remote origin` 推断，配好 GitHub 的仓库无需任何配置文件。
+- **构建**：守护进程脚本加载 `packages/*/dist`，先 `pnpm run build`。
+
+### 哪些 PR 会被接管
+
+- **分支前缀**：`autoAdoptBranchPrefixes` 默认 `["haji/"]`（与自动 worktree 的分支前缀一致），命中即视为 agent 产出，无需登记；置 `[]` 关闭自动接管。
+- **label**：`autoAdoptLabels` 里任一 label 的开放 PR 视为已授权接管，默认空。
+- **本人提交**：`autoAdoptSelfAuthored` 默认 `false`；开启后你自己提交的 PR 也会被审查 / 自动合并，属于显式选择。
+- **显式登记**：`/patrol register <PR> --task <id> --brief <任务> [--accept <验收>]... [--scope <范围>]...`，用于非 `haji/` 分支。**未登记的 PR 不取得写入与合并资格**，PR 正文也不参与来源判定（避免 PR 里写一句话就自我授权）。
+
+### 命令
+
+| 命令 | 说明 |
+|---|---|
+| `/patrol`、`/patrol status` | 查看巡检任务列表 |
+| `/patrol inspect <PR>` | 查看单个任务详情（结论、轮次、预算、最近运行） |
+| `/patrol register <PR> --task <id> --brief <任务>` | 登记 PR 来源 |
+| `/patrol unregister <PR>` | 取消登记 |
+| `/patrol start [--interval <秒>]` | 启动常驻巡检（阻塞当前回合，建议独立终端或交给守护进程） |
+| `/patrol stop` | 停止侧栏启动的常驻巡查；巡检由 systemd 守护进程运行时只提示 `systemctl --user stop haji-patrol` |
+| `/patrol run-once` | 单轮巡检，配合外部 cron / 定时器 |
+| `/patrol pause` / `/patrol resume` | 暂停 / 恢复（暂停时合并门禁直接拒绝） |
+| `/patrol retry <PR>` | 重置卡住或已终止的任务 |
+| `/patrol watch <url>` / `/patrol unwatch` | 接入 / 关闭 webhook 唤醒通道 |
+
+### 三种跑法
+
+1. **单轮**：`/patrol run-once`，跑一轮对账与推进就返回，适合放进 cron。
+2. **会话内常驻**：点侧栏「PR 巡检」入口启动常驻巡查（运行中再点进任务页），`/patrol stop` 停止；运行中侧栏显示当前阶段与已耗时（如 `#12 审查中 · 3m`），巡检页显示最近一次运行摘要。入口只在「有命中接管策略的开放 PR 且巡检没在跑」时出现，探测只在启动时做一次，不每帧联网。
+3. **无头守护进程**：关掉终端也继续跑，由 `systemd --user` 托管。
+
+```bash
+node scripts/patrol-daemon.mjs      # 前台跑，Ctrl+C 退出
+systemctl --user start haji-patrol  # 交给 systemd（unit 需自行创建，示例见下）
+```
+
+```ini
+# ~/.config/systemd/user/haji-patrol.service
+[Unit]
+Description=hajicli PR patrol daemon
+
+[Service]
+WorkingDirectory=<仓库绝对路径>
+ExecStart=/usr/bin/env node <仓库绝对路径>/scripts/patrol-daemon.mjs
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+同一份 `.haji/patrol` store 只应有**一个**巡检在写：守护进程运行时不要在 haji 里再 `/patrol start`。守护进程每 5 秒把心跳写进 `.haji/patrol/daemon.json`，haji 侧栏据此判断「巡检在外部跑着」，此时只读状态、不联网探测。
+
+### 唤醒通道
+
+默认靠 `pollIntervalMs`（默认 60s）轮询。配置 `wakeUrl`（smee 形态的 SSE 中继，`/patrol watch https://smee.io/xxxx`）后，GitHub 事件到达即立刻复查，不必等下一个轮询周期。唤醒通道**只做加速、不替代轮询**：事件丢失、乱序或通道故障时一律退回纯轮询。
+
+### 配置：`.haji/patrol/config.json`
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `repo` | 空（从 `origin` 推断） | `owner/name` |
+| `ruleVersion` | `"v1"` | 规则版本；变更即作废旧结论、触发重审 |
+| `requiredChecks` | `[]` | 必须成功的 CI 检查名 |
+| `trustedApps` | `["github-actions"]` | 认可的检查来源；空列表表示不校验来源 |
+| `pollIntervalMs` | `60000` | 轮询间隔，最小 5000 |
+| `mergeMethod` | `"merge"` | `merge` / `squash` / `rebase` |
+| `autoAdoptBranchPrefixes` | `["haji/"]` | 自动接管的分支前缀，`[]` 关闭 |
+| `autoAdoptSelfAuthored` | `false` | 是否接管本人提交的 PR |
+| `autoAdoptLabels` | `[]` | 命中即视为已授权接管的 label |
+| `wakeUrl` | 空 | webhook 唤醒通道（仅接受 http(s)） |
+| `limits` | 见下 | 预算上限 |
+
+`limits` 默认 `maxFixRounds: 3`、`maxAdjudicationRounds: 2`、`maxCostCny: 20`、`reserveAdjudicationCny: 5`、`maxAgeMs: 24h`、`maxRunRetries: 3`。普通修改在花费超过「总上限 − 裁决预留」后不再派发，把剩余额度留给最终裁决；任一上限耗尽即终止并记录原因。
+
+### 合并门禁
+
+语义结论（审查通过 / 裁决放行）只是必要条件，合并前还要过一遍程序侧的确定性检查，任一不满足就不合并：PR 仍开放、非草稿、无冲突、`head` 与结论绑定的版本一致（防止用旧结论合并新提交）、`requiredChecks` 全部成功且来源在 `trustedApps` 内、来源已授权自动合并（非本人作者且无授权 label 时只审查不合并）、未被暂停、预算未耗尽。合并请求带 sha 条件，已合并的 PR 视为幂等成功。
+
+### 数据与日志
+
+- `.haji/patrol/state.json`、`registry.json`：任务状态与来源登记，原子写；重启时自动恢复（running run → aborted、死租约清除、executing 动作回退 intended）。
+- `.haji/patrol/runs/<jobId>/<runId>.log`：每次运行的 start / finish 与失败摘要。
+- `.haji/patrol/daemon.json`：守护进程心跳，停更 30 秒或 pid 失效即判定为未运行。
+
 ## 安全边界
 
 文件读取、写入、编辑和检索的作用域是「工作区根」：启动目录，加上 `--add-dir <目录>`（本次进程）与 `/workspace add <目录>`（持久化到 `~/.haji/workspaces.json`，按项目分组）追加的目录。路径判定会解析符号链接：目标不存在时按最近的已存在上级目录判断，因此 `../`、绝对路径和指向外部的符号链接都绕不过去。
@@ -382,17 +473,19 @@ HAJI 内置一套跨会话的自学习闭环，在日常使用中观察工具调
 
 交互命令：
 
-- `/memory`：列出 active 与 staging 记忆（标注 `[用户级]`/`[项目级]` 作用域）
+- `/memory`、`/memory list`：列出 active 与 staging 记忆（标注 `[用户级]`/`[项目级]` 作用域）
 - `/memory confirm <id>`：确认 staging 记忆为 active（`user` 类型确认后进用户级，跨项目生效；其余进项目级）
 - `/memory add <user|project|feedback> <内容>`：手工添加记忆（`user` 写用户级，跨项目共用；其余写项目级）
 - `/memory forget <id>`：删除记忆
 - `/memory promote <id>`：把项目级记忆提升到用户级（跨项目共用）
-- `/instinct`：列出所有规则（按 confidence 排序，标注作用域）
-- `/instinct distill`：用本会话观测手动触发提炼（不必等会话结束）
-- `/instinct forget <id>`：删除规则
-- `/instinct promote <id>`：把项目级规则提升到用户级（跨项目共用）
-- `/instinct skill [id]`：查看可蒸馏规则（confidence ≥ 0.8 且观测 ≥ 3 次）/ 把高频规则生成为用户级 Skill 草稿（trigger→when_to_use、action→执行要点），`/skills reload` 后生效
-- `/instinct stats`：查看规则/记忆数量（含作用域分布）、领域分布与观测健康（近 30 天失败率、失败集中的工具、周趋势）
+- `/memory rules`：列出所有规则（按 confidence 排序，标注作用域）
+- `/memory rules distill`：用本会话观测手动触发提炼（不必等会话结束）
+- `/memory rules forget <id>`：删除规则
+- `/memory rules promote <id>`：把项目级规则提升到用户级（跨项目共用）
+- `/memory rules skill [id]`：查看可蒸馏规则（confidence ≥ 0.8 且观测 ≥ 3 次）/ 把高频规则生成为用户级 Skill 草稿（trigger→when_to_use、action→执行要点），`/skills reload` 后生效
+- `/memory rules stats`：查看规则/记忆数量（含作用域分布）、领域分布与观测健康（近 30 天失败率、失败集中的工具、周趋势）
+
+规则相关的旧指令 `/instinct`、`/instinct distill|forget|promote|skill|stats` 仍可用，解析时等价于上面的 `/memory rules` 系列；但补全与 `/help` 只展示 `/memory rules` 这一个名字。
 
 经验文件默认不入版本库（`.haji/` 已被 gitignore）。LLM 提炼在你的本地 provider 上完成，记忆内容不会上传第三方服务。Ctrl+C 退出时会尽力 flush 已累积的观测样本。
 

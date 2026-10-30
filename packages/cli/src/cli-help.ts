@@ -302,7 +302,7 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
   {
     command: "/patrol",
     description: "PR 巡检：自动审查 agent PR、退回修改、最终裁决与合并门禁",
-    argHint: "[status|inspect|register|start|run-once|pause|resume|retry]",
+    argHint: "[status|inspect|register|start|stop|run-once|pause|resume|retry|watch|unwatch]",
     menu: false,
     subcommands: [
       { command: "/patrol status", description: "查看巡检任务列表" },
@@ -329,6 +329,10 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "启动常驻巡检（阻塞；建议独立终端）",
         argHint: "[--interval <秒>]",
       },
+      {
+        command: "/patrol stop",
+        description: "停止侧栏启动的常驻巡查（守护进程运行时提示 systemctl）",
+      },
       { command: "/patrol run-once", description: "单轮巡检（配合外部定时）" },
       { command: "/patrol pause", description: "暂停巡检" },
       { command: "/patrol resume", description: "恢复巡检" },
@@ -338,6 +342,13 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         argHint: "<PR>",
         argRequired: true,
       },
+      {
+        command: "/patrol watch",
+        description: "接入 webhook 唤醒通道（smee 形态 SSE），事件到达即复查",
+        argHint: "<url>",
+        argRequired: true,
+      },
+      { command: "/patrol unwatch", description: "关闭唤醒通道，退回纯轮询" },
     ],
   },
   {
