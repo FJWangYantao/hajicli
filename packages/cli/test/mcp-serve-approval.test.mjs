@@ -241,7 +241,7 @@ async function withServe(args, body) {
   } finally {
     await serve.close();
     model.close();
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    fs.rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -407,6 +407,6 @@ test("examples/mcp-serve-client.mjs 按策略回复授权卡与计划审批", as
     assert.match(planned.stdout, /已按计划执行完毕/);
   } finally {
     model.close();
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    fs.rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
