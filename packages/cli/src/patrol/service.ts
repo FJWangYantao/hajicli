@@ -29,7 +29,7 @@ import {
   planNextStatusAfterReview,
   resetPatrolJobForNewCommit,
 } from "@hajicli/core";
-import { loadPatrolConfig, type PatrolConfig } from "./config.js";
+import { loadPatrolConfig, matchAdoptPrefix, type PatrolConfig } from "./config.js";
 import { stableFindingId } from "./runners.js";
 import type { ForgePullRequest, PatrolForgeAdapter, PatrolRunners } from "./types.js";
 
@@ -94,11 +94,12 @@ export class PatrolService {
    * 因此可随时 `/patrol unregister` 收回；未命中前缀的 PR 一律不接管。
    */
   private adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): void {
-    const prefix = this.config.autoAdoptBranchPrefix;
-    if (!prefix) return;
+    const prefixes = this.config.autoAdoptBranchPrefixes;
+    if (prefixes.length === 0) return;
     const now = new Date().toISOString();
     for (const pr of prs) {
-      if (!pr.branch.startsWith(prefix)) continue;
+      const prefix = matchAdoptPrefix(pr.branch, prefixes);
+      if (!prefix) continue;
       const jobId = patrolJobId(this.adapter.repo, pr.number);
       if (this.store.getRegistration(jobId) || this.store.getJob(jobId)) continue;
       const taskId = pr.branch.slice(prefix.length).trim() || `pr-${pr.number}`;
@@ -222,7 +223,7 @@ export class PatrolService {
     const prs = await this.adapter.listOpenPullRequests();
     const openByNumber = new Map(prs.map((pr) => [pr.number, pr]));
 
-    // 0. 自动登记：分支名命中 autoAdoptBranchPrefix 的开放 PR 视为 agent 产出，无需手动 register。
+    // 0. 自动登记：分支名命中 autoAdoptBranchPrefixes 任一前缀的开放 PR 视为 agent 产出，无需手动 register。
     this.adoptAgentPullRequests(prs, events);
 
     // 1. 为已登记来源的开放 PR 建任务（未登记的不自动接管）。

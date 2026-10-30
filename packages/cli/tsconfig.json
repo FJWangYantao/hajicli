@@ -5,5 +5,5 @@
     "rootDir": "./src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../plugins" }]
+  "references": [{ "path": "../core" }, { "path": "../patrol-github" }, { "path": "../plugins" }]
 }

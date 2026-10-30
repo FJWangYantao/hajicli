@@ -18,10 +18,10 @@ export interface PatrolConfig {
   pollIntervalMs: number;
   mergeMethod: "merge" | "squash" | "rebase";
   /**
-   * 自动登记前缀：分支名命中的开放 PR 视为 agent 产出，无需 `/patrol register`。
-   * 默认与 worktree 分支前缀一致（`haji/`），置空字符串即关闭自动接管。
+   * 自动登记前缀（多个）：分支名命中任一前缀的开放 PR 视为 agent 产出，无需 `/patrol register`。
+   * 默认与 worktree 分支前缀一致（`haji/`）；置空数组即关闭自动接管。
    */
-  autoAdoptBranchPrefix: string;
+  autoAdoptBranchPrefixes: string[];
 }
 
 export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
@@ -32,7 +32,7 @@ export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
   limits: normalizePatrolLimits(),
   pollIntervalMs: 60_000,
   mergeMethod: "merge",
-  autoAdoptBranchPrefix: WORKTREE_BRANCH_PREFIX,
+  autoAdoptBranchPrefixes: [WORKTREE_BRANCH_PREFIX],
 };
 
 export function patrolConfigPath(cwd: string): string {
@@ -67,11 +67,24 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
       raw.mergeMethod === "squash" || raw.mergeMethod === "rebase" || raw.mergeMethod === "merge"
         ? raw.mergeMethod
         : DEFAULT_PATROL_CONFIG.mergeMethod,
-    autoAdoptBranchPrefix:
-      typeof raw.autoAdoptBranchPrefix === "string"
-        ? raw.autoAdoptBranchPrefix.trim()
-        : DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefix,
+    autoAdoptBranchPrefixes: adoptPrefixesFrom(raw),
   };
+}
+
+/**
+ * 自动接管前缀：新键 `autoAdoptBranchPrefixes`（数组或单个字符串）优先，
+ * 兼容旧键 `autoAdoptBranchPrefix`；两者都缺省时用默认值。
+ * 显式 `[]` / `""` 表示关闭自动接管，不会被当成「未配置」。
+ */
+function adoptPrefixesFrom(raw: Record<string, unknown>): string[] {
+  const value = raw.autoAdoptBranchPrefixes ?? raw.autoAdoptBranchPrefix;
+  if (value === undefined) return [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes];
+  return stringOrList(value);
+}
+
+/** 返回分支命中的自动接管前缀；未命中返回 undefined。前缀为空即关闭自动接管。 */
+export function matchAdoptPrefix(branch: string, prefixes: readonly string[]): string | undefined {
+  return prefixes.find((prefix) => prefix !== "" && branch.startsWith(prefix));
 }
 
 /**
@@ -127,4 +140,9 @@ function stringList(value: unknown): string[] {
         .map((item) => item.trim())
         .filter(Boolean)
     : [];
+}
+
+/** 单个字符串视作一元列表，其余按数组处理。 */
+function stringOrList(value: unknown): string[] {
+  return typeof value === "string" ? stringList([value]) : stringList(value);
 }

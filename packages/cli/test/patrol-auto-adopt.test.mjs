@@ -119,14 +119,39 @@ test("自动接管：非 haji/ 分支的 PR 不被接管", async () => {
   assert.equal(service.store.getJob(patrolJobId(REPO, 12)), null);
 });
 
-test("自动接管：autoAdoptBranchPrefix 置空即关闭", async () => {
+test("自动接管：autoAdoptBranchPrefixes 置空即关闭", async () => {
   const tmp = tmpHome();
   const forge = new FakeForge([makePr(13, "head1313")]);
-  const service = makeService(tmp, forge, { autoAdoptBranchPrefix: "" });
+  const service = makeService(tmp, forge, { autoAdoptBranchPrefixes: [] });
 
   await service.tick();
   assert.equal(service.store.getRegistration(patrolJobId(REPO, 13)), null);
   assert.equal(service.store.getJob(patrolJobId(REPO, 13)), null);
+});
+
+test("自动接管：配置多个前缀时命中任一即接管，taskId 取命中前缀之后的部分", async () => {
+  const tmp = tmpHome();
+  const forge = new FakeForge([
+    makePr(21, "head2121", { branch: "feat/alpha" }),
+    makePr(22, "head2222", { branch: "fix/beta" }),
+    makePr(23, "head2323", { branch: "chore/gamma" }),
+  ]);
+  const service = makeService(tmp, forge, {
+    autoAdoptBranchPrefixes: ["feat/", "fix/"],
+  });
+
+  await service.tick();
+  const alpha = service.store.getRegistration(patrolJobId(REPO, 21));
+  const beta = service.store.getRegistration(patrolJobId(REPO, 22));
+  assert.ok(alpha, "feat/ 前缀应被接管");
+  assert.ok(beta, "fix/ 前缀应被接管");
+  assert.equal(alpha.taskId, "alpha");
+  assert.equal(beta.taskId, "beta");
+  assert.equal(
+    service.store.getRegistration(patrolJobId(REPO, 23)),
+    null,
+    "未命中任何前缀的 chore/ 分支不应被接管",
+  );
 });
 
 test("自动接管：已手动登记的任务不被覆盖", async () => {

@@ -6,8 +6,7 @@
  * - merge 带 headSha 条件（GitHub 的 sha 参数），远端 head 不匹配时 GitHub 返回 409，
  *   适配层把它转成错误而不是误合并；「已被合并」识别为幂等成功。
  */
-import type { PatrolCheckInfo } from "@hajicli/core";
-import type { ForgePullRequest, PatrolForgeAdapter } from "./types.js";
+import type { ForgePullRequest, PatrolCheckInfo, PatrolForgeAdapter } from "@hajicli/core";
 
 export interface GitHubPatrolOptions {
   /** `owner/name`。 */

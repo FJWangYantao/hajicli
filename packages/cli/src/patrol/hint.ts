@@ -10,9 +10,13 @@
  */
 import path from "node:path";
 import { isTerminalPatrolStatus, type PatrolJob, PatrolStore, patrolJobId } from "@hajicli/core";
-import { WORKTREE_BRANCH_PREFIX } from "../worktree.js";
-import { resolvePatrolRepo } from "./config.js";
-import { GitHubPatrolAdapter } from "./github.js";
+import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
+import {
+  DEFAULT_PATROL_CONFIG,
+  loadPatrolConfig,
+  matchAdoptPrefix,
+  resolvePatrolRepo,
+} from "./config.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
 import type { PatrolForgeAdapter, PatrolRunners } from "./types.js";
@@ -63,6 +67,8 @@ export class PatrolHint {
   private controller?: AbortController;
   private timer?: ReturnType<typeof setInterval>;
   private disposed = false;
+  /** 探测时读到的自动接管前缀，仅用于把提示文案和实际配置对齐。 */
+  private adoptPrefixes: string[] = [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes];
 
   constructor(options: PatrolHintOptions) {
     this.cwd = options.cwd;
@@ -75,6 +81,29 @@ export class PatrolHint {
       options.createAdapter ?? ((repo, token) => new GitHubPatrolAdapter({ repo, token }));
     this.createRunners =
       options.createRunners ?? (() => createHeadlessRunners({ repoDir: this.cwd }));
+  }
+
+  /** 提示文案里的前缀描述；多前缀用 ` / ` 连接。 */
+  private prefixLabel(): string {
+    return this.adoptPrefixes.length > 0
+      ? `分支前缀 ${this.adoptPrefixes.join(" / ")}`
+      : "未配置自动接管前缀";
+  }
+
+  /** 启动文案里的接管说明，覆盖「关闭自动接管」这一配置。 */
+  private adoptLabel(): string {
+    return this.adoptPrefixes.length > 0
+      ? `自动接管${this.prefixLabel()}的 PR`
+      : "未配置自动接管前缀，仅处理 /patrol register 登记过的 PR";
+  }
+
+  /** 读配置里的自动接管前缀；配置损坏时退回默认值，不影响提示渲染。 */
+  private readAdoptPrefixes(): string[] {
+    try {
+      return loadPatrolConfig(this.cwd).autoAdoptBranchPrefixes;
+    } catch {
+      return [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes];
+    }
   }
 
   /**
@@ -100,8 +129,10 @@ export class PatrolHint {
       const prs = await adapter.listOpenPullRequests();
       if (this.disposed) return;
       const store = new PatrolStore(path.join(this.cwd, ".haji", "patrol"));
+      const prefixes = this.readAdoptPrefixes();
+      this.adoptPrefixes = prefixes;
       const pending = prs.filter((pr) => {
-        if (!pr.branch.startsWith(WORKTREE_BRANCH_PREFIX)) return false;
+        if (!matchAdoptPrefix(pr.branch, prefixes)) return false;
         return !store.getJob(patrolJobId(repo, pr.number));
       }).length;
       this.onChange({ status: "ready", pending, repo });
@@ -134,6 +165,7 @@ export class PatrolHint {
       return;
     }
     this.repo = repo;
+    this.adoptPrefixes = this.readAdoptPrefixes();
     const controller = new AbortController();
     const service = new PatrolService({
       cwd: this.cwd,
@@ -145,18 +177,14 @@ export class PatrolHint {
     this.service = service;
     this.controller = controller;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
-    this.log?.(
-      `PR 巡查已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；本次跑到没有可推进的步骤为止。`,
-    );
+    this.log?.(`PR 巡查已启动（${repo}），${this.adoptLabel()}；本次跑到没有可推进的步骤为止。`);
     const startedAt = Date.now();
     void service
       .drain()
       .then((result) => {
         for (const event of result.events) this.log?.(event);
         if (result.processed === 0 && !result.pendingExternal) {
-          this.log?.(
-            `没有可接管的 agent PR（分支前缀 ${WORKTREE_BRANCH_PREFIX} 或已 /patrol register 登记）。`,
-          );
+          this.log?.(`没有可接管的 agent PR（${this.prefixLabel()}或已 /patrol register 登记）。`);
           return;
         }
         this.log?.(

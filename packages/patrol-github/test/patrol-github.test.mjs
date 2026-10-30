@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GitHubPatrolAdapter, mapCheckStatus } from "../dist/patrol/github.js";
+import { GitHubPatrolAdapter, mapCheckStatus } from "../dist/index.js";
 
 function jsonResponse(status, body) {
   return {

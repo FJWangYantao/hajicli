@@ -7,9 +7,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isTerminalPatrolStatus, PatrolStore, patrolJobId } from "@hajicli/core";
+import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
 import { colors } from "../theme.js";
 import { resolvePatrolRepo } from "./config.js";
-import { GitHubPatrolAdapter } from "./github.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
 
