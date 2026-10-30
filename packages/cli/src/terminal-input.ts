@@ -1352,6 +1352,7 @@ export class TerminalUI {
       next?.pending === this.patrolState?.pending &&
       next?.tasks === this.patrolState?.tasks &&
       next?.merged === this.patrolState?.merged &&
+      next?.activity === this.patrolState?.activity &&
       next?.repo === this.patrolState?.repo;
     if (same) return;
     this.patrolState = next;

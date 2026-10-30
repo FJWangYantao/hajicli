@@ -3,13 +3,13 @@
  *
  * 分工约定：
  * - 探测只做一次（启动时），绝不每帧联网；失败静默——侧栏不显示，而不是把错误糊到对话区。
- * - 启动走 `PatrolService.runLoop` 的后台任务，不阻塞输入；运行中每 5s 读本地 store 刷新计数
- *   （纯文件读取，不联网）。
+ * - 点击入口跑一次 `PatrolService.drain()`（后台，不阻塞输入），跑到没有可推进的步骤即停；
+ *   运行中每 5s 读本地 store 刷新阶段与计数（纯文件读取，不联网）。
  * - 不写任何配置文件：仓库由 `git remote origin` 推断，PR 由分支前缀自动登记（见 service.ts），
  *   所以「自动配置」的产物只有 `.haji/patrol/` 下的运行数据。
  */
 import path from "node:path";
-import { PatrolStore, patrolJobId } from "@hajicli/core";
+import { isTerminalPatrolStatus, type PatrolJob, PatrolStore, patrolJobId } from "@hajicli/core";
 import { WORKTREE_BRANCH_PREFIX } from "../worktree.js";
 import { resolvePatrolRepo } from "./config.js";
 import { GitHubPatrolAdapter } from "./github.js";
@@ -26,6 +26,8 @@ export interface PatrolHintState {
   tasks?: number;
   /** running 时已合并的任务数。 */
   merged?: number;
+  /** running 时「当前在做什么」，如 `#12 审查中 · 3m`；无进行中任务时缺省。 */
+  activity?: string;
   /** 巡检仓库（owner/name）。 */
   repo?: string;
 }
@@ -105,10 +107,13 @@ export class PatrolHint {
     }
   }
 
-  /** 侧栏点击入口：后台启动巡检（幂等，重复点击不会起第二个循环）。 */
+  /**
+   * 侧栏点击入口：后台跑一次巡查（drain 到没有可推进的步骤即停），不是常驻循环。
+   * 幂等：巡查进行中重复点击只提示，不叠加第二次。
+   */
   async start(): Promise<void> {
     if (this.service) {
-      this.log?.("PR 巡检已在运行。");
+      this.log?.("PR 巡查进行中，完成后再点一次。");
       return;
     }
     const repo = this.repo ?? resolvePatrolRepo(this.cwd);
@@ -136,14 +141,24 @@ export class PatrolHint {
     this.service = service;
     this.controller = controller;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
-    this.log?.(`PR 巡检已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR。`);
-    void service.runLoop(controller.signal).catch((error) => {
-      this.service = undefined;
-      this.controller = undefined;
-      this.stopTimer();
-      this.onChange({ status: "ready", pending: 0, repo });
-      this.log?.(`PR 巡检已停止：${(error as Error).message}`);
-    });
+    this.log?.(
+      `PR 巡查已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；本次跑到没有可推进的步骤为止。`,
+    );
+    void service
+      .drain()
+      .then((result) => {
+        for (const event of result.events) this.log?.(event);
+        this.log?.(
+          `本次巡查推进 ${result.processed} 步${result.pendingExternal ? "，仍有任务在等外部状态（CI / 草稿 / head）" : ""}。`,
+        );
+      })
+      .catch((error) => this.log?.(`PR 巡查失败：${(error as Error).message}`))
+      .finally(() => {
+        this.service = undefined;
+        this.controller = undefined;
+        this.stopTimer();
+        if (!this.disposed) this.onChange({ status: "ready", pending: 0, repo });
+      });
     this.startTimer();
   }
 
@@ -173,15 +188,45 @@ export class PatrolHint {
     if (!this.repo || !this.service) return;
     try {
       const jobs = new PatrolStore(path.join(this.cwd, ".haji", "patrol")).listJobs();
+      const activity = describeActivity(jobs);
       this.onChange({
         status: "running",
         pending: 0,
         tasks: jobs.length,
         merged: jobs.filter((job) => job.status === "merged").length,
+        ...(activity ? { activity } : {}),
         repo: this.repo,
       });
     } catch {
       // 运行数据读失败不影响巡检本身；保持上一帧状态即可。
     }
   }
+}
+
+const RUN_ROLE_LABELS: Record<string, string> = {
+  review: "审查中",
+  fix: "修复中",
+  adjudicate: "裁决中",
+  merge: "合并中",
+};
+
+/**
+ * 侧栏「当前在做什么」：优先取运行中的 run，其次合并门禁 / 草稿等待。
+ * 含已耗时（分钟取整），分钟不变时字符串不变，避免 5s 轮询空转重绘。
+ */
+export function describeActivity(jobs: PatrolJob[]): string | undefined {
+  for (const job of jobs) {
+    if (isTerminalPatrolStatus(job.status)) continue;
+    const run = [...job.runs].reverse().find((item) => item.status === "running");
+    if (run) {
+      const label = RUN_ROLE_LABELS[run.role] ?? run.role;
+      const mins = Math.floor((Date.now() - Date.parse(run.startedAt)) / 60_000);
+      return `#${job.prNumber} ${label}${Number.isFinite(mins) && mins >= 1 ? ` · ${mins}m` : ""}`;
+    }
+    if (job.status === "ready_to_merge" || job.status === "merging") {
+      return `#${job.prNumber} 合并门禁`;
+    }
+    if (job.draft) return `#${job.prNumber} 草稿等待`;
+  }
+  return undefined;
 }

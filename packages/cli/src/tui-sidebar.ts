@@ -106,6 +106,8 @@ export interface SidebarPatrolState {
   tasks?: number;
   /** running 时已合并的任务数。 */
   merged?: number;
+  /** running 时「当前在做什么」，如 `#12 审查中 · 3m`；无进行中任务时缺省。 */
+  activity?: string;
   /** 巡检仓库（owner/name），窄栏降级时只留它。 */
   repo?: string;
 }
@@ -838,9 +840,9 @@ export function buildSidebarFrame(
       patrol.status === "running"
         ? fitHint(
             [
-              `巡检中 · ${patrol.tasks ?? 0} 个任务${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""} · 点此查看`,
-              `巡检中 · ${patrol.tasks ?? 0} 个任务 · 查看`,
-              "巡检中",
+              `巡检中 · ${patrol.activity ?? `${patrol.tasks ?? 0} 个任务`}${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""} · 点此查看`,
+              `巡检中 · ${patrol.activity ?? `${patrol.tasks ?? 0} 个任务`}`,
+              patrol.activity ?? "巡检中",
             ],
             contentW,
           )
@@ -852,10 +854,10 @@ export function buildSidebarFrame(
           : fitHint(
               [
                 patrol.pending > 0
-                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此启动`
-                  : "PR 巡检未启动 · 点此启动",
-                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 启动` : "PR 巡检 · 启动",
-                "启动巡检",
+                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此巡查`
+                  : "PR 巡检 · 点此巡查",
+                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 巡查` : "PR 巡检 · 巡查",
+                "巡查",
               ],
               contentW,
             );

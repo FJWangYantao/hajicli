@@ -9,6 +9,8 @@
  * 5. 状态评论 upsert（Action 幂等，重复内容不重发）。
  */
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   applyAdjudicationToFindings,
   applyPatrolTransition,
@@ -40,6 +42,8 @@ export interface PatrolServiceOptions {
   logger?: (line: string) => void;
   /** run 租约时长（同时是无头进程的兜底超时），默认 30 分钟。 */
   runTimeoutMs?: number;
+  /** run 日志目录，默认 `<cwd>/.haji/patrol/runs`。 */
+  runsDir?: string;
 }
 
 export interface PatrolTickResult {
@@ -48,6 +52,22 @@ export interface PatrolTickResult {
   events: string[];
 }
 
+export interface PatrolDrainResult {
+  processed: number;
+  events: string[];
+  /** 本轮是否推进了任何任务状态；用于重置退避。 */
+  progressed: boolean;
+  /** 是否仍有非终态任务在等外部状态（CI / 草稿转正 / head 变化）。 */
+  pendingExternal: boolean;
+}
+
+/** 等外部状态（CI 未跑完、草稿转正）时的首次复查间隔，之后指数退避。 */
+const EXTERNAL_RECHECK_MS = 20_000;
+/** 退避上限：64 分钟。 */
+const IDLE_BACKOFF_MAX_MS = 64 * 60_000;
+/** 单次 drain 的最大推进轮数，防止异常状态下无限循环。 */
+const MAX_DRAIN_ROUNDS = 50;
+
 export class PatrolService {
   readonly store: PatrolStore;
   readonly config: PatrolConfig;
@@ -55,6 +75,7 @@ export class PatrolService {
   private readonly runners: PatrolRunners;
   private readonly logger: (line: string) => void;
   private readonly runTimeoutMs: number;
+  private readonly runsDir: string;
   private readonly disputes = new Map<string, string>();
 
   constructor(options: PatrolServiceOptions) {
@@ -65,6 +86,7 @@ export class PatrolService {
     this.runners = options.runners;
     this.logger = options.logger ?? (() => {});
     this.runTimeoutMs = options.runTimeoutMs ?? 30 * 60_000;
+    this.runsDir = options.runsDir ?? path.join(cwd, ".haji", "patrol", "runs");
   }
 
   /**
@@ -95,27 +117,103 @@ export class PatrolService {
     }
   }
 
-  /** 常驻轮询；signal 中止后退出。tick 抛错只退避不退出。 */
+  /**
+   * 事件驱动主循环：有活连续推进，没活指数退避。
+   *
+   * - `drain()` 内部一直推进到「没有任何状态变化」为止，不再按固定周期空等；
+   * - 仍有任务在等外部（CI / 草稿转正 / head 变化）时，从 20s 起指数退避复查；
+   * - 完全空闲时按 `pollIntervalMs` 起指数退避探测新 PR，上限 64 分钟；
+   * - 任何一轮有推进都重置退避。signal 中止后退出。
+   */
   async runLoop(signal: AbortSignal): Promise<void> {
-    let consecutiveFailures = 0;
+    let externalBackoff = 0;
+    let idleBackoff = 0;
     while (!signal.aborted) {
-      let slept = false;
-      try {
-        const result = await this.tick();
-        consecutiveFailures = 0;
-        for (const event of result.events) this.logger(event);
-        const wait = this.config.pollIntervalMs;
-        slept = true;
-        await sleep(signal, wait);
-      } catch (error) {
-        consecutiveFailures += 1;
-        this.logger(`巡检轮失败（${consecutiveFailures}）：${(error as Error).message}`);
-        const backoff = Math.min(this.config.pollIntervalMs * consecutiveFailures, 15 * 60_000);
-        slept = true;
-        await sleep(signal, backoff);
+      // 暂停期间固定按 pollIntervalMs 复查，避免退避到 64 分钟后恢复延迟。
+      if (this.store.isPaused()) {
+        await sleep(signal, this.config.pollIntervalMs);
+        continue;
       }
-      if (!slept) await sleep(signal, 1_000);
+      let result: PatrolDrainResult;
+      try {
+        result = await this.drain();
+      } catch (error) {
+        this.logger(`巡检轮失败：${(error as Error).message}`);
+        externalBackoff = 0;
+        idleBackoff += 1;
+        await sleep(signal, backoffMs(this.config.pollIntervalMs, idleBackoff));
+        continue;
+      }
+      for (const event of result.events) this.logger(event);
+      if (result.progressed) {
+        externalBackoff = 0;
+        idleBackoff = 0;
+      }
+      if (result.pendingExternal) {
+        await sleep(signal, backoffMs(EXTERNAL_RECHECK_MS, externalBackoff));
+        externalBackoff += 1;
+      } else {
+        await sleep(signal, backoffMs(this.config.pollIntervalMs, idleBackoff));
+        idleBackoff += 1;
+      }
     }
+  }
+
+  /**
+   * 连续推进所有任务，直到本轮不再产生任何状态变化。
+   *
+   * 一次状态跃迁（审查通过 → 待合并 → 合并）不再需要各等一个轮询周期：
+   * 同一次调用内会一路推进到必须等待外部状态为止。
+   * `processed` 是各轮推进次数的累加，仅用于日志，不代表去重后的任务数。
+   */
+  async drain(): Promise<PatrolDrainResult> {
+    const events: string[] = [];
+    let processed = 0;
+    let progressed = false;
+    for (let round = 0; round < MAX_DRAIN_ROUNDS; round += 1) {
+      if (this.store.isPaused()) break;
+      const before = this.jobSignature();
+      const result = await this.tick();
+      events.push(...result.events);
+      processed += result.processed;
+      // 没有状态变化 = 所有任务都在等外部（CI / 草稿 / head）或已终态，退出。
+      if (this.jobSignature() === before) break;
+      progressed = true;
+    }
+    return {
+      processed,
+      events,
+      progressed,
+      pendingExternal: this.hasPendingExternal(),
+    };
+  }
+
+  /** 任务状态指纹：任一字段变化都算「有进展」。 */
+  private jobSignature(): string {
+    return JSON.stringify(
+      this.store
+        .listJobs()
+        .map((job) => [
+          job.jobId,
+          job.status,
+          job.version.headSha,
+          job.fixRounds,
+          job.adjudicationRounds,
+          job.draft,
+          job.runs.length,
+          job.findings.length,
+          job.decisions.length,
+          job.lease?.holder ?? "",
+          job.updatedAt,
+        ]),
+    );
+  }
+
+  /** 仍有非终态任务 = 在等外部状态（CI、草稿转正、head 变化）。 */
+  private hasPendingExternal(): boolean {
+    return this.store
+      .listJobs()
+      .some((job) => job.repo === this.adapter.repo && !isTerminalPatrolStatus(job.status));
   }
 
   async tick(): Promise<PatrolTickResult> {
@@ -594,7 +692,23 @@ export class PatrolService {
       job.fixRounds += 1;
     }
     this.store.saveJob(job);
+    this.appendRunLog(
+      job,
+      runId,
+      `start role=${role} attempt=${attempt} pr=#${job.prNumber} head=${short(job.version.headSha)}`,
+    );
     return runId;
+  }
+
+  /** run 日志追加到 `.haji/patrol/runs/<jobId>/<runId>.log`；失败不影响巡检。 */
+  private appendRunLog(job: PatrolJob, runId: string, line: string): void {
+    try {
+      const dir = path.join(this.runsDir, job.jobId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, `${runId}.log`), `${new Date().toISOString()} ${line}\n`);
+    } catch {
+      // 日志落盘失败不能中断巡检本身。
+    }
   }
 
   private finishRun(
@@ -609,6 +723,8 @@ export class PatrolService {
       run.finishedAt = new Date().toISOString();
       run.summary = summary;
     }
+    const oneLine = summary ? ` summary=${summary.replace(/\s*\n\s*/g, " ⏎ ")}` : "";
+    this.appendRunLog(job, runId, `finish status=${status}${oneLine}`);
   }
 
   private handleRunFailure(
@@ -805,6 +921,11 @@ function sameVersion(
   b: { headSha: string; ruleVersion: string },
 ): boolean {
   return a.headSha === b.headSha && a.ruleVersion === b.ruleVersion;
+}
+
+/** 指数退避：base * 2^attempt，封顶 64 分钟。 */
+export function backoffMs(base: number, attempt: number): number {
+  return Math.min(base * 2 ** attempt, IDLE_BACKOFF_MAX_MS);
 }
 
 function sleep(signal: AbortSignal, ms: number): Promise<void> {
