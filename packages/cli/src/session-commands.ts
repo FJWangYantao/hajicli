@@ -73,6 +73,11 @@ export interface SessionCommandContext {
   saveSession(): void;
   updateStatusUI(): void;
   /**
+   * 重新读取首页「最近会话」（切换会话后调用）：/clear、/fork、/resume 之后
+   * 首页不能还挂着启动那一刻的快照。
+   */
+  refreshRecentSessions(): void;
+  /**
    * 把会话用量（费用明细 / 压缩次数 / 上轮耗时）整体应用到侧栏：
    * /resume 用历史会话自己的记录，/clear 传 undefined 归零。
    */
@@ -111,6 +116,8 @@ export async function handleClearCommand(ctx: SessionCommandContext): Promise<vo
   ctx.updateStatusUI();
   ui.clearChat();
   ui.writeLine(colors.okLine("已开启全新对话并重置上下文。"));
+  // 上一个会话就此收尾（标题/时间已变），首页列表要跟着换。
+  ctx.refreshRecentSessions();
 }
 
 /** /fork [名称]：复制历史并切换；任务、Agent 与代码修改归属从新作用域开始。 */
@@ -142,6 +149,7 @@ export async function handleForkCommand(ctx: SessionCommandContext, title?: stri
   ctx.ui.writeLine(
     colors.gray("共用当前工作目录；费用、任务和代码回退从分叉后开始，历史回退节点不继承。"),
   );
+  ctx.refreshRecentSessions();
 }
 
 /** 压缩记录里的时间戳；与 /resume 选择器用同一套时间格式。 */
@@ -250,6 +258,8 @@ async function loadAndRenderSession(
       ),
     );
   }
+  // 当前会话换了：首页的「最近会话」要按新会话重新取数（当前会话会被排除）。
+  ctx.refreshRecentSessions();
   return true;
 }
 

@@ -228,7 +228,7 @@ import {
   type SessionCommandContext,
 } from "./session-commands.js";
 import { runShutdownSteps } from "./shutdown.js";
-import { buildSessionProgress } from "./startup-home.js";
+import { buildSessionProgress, type RecentSessionEntry } from "./startup-home.js";
 import { takeQueuedSteer } from "./steering.js";
 import {
   handleAgentsCommand,
@@ -1476,6 +1476,11 @@ async function main() {
   let openTurnReportRef: (metric: TurnMetric) => void = () => {};
 
   let resumeStartupSession: (id: string) => void = () => {};
+  /**
+   * 重新读取首页「最近会话」。启动时取一次快照；此后 /clear、/fork、/resume 以及首页
+   * 重新可见时才再读，避免首页长期挂着启动那一刻的列表。
+   */
+  let refreshRecentSessions: () => void = () => {};
   // 驱动服务（mcp-serve）的事件出口与启动期输出缓冲：ui 早于 DriverServer 构造，
   // 期间写出的内容先攒着，等服务起来再补发成 notice 事件，避免落到 MCP 占用的 stdout。
   let driverServerRef: DriverServer | undefined;
@@ -1541,6 +1546,8 @@ async function main() {
   });
   const ui = new TerminalUI({
     onResumeSession: (id) => resumeStartupSession(id),
+    // 首页重新可见（/clear 后回到空会话、关掉整页视图等）时重新取「最近会话」。
+    onStartupHomeShown: () => refreshRecentSessions(),
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
     header: buildLogo().trim(),
     // 无头模式下 compactHeader 会被 ui.start() 直写 stdout，置空以保持输出纯净。
@@ -1712,25 +1719,30 @@ async function main() {
     }
     return buildSessionProgress(session.goal, plan);
   };
-  const recentSessions = headlessRequest
-    ? []
-    : sessionManager
-        .listSessions()
-        .filter(
-          (session) =>
-            session.id !== sessionManager.getCurrentSession().id &&
-            session.messages.some((message) => message.role === "user"),
-        )
-        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-        .slice(0, 3)
-        .map((session, index) => ({
-          id: session.id,
-          title: session.title,
-          updatedAt: session.updatedAt,
-          // 只有「继续上次」那条要说明停在哪：读它的目标与任务计划（计划在会话所在树的 .haji/tasks）。
-          ...(index === 0 ? { progress: readStartupSessionProgress(session) } : {}),
-        }));
-  ui.setRecentSessions(recentSessions);
+  // 首页「最近会话」：当前会话不算历史，空会话（没有用户消息）也不算。
+  const collectRecentSessions = (): RecentSessionEntry[] =>
+    headlessRequest
+      ? []
+      : sessionManager
+          .listSessions()
+          .filter(
+            (session) =>
+              session.id !== sessionManager.getCurrentSession().id &&
+              session.messages.some((message) => message.role === "user"),
+          )
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+          .slice(0, 3)
+          .map((session, index) => ({
+            id: session.id,
+            title: session.title,
+            updatedAt: session.updatedAt,
+            // 只有「继续上次」那条要说明停在哪：读它的目标与任务计划（计划在会话所在树的 .haji/tasks）。
+            ...(index === 0 ? { progress: readStartupSessionProgress(session) } : {}),
+          }));
+  refreshRecentSessions = (): void => {
+    ui.setRecentSessions(collectRecentSessions());
+  };
+  refreshRecentSessions();
   const startupModeLabel = formatPermissionModeLabel(permissionMode);
   ui.setHeaderInfo([
     `${colors.muted(providerLabel(currentProviderName))} ${colors.gray("·")} ${colors.boldAccent(selectedModel)} ${colors.gray("·")} ${colors.muted(reasoningEffort)}  ${colors.gray(`[${startupModeLabel}]`)}   ${colors.gray(formatWorkspaceLabel(process.cwd(), readGitBranch(gitHeadPath)))}`,
@@ -3527,6 +3539,7 @@ async function main() {
     isThinkingVisible: () => showThinking,
     saveSession: () => sessionManager.saveCurrentSession(messages),
     updateStatusUI,
+    refreshRecentSessions: () => refreshRecentSessions(),
     // 会话用量跟随会话走：/resume 还原历史会话自己的记账与压缩记录，/clear 归零。
     applySessionUsage: (usage) => {
       costTracker.loadRecords(usage?.costRecords);

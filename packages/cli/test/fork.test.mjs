@@ -85,6 +85,7 @@ test("CLI fork switches all scopes and refreshes inherited context", async (t) =
   const lines = [];
   let applied;
   let refreshed = false;
+  let recentRefreshes = 0;
   const ctx = {
     sessionManager: manager,
     saveSession: () => manager.saveCurrentSession(messages),
@@ -106,6 +107,9 @@ test("CLI fork switches all scopes and refreshes inherited context", async (t) =
     },
     refreshAgentVerificationContext: () => true,
     updateStatusUI: () => {},
+    refreshRecentSessions: () => {
+      recentRefreshes += 1;
+    },
     ui: {
       writeLine: (line) => lines.push(line),
       getContentWidth: () => 80,
@@ -121,6 +125,8 @@ test("CLI fork switches all scopes and refreshes inherited context", async (t) =
   assert.ok(scopes.every((id) => id === manager.getCurrentSession().id));
   assert.ok(refreshed);
   assert.equal(applied, undefined);
+  // 分叉换了当前会话：首页「最近会话」必须重新取数。
+  assert.equal(recentRefreshes, 1);
   assert.ok(lines.some((line) => line.includes("已分叉")));
   await manager.flush();
 });

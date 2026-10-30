@@ -231,6 +231,11 @@ export interface TerminalUIOptions {
   /** 首屏选中历史会话，由主循环安全接管并恢复。 */
   onResumeSession?: (id: string) => void;
   /**
+   * 首页从隐藏状态重新可见：让调用方重新读取「最近会话」，避免首页挂着启动时的旧快照。
+   * 首帧不触发（启动时已取过一次）。
+   */
+  onStartupHomeShown?: () => void;
+  /**
    * 首屏启动动效（标语解码 / Logo 高光 / 星点闪烁，约 1.8 秒后静止）。
    * 默认关闭，由入口按交互模式开启；`HAJI_REDUCED_MOTION=1` 时强制关闭。
    */
@@ -816,6 +821,10 @@ export class TerminalUI {
   /** Logo 下方附加的启动信息行（provider/model/effort + 引导提示）。 */
   private headerInfo: string[] = [];
   private recentSessions: RecentSessionEntry[] = [];
+  /** 上一帧首页是否可见：从隐藏恢复可见时刷新「最近会话」。 */
+  private startupHomeVisibleLastFrame = false;
+  /** 首帧首页由启动流程负责取数，不重复触发刷新回调。 */
+  private startupHomeShownOnce = false;
   private workspaceStatus?: WorkspaceStatus;
   private startupSelected = -1;
   /** 首屏入口的鼠标悬停项：只换颜色，不改行数。 */
@@ -851,6 +860,22 @@ export class TerminalUI {
       this.sealedSegments.length === 0 &&
       !this.chatContent.trim()
     );
+  }
+
+  /**
+   * 首页重新可见时通知外部刷新「最近会话」：用户在同一进程里 /clear、/resume 或关掉
+   * 整页视图回到空会话首页时，列表不能还是启动那一刻的快照。首帧由启动流程取数，跳过。
+   */
+  private notifyStartupHomeShown(visible: boolean): void {
+    if (visible === this.startupHomeVisibleLastFrame) return;
+    this.startupHomeVisibleLastFrame = visible;
+    if (!visible) return;
+    if (!this.startupHomeShownOnce) {
+      this.startupHomeShownOnce = true;
+      return;
+    }
+    // 本帧照旧画完；刷新结果经 setRecentSessions 的 scheduleRender 进下一帧，不会同步重入渲染。
+    queueMicrotask(() => this.options.onStartupHomeShown?.());
   }
 
   private activateStartupAction(index: number): void {
@@ -4577,6 +4602,10 @@ export class TerminalUI {
       return;
     }
 
+    // 首页可见性只判定一次：起手通知刷新，后面的布局复用同一结果，避免重复 trim 大段对话内容。
+    const homeVisible = this.startupHomeAvailable();
+    this.notifyStartupHomeShown(homeVisible);
+
     const layout = resolveTuiLayout(
       Math.max(1, stdout.columns || 80),
       Math.max(1, stdout.rows || 24),
@@ -4584,7 +4613,7 @@ export class TerminalUI {
     const width = Math.max(1, layout.safeWidth);
     const height = Math.max(1, layout.safeHeight);
     this.inputSelectionLeft = 0;
-    if (this.startupHomeAvailable() && width >= 24 && height >= 10) {
+    if (homeVisible && width >= 24 && height >= 10) {
       this.renderStartupLauncher(width, height);
       return;
     }
@@ -4736,7 +4765,7 @@ export class TerminalUI {
     // （活动行、折叠段、悬停卡片都不参与本帧）。命中区域按屏幕坐标（1 基）换算。
     const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
     const pageRows = this.renderOverlayPage(leftAreaWidth, chatHeight, chatScreenTop);
-    const home = this.startupHomeAvailable()
+    const home = homeVisible
       ? buildStartupHome(this.recentSessions, chatWidth, chatHeight, this.startupSelected)
       : undefined;
     this.startupHits = (home?.hits ?? []).map((hit) => ({

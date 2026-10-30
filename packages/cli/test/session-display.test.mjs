@@ -48,6 +48,7 @@ function fixture() {
     syncTaskPlanUI: noop,
     saveSession: noop,
     updateStatusUI: noop,
+    refreshRecentSessions: noop,
     getSlashCommands: () => [],
     pendingInputs: [],
     readSelectionSafely: async () => ({ value: "3", secondaryValue: "yes" }),
