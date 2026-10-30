@@ -207,10 +207,10 @@ import {
   handleResumeCommand,
   handleRewindCommand,
   handleUndoCommand,
+  renderSessionHistory,
   resumeByKeyword,
   resumeLatestSession,
   resumeSessionById,
-  renderSessionHistory,
   type SessionCommandContext,
 } from "./session-commands.js";
 import { runShutdownSteps } from "./shutdown.js";
