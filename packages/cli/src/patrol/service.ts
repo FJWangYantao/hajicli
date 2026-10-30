@@ -469,7 +469,10 @@ export class PatrolService {
         headSha: job.version.headSha,
         method: this.config.mergeMethod,
       });
-      this.store.markActionResult(actionId, { ok: true });
+      this.store.markActionResult(actionId, {
+        ok: result.merged,
+        error: result.merged ? undefined : "合并未完成",
+      });
       if (result.merged) {
         this.markMerged(job, result.sha);
         events.push(`${job.jobId} 已合并（${short(result.sha ?? job.version.headSha)}）`);

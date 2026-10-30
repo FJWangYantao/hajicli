@@ -46,7 +46,10 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
     ruleVersion:
       typeof raw.ruleVersion === "string" ? raw.ruleVersion : DEFAULT_PATROL_CONFIG.ruleVersion,
     requiredChecks: stringList(raw.requiredChecks),
-    trustedApps: stringList(raw.trustedApps) || DEFAULT_PATROL_CONFIG.trustedApps,
+    trustedApps:
+      raw.trustedApps === undefined
+        ? [...DEFAULT_PATROL_CONFIG.trustedApps]
+        : stringList(raw.trustedApps),
     limits: normalizePatrolLimits(limitsRaw as Partial<PatrolLimits>),
     pollIntervalMs:
       typeof raw.pollIntervalMs === "number" && raw.pollIntervalMs >= 5_000
@@ -66,6 +69,9 @@ export function savePatrolConfig(cwd: string, config: PatrolConfig): void {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
     : [];
 }

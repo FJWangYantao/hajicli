@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { PatrolStore, patrolJobId } from "@hajicli/core";
 import { handlePatrolCommand } from "../dist/patrol/commands.js";
+import { DEFAULT_PATROL_CONFIG, loadPatrolConfig } from "../dist/patrol/config.js";
 
 function makeCtx() {
   const lines = [];
@@ -128,4 +129,22 @@ test("/patrol status / inspect / retry：任务展示与重置", async () => {
 
   await handlePatrolCommand(ctx, { parts: ["patrol", "inspect", "99"] });
   assert.ok(ctx.lines.some((line) => line.includes("没有 PR #99")));
+});
+
+test("巡检配置 trustedApps：省略时保留默认，显式空数组禁用信任", (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "patrol-config-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const dir = path.join(cwd, ".haji", "patrol");
+  fs.mkdirSync(dir, { recursive: true });
+  const write = (raw) => fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(raw));
+  assert.deepEqual(loadPatrolConfig(cwd).trustedApps, ["github-actions"]);
+  write({ repo: "owner/repo" });
+  assert.deepEqual(loadPatrolConfig(cwd).trustedApps, ["github-actions"]);
+  const loaded = loadPatrolConfig(cwd);
+  loaded.trustedApps.push("custom");
+  assert.deepEqual(DEFAULT_PATROL_CONFIG.trustedApps, ["github-actions"]);
+  write({ trustedApps: [] });
+  assert.deepEqual(loadPatrolConfig(cwd).trustedApps, []);
+  write({ trustedApps: [" ci-app ", "other"] });
+  assert.deepEqual(loadPatrolConfig(cwd).trustedApps, ["ci-app", "other"]);
 });

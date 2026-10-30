@@ -555,3 +555,38 @@ test("暂停时不推进；CI 未通过时不合并", async () => {
   await service.tick();
   assert.equal(service.store.getJob(patrolJobId(REPO, 11)).status, "merged");
 });
+
+test("合并返回 merged:false：动作保持失败，后续 tick 重试成功后才收敛", async (t) => {
+  const tmp = tmpHome();
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const forge = new FakeForge([makePr(91, "retry-head")]);
+  const originalMerge = forge.merge.bind(forge);
+  let attempts = 0;
+  forge.merge = async (...args) => {
+    attempts++;
+    if (attempts <= 2) return { merged: false, message: "暂时无法合并" };
+    return originalMerge(...args);
+  };
+  const { runners, calls } = scriptRunners({});
+  const service = makeService(tmp, forge, runners);
+  register(service.store, 91);
+  const jobId = patrolJobId(REPO, 91);
+  await service.tick();
+  assert.equal(service.store.getJob(jobId).status, "ready_to_merge");
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await service.tick();
+    const job = service.store.getJob(jobId);
+    assert.equal(attempts, attempt, "每一轮必须实际重试 merge");
+    assert.equal(job.status, "ready_to_merge");
+    assert.equal(job.mergedAt, undefined);
+    const action = service.store.getAction(`${jobId}:merge:retry-head`);
+    assert.equal(action.status, "failed");
+    assert.equal(action.lastError, "合并未完成");
+    assert.equal(forge.prs[0].merged, false);
+  }
+  await service.tick();
+  assert.equal(attempts, 3);
+  assert.equal(service.store.getJob(jobId).status, "merged");
+  assert.equal(service.store.getAction(`${jobId}:merge:retry-head`).status, "done");
+  assert.equal(calls.review.length, 1);
+});

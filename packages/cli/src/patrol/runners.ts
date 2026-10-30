@@ -66,8 +66,14 @@ export function parseReviewOutput(text: string): ReviewRunnerOutput {
     return { verdict: "inconclusive", findings: [], summary: "审查输出无法解析为结构化 JSON" };
   }
   const verdict = parsed.verdict;
-  const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
-  const normalized = findings.filter(isRawFinding);
+  if (
+    !Array.isArray(parsed.findings) ||
+    !parsed.findings.every(isRawFinding) ||
+    (parsed.summary !== undefined && typeof parsed.summary !== "string")
+  ) {
+    return { verdict: "inconclusive", findings: [], summary: "审查输出不符合 schema" };
+  }
+  const normalized = parsed.findings;
   if (verdict === "pass") {
     // 「通过」却报告阻塞问题：自相矛盾，按需修改处理。
     if (normalized.some((f) => (f.severity ?? "blocking") === "blocking")) {
@@ -158,7 +164,17 @@ export function parseAdjudicationOutput(text: string): AdjudicationRunnerOutput 
 function isRawFinding(value: unknown): value is RawFinding {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<RawFinding>;
-  return typeof candidate.summary === "string" && candidate.summary.trim().length > 0;
+  return (
+    !Array.isArray(value) &&
+    typeof candidate.summary === "string" &&
+    candidate.summary.trim().length > 0 &&
+    (candidate.severity === undefined ||
+      candidate.severity === "blocking" ||
+      candidate.severity === "nonblocking") &&
+    [candidate.findingId, candidate.location, candidate.evidence, candidate.requiredFix].every(
+      (field) => field === undefined || typeof field === "string",
+    )
+  );
 }
 
 // ---- 提示词构造 ---------------------------------------------------------
@@ -277,6 +293,8 @@ export interface HeadlessRunnersOptions {
   workRoot?: string;
   /** haji 可执行命令，默认 "haji"。 */
   hajiCommand?: string;
+  /** 可执行命令的前置参数（如通过 node 运行 CLI 脚本）。 */
+  hajiCommandArgs?: string[];
   /** 传给无头进程的额外参数（如 --model）。 */
   hajiArgs?: string[];
   /** 无头进程权限档，默认 accept-edit（修复需要写文件）。 */
@@ -309,6 +327,7 @@ export function createHeadlessRunners(options: HeadlessRunnersOptions): PatrolRu
       const executed = await execFileAsync(
         hajiCommand,
         [
+          ...(options.hajiCommandArgs ?? []),
           "-p",
           prompt,
           "--output-format",
@@ -345,10 +364,13 @@ export function createHeadlessRunners(options: HeadlessRunnersOptions): PatrolRu
 
   const jobWorkspace = (job: PatrolJob, kind: "review" | "fix"): string => {
     const safe = `${job.repo.replace(/[^A-Za-z0-9_-]/g, "-")}-${job.prNumber}-${kind}`;
-    return path.join(workRoot, safe);
+    return path.join(workRoot, kind === "review" ? `${safe}-${job.version.headSha}` : safe);
   };
 
   const prepareWorktree = async (job: PatrolJob, kind: "review" | "fix"): Promise<string> => {
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(job.version.headSha)) {
+      throw new Error("无效的 PR head SHA");
+    }
     const dir = jobWorkspace(job, kind);
     await execFileAsync("git", ["-C", options.repoDir, "fetch", "origin", "--quiet"]);
     if (kind === "fix") {
@@ -379,6 +401,17 @@ export function createHeadlessRunners(options: HeadlessRunnersOptions): PatrolRu
         dir,
         job.version.headSha,
       ]);
+    }
+    if (kind === "review") {
+      await execFileAsync("git", [
+        "-C",
+        dir,
+        "checkout",
+        "--detach",
+        "--force",
+        job.version.headSha,
+      ]);
+      await execFileAsync("git", ["-C", dir, "clean", "-fdx"]);
     }
     return dir;
   };
