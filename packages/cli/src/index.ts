@@ -12,9 +12,11 @@ import {
   type AgentRecord,
   type BaseTool,
   buildExperienceRecall,
+  buildSummaryTranscript,
   type ChatMessage,
   COMPACTED_SUMMARY_MARKER,
   type CompactionResult,
+  type CompletionOptions,
   DEFAULT_PERMISSION_MODE,
   DistillEngine,
   ExperienceStore,
@@ -158,6 +160,7 @@ import { GoalPromptPart } from "./goal-prompt.js";
 import { parseAddDirArgs, parseHeadlessArgs, parseSessionResumeArgs } from "./headless.js";
 import { loadImageAttachment, parseImageCommand } from "./image-command.js";
 import { buildImageView } from "./image-view-command.js";
+import { MarkdownRenderThrottle, MarkdownStreamRenderer } from "./markdown-renderer.js";
 import { resolveModelPricing } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
@@ -754,6 +757,7 @@ async function main() {
     return {
       provider: utility?.provider ?? provider,
       model,
+      providerName,
       onUsage: (usage: CostUsage) => recordSideCost(purpose, model, usage, providerName),
     };
   };
@@ -799,6 +803,8 @@ async function main() {
   let permissionRules = loadRules();
   // 思维链展开开关（/think 可切；缺省展开，即完整推理常驻对话区）。
   let showThinking = savedPreference?.showThinking !== false;
+  // 压缩摘要流式显示开关（/config compact-stream 可切；缺省开启）。
+  let compactStreamEnabled = savedPreference?.compactStream !== false;
   let permissionMode: PermissionMode = isPermissionMode(savedPreference?.permissionMode)
     ? savedPreference?.permissionMode
     : DEFAULT_PERMISSION_MODE;
@@ -884,6 +890,11 @@ async function main() {
    * /resume 回放压缩记录、selfstate 说明「上下文是怎么变小的」都读它。
    */
   let lastCompaction: SessionCompaction | undefined;
+  /**
+   * 最近一次摘要调用实际用的模型（由摘要注入点 `summarizeMessagesForCompaction` 写入）。
+   * 压缩提示要告诉用户「压缩模型是谁」：杂活模型和主模型可能不是同一个。
+   */
+  let lastSummaryModel: string | undefined;
   /** 把一次压缩结果整理成会话元数据；压缩前轨迹路径从系统提示词尾部取。 */
   const recordCompaction = (result: CompactionResult): void => {
     const systemContent =
@@ -898,8 +909,21 @@ async function main() {
       layers: [...result.layersApplied],
       ...(transcriptPath ? { transcriptPath } : {}),
       ...(result.summaryMode === "none" ? {} : { summaryMode: result.summaryMode }),
+      ...(result.summaryMode !== "none" && lastSummaryModel
+        ? { summaryModel: lastSummaryModel }
+        : {}),
       ...(result.summaryError ? { summaryError: result.summaryError } : {}),
     };
+  };
+
+  /**
+   * 压缩提示里的「压缩模型」一行：说明这次摘要到底由哪个模型生成。
+   * 模型名来自摘要注入点（utilityCall），纯本地规则压缩时没有模型可用。
+   */
+  const describeCompactionModel = (summaryMode: CompactionResult["summaryMode"]): string => {
+    if (summaryMode === "none") return "未使用（本次仅本地规则压缩）";
+    const model = lastSummaryModel ?? "未知模型";
+    return summaryMode === "fallback" ? `${model}（调用失败，已用本地降级摘要）` : model;
   };
 
   /**
@@ -1061,6 +1085,8 @@ async function main() {
         `上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
       ),
     );
+    // 每次压缩都重新记录摘要模型：上一次的结果不能借给这一次用。
+    lastSummaryModel = undefined;
     const result = await runCompactionPipeline(history, {
       forceL4: false,
       maxTokensThreshold: thresholds.triggerTokens,
@@ -1084,7 +1110,7 @@ async function main() {
     const layers = result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
     ui.writeLine(
       colors.gray(
-        `✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`,
+        `✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}，压缩模型 ${describeCompactionModel(result.summaryMode)}。`,
       ),
     );
     // 压缩后上下文用量提醒重新计数（黄/红阈值可再次触发）。
@@ -1112,10 +1138,19 @@ async function main() {
 
   let provider = buildProvider(selectedModel, undefined, currentProviderName);
   let foregroundAbortSignal: AbortSignal | undefined;
+  /**
+   * 摘要输入的估算 token 预算：取摘要模型窗口的一半，封顶 200k。
+   * 估算器对 JSONL 偏乐观（中文约 0.7 token/字），留一半余量才不会把摘要请求顶到模型上限。
+   */
+  const summaryInputBudgetTokens = (model: string, providerName: string): number => {
+    const window = getModelContextWindowTokens(
+      model,
+      process.env,
+      configuredContextWindow(providerName, model),
+    );
+    return Math.max(20_000, Math.min(Math.floor(window * 0.5), 200_000));
+  };
   async function summarizeMessagesForCompaction(sourceMessages: ChatMessage[]): Promise<string> {
-    const transcript = sourceMessages
-      .map((message, index) => JSON.stringify({ index, ...message }))
-      .join("\n");
     const summaryInstruction = [
       "你是编程会话上下文压缩器。请完整阅读所给 JSONL 对话记录，生成可供另一个 AI 无缝继续工作的中文结构化摘要。",
       "必须忠实保留：当前目标、已完成事项及验证证据、未完成事项、最新用户要求、关键决策、约束与偏好、修改过的文件、Git 状态、精确错误文本、重要命令/路径/配置值。",
@@ -1127,20 +1162,48 @@ async function main() {
     activityIndicator.start("compacting", "压缩上下文", "正在生成结构化摘要");
     try {
       const utility = utilityCall("上下文压缩");
-      const summary = await utility.provider.complete(
-        [
-          { role: "system", content: summaryInstruction },
-          { role: "user", content: `以下是待压缩的完整 JSONL 对话记录：\n\n${transcript}` },
-        ],
-        {
-          model: utility.model,
-          onUsage: utility.onUsage,
-          reasoningEffort: "low",
-          thinking: false,
-          maxTokens: 6000,
-          abortSignal: foregroundAbortSignal,
-        },
-      );
+      // 记下实际使用的模型：压缩提示的「压缩模型」一行读它（失败时也要能说清是哪个模型失败）。
+      lastSummaryModel = utility.model;
+      // 完整记录可能超出摘要模型上下文（实测 1.78M tokens > 1M 上限）：按预算保留头尾。
+      const transcript = buildSummaryTranscript(sourceMessages, {
+        budgetTokens: summaryInputBudgetTokens(utility.model, utility.providerName),
+      });
+      const requestMessages: ChatMessage[] = [
+        { role: "system", content: summaryInstruction },
+        { role: "user", content: `以下是待压缩的完整 JSONL 对话记录：\n\n${transcript}` },
+      ];
+      const requestOptions: CompletionOptions = {
+        model: utility.model,
+        onUsage: utility.onUsage,
+        reasoningEffort: "low",
+        thinking: false,
+        maxTokens: 6000,
+        abortSignal: foregroundAbortSignal,
+      };
+      let summary: string;
+      if (compactStreamEnabled && ui.isInteractive()) {
+        // 流式显示摘要：正文边生成边重绘同一段尾部，压缩结束后留在对话区。
+        // 管道 / 无头模式没有重绘能力，仍走一次性 complete（不往协议输出里掺摘要）。
+        activityIndicator.stop();
+        ui.writeLine(colors.gray(`  正在生成压缩摘要（${utility.model}）：`));
+        const anchor = ui.getChatLength();
+        ui.markStableChatPrefix(anchor);
+        const renderer = new MarkdownStreamRenderer(() => ui.getContentWidth());
+        const throttle = new MarkdownRenderThrottle();
+        summary = "";
+        for await (const chunk of utility.provider.completeStream(
+          requestMessages,
+          requestOptions,
+        )) {
+          summary += chunk;
+          if (throttle.shouldRender(Date.now(), summary.length)) {
+            ui.updateChatFrom(anchor, renderer.render(summary, false));
+          }
+        }
+        if (summary) ui.updateChatFrom(anchor, renderer.render(summary, true));
+      } else {
+        summary = await utility.provider.complete(requestMessages, requestOptions);
+      }
       if (!summary.trim()) throw new Error("摘要模型返回了空内容");
       return summary.trim();
     } finally {
@@ -2957,6 +3020,39 @@ async function main() {
     );
   };
 
+  /**
+   * 压缩摘要的流式显示开关（/config compact-stream）。
+   * 只影响展示：关闭后摘要照常生成并落盘，只是不再边生成边写对话区。
+   */
+  const runCompactStreamCommand = (words: readonly string[]): void => {
+    const arg = parseOnOff(words[1]);
+    if (arg === null) {
+      immediateWriteLine(
+        colors.failLine("用法：/config compact-stream [on|off]（无参切换当前状态）"),
+      );
+      return;
+    }
+    const enabled = arg ?? !compactStreamEnabled;
+    compactStreamEnabled = enabled;
+    const currentPreference = loadPreference();
+    savePreference(
+      {
+        ...(currentPreference ?? {}),
+        model: currentPreference?.model || selectedModel,
+        reasoningEffort: currentPreference?.reasoningEffort || reasoningEffort,
+        compactStream: enabled,
+      },
+      showRuntimeWarning,
+    );
+    immediateWriteLine(
+      colors.okLine(
+        enabled
+          ? "压缩摘要流式显示已开启：压缩过程中摘要正文会边生成边写入对话区。"
+          : "压缩摘要流式显示已关闭：摘要只在后台生成，压缩结束时给出统计。",
+      ),
+    );
+  };
+
   /** 安全点收尾：落地推迟的 system prompt 重建与寄存的输出。 */
   const flushImmediateEffects = async (): Promise<void> => {
     if (pendingPromptRefresh) {
@@ -3205,6 +3301,7 @@ async function main() {
       else if (command === "sidebar") runSidebarCommand(words);
       else if (command === "fold") runFoldCommand(words);
       else if (command === "think") runThinkCommand(words);
+      else if (command === "compact-stream") runCompactStreamCommand(words);
       else if (command === "worktree")
         handleWorktreeCommand(
           { cwd: process.cwd(), writeLine: immediateWriteLine, writeChat: immediateWriteChat },
@@ -4099,6 +4196,7 @@ async function main() {
           // 回车会进 pendingInputs，压缩结束后由主循环按队列处理，草稿则随 cancelInput 保留。
           startBackgroundInput();
           ui.writeLine(colors.boldPurple("正在执行四层上下文压缩管线..."));
+          lastSummaryModel = undefined;
           const result = await runCompactionPipeline(messages, {
             forceL4: true,
             summaryProvider: summarizeMessagesForCompaction,
@@ -4131,6 +4229,7 @@ async function main() {
               `  Token 估算: ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}`,
             ),
           );
+          ui.writeLine(colors.cyan(`  压缩模型: ${describeCompactionModel(result.summaryMode)}`));
           if (result.summaryMode === "fallback") {
             ui.writeLine(
               colors.warnLine(
@@ -4204,6 +4303,10 @@ async function main() {
         }
         if (command === "think") {
           runThinkCommand(parts);
+          continue;
+        }
+        if (command === "compact-stream") {
+          runCompactStreamCommand(parts);
           continue;
         }
         if (command === "output") {

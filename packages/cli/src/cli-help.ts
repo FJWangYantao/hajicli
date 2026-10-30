@@ -236,6 +236,12 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         argHint: "[on|off]",
         immediate: {},
       },
+      {
+        command: "/compact-stream",
+        description: "开关压缩摘要的流式显示（压缩时摘要正文边生成边写入对话区）",
+        argHint: "[on|off]",
+        immediate: {},
+      },
     ],
   },
   {

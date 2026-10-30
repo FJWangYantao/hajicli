@@ -363,6 +363,14 @@ export function renderSessionHistory(
           `  Token 估算: ${compaction.beforeTokens.toLocaleString()} ➔ ${compaction.afterTokens.toLocaleString()}`,
         ),
       );
+      // 摘要由哪个模型生成：杂活模型与主模型可能不是同一个，跨会话回放时也要看得见。
+      const failedSuffix = compaction.summaryMode === "fallback" ? "（调用失败）" : "";
+      const compactionModel = compaction.summaryModel
+        ? `${compaction.summaryModel}${failedSuffix}`
+        : compaction.summaryMode
+          ? `未记录${failedSuffix}`
+          : "未使用（本次仅本地规则压缩）";
+      appendHistoryLine(colors.gray(`  压缩模型: ${compactionModel}`));
     }
     if (compaction?.summaryMode === "fallback") {
       // 回放时把当时的失败原因一并带上，否则跨会话只能看到「用了降级摘要」这个结论。
