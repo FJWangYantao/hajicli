@@ -35,9 +35,11 @@ function context(manager) {
   let messages = [{ role: "system", content: "旧目标 + 旧技能" }];
   let prompt = messages[0].content;
   const effects = [];
+  const recentRefreshes = [];
   const noop = () => {};
   return {
     effects,
+    recentRefreshes,
     sessionManager: manager,
     ui: {
       writeLine: noop,
@@ -66,6 +68,9 @@ function context(manager) {
     refreshAgentVerificationContext: noop,
     saveSession: () => manager.saveCurrentSession(messages),
     updateStatusUI: noop,
+    refreshRecentSessions: () => {
+      recentRefreshes.push(manager.getCurrentSession().id);
+    },
     applySessionUsage: noop,
     enterSessionWorktree: (cwd) => {
       effects.push(["cwd", cwd]);
@@ -93,6 +98,8 @@ test("保存失败时 clear 和 resume 保留当前会话与消息", async (t) =
     assert.equal(manager.getCurrentSession().id, id);
     assert.equal(ctx.getMessages(), messages);
     assert.deepEqual(ctx.effects, []);
+    // 切换失败：首页「最近会话」不该被重算（当前会话没变）。
+    assert.deepEqual(ctx.recentRefreshes, []);
   } finally {
     fs.promises.rename = original;
   }
@@ -108,6 +115,8 @@ test("/clear 后下一轮提示词不携带旧目标、技能或压缩摘要", a
   await manager.flush();
   assert.equal(manager.getCurrentSession().goal, undefined);
   assert.deepEqual(ctx.getMessages(), [{ role: "system", content: "新会话提示词" }]);
+  // 上一个会话已收尾：首页「最近会话」按新的当前会话重算。
+  assert.deepEqual(ctx.recentRefreshes, [manager.getCurrentSession().id]);
 });
 
 test("恢复列表、定位与实际加载均选择最新副本，继续保存回原目录", async (t) => {
@@ -126,6 +135,8 @@ test("恢复列表、定位与实际加载均选择最新副本，继续保存�
   assert.equal(manager.getCurrentSession().title, "新副本");
   assert.equal(ctx.getMessages()[0].content, "最新进度");
   assert.deepEqual(ctx.effects[0], ["cwd", path.resolve(other, "..", "..")]);
+  // 恢复的是另一棵树的会话：刷新按恢复后的当前会话 id 记账。
+  assert.deepEqual(ctx.recentRefreshes, ["duplicate"]);
   manager.saveCurrentSession([...ctx.getMessages(), { role: "user", content: "继续" }]);
   await manager.flush();
   assert.equal(

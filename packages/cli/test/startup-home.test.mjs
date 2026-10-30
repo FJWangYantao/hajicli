@@ -563,6 +563,7 @@ test("recent session recovers the exact stored conversation, usage, task scope a
   let restored,
     usage,
     taskScope,
+    recentRefreshes = 0,
     dismissed = false;
   const scope = { setScope() {} };
   const context = {
@@ -597,6 +598,9 @@ test("recent session recovers the exact stored conversation, usage, task scope a
     },
     saveSession() {},
     updateStatusUI() {},
+    refreshRecentSessions() {
+      recentRefreshes += 1;
+    },
   };
   assert.equal(await resumeSessionById(context, id), true);
   assert.equal(manager.getCurrentSession().id, id);
@@ -604,7 +608,10 @@ test("recent session recovers the exact stored conversation, usage, task scope a
   assert.equal(usage.compactionCount, 2);
   assert.match(restored, /目标会话/);
   assert.equal(dismissed, true);
+  // 恢复成功后首页「最近会话」重算；失败那次不再重算。
+  assert.equal(recentRefreshes, 1);
   assert.equal(await resumeSessionById(context, "missing-session"), false);
+  assert.equal(recentRefreshes, 1);
 });
 
 function launcherFrame(overrides = {}) {
@@ -802,4 +809,38 @@ test("cell canvas keeps surface backgrounds through theme resets and handles wid
   const mono = new CellCanvas(6, 1);
   mono.ansi(0, 0, "\x1b[7mab\x1b[27mc");
   assert.equal(mono.toRows()[0], "\x1b[0;7mab\x1b[0mc\x1b[0m");
+});
+
+test("首页重新可见才重新取「最近会话」：首帧与普通对话帧都不触发", async () => {
+  const shown = [];
+  let ui;
+  const fresh = { id: "fresh", title: "刚结束的会话", updatedAt: new Date().toISOString() };
+  withUI(140, 40, (instance) => {
+    ui = instance;
+    ui.options.onStartupHomeShown = () => {
+      shown.push(Date.now());
+      ui.setRecentSessions([fresh]);
+    };
+    // 首帧由启动流程自己取数，不重复触发。
+    assert.equal(shown.length, 0);
+    // 普通对话视图（发过消息、Logo 已收起）：不触发。
+    ui.dismissStartupHeader();
+    ui.renderFrame();
+    assert.equal(shown.length, 0);
+    // 回到空会话首页两次：每次重新可见都触发一次刷新。
+    for (let round = 0; round < 2; round++) {
+      ui.startupHeaderVisible = true;
+      ui.renderFrame();
+      ui.dismissStartupHeader();
+      ui.renderFrame();
+    }
+  });
+  // 刷新走微任务：渲染帧不因同步读盘而卡住。
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shown.length, 2);
+  // 回调里重设的列表真的被首页接住（旧快照已被替换）。
+  assert.deepEqual(
+    ui.recentSessions.map((session) => session.title),
+    [fresh.title],
+  );
 });

@@ -77,6 +77,7 @@ function createContext(sessionManager, lines) {
     isThinkingVisible: () => true,
     saveSession: noop,
     updateStatusUI: noop,
+    refreshRecentSessions: noop,
     applySessionUsage: (usage) => lines.push(`<<USAGE ${usage?.compactionCount}>>`),
   };
 }
