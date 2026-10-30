@@ -9,9 +9,10 @@ import { promisify } from "node:util";
 import { isTerminalPatrolStatus, PatrolStore, patrolJobId } from "@hajicli/core";
 import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
 import { colors } from "../theme.js";
-import { resolvePatrolRepo } from "./config.js";
+import { loadPatrolConfig, resolvePatrolRepo, savePatrolConfig } from "./config.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
+import { createSmeeWakeSource } from "./wake.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +74,10 @@ async function dispatchPatrolCommand(
       return runOnce(ctx);
     case "stop":
       return stop(ctx);
+    case "watch":
+      return watch(ctx, parts[2]);
+    case "unwatch":
+      return unwatch(ctx);
     default:
       usage(ctx);
       ctx.writeLine(colors.failLine(`未知子命令: ${sub}`));
@@ -86,6 +91,12 @@ function usage(ctx: PatrolCommandContext): void {
     colors.gray("  /patrol start [--interval <秒>]   一步启动常驻巡检（仓库与令牌自动推断）"),
   );
   ctx.writeLine(colors.gray("  /patrol stop                停止侧栏启动的常驻巡查"));
+  ctx.writeLine(
+    colors.gray(
+      "  /patrol watch <url>         接入 webhook 唤醒通道（smee 形态 SSE），事件到达即复查",
+    ),
+  );
+  ctx.writeLine(colors.gray("  /patrol unwatch             关闭唤醒通道，退回纯轮询"));
   ctx.writeLine(colors.gray("  /patrol run-once            单轮巡检（配合外部定时）"));
   ctx.writeLine(colors.gray("  /patrol inspect <PR>        查看单个任务详情"));
   ctx.writeLine(
@@ -322,9 +333,16 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
       `PR Patrol 启动（${repo}）。有任务时连续推进，空闲时指数退避探测新 PR（上限 64 分钟）。Ctrl+C 停止。`,
     ),
   );
+  const wakeUrl = loadPatrolConfig(ctx.cwd).wakeUrl;
+  const wake = wakeUrl
+    ? createSmeeWakeSource(wakeUrl, { logger: (line) => ctx.writeLine(colors.gray(line)) })
+    : undefined;
+  if (wake)
+    ctx.writeLine(colors.gray(`已接入唤醒通道（${wakeUrl}）：事件到达即复查，轮询仍作兜底。`));
   try {
-    await service.runLoop(controller.signal);
+    await service.runLoop(controller.signal, { wake });
   } finally {
+    wake?.close();
     ctx.writeLine(colors.gray("PR Patrol 已停止。"));
   }
 }
@@ -336,6 +354,52 @@ function stop(ctx: PatrolCommandContext): void {
       ? colors.okLine("常驻巡查已停止（点侧栏入口可重新开始）")
       : colors.gray("当前没有侧栏启动的常驻巡查在运行"),
   );
+}
+
+/**
+ * 接入唤醒通道：只写配置，不动正在跑的循环——热切换会让「谁在等」难以推理，
+ * 重启一次（/patrol stop 后点侧栏）成本极低。
+ */
+async function watch(ctx: PatrolCommandContext, url?: string): Promise<void> {
+  const trimmed = (url ?? "").trim();
+  if (!trimmed) {
+    ctx.writeLine(colors.failLine("用法：/patrol watch <url>（如 https://smee.io/xxxx）"));
+    return;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    ctx.writeLine(colors.failLine(`唤醒通道地址不合法：${trimmed}`));
+    return;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    ctx.writeLine(colors.failLine(`唤醒通道只支持 http(s)：${trimmed}`));
+    return;
+  }
+  const config = loadPatrolConfig(ctx.cwd);
+  config.wakeUrl = trimmed;
+  savePatrolConfig(ctx.cwd, config);
+  ctx.writeLine(colors.okLine(`已接入唤醒通道：${trimmed}`));
+  ctx.writeLine(
+    colors.gray(
+      "  GitHub 侧把仓库 webhook 指向该地址（pull_request / pull_request_review / check_suite / workflow_run / issue_comment）。",
+    ),
+  );
+  ctx.writeLine(
+    colors.gray("  轮询仍是兜底：事件丢了、乱序了，下一轮照样能对齐。重启巡检后生效。"),
+  );
+}
+
+function unwatch(ctx: PatrolCommandContext): void {
+  const config = loadPatrolConfig(ctx.cwd);
+  if (!config.wakeUrl) {
+    ctx.writeLine(colors.gray("当前没有配置唤醒通道"));
+    return;
+  }
+  config.wakeUrl = "";
+  savePatrolConfig(ctx.cwd, config);
+  ctx.writeLine(colors.okLine("已关闭唤醒通道，巡检退回纯轮询（重启巡检后生效）"));
 }
 
 async function runOnce(ctx: PatrolCommandContext): Promise<void> {

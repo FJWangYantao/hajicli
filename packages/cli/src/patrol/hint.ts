@@ -17,6 +17,7 @@ import {
   isTerminalPatrolStatus,
   type PatrolJob,
   PatrolStore,
+  type PatrolWakeSource,
   patrolJobId,
 } from "@hajicli/core";
 import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
@@ -24,6 +25,7 @@ import { DEFAULT_PATROL_CONFIG, loadPatrolConfig, resolvePatrolRepo } from "./co
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
 import type { PatrolForgeAdapter, PatrolRunners } from "./types.js";
+import { createSmeeWakeSource } from "./wake.js";
 
 /** 侧栏入口状态；结构与 `SidebarPatrolState` 一致（渲染层只读，不反向依赖本模块）。 */
 export interface PatrolHintState {
@@ -70,6 +72,8 @@ export class PatrolHint {
   private repo?: string;
   private service?: PatrolService;
   private controller?: AbortController;
+  /** 本轮常驻的唤醒通道（配置了 wakeUrl 才有）；停止时必须 close，否则 SSE 连接会挂住。 */
+  private wake?: PatrolWakeSource;
   private timer?: ReturnType<typeof setInterval>;
   private disposed = false;
   /** 本轮常驻的启动时刻：用于「巡检中」至少可见 minRunningMs。 */
@@ -125,6 +129,15 @@ export class PatrolHint {
         selfAuthored: DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
         labels: [...DEFAULT_PATROL_CONFIG.autoAdoptLabels],
       };
+    }
+  }
+
+  /** 读配置里的唤醒通道；配置损坏时视为未配置——唤醒是加速项，不该阻断巡检。 */
+  private readWakeUrl(): string {
+    try {
+      return loadPatrolConfig(this.cwd).wakeUrl;
+    } catch {
+      return "";
     }
   }
 
@@ -218,18 +231,26 @@ export class PatrolHint {
     this.service = service;
     this.controller = controller;
     this.startedAt = Date.now();
+    const wakeUrl = this.readWakeUrl();
+    const wake = wakeUrl
+      ? createSmeeWakeSource(wakeUrl, { logger: (line) => this.log?.(line) })
+      : undefined;
+    this.wake = wake;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
     this.log?.(
       `PR 巡查已启动（${repo}），${this.adoptLabel()}；没活时每 ${Math.round(this.pollIntervalMs / 1000)}s 探测新 PR，再点一次或 /patrol stop 停止。`,
     );
+    if (wake) this.log?.(`已接入唤醒通道（${wakeUrl}）：GitHub 事件到达即复查，轮询仍作兜底。`);
     void service
-      .runLoop(controller.signal, { idleBackoffCapMs: this.pollIntervalMs })
+      .runLoop(controller.signal, { idleBackoffCapMs: this.pollIntervalMs, wake })
       .catch((error) => this.log?.(`PR 巡查失败：${(error as Error).message}`))
       .finally(() => {
         // 已被 stop() 清理、或已被下一次点击接管：不动状态，避免覆盖新的常驻。
         if (this.service !== service) return;
         this.service = undefined;
         this.controller = undefined;
+        this.wake = undefined;
+        wake?.close();
         this.stopTimer();
         if (this.disposed) return;
         this.onChange({ status: "ready", pending: 0, repo });
@@ -247,6 +268,8 @@ export class PatrolHint {
     this.service = undefined;
     this.controller?.abort();
     this.controller = undefined;
+    this.wake?.close();
+    this.wake = undefined;
     this.stopTimer();
     this.log?.("PR 巡查已停止（点侧栏入口可重新开始）。");
     if (this.disposed) return;
@@ -266,6 +289,8 @@ export class PatrolHint {
     this.stopTimer();
     this.controller?.abort();
     this.controller = undefined;
+    this.wake?.close();
+    this.wake = undefined;
     this.service = undefined;
   }
 

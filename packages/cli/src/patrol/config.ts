@@ -29,6 +29,11 @@ export interface PatrolConfig {
   autoAdoptSelfAuthored: boolean;
   /** 带任一 label 的开放 PR 视为已授权接管（也可授权自动合并）。默认空。 */
   autoAdoptLabels: string[];
+  /**
+   * webhook 唤醒通道（SSE，如 `https://smee.io/xxx`）：GitHub 事件到达即立刻复查，
+   * 不必等下一个轮询周期。留空 = 纯轮询。轮询始终是兜底，不会因为配了就关掉。
+   */
+  wakeUrl: string;
 }
 
 export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
@@ -42,6 +47,7 @@ export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
   autoAdoptBranchPrefixes: [WORKTREE_BRANCH_PREFIX],
   autoAdoptSelfAuthored: false,
   autoAdoptLabels: [],
+  wakeUrl: "",
 };
 
 export function patrolConfigPath(cwd: string): string {
@@ -82,7 +88,21 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
         ? raw.autoAdoptSelfAuthored
         : DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
     autoAdoptLabels: [...new Set(stringList(raw.autoAdoptLabels))],
+    wakeUrl: wakeUrlFrom(raw.wakeUrl),
   };
+}
+
+/** 唤醒通道只接受 http(s)；非法值归一为空，等价于「未配置」。 */
+function wakeUrlFrom(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "https:" || url.protocol === "http:" ? trimmed : "";
+  } catch {
+    return "";
+  }
 }
 
 /**

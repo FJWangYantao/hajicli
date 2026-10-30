@@ -26,6 +26,8 @@ import {
   type PatrolJob,
   PatrolStore,
   type PatrolUsage,
+  type PatrolWakeEvent,
+  type PatrolWakeSource,
   patrolBudgetStatus,
   patrolJobId,
   planNextStatusAfterReview,
@@ -160,13 +162,19 @@ export class PatrolService {
    * - 仍有任务在等外部（CI / 草稿转正 / head 变化）时，从 20s 起指数退避复查；
    * - 完全空闲时按 `pollIntervalMs` 起指数退避探测新 PR，上限 64 分钟；
    * - 任何一轮有推进都重置退避。signal 中止后退出。
+   * - 传入 `wake` 时，等待可被 webhook 事件提前打断；轮询仍是兜底（事件会丢、会乱序）。
    */
-  async runLoop(signal: AbortSignal, options: { idleBackoffCapMs?: number } = {}): Promise<void> {
+  async runLoop(
+    signal: AbortSignal,
+    options: { idleBackoffCapMs?: number; wake?: PatrolWakeSource } = {},
+  ): Promise<void> {
     const idleCap = options.idleBackoffCapMs ?? IDLE_BACKOFF_MAX_MS;
+    const wake = options.wake;
     let externalBackoff = 0;
     let idleBackoff = 0;
     while (!signal.aborted) {
       // 暂停期间固定按 pollIntervalMs 复查，避免退避到 64 分钟后恢复延迟。
+      // 暂停是显式意图，这段时间不响应唤醒事件。
       if (this.store.isPaused()) {
         await sleep(signal, this.config.pollIntervalMs);
         continue;
@@ -187,12 +195,57 @@ export class PatrolService {
         idleBackoff = 0;
       }
       if (result.pendingExternal) {
-        await sleep(signal, backoffMs(EXTERNAL_RECHECK_MS, externalBackoff));
-        externalBackoff += 1;
+        const woke = await this.waitForWake(
+          signal,
+          backoffMs(EXTERNAL_RECHECK_MS, externalBackoff),
+          wake,
+        );
+        if (woke) {
+          externalBackoff = 0;
+          idleBackoff = 0;
+        } else {
+          externalBackoff += 1;
+        }
       } else {
-        await sleep(signal, Math.min(backoffMs(this.config.pollIntervalMs, idleBackoff), idleCap));
-        idleBackoff += 1;
+        const woke = await this.waitForWake(
+          signal,
+          Math.min(backoffMs(this.config.pollIntervalMs, idleBackoff), idleCap),
+          wake,
+        );
+        if (woke) {
+          idleBackoff = 0;
+        } else {
+          idleBackoff += 1;
+        }
       }
+    }
+  }
+
+  /**
+   * 等到「退避到期」或「唤醒事件到达」，先到者胜。
+   * 没有唤醒源、或唤醒源抛错时退化为纯 sleep——**绝不能因为唤醒通道坏了就不干活**。
+   */
+  private async waitForWake(
+    signal: AbortSignal,
+    ms: number,
+    wake?: PatrolWakeSource,
+  ): Promise<PatrolWakeEvent | undefined> {
+    if (!wake) {
+      await sleep(signal, ms);
+      return undefined;
+    }
+    try {
+      const event = await wake.wait(signal, ms);
+      if (event) {
+        const target = event.prNumber === undefined ? "" : ` #${event.prNumber}`;
+        const action = event.action ? `（${event.action}）` : "";
+        this.logger(`收到 ${event.event}${action}${target} 事件，立即复查`);
+      }
+      return event ?? undefined;
+    } catch (error) {
+      this.logger(`唤醒通道不可用（${(error as Error).message}），退回轮询`);
+      await sleep(signal, ms);
+      return undefined;
     }
   }
 

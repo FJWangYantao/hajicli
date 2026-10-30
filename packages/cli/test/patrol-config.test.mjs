@@ -129,3 +129,18 @@ test("matchAdoptPrefix：返回命中前缀，未命中或前缀为空返回 und
   assert.equal(matchAdoptPrefix("feat/x", []), undefined);
   assert.equal(matchAdoptPrefix("haji/x", [""]), undefined);
 });
+test("wakeUrl：默认空，只接受 http(s)，非法值归一为空", () => {
+  assert.equal(loadPatrolConfig(tmpDir()).wakeUrl, "");
+
+  const ok = writeConfig(tmpDir(), { wakeUrl: "https://smee.io/chan" });
+  assert.equal(loadPatrolConfig(ok).wakeUrl, "https://smee.io/chan");
+
+  // 两侧空白去掉，避免复制粘贴带空格导致连不上。
+  const spaced = writeConfig(tmpDir(), { wakeUrl: "  https://smee.io/chan  " });
+  assert.equal(loadPatrolConfig(spaced).wakeUrl, "https://smee.io/chan");
+
+  // 非 http(s) / 非 URL / 非字符串一律视为未配置。
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: "ftp://host/x" })).wakeUrl, "");
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: "不是地址" })).wakeUrl, "");
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: 42 })).wakeUrl, "");
+});

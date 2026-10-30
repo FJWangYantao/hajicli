@@ -217,3 +217,25 @@ test("/patrol：配置损坏时给出可读错误而不抛异常", async (t) => 
     `应给出可读错误：${lines.join(" | ")}`,
   );
 });
+
+test("/patrol watch / unwatch：写入并清除唤醒通道", async () => {
+  const ctx = makeCtx();
+  withConfig(ctx);
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "watch", "https://smee.io/chan"] });
+  assert.ok(
+    ctx.lines.some((line) => line.includes("已接入唤醒通道")),
+    `应提示已接入：${ctx.lines.join(" | ")}`,
+  );
+  assert.equal(loadPatrolConfig(ctx.cwd).wakeUrl, "https://smee.io/chan");
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "unwatch"] });
+  assert.equal(loadPatrolConfig(ctx.cwd).wakeUrl, "");
+  assert.ok(ctx.lines.some((line) => line.includes("已关闭唤醒通道")));
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "watch", "ftp://nope"] });
+  assert.ok(ctx.lines.some((line) => line.includes("只支持 http(s)")));
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "watch"] });
+  assert.ok(ctx.lines.some((line) => line.includes("用法")));
+});

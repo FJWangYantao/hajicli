@@ -177,6 +177,15 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   - 手动 `/patrol register` 是显式授权，写 `mergeAuthorized: true`；缺省（旧状态文件）视为允许。
   - 登录名来自适配器的 `getViewerLogin()`（GitHub 走 `GET /user`，缓存含失败）。
   - 侧栏提示文案与探测计数读同一份配置与策略（`hint.ts`）。
+- **webhook 唤醒只做加速，轮询仍是对账来源**（`core/src/patrol/wake.ts` 契约 + `cli/src/patrol/wake.ts` 的
+  SSE 客户端）：配 `wakeUrl`（`/patrol watch <url>`）后 `runLoop` 的等待变成「事件或退避到期，先到者胜」，
+  GitHub 事件秒级触发复查；但事件会丢、会乱序、会在进程重启期间到达，所以**任何情况下都不能因为
+  配了唤醒就关掉轮询**，唤醒源抛错时必须退化为纯 sleep（`patrol-wake.test.mjs` 固化）。
+  - 通道是**出站** SSE（smee 形态），本地不开端口、不需要公网入站；smee.io 只适合开发，
+    长期跑换自建中继，只需替换 `cli/src/patrol/wake.ts`，契约不变。
+  - 只对白名单事件唤醒（`pull_request` / `pull_request_review` / `check_suite` / `workflow_run` /
+    `issue_comment`），其余事件直接丢弃，避免打爆 GitHub API；`x-github-delivery` 用于重投去重。
+  - 暂停期间不响应唤醒（暂停是显式意图）。
 
 ## 斜杠指令：立即执行通道（回合进行中）
 
