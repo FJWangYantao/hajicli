@@ -447,6 +447,78 @@ test("readCompactedContext splits the summary and pre-compaction transcript path
   assert.equal(readCompactedContext("system rules"), undefined);
 });
 
+test("L2 保护最后一个用户回合：回合内压缩不裁掉当前 prompt 及其后的工作", () => {
+  const history = [{ role: "system", content: "rules" }];
+  for (let i = 0; i < 12; i++) {
+    history.push(
+      { role: "user", content: `old-request-${i}` },
+      { role: "assistant", content: `old-answer-${i}` },
+    );
+  }
+  // 模拟回合内：当前 prompt 后面已经跑了一长串工具迭代，最后一个 user 不在尾部。
+  history.push({ role: "user", content: "current prompt" });
+  for (let i = 0; i < 40; i++) {
+    history.push({ role: "assistant", content: `turn-step-${i}` });
+  }
+
+  const compacted = snipCompact(history, 40, { protectLastUserTurn: true });
+  assert.ok(compacted.some((message) => message.content === "current prompt"));
+  assert.ok(compacted.some((message) => message.content === "turn-step-39"));
+  // 头部 3 条（system + 第一轮问答）按既有规则保留，其余历史应被裁掉。
+  assert.equal(
+    compacted.some((message) => message.content === "old-request-1"),
+    false,
+    "更早的历史仍应被裁掉",
+  );
+  assertValidToolPairs(compacted);
+});
+
+test("回合内压缩保护当前回合：L4 摘要历史但不丢最后一个用户消息", async () => {
+  const previousCwd = process.cwd();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-compact-turn-"));
+  process.chdir(cwd);
+  try {
+    const history = [{ role: "system", content: "system rules" }];
+    for (let i = 0; i < 30; i++) {
+      history.push(
+        { role: "user", content: `old-request-${i}` },
+        { role: "assistant", content: `old-answer-${i}` },
+      );
+    }
+    history.push({ role: "user", content: "current prompt" });
+    for (let i = 0; i < 25; i++) {
+      history.push({ role: "assistant", content: `turn-step-${i}` });
+    }
+
+    const result = await runCompactionPipeline(history, {
+      forceL4: true,
+      protectLastUserTurn: true,
+      summaryProvider: async () => "## 目标\n继续长任务",
+    });
+
+    assert.equal(result.summaryMode, "model");
+    assert.ok(result.layersApplied.includes("L2:中间对话裁剪"));
+    assert.match(result.messages[0].content, /继续长任务/);
+    assert.ok(
+      result.messages.some((message) => message.content === "current prompt"),
+      "最后一个用户消息必须保留",
+    );
+    assert.ok(
+      result.messages.some((message) => message.content === "turn-step-24"),
+      "当前回合的最新工作必须保留",
+    );
+    assert.equal(
+      result.messages.some((message) => message.content === "old-request-0"),
+      false,
+      "更早的历史应被裁掉或摘要掉",
+    );
+    assertValidToolPairs(result.messages);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("pipeline 输出的 system 消息能被 readCompactedContext 还原出摘要与轨迹路径", async () => {
   const previousCwd = process.cwd();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-compact-record-"));

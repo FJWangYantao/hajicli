@@ -1027,60 +1027,86 @@ async function main() {
     if (notice) pendingToolNotices.push(notice);
   });
 
+  /**
+   * 上下文自动压缩：在安全点检查用量，越过触发线时执行四层压缩管线。
+   * 返回压缩后的消息数组；未触发（或压缩被中止）时返回原数组引用，调用方据此判断是否替换。
+   *
+   * 两个调用点语义不同：
+   * - 用户提交 prompt 前（UserPromptSubmit）：splitPendingTurn=true，把刚发出的用户消息
+   *   及其后续消息排除在压缩之外，保证 prompt 不被摘要改写。
+   * - 回合内每次请求前（turn-runner）：splitPendingTurn=false，整个当前回合都参与压缩，
+   *   只保护最后一条用户消息之后的上下文不被 L2 裁掉——长任务里本回合的工具输出
+   *   往往就是撑爆窗口的主因，不能把它整段排除在外。
+   */
+  const autoCompactContext = async (
+    sourceMessages: ChatMessage[],
+    options: { splitPendingTurn?: boolean; startInput?: () => void } = {},
+  ): Promise<ChatMessage[]> => {
+    const thresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
+    const usedTokens = estimateMessagesTokens(sourceMessages, { includeSystem: true });
+    if (usedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
+    if (!shouldTriggerAutoCompaction(usedTokens, thresholds, autoCompactionArmed)) {
+      return sourceMessages;
+    }
+    const { history, pendingTurn } = options.splitPendingTurn
+      ? splitPendingUserTurn(sourceMessages)
+      : { history: sourceMessages, pendingTurn: [] as ChatMessage[] };
+    if (history.length === 0) return sourceMessages;
+    autoCompactionArmed = false;
+    // 压缩期间保持输入行可用：摘要模型可能要跑几十秒，用户可以先写下一句；
+    // 回车会进 pendingInputs，压缩结束后由主循环按队列处理。
+    options.startInput?.();
+    ui.writeLine(
+      colors.gray(
+        `上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
+      ),
+    );
+    const result = await runCompactionPipeline(history, {
+      forceL4: false,
+      maxTokensThreshold: thresholds.triggerTokens,
+      protectLastUserTurn: !options.splitPendingTurn,
+      summaryProvider: summarizeMessagesForCompaction,
+    });
+    if (foregroundAbortSignal?.aborted) {
+      autoCompactionArmed = true;
+      return sourceMessages;
+    }
+    const nextMessages = [...result.messages, ...pendingTurn];
+    skillRegistry.restoreScopeFromMessages("main", nextMessages);
+    if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
+    // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
+    if (result.layersApplied.length > 0) {
+      ui.noteCompaction();
+      recordCompaction(result);
+      // 压缩记录属于会话元数据：同步后随下一次落盘写进 usage.lastCompaction。
+      syncSessionUsage();
+    }
+    const layers = result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
+    ui.writeLine(
+      colors.gray(
+        `✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`,
+      ),
+    );
+    // 压缩后上下文用量提醒重新计数（黄/红阈值可再次触发）。
+    resetContextUsageWarnings();
+    if (result.summaryMode === "fallback") {
+      ui.writeLine(
+        colors.warnLine(
+          `模型摘要失败${describeCompactionFailure(result.summaryError)}，本次使用了本地降级摘要。`,
+        ),
+      );
+    }
+    return nextMessages;
+  };
+
   // 3. 注册 UserPromptSubmit Hook：检测上下文膨胀并自动预压缩
   hookEngine.register("UserPromptSubmit", async (ctx) => {
     if (!ctx.messages) return;
-    const thresholds = getContextCompactionThresholds(getSelectedContextWindowTokens());
-    const usedTokens = estimateMessagesTokens(ctx.messages, { includeSystem: true });
-    if (usedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
-    if (shouldTriggerAutoCompaction(usedTokens, thresholds, autoCompactionArmed)) {
-      const { history, pendingTurn } = splitPendingUserTurn(ctx.messages);
-      if (history.length === 0) return;
-      autoCompactionArmed = false;
-      // 压缩期间保持输入行可用：摘要模型可能要跑几十秒，用户可以先写下一句；
-      // 回车会进 pendingInputs，压缩结束后由主循环按队列处理。
-      startBackgroundInput();
-      ui.writeLine(
-        colors.gray(
-          `上下文约 ${usedTokens.toLocaleString()} / ${thresholds.contextWindowTokens.toLocaleString()} tokens，开始自动压缩...`,
-        ),
-      );
-      const result = await runCompactionPipeline(history, {
-        forceL4: false,
-        maxTokensThreshold: thresholds.triggerTokens,
-        summaryProvider: summarizeMessagesForCompaction,
-      });
-      if (foregroundAbortSignal?.aborted) {
-        autoCompactionArmed = true;
-        return;
-      }
-      ctx.messages = [...result.messages, ...pendingTurn];
-      skillRegistry.restoreScopeFromMessages("main", ctx.messages);
-      if (result.compactedTokens <= thresholds.rearmTokens) autoCompactionArmed = true;
-      // 侧栏“⟳ 已压缩”：圆环会因压缩突然掉下来，标记一次就解释了“上下文怎么没了”。
-      if (result.layersApplied.length > 0) {
-        ui.noteCompaction();
-        recordCompaction(result);
-        // 压缩记录属于会话元数据：同步后随下一次落盘写进 usage.lastCompaction。
-        syncSessionUsage();
-      }
-      const layers =
-        result.layersApplied.length > 0 ? result.layersApplied.join(" -> ") : "无需变更";
-      ui.writeLine(
-        colors.gray(
-          `✓ 自动压缩完成（${layers}），tokens 约 ${result.originalTokens.toLocaleString()} ➔ ${result.compactedTokens.toLocaleString()}。`,
-        ),
-      );
-      // 压缩后上下文用量提醒重新计数（黄/红阈值可再次触发）。
-      resetContextUsageWarnings();
-      if (result.summaryMode === "fallback") {
-        ui.writeLine(
-          colors.warnLine(
-            `模型摘要失败${describeCompactionFailure(result.summaryError)}，本次使用了本地降级摘要。`,
-          ),
-        );
-      }
-    }
+    const nextMessages = await autoCompactContext(ctx.messages, {
+      splitPendingTurn: true,
+      startInput: startBackgroundInput,
+    });
+    if (nextMessages !== ctx.messages) ctx.messages = nextMessages;
   });
   userHookRunner.registerAfterBuiltins(hookEngine);
 
@@ -3603,6 +3629,9 @@ async function main() {
     refreshAgentVerificationContext,
     startBackgroundInput,
     flushImmediateEffects,
+    // 回合内每次请求前的自动压缩：与 UserPromptSubmit 共用同一套阈值与管线，
+    // 区别是回合内保护整个当前回合（见 autoCompactContext 的注释）。
+    autoCompactContext: (msgs) => autoCompactContext(msgs),
     getCostSnapshot: () => costTracker.getSummary(),
     getLastTypeCheck: (sinceMs) => postEditVerifier.lastCheckSince(sinceMs),
     drainToolNotices: () => pendingToolNotices.splice(0),

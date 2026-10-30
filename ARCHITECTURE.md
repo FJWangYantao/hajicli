@@ -57,7 +57,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 
 ### 回合执行（turn-runner.ts）
 
-`runAgentTurn(deps, input)` 承担一个完整对话回合：prompt 提交 → UserPromptSubmit Hook（可能触发自动压缩）→ 循环调用 `provider.completeStream`（流式正文 + 推理预览 + onRetry 提示）→ 工具调用按依赖分批（`tool-batch.ts`，只读工具并行）→ 结果写回消息。关键语义：
+`runAgentTurn(deps, input)` 承担一个完整对话回合：prompt 提交 → UserPromptSubmit Hook（可能触发自动压缩）→ 循环（每次请求前的安全点也会检查自动压缩）调用 `provider.completeStream`（流式正文 + 推理预览 + onRetry 提示）→ 工具调用按依赖分批（`tool-batch.ts`，只读工具并行）→ 结果写回消息。关键语义：
 
 - **prompt 收回**：请求真正发出前按 Esc，prompt 不入会话、回填输入框（`commitPromptForRequest` 由 `onRequestStart` 划界）。
 - **中止**：发出后 Esc → AbortController，部分输出保留，工具进程后台清理。
@@ -112,7 +112,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 ## 上下文管理
 
 - token 估算：`estimateMessagesTokens` / `estimateTextTokens`（core）。
-- 自动压缩：UserPromptSubmit Hook 内检测用量越过触发阈值 → `runCompactionPipeline` 四层管线（`context-compact.ts`，模型摘要失败降级本地摘要），带 rearm 防抖；`splitPendingUserTurn` 保证最新一条用户消息不被压缩。
+- 自动压缩：两个安全点共用同一套阈值与管线（`index.ts` 的 `autoCompactContext`）。① 用户提交 prompt 前（UserPromptSubmit Hook）：`splitPendingUserTurn` 把最新一条用户消息及其后续消息排除在压缩之外。② 回合内每次请求前（`turn-runner` 的 `TurnDeps.autoCompactContext`）：整个当前回合参与压缩，`runCompactionPipeline({ protectLastUserTurn: true })` 让 L2 裁剪不切断最后一个用户回合——长任务单回合内累积的工具输出正是撑爆窗口的主因。管线为 `runCompactionPipeline` 四层（`context-compact.ts`，模型摘要失败降级本地摘要），带 rearm 防抖。
 - 手动 `/compact` 强制全管线。压缩摘要以 `[Compacted Context Summary]` 后缀保留在系统提示词尾部，刷新提示词时原样带过。
 - 压缩记录随会话落盘：`SessionUsage.lastCompaction`（时间 / 前后 token 与字符 / 层级 / `transcriptPath` / 摘要来源）与消息一起写进会话文件；`/resume` 显式回放「压缩完成、字符与 Token 估算、压缩前完整记录、摘要」——摘要只存在于 system 消息里，普通历史渲染会跳过它。老会话没有该字段时按系统提示词里的标记与轨迹行兜底。`selfstate` 的 `context.lastCompaction` 也读这个持久化字段，`/resume`、`/clear` 跟着会话重置。
 

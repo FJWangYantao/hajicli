@@ -298,11 +298,24 @@ export function toolResultBudget(messages: ChatMessage[], maxBytes = 150_000): C
   return changed ? result : messages;
 }
 
+export interface SnipCompactOptions {
+  /**
+   * 保护最后一个用户回合：从最后一条 user 消息起的内容一律不裁。
+   * 回合内压缩需要它——当前回合的 prompt 与工具交换还在进行中，被裁掉会让模型
+   * 丢失「刚才在做什么」；用户提交时的压缩会先拆出 pendingTurn，无需这个保护。
+   */
+  protectLastUserTurn?: boolean;
+}
+
 /**
  * L2: snip_compact（裁切无关联中间旧对话 - 0 API）
  * 当消息条数超过阈值时，保留头部 3 条与尾部 20 条，切除中间旧消息。
  */
-export function snipCompact(messages: ChatMessage[], maxMessages = 40): ChatMessage[] {
+export function snipCompact(
+  messages: ChatMessage[],
+  maxMessages = 40,
+  options: SnipCompactOptions = {},
+): ChatMessage[] {
   if (messages.length <= maxMessages) {
     return messages;
   }
@@ -310,6 +323,15 @@ export function snipCompact(messages: ChatMessage[], maxMessages = 40): ChatMess
   const result = [...messages];
   const headEnd = 3;
   let tailStart = messages.length - 20;
+
+  if (options.protectLastUserTurn) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === "user") {
+        tailStart = Math.min(tailStart, index);
+        break;
+      }
+    }
+  }
 
   if (tailStart <= headEnd) {
     return messages;
@@ -506,6 +528,11 @@ export async function runCompactionPipeline(
     forceL4?: boolean;
     maxTokensThreshold?: number;
     summaryProvider?: (msgs: ChatMessage[]) => Promise<string>;
+    /**
+     * 回合内压缩时置 true：L2 裁剪不切断最后一个用户回合，
+     * 避免正在进行中的 prompt 与工具交换被当成「中间旧对话」裁掉。
+     */
+    protectLastUserTurn?: boolean;
   } = {},
 ): Promise<CompactionResult> {
   const originalChars = estimateMessagesChars(messages);
@@ -538,7 +565,9 @@ export async function runCompactionPipeline(
     // L2/L3 只作为 L4 的“最近对话保留集”预处理。
     // 完整历史会先落盘并交给摘要模型，不再出现无摘要直接丢弃中间消息。
     let recentMessages = currentMessages;
-    const l2Messages = snipCompact(recentMessages);
+    const l2Messages = snipCompact(recentMessages, 40, {
+      protectLastUserTurn: options.protectLastUserTurn,
+    });
     if (l2Messages !== recentMessages) {
       layersApplied.push("L2:中间对话裁剪");
       recentMessages = l2Messages;

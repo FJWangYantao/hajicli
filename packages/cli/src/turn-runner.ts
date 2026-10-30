@@ -199,6 +199,12 @@ export interface TurnDeps {
    * 在每次发起新请求前调用（此时没有在飞的流，属于安全点）。
    */
   flushImmediateEffects?(): Promise<void>;
+  /**
+   * 回合内自动压缩：每次请求前在安全点检查上下文用量，越过阈值时压缩。
+   * 返回新消息数组；未触发压缩时返回原数组引用（调用方据此判断是否替换）。
+   * 缺省不压缩，保持旧行为。
+   */
+  autoCompactContext?(messages: ChatMessage[]): Promise<ChatMessage[]>;
 }
 
 export interface TurnInput {
@@ -511,6 +517,19 @@ export async function runAgentTurn(deps: TurnDeps, input: TurnInput): Promise<vo
     // 安全点：上一轮流已收尾、下一次请求尚未发出。回合中途的立即指令把收尾工作
     // （system prompt 重建 / 结果提示）寄存在这里落地，避免和流式写入抢 messages。
     if (deps.flushImmediateEffects) await deps.flushImmediateEffects();
+    // 回合内自动压缩：长任务在单个回合里反复调用工具时，用量可能在两次用户提交之间
+    // 越过窗口。这里在每次请求前补一次检查，避免直接撞上模型上下文上限；
+    // 压缩会改写 system prompt 与历史，必须落盘后再发请求。
+    if (deps.autoCompactContext) {
+      const compacted = await deps.autoCompactContext(messages);
+      if (compacted !== messages) {
+        setMessages(compacted);
+        deps.refreshAgentVerificationContext(messages);
+        sessionManager.saveCurrentSession(messages);
+        deps.updateStatusUI();
+      }
+      if (isTurnAborted) break;
+    }
     deps.startBackgroundInput();
     let currentToolCalls: ToolCall[] | null = null;
     let completionTokens: number | undefined;
