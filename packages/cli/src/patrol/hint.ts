@@ -22,6 +22,7 @@ import {
 } from "@hajicli/core";
 import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
 import { DEFAULT_PATROL_CONFIG, loadPatrolConfig, resolvePatrolRepo } from "./config.js";
+import { type PatrolDaemonState, readDaemonState } from "./daemon-state.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
 import type { PatrolForgeAdapter, PatrolRunners } from "./types.js";
@@ -159,6 +160,14 @@ export class PatrolHint {
    */
   async probe(): Promise<void> {
     if (this.disposed || this.service) return;
+    // 外部守护进程在跑时，侧栏只反映它的状态：不联网探测、也不显示「就绪」。
+    const daemon = readDaemonState(this.cwd);
+    if (daemon) {
+      this.repo = daemon.repo ?? resolvePatrolRepo(this.cwd);
+      this.onChange(daemonToHint(daemon, this.repo));
+      this.startTimer();
+      return;
+    }
     const repo = resolvePatrolRepo(this.cwd);
     if (!repo) {
       this.onChange(null);
@@ -201,6 +210,17 @@ export class PatrolHint {
   async start(): Promise<void> {
     if (this.service) {
       this.stop();
+      return;
+    }
+    // 外部守护进程在跑：本会话不再起第二个循环（共用同一份 store，会互相踩状态）。
+    const daemon = readDaemonState(this.cwd);
+    if (daemon) {
+      this.repo = daemon.repo ?? this.repo;
+      this.onChange(daemonToHint(daemon, this.repo));
+      this.startTimer();
+      this.log?.(
+        "巡检已由 systemd 守护进程运行（haji-patrol）；要改由本会话接管，先 systemctl --user stop haji-patrol。",
+      );
       return;
     }
     const repo = this.repo ?? resolvePatrolRepo(this.cwd);
@@ -261,6 +281,13 @@ export class PatrolHint {
   /** 停止常驻巡查（侧栏再次点击 / `/patrol stop`）；没有在跑时只提示。 */
   stop(): void {
     if (!this.service) {
+      // 外部守护进程不受本会话控制：给出可执行的下一步，而不是「没有在运行」这种误导。
+      if (readDaemonState(this.cwd)) {
+        this.log?.(
+          "巡检由 systemd 守护进程运行，本会话无法停止：systemctl --user stop haji-patrol。",
+        );
+        return;
+      }
       this.log?.("PR 巡查没有在运行。");
       return;
     }
@@ -281,6 +308,11 @@ export class PatrolHint {
   /** 常驻巡查是否在运行；供 `/patrol stop` 等命令判断。 */
   isRunning(): boolean {
     return this.service !== undefined;
+  }
+
+  /** 外部守护进程是否在跑（只读状态文件，不联网）。 */
+  isDaemonRunning(): boolean {
+    return readDaemonState(this.cwd) !== undefined;
   }
 
   /** 停止巡检并释放定时器；退出流程必须调用，否则 interval 会挂住进程。 */
@@ -308,7 +340,20 @@ export class PatrolHint {
   }
 
   private refreshTasks(): void {
-    if (!this.repo || !this.service) return;
+    if (!this.service || !this.repo) {
+      // 本会话没有常驻：可能是外部守护进程在跑，读它的状态。
+      const daemon = readDaemonState(this.cwd);
+      if (daemon) {
+        this.onChange(daemonToHint(daemon, this.repo));
+        return;
+      }
+      // 守护进程消失（被停 / 崩了）：停掉轮询并重新探测，回到「就绪」或隐藏入口。
+      if (this.timer) {
+        this.stopTimer();
+        void this.probe();
+      }
+      return;
+    }
     try {
       const jobs = new PatrolStore(path.join(this.cwd, ".haji", "patrol")).listJobs();
       const active = jobs.filter((job) => !isTerminalPatrolStatus(job.status)).length;
@@ -327,6 +372,22 @@ export class PatrolHint {
       // 运行数据读失败不影响巡检本身；保持上一帧状态即可。
     }
   }
+}
+
+/**
+ * 守护进程状态 → 侧栏状态。字段名一致，转换只为兜住可选值缺省，
+ * 让「外部在跑」和「本会话在跑」在渲染层看起来完全一样。
+ */
+function daemonToHint(state: PatrolDaemonState, repo?: string): PatrolHintState {
+  const resolved = state.repo ?? repo;
+  return {
+    status: state.status,
+    pending: 0,
+    tasks: state.tasks ?? 0,
+    merged: state.merged ?? 0,
+    ...(state.activity ? { activity: state.activity } : {}),
+    ...(resolved ? { repo: resolved } : {}),
+  };
 }
 
 const RUN_ROLE_LABELS: Record<string, string> = {

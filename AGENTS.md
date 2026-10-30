@@ -187,6 +187,16 @@ node -e "console.log(require('./packages/cli/package.json').version)"
     `issue_comment`），其余事件直接丢弃，避免打爆 GitHub API；`x-github-delivery` 用于重投去重。
   - 暂停期间不响应唤醒（暂停是显式意图）。
 
+- **巡检的常驻归守护进程，侧栏只读状态**（`scripts/patrol-daemon.mjs` + `cli/src/patrol/daemon-state.ts`）：
+  TUI 内的常驻（`hint.start()`）随进程退出而结束，要长期跑就用 systemd --user 托管无头守护进程。
+  - 守护进程每 5s 心跳写 `.haji/patrol/daemon.json`（pid / repo / status / tasks / activity），
+    侧栏读它判断「外部在跑」，**不联网、不翻进程命令行**。
+  - 两条失效判据缺一不可：心跳陈旧（>30s，兜住卡死）与 pid 已消失（兜住残留文件）；
+    任一命中即当作没有守护进程，侧栏退回「就绪」或本会话常驻，绝不让坏文件卡死入口。
+  - 同一份 `.haji/patrol` store 只应有一个写入者：守护进程在跑时 `hint.start()` 直接拒绝并提示
+    `systemctl --user stop haji-patrol`，`/patrol stop` 也改提示同一条命令，而不是谎称「没有运行」。
+  - 改 `wakeUrl` 或重建 `dist` 后必须 `systemctl --user restart haji-patrol`（配置与代码都不热切换）。
+
 ## 斜杠指令：立即执行通道（回合进行中）
 
 回合进行中的输入默认进 `pendingInputs` 排队，等本轮结束再分发（`/compact`、`/clear` 必须如此）。
