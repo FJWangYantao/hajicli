@@ -9,9 +9,11 @@ import { COST_LOG_MIN_COLUMNS, COST_LOG_MIN_ROWS } from "../dist/cost-log-page.j
 import {
   costLogHit,
   inspectorHit,
+  patrolHit,
   requestDetailHit,
   resolveOverlayPage,
 } from "../dist/overlay-page.js";
+import { PATROL_PAGE_MIN_COLUMNS, PATROL_PAGE_MIN_ROWS } from "../dist/patrol-page.js";
 
 /** 整页视图的纯渲染决策：选层、最小尺寸判定、帧几何 → 屏幕命中区域。 */
 const AT = Date.parse("2024-01-02T03:04:05Z");
@@ -171,4 +173,71 @@ test("费用日志命中区域带上每项行数；请求详情页没有列表",
   assert.equal(requestHit.listWidth, 0);
   assert.equal(requestHit.itemHeight, 1);
   assert.equal(requestHit.backRow, 3 + requestPage.request.back.row);
+});
+
+function patrolState(overrides = {}) {
+  return {
+    jobs: [
+      {
+        prNumber: 6,
+        branch: "haji/x",
+        targetBranch: "master",
+        statusLabel: "审查中",
+        terminal: false,
+        headSha: "398d09d",
+        fixRounds: 0,
+        adjudicationRounds: 0,
+        costCny: 0.01,
+        taskBrief: "任务",
+      },
+    ],
+    selectedIndex: 0,
+    running: true,
+    paused: false,
+    repo: "owner/repo",
+    ...overrides,
+  };
+}
+
+test("巡检页：排出整屏内容并给出页面名，不干扰其它层", () => {
+  const page = resolveOverlayPage(undefined, undefined, 120, 40, patrolState());
+  assert.equal(page.pageName, "PR 巡检页");
+  assert.equal(page.tooSmall, false);
+  assert.ok(page.patrol);
+  assert.equal(page.rows, page.patrol?.rows);
+  assert.equal(page.inspector, undefined);
+  assert.equal(page.costLog, undefined);
+});
+
+test("巡检页：终端小于最小尺寸时判太小，页面名仍是巡检页", () => {
+  const narrow = resolveOverlayPage(
+    undefined,
+    undefined,
+    PATROL_PAGE_MIN_COLUMNS - 1,
+    40,
+    patrolState(),
+  );
+  assert.equal(narrow.tooSmall, true);
+  assert.equal(narrow.pageName, "PR 巡检页");
+
+  const short = resolveOverlayPage(
+    undefined,
+    undefined,
+    120,
+    PATROL_PAGE_MIN_ROWS - 1,
+    patrolState(),
+  );
+  assert.equal(short.tooSmall, true);
+});
+
+test("巡检页命中区域与费用列表页同构（行号加对话区首行、列号转 1 基）", () => {
+  const page = resolveOverlayPage(undefined, undefined, 120, 40, patrolState());
+  assert.ok(page.patrol);
+  const hit = patrolHit(page.patrol, 7);
+  assert.equal(hit.listTop, 7 + page.patrol.listTop);
+  assert.equal(hit.listLeft, page.patrol.listLeft + 1);
+  assert.equal(hit.listOffset, page.patrol.listOffset);
+  assert.equal(hit.itemHeight, page.patrol.itemHeight);
+  assert.equal(hit.backRow, 7 + page.patrol.back.row);
+  assert.equal(hit.backLeft, page.patrol.back.left + 1);
 });

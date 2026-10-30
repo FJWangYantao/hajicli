@@ -8,6 +8,7 @@ import type readline from "node:readline";
 import type { ContextItemGroup } from "./context-breakdown.js";
 import { type CostLogSort, sortRequestDetails } from "./cost-log-page.js";
 import type { RequestCostDetail } from "./cost-tracker.js";
+import type { PatrolPageState } from "./patrol-page.js";
 import { collectTurnDetails } from "./turn-detail-page.js";
 
 /** PgUp/PgDn 一次移动的行数。 */
@@ -255,6 +256,48 @@ export function selectCostLogItem(state: CostLogPageState, index: number): boole
     return true;
   }
   if (index >= state.details.length || index === state.selectedIndex) return false;
+  state.selectedIndex = index;
+  return true;
+}
+
+// ── PR 巡检页（单层列表：任务 → 详情行）──
+
+/** ↑↓/PgUp/PgDn/滚轮/点击共用：移动选中项并夹紧到有效范围。 */
+export function movePatrolSelection(state: PatrolPageState, delta: number): boolean {
+  if (delta === 0) return false;
+  const next = clamp(state.selectedIndex + delta, state.jobs.length - 1);
+  if (next === state.selectedIndex) return false;
+  state.selectedIndex = next;
+  return true;
+}
+
+export type PatrolCommand = { type: "back" } | { type: "move"; delta: number };
+
+/** 巡检页的按键：只接管导航键，返回 undefined 表示交还输入框。 */
+export function patrolKeyCommand(key: readline.Key): PatrolCommand | undefined {
+  switch (key.name) {
+    case "escape":
+      return { type: "back" };
+    case "up":
+      return { type: "move", delta: -1 };
+    case "down":
+      return { type: "move", delta: 1 };
+    case "pageup":
+      return { type: "move", delta: -INSPECTOR_PAGE_ROWS };
+    case "pagedown":
+      return { type: "move", delta: INSPECTOR_PAGE_ROWS };
+    case "home":
+      return key.ctrl ? { type: "move", delta: -Number.MAX_SAFE_INTEGER } : undefined;
+    case "end":
+      return key.ctrl ? { type: "move", delta: Number.MAX_SAFE_INTEGER } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** 巡检页内点中第 index 项。 */
+export function selectPatrolItem(state: PatrolPageState, index: number): boolean {
+  if (index >= state.jobs.length || index === state.selectedIndex) return false;
   state.selectedIndex = index;
   return true;
 }

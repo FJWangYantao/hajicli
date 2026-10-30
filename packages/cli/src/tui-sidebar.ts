@@ -829,8 +829,8 @@ export function buildSidebarFrame(
     }
   }
 
-  // ── PR 巡检：可一键启动的入口行（代理之后、扩展之前）──
-  // 只占一行：可操作时用强调色 + ▸，不可操作（缺令牌 / 运行中）退成次要色。
+  // ── PR 巡检：入口行（代理之后、扩展之前）──
+  // 只占一行：可操作（就绪 / 运行中）时加 ▸，不可操作（缺令牌）退成次要色。
   if (state.patrol && upperBudget() >= 1) {
     const patrol = state.patrol;
     const entryRow = rows.length;
@@ -838,8 +838,8 @@ export function buildSidebarFrame(
       patrol.status === "running"
         ? fitHint(
             [
-              `巡检中 · ${patrol.tasks ?? 0} 个任务${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""}`,
-              `巡检中 · ${patrol.tasks ?? 0} 个任务`,
+              `巡检中 · ${patrol.tasks ?? 0} 个任务${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""} · 点此查看`,
+              `巡检中 · ${patrol.tasks ?? 0} 个任务 · 查看`,
               "巡检中",
             ],
             contentW,
@@ -859,7 +859,8 @@ export function buildSidebarFrame(
               ],
               contentW,
             );
-    const actionable = patrol.status === "ready";
+    // 就绪（点此启动）与运行中（点此看任务列表）都可点；缺令牌仍不可点。
+    const actionable = patrol.status === "ready" || patrol.status === "running";
     // 配色按状态区分：巡检中橙（主题 yellow 为琥珀橙）、有待接管 PR 绿、
     // 未启动灰；缺令牌用橙提示「需要处理」，避免和「已就绪但没活干」混为一谈。
     const color =

@@ -19,6 +19,13 @@ import {
 } from "./cost-log-page.js";
 import type { ContextInspectorState, CostLogPageState, OverlayHit } from "./overlay-navigation.js";
 import {
+  buildPatrolFrame,
+  PATROL_PAGE_MIN_COLUMNS,
+  PATROL_PAGE_MIN_ROWS,
+  type PatrolPageFrame,
+  type PatrolPageState,
+} from "./patrol-page.js";
+import {
   buildRequestDetailFrame,
   REQUEST_DETAIL_MIN_COLUMNS,
   REQUEST_DETAIL_MIN_ROWS,
@@ -37,6 +44,7 @@ export interface OverlayPageFrames {
   request?: RequestDetailFrame;
   turn?: TurnDetailFrame;
   costLog?: CostLogFrame;
+  patrol?: PatrolPageFrame;
 }
 
 export interface OverlayPageResolution extends OverlayPageFrames {
@@ -63,7 +71,10 @@ export function resolveOverlayPage(
   costLog: CostLogPageState | undefined,
   width: number,
   height: number,
+  patrol?: PatrolPageState,
 ): OverlayPageResolution {
+  // PR 巡检页是独立的单层页面，与上面几层互斥（打开时会关掉其它页面）。
+  const patrolFrame = patrol ? buildPatrolFrame(patrol, width, height) : undefined;
   const inspectorFrame = inspector
     ? buildContextInspectorFrame(
         {
@@ -115,30 +126,36 @@ export function resolveOverlayPage(
         )
       : undefined;
 
-  const pageMinColumns = requestFrame
-    ? REQUEST_DETAIL_MIN_COLUMNS
-    : turnFrame
-      ? TURN_DETAIL_MIN_COLUMNS
-      : costLogFrame
-        ? COST_LOG_MIN_COLUMNS
-        : CONTEXT_INSPECTOR_MIN_COLUMNS;
-  const pageMinRows = requestFrame
-    ? REQUEST_DETAIL_MIN_ROWS
-    : turnFrame
-      ? TURN_DETAIL_MIN_ROWS
-      : costLogFrame
-        ? COST_LOG_MIN_ROWS
-        : CONTEXT_INSPECTOR_MIN_ROWS;
-  const pageName = requestFrame
-    ? "请求详情页"
-    : turnFrame
-      ? "回合详情页"
-      : costLogFrame
-        ? "费用日志页"
-        : "上下文详情页";
+  const pageMinColumns = patrolFrame
+    ? PATROL_PAGE_MIN_COLUMNS
+    : requestFrame
+      ? REQUEST_DETAIL_MIN_COLUMNS
+      : turnFrame
+        ? TURN_DETAIL_MIN_COLUMNS
+        : costLogFrame
+          ? COST_LOG_MIN_COLUMNS
+          : CONTEXT_INSPECTOR_MIN_COLUMNS;
+  const pageMinRows = patrolFrame
+    ? PATROL_PAGE_MIN_ROWS
+    : requestFrame
+      ? REQUEST_DETAIL_MIN_ROWS
+      : turnFrame
+        ? TURN_DETAIL_MIN_ROWS
+        : costLogFrame
+          ? COST_LOG_MIN_ROWS
+          : CONTEXT_INSPECTOR_MIN_ROWS;
+  const pageName = patrolFrame
+    ? "PR 巡检页"
+    : requestFrame
+      ? "请求详情页"
+      : turnFrame
+        ? "回合详情页"
+        : costLogFrame
+          ? "费用日志页"
+          : "上下文详情页";
   // 页面比终端还小的时候不渲染页面内容：一行说明足够，也避免行宽溢出打乱整帧。
   const tooSmall = Boolean(
-    (inspectorFrame || costLogFrame || turnFrame || requestFrame) &&
+    (inspectorFrame || costLogFrame || turnFrame || requestFrame || patrolFrame) &&
       (width < pageMinColumns || height < pageMinRows),
   );
 
@@ -147,9 +164,15 @@ export function resolveOverlayPage(
     request: requestFrame,
     turn: turnFrame,
     costLog: costLogFrame,
+    patrol: patrolFrame,
     tooSmall,
     pageName,
-    rows: inspectorFrame?.rows ?? requestFrame?.rows ?? turnFrame?.rows ?? costLogFrame?.rows,
+    rows:
+      patrolFrame?.rows ??
+      inspectorFrame?.rows ??
+      requestFrame?.rows ??
+      turnFrame?.rows ??
+      costLogFrame?.rows,
   };
 }
 
@@ -180,6 +203,11 @@ export function costLogHit(frame: ListFrameGeometry, screenTop: number): Overlay
     backLeft: frame.back.left + 1,
     backWidth: frame.back.width,
   };
+}
+
+/** PR 巡检页与费用列表页几何一致，直接复用同一张命中表。 */
+export function patrolHit(frame: PatrolPageFrame, screenTop: number): OverlayHit {
+  return costLogHit(frame, screenTop);
 }
 
 /** 请求详情页没有列表：只登记返回按钮，列表区域留空（点击一律落到空）。 */

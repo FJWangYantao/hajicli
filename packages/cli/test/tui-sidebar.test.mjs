@@ -1061,13 +1061,25 @@ test("patrol entry renders one actionable row with a hit region", () => {
 });
 
 test("patrol entry degrades text and stops being clickable when not actionable", () => {
+  // 运行中也可点：点进去看任务列表（启动动作由调用方按状态分流）。
   const running = buildSidebarFrame(
     sidebarState({ patrol: { status: "running", pending: 0, tasks: 3, merged: 1 } }),
     34,
     32,
   );
-  assert.match(running.rows.map(stripAnsi).join("\n"), /巡检中 · 3 个任务 · 已合并 1/);
-  assert.ok(!running.regions.some((region) => region.id === "patrol.entry"));
+  assert.match(running.rows.map(stripAnsi).join("\n"), /巡检中 · 3 个任务/);
+  assert.ok(running.regions.some((region) => region.id === "patrol.entry"));
+
+  const wideRunning = buildSidebarFrame(
+    sidebarState({ patrol: { status: "running", pending: 0, tasks: 3, merged: 1 } }),
+    48,
+    32,
+  );
+  assert.match(
+    wideRunning.rows.map(stripAnsi).join("\n"),
+    /巡检中 · 3 个任务 · 已合并 1 · 点此查看/,
+  );
+  assert.ok(wideRunning.regions.some((region) => region.id === "patrol.entry"));
 
   const noToken = buildSidebarFrame(
     sidebarState({ patrol: { status: "no-token", pending: 0 } }),

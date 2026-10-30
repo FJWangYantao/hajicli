@@ -47,14 +47,24 @@ import {
   moveCostLogSelection,
   moveInspectorCategory,
   moveInspectorItem,
+  movePatrolSelection,
   type OverlayHit,
   overlayClickTarget,
+  patrolKeyCommand,
   scrollInspector,
   selectCostLogItem,
   selectInspectorItem,
+  selectPatrolItem,
 } from "./overlay-navigation.js";
-import { costLogHit, inspectorHit, requestDetailHit, resolveOverlayPage } from "./overlay-page.js";
+import {
+  costLogHit,
+  inspectorHit,
+  patrolHit,
+  requestDetailHit,
+  resolveOverlayPage,
+} from "./overlay-page.js";
 import { paperSidebarEnabled } from "./paper-sidebar.js";
+import type { PatrolPageState } from "./patrol-page.js";
 import {
   buildQueueSteerHits,
   buildQueueSteerRows,
@@ -468,6 +478,13 @@ export class TerminalUI {
   private costLogProvider?: (sort: CostLogSort) => RequestCostDetail[];
   /** 上一帧的命中区域（屏幕绝对行列，1 基）；点击行与「Esc 返回」用。 */
   private costLogHit?: OverlayHit;
+  /**
+   * PR 巡检页状态；undefined 表示页面关闭。
+   * 与上面两页同构的单层列表：数据由外部（巡检存储）投影后推入，页面只负责排版。
+   */
+  private patrolPage?: PatrolPageState;
+  /** 上一帧的命中区域（屏幕绝对行列，1 基）；点击任务行与「Esc 返回」用。 */
+  private patrolPageHit?: OverlayHit;
   /** 侧栏显示时对话区最右列（1-based）；0 表示侧栏隐藏，鼠标可整行选字。 */
   private chatAreaRightEdgeColumn = 0;
   /** 右侧会话信息栏（默认开启，可在 /config 中关闭并持久化）。 */
@@ -824,6 +841,7 @@ export class TerminalUI {
       this.startupHeaderVisible &&
       !this.contextInspector &&
       !this.costLog &&
+      !this.patrolPage &&
       !this.activeSelection &&
       Boolean(this.activeInput) &&
       !this.activeInput?.sensitive &&
@@ -977,6 +995,7 @@ export class TerminalUI {
   openContextInspector(): boolean {
     if (!this.interactive) return false;
     if (this.costLog) this.closeCostLog();
+    if (this.patrolPage) this.closePatrolPage();
     if (this.contextInspector) return true;
     const provider = this.contextItemsProvider;
     const groups = provider ? provider() : [];
@@ -1029,6 +1048,7 @@ export class TerminalUI {
   openCostLog(sort: CostLogSort = "cost"): boolean {
     if (!this.interactive) return false;
     if (this.contextInspector) this.closeContextInspector();
+    if (this.patrolPage) this.closePatrolPage();
     if (this.costLog) {
       // 已打开时又点了另一行：原地换排序视角，不重新快照（否则选中项会被重置）。
       if (this.costLog.sort !== sort) {
@@ -1061,6 +1081,67 @@ export class TerminalUI {
     if (!this.costLog) return;
     this.costLog = undefined;
     this.costLogHit = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+  }
+
+  /** PR 巡检页是否打开。 */
+  isPatrolPageOpen(): boolean {
+    return this.patrolPage !== undefined;
+  }
+
+  /**
+   * 打开 PR 巡检页：覆盖对话区，列出巡检任务（状态 / 分支 / head / 轮次 / 费用）。
+   *
+   * 与其它整页视图互斥（打开时会关掉详情页与费用页）。数据由调用方从巡检存储投影后传入，
+   * 之后用 updatePatrolPage 刷新，页面本身不读文件。返回 false 表示非交互模式，没打开。
+   */
+  openPatrolPage(state: PatrolPageState): boolean {
+    if (!this.interactive) return false;
+    if (this.contextInspector) this.closeContextInspector();
+    if (this.costLog) this.closeCostLog();
+    this.patrolPage = {
+      ...state,
+      jobs: [...state.jobs],
+      selectedIndex: Math.min(Math.max(0, state.selectedIndex), Math.max(0, state.jobs.length - 1)),
+    };
+    // 页面覆盖对话区：清掉进行中的选区与待点击状态，避免两套交互同时生效。
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    this.pendingMouseSelection = undefined;
+    this.pendingInputSelection = undefined;
+    this.pendingSidebarClick = undefined;
+    this.pendingInspectorClickRow = undefined;
+    this.scheduleRender(true);
+    return true;
+  }
+
+  /**
+   * 页面打开期间刷新任务列表（巡检跑起来后状态会变）。
+   * 选中下标按位置保持并夹紧；内容没变化时不重绘，避免定时刷新把屏幕刷花。
+   */
+  updatePatrolPage(state: PatrolPageState): void {
+    const current = this.patrolPage;
+    if (!current) return;
+    const jobs = [...state.jobs];
+    const selectedIndex = Math.min(
+      Math.max(0, current.selectedIndex),
+      Math.max(0, jobs.length - 1),
+    );
+    const changed =
+      current.running !== state.running ||
+      current.paused !== state.paused ||
+      current.repo !== state.repo ||
+      current.selectedIndex !== selectedIndex ||
+      JSON.stringify(current.jobs) !== JSON.stringify(jobs);
+    this.patrolPage = { ...state, jobs, selectedIndex };
+    if (changed) this.scheduleRender(true);
+  }
+
+  closePatrolPage(): void {
+    if (!this.patrolPage) return;
+    this.patrolPage = undefined;
+    this.patrolPageHit = undefined;
     this.pendingInspectorClickRow = undefined;
     this.scheduleRender(true);
   }
@@ -1155,6 +1236,27 @@ export class TerminalUI {
     const target = overlayClickTarget(hit, column, row);
     if (target === "back") this.backCostLog();
     else if (target !== undefined && selectCostLogItem(state, target)) this.scheduleRender(true);
+  }
+
+  /** PR 巡检页的按键：只接管导航键（↑↓/PgUp/PgDn/Esc），其余键仍进输入框。 */
+  private handlePatrolKey(key: readline.Key): boolean {
+    const state = this.patrolPage;
+    if (!state) return false;
+    const command = patrolKeyCommand(key);
+    if (!command) return false;
+    if (command.type === "back") this.closePatrolPage();
+    else if (movePatrolSelection(state, command.delta)) this.scheduleRender(true);
+    return true;
+  }
+
+  /** PR 巡检页内的点击：命中「返回」按钮或某一项；其余位置忽略。 */
+  private handlePatrolClick(column: number, row: number): void {
+    const hit = this.patrolPageHit;
+    const state = this.patrolPage;
+    if (!hit || !state) return;
+    const target = overlayClickTarget(hit, column, row);
+    if (target === "back") this.closePatrolPage();
+    else if (target !== undefined && selectPatrolItem(state, target)) this.scheduleRender(true);
   }
 
   /** PgUp/PgDn 与滚轮：只滚原文；上限取上一帧的实际可滚动行数。 */
@@ -3078,6 +3180,10 @@ export class TerminalUI {
     // 详情页打开时滚轮归原文；费用日志页没有独立滚动区，滚轮等价于上下移动选中项。
     const rows = event.wheelRows ?? 0;
     const step = rows === 0 ? 0 : rows > 0 ? INSPECTOR_WHEEL_ROWS : -INSPECTOR_WHEEL_ROWS;
+    if (this.patrolPage) {
+      if (movePatrolSelection(this.patrolPage, step)) this.scheduleRender(true);
+      return;
+    }
     if (this.costLog) {
       this.moveCostLogSelection(step);
       return;
@@ -3118,7 +3224,7 @@ export class TerminalUI {
       return;
     }
     // 详情页覆盖了对话区：按下只记录待点击行，不产生文本选区。
-    if (this.contextInspector || this.costLog) {
+    if (this.contextInspector || this.costLog || this.patrolPage) {
       this.pendingMouseSelection = undefined;
       this.pendingInputSelection = undefined;
       this.pendingSidebarClick = undefined;
@@ -3269,7 +3375,8 @@ export class TerminalUI {
       this.pendingInspectorClickRow = undefined;
       if (pressedRow === event.row) {
         // 两个整页视图共用同一个「按下-松开同一行才算点击」的通道，按当前打开的是谁分发。
-        if (this.costLog) this.handleCostLogClick(event.column, event.row);
+        if (this.patrolPage) this.handlePatrolClick(event.column, event.row);
+        else if (this.costLog) this.handleCostLogClick(event.column, event.row);
         else this.handleInspectorClick(event.column, event.row);
       }
       return;
@@ -3770,7 +3877,12 @@ export class TerminalUI {
    */
   private updateChatHover(column: number, row: number): void {
     let next: { type: "block"; id: number } | { type: "fold"; id: number } | undefined;
-    if (!this.contextInspector && !this.costLog && !this.isPointerInSidebar(column)) {
+    if (
+      !this.contextInspector &&
+      !this.costLog &&
+      !this.patrolPage &&
+      !this.isPointerInSidebar(column)
+    ) {
       const logicalRow = this.getLogicalChatRow(row);
       if (logicalRow !== undefined) {
         for (const [blockId, range] of this.toolBlockRanges) {
@@ -4039,6 +4151,7 @@ export class TerminalUI {
     this.pendingWheelRows = 0;
     this.contextInspectorHit = undefined;
     this.costLogHit = undefined;
+    this.patrolPageHit = undefined;
     this.setMouseMotionEnabled(true);
     const fullRefresh =
       width !== this.renderedScreenWidth ||
@@ -4071,7 +4184,13 @@ export class TerminalUI {
     height: number,
     screenTop: number,
   ): string[] | undefined {
-    const page = resolveOverlayPage(this.contextInspector, this.costLog, width, height);
+    const page = resolveOverlayPage(
+      this.contextInspector,
+      this.costLog,
+      width,
+      height,
+      this.patrolPage,
+    );
     const turnDetailView = this.costLog?.turnDetail;
     // 整页视图整块替换对话区（活动行、折叠段、悬停卡片都不参与本帧）。
     if (page.inspector && !page.tooSmall) {
@@ -4101,6 +4220,13 @@ export class TerminalUI {
     } else if (!page.request) {
       // 请求详情页的命中表在上面单独写好了，这里不能覆盖掉。
       this.costLogHit = undefined;
+    }
+    if (page.patrol && !page.tooSmall) {
+      this.patrolPageHit = patrolHit(page.patrol, screenTop);
+      // 渲染时会把超出范围的下标夹紧（比如刷新后任务变少），这里回写。
+      if (this.patrolPage) this.patrolPage.selectedIndex = page.patrol.selectedIndex;
+    } else {
+      this.patrolPageHit = undefined;
     }
     if (page.tooSmall)
       return [`${SEQ.muted}终端太小，放不下${page.pageName}（Esc 返回）${SEQ.reset}`];
@@ -4412,7 +4538,7 @@ export class TerminalUI {
       visibleEnd: args.visibleEnd,
       chatRegionStart,
       chatPadding: args.chatPadding,
-      suppressed: Boolean(this.contextInspector),
+      suppressed: Boolean(this.contextInspector) || Boolean(this.patrolPage),
     });
     frame += cursorState;
     frame += "\x1b[?2026l";
@@ -4464,7 +4590,8 @@ export class TerminalUI {
     // 右侧会话信息栏：只占对话区高度，顶框、输入框与状态栏都收窄到左区宽度，
     // 让整块左侧内容的右边界对齐；侧栏下方的右侧留背景空白，不再横跨整行。
     // 整页视图（上下文详情 / 费用日志）打开时侧栏临时收起，把整行宽度让给页面（退出即恢复）。
-    const pageOpen = Boolean(this.contextInspector) || Boolean(this.costLog);
+    const pageOpen =
+      Boolean(this.contextInspector) || Boolean(this.costLog) || Boolean(this.patrolPage);
     const sidebarWidth = pageOpen ? 0 : resolveSidebarWidth(width, height, this.sidebarEnabled);
     const sidebarVisible = sidebarWidth > 0;
     const leftAreaWidth = Math.max(
@@ -4863,6 +4990,10 @@ export class TerminalUI {
     }
     // 费用日志页同样是只读覆盖层：导航键先归它，Esc 只关页面。
     if (this.handleCostLogKey(key)) {
+      return;
+    }
+    // PR 巡检页同样是只读覆盖层：导航键先归它，Esc 只关页面。
+    if (this.handlePatrolKey(key)) {
       return;
     }
     const activeInput = this.activeInput;

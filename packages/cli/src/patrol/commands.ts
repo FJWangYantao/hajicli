@@ -93,7 +93,7 @@ function usage(ctx: PatrolCommandContext): void {
   ctx.writeLine(colors.gray("  /patrol retry <PR>          重置卡住 / 已终止的任务"));
 }
 
-const STATUS_LABELS: Record<string, string> = {
+export const STATUS_LABELS: Record<string, string> = {
   discovered: "已登记",
   reviewing: "审查中",
   awaiting_changes: "退回修改",
