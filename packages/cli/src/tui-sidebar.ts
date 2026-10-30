@@ -96,11 +96,12 @@ export interface SidebarPricingAgentState {
 
 /**
  * 侧栏 PR 巡检入口的状态。
- * 只有 `ready` 是可操作状态（点一下自动配置并启动）；其余两种只做状态提示。
+ * `ready`（点一下启动）/ `running`（巡检中）/ `waiting`（常驻但没活，在等新 PR）可点，
+ * 点进去看任务列表；`no-token` 只做状态提示。
  */
 export interface SidebarPatrolState {
-  status: "ready" | "running" | "no-token";
-  /** ready 时探测到的、分支命中 agent 前缀的开放 PR 数。 */
+  status: "ready" | "running" | "waiting" | "no-token";
+  /** ready 时探测到的、命中接管策略的开放 PR 数。 */
   pending: number;
   /** running 时的任务总数。 */
   tasks?: number;
@@ -846,27 +847,37 @@ export function buildSidebarFrame(
             ],
             contentW,
           )
-        : patrol.status === "no-token"
+        : patrol.status === "waiting"
           ? fitHint(
-              ["PR 巡检 · 需要 GitHub 令牌（gh auth login）", "PR 巡检 · 需令牌", "需令牌"],
-              contentW,
-            )
-          : fitHint(
               [
-                patrol.pending > 0
-                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此巡查`
-                  : "PR 巡检 · 点此巡查",
-                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 巡查` : "PR 巡检 · 巡查",
-                "巡查",
+                `PR 巡检 · 等待新 PR${patrol.tasks ? ` · 已完成 ${patrol.merged ?? 0}/${patrol.tasks}` : ""} · 点此查看`,
+                "PR 巡检 · 等待新 PR · 点此查看",
+                "等待中",
               ],
               contentW,
-            );
-    // 就绪（点此启动）与运行中（点此看任务列表）都可点；缺令牌仍不可点。
-    const actionable = patrol.status === "ready" || patrol.status === "running";
+            )
+          : patrol.status === "no-token"
+            ? fitHint(
+                ["PR 巡检 · 需要 GitHub 令牌（gh auth login）", "PR 巡检 · 需令牌", "需令牌"],
+                contentW,
+              )
+            : fitHint(
+                [
+                  patrol.pending > 0
+                    ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此巡查`
+                    : "PR 巡检 · 点此巡查",
+                  patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 巡查` : "PR 巡检 · 巡查",
+                  "巡查",
+                ],
+                contentW,
+              );
+    // 就绪（点此启动）与运行中 / 等待中（点此看任务列表）都可点；缺令牌仍不可点。
+    const actionable =
+      patrol.status === "ready" || patrol.status === "running" || patrol.status === "waiting";
     // 配色按状态区分：巡检中橙（主题 yellow 为琥珀橙）、有待接管 PR 绿、
     // 未启动灰；缺令牌用橙提示「需要处理」，避免和「已就绪但没活干」混为一谈。
     const color =
-      patrol.status === "running" || patrol.status === "no-token"
+      patrol.status === "running" || patrol.status === "waiting" || patrol.status === "no-token"
         ? SEQ.yellow
         : patrol.pending > 0
           ? SEQ.green

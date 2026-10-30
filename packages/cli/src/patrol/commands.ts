@@ -22,6 +22,11 @@ export interface PatrolCommandContext {
   token?: string;
   /** start 的中止信号；缺省时用进程级 SIGINT/SIGTERM。 */
   signal?: AbortSignal;
+  /**
+   * 停止侧栏启动的常驻巡查（由 index.ts 注入）；返回是否真的停掉了一个在跑的循环。
+   * 缺省（无头 / 非交互）时 `/patrol stop` 只提示没有常驻巡查。
+   */
+  stopLoop?: () => boolean;
 }
 
 export async function handlePatrolCommand(
@@ -66,6 +71,8 @@ async function dispatchPatrolCommand(
       return start(ctx, parts.slice(2));
     case "run-once":
       return runOnce(ctx);
+    case "stop":
+      return stop(ctx);
     default:
       usage(ctx);
       ctx.writeLine(colors.failLine(`未知子命令: ${sub}`));
@@ -78,6 +85,7 @@ function usage(ctx: PatrolCommandContext): void {
   ctx.writeLine(
     colors.gray("  /patrol start [--interval <秒>]   一步启动常驻巡检（仓库与令牌自动推断）"),
   );
+  ctx.writeLine(colors.gray("  /patrol stop                停止侧栏启动的常驻巡查"));
   ctx.writeLine(colors.gray("  /patrol run-once            单轮巡检（配合外部定时）"));
   ctx.writeLine(colors.gray("  /patrol inspect <PR>        查看单个任务详情"));
   ctx.writeLine(
@@ -246,6 +254,8 @@ async function register(
     taskBrief: brief,
     acceptance: values.get("accept") ?? [],
     scope: values.get("scope") ?? [],
+    // 手动登记即显式授权：允许自动合并（自动登记才会因「作者非本人」被降级为仅审查）。
+    mergeAuthorized: true,
   });
   ctx.writeLine(colors.okLine(`已登记 PR #${number}（任务 ${taskId}）。下一轮巡检将自动接管。`));
 }
@@ -317,6 +327,15 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
   } finally {
     ctx.writeLine(colors.gray("PR Patrol 已停止。"));
   }
+}
+
+function stop(ctx: PatrolCommandContext): void {
+  const stopped = ctx.stopLoop?.() ?? false;
+  ctx.writeLine(
+    stopped
+      ? colors.okLine("常驻巡查已停止（点侧栏入口可重新开始）")
+      : colors.gray("当前没有侧栏启动的常驻巡查在运行"),
+  );
 }
 
 async function runOnce(ctx: PatrolCommandContext): Promise<void> {

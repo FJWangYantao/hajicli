@@ -1,3 +1,4 @@
+export * from "./adopt.js";
 export * from "./budget.js";
 export * from "./forge.js";
 export * from "./merge-gate.js";

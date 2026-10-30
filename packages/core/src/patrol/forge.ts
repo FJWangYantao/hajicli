@@ -20,6 +20,10 @@ export interface ForgePullRequest {
   title: string;
   mergeable: boolean | null;
   updatedAt: string;
+  /** 作者登录名（GitHub 的 user.login）；适配器无法提供时缺省。 */
+  author?: string;
+  /** PR 的 label 名列表。 */
+  labels?: string[];
 }
 
 export interface PatrolForgeAdapter {
@@ -41,4 +45,9 @@ export interface PatrolForgeAdapter {
     options: { headSha: string; method?: "merge" | "squash" | "rebase" },
   ): Promise<{ merged: boolean; sha?: string; alreadyMerged?: boolean }>;
   close(number: number): Promise<void>;
+  /**
+   * 当前令牌对应的登录名，用于「本人提交」判定；适配器不支持或读不到时返回 null。
+   * 可选：缺省实现时按「无法判定作者」处理（只靠分支前缀 / label 接管）。
+   */
+  getViewerLogin?(): Promise<string | null>;
 }

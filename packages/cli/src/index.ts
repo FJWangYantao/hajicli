@@ -1535,7 +1535,7 @@ async function main() {
   const buildPatrolPageState = (): PatrolPageState => ({
     jobs: projectPatrolJobs(),
     selectedIndex: 0,
-    running: patrolHintState?.status === "running",
+    running: patrolHintState?.status === "running" || patrolHintState?.status === "waiting",
     paused: false,
     ...(patrolHintState?.repo ? { repo: patrolHintState.repo } : {}),
   });
@@ -1570,8 +1570,8 @@ async function main() {
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
       else if (id === "patrol.entry") {
-        // 就绪时点一下只启动巡查，侧栏保持可见并变色；运行中再点才进页面看任务。
-        if (patrolHintState?.status === "running") {
+        // 就绪时点一下启动常驻巡查，侧栏保持可见并变色；运行中 / 等待中再点进页面看任务。
+        if (patrolHintState?.status === "running" || patrolHintState?.status === "waiting") {
           ui.openPatrolPage(buildPatrolPageState());
         } else {
           void patrolHint?.start();
@@ -4332,6 +4332,11 @@ async function main() {
             {
               cwd: process.cwd(),
               writeLine: (text) => immediateWriteLine(sanitizeTerminalText(text)),
+              stopLoop: () => {
+                if (!patrolHint?.isRunning()) return false;
+                patrolHint.stop();
+                return true;
+              },
             },
             { parts },
           );

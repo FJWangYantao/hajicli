@@ -69,9 +69,38 @@ test("/patrol register：写入来源登记；缺配置报错", async () => {
   const registration = store.getRegistration(patrolJobId("owner/repo", 7));
   assert.equal(registration.taskId, "t-7");
   assert.deepEqual(registration.acceptance, ["测试覆盖"]);
+  assert.equal(registration.mergeAuthorized, true, "手动登记是显式授权，允许自动合并");
 
   await handlePatrolCommand(ctx, { parts: ["patrol", "unregister", "7"] });
   assert.equal(store.getRegistration(patrolJobId("owner/repo", 7)), null);
+});
+
+test("/patrol stop：有常驻巡查时停止，没有时只提示", async () => {
+  const ctx = makeCtx();
+  let running = true;
+  let stopped = 0;
+  const ctxWithLoop = {
+    ...ctx,
+    stopLoop: () => {
+      if (!running) return false;
+      running = false;
+      stopped += 1;
+      return true;
+    },
+  };
+
+  await handlePatrolCommand(ctxWithLoop, { parts: ["patrol", "stop"] });
+  assert.equal(stopped, 1);
+  assert.ok(ctx.lines.some((line) => line.includes("已停止")));
+
+  await handlePatrolCommand(ctxWithLoop, { parts: ["patrol", "stop"] });
+  assert.equal(stopped, 1, "没有在跑的循环不应重复停止");
+  assert.ok(ctx.lines.some((line) => line.includes("没有侧栏启动的常驻巡查")));
+
+  // 无头场景（ctx 没有 stopLoop）也不能崩。
+  const headless = makeCtx();
+  await handlePatrolCommand(headless, { parts: ["patrol", "stop"] });
+  assert.ok(headless.lines.some((line) => line.includes("没有侧栏启动的常驻巡查")));
 });
 
 test("/patrol pause / resume：切换暂停标记", async () => {

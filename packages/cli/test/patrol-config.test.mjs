@@ -5,9 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { matchAdoptPrefix } from "@hajicli/core";
 import {
   loadPatrolConfig,
-  matchAdoptPrefix,
   parseRepoFromRemote,
   repoFromGitRemote,
   resolvePatrolRepo,
@@ -107,6 +107,20 @@ test("autoAdoptBranchPrefixes：兼容旧键 autoAdoptBranchPrefix", () => {
     autoAdoptBranchPrefixes: ["fix/"],
   });
   assert.deepEqual(loadPatrolConfig(both).autoAdoptBranchPrefixes, ["fix/"]);
+});
+
+test("autoAdoptSelfAuthored / autoAdoptLabels：默认关闭接管本人提交与 label", () => {
+  const base = loadPatrolConfig(tmpDir());
+  assert.equal(base.autoAdoptSelfAuthored, false);
+  assert.deepEqual(base.autoAdoptLabels, []);
+
+  const on = writeConfig(tmpDir(), {
+    autoAdoptSelfAuthored: true,
+    autoAdoptLabels: ["patrol", " patrol ", ""],
+  });
+  const config = loadPatrolConfig(on);
+  assert.equal(config.autoAdoptSelfAuthored, true);
+  assert.deepEqual(config.autoAdoptLabels, ["patrol"]);
 });
 
 test("matchAdoptPrefix：返回命中前缀，未命中或前缀为空返回 undefined", () => {

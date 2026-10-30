@@ -12,8 +12,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  type AdoptPolicy,
   applyAdjudicationToFindings,
   applyPatrolTransition,
+  decideAdoption,
   evaluatePatrolMergeGate,
   isTerminalPatrolStatus,
   latestApplicableDecision,
@@ -29,7 +31,7 @@ import {
   planNextStatusAfterReview,
   resetPatrolJobForNewCommit,
 } from "@hajicli/core";
-import { loadPatrolConfig, matchAdoptPrefix, type PatrolConfig } from "./config.js";
+import { loadPatrolConfig, type PatrolConfig } from "./config.js";
 import { stableFindingId } from "./runners.js";
 import type { ForgePullRequest, PatrolForgeAdapter, PatrolRunners } from "./types.js";
 
@@ -77,6 +79,8 @@ export class PatrolService {
   private readonly runTimeoutMs: number;
   private readonly runsDir: string;
   private readonly disputes = new Map<string, string>();
+  /** `GET /user` 的登录名缓存；undefined = 尚未解析，null = 解析失败。 */
+  private viewerLogin?: string | null;
 
   constructor(options: PatrolServiceOptions) {
     const cwd = options.cwd ?? process.cwd();
@@ -90,19 +94,26 @@ export class PatrolService {
   }
 
   /**
-   * 自动登记 agent 分支的 PR：只写 registry.json，仍走「来源登记是接管前提」的既有路径，
-   * 因此可随时 `/patrol unregister` 收回；未命中前缀的 PR 一律不接管。
+   * 自动登记可接管的 PR：只写 registry.json，仍走「来源登记是接管前提」的既有路径，
+   * 因此可随时 `/patrol unregister` 收回。
+   *
+   * 接管条件（见 core 的 `decideAdoption`）：分支前缀命中 ∥ 本人提交（可配置）∥ 命中授权 label。
+   * 合并授权单独判定：只有「本人提交 / 授权 label / 前缀命中且解析不到登录名」才允许自动合并，
+   * 别人用同样前缀提的 PR 会被接管审查，但不会被自动合并。
    */
-  private adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): void {
-    const prefixes = this.config.autoAdoptBranchPrefixes;
-    if (prefixes.length === 0) return;
+  private async adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): Promise<void> {
+    const policy = await this.adoptPolicy();
     const now = new Date().toISOString();
     for (const pr of prs) {
-      const prefix = matchAdoptPrefix(pr.branch, prefixes);
-      if (!prefix) continue;
+      const decision = decideAdoption(pr, policy);
+      if (!decision.adopted) continue;
       const jobId = patrolJobId(this.adapter.repo, pr.number);
       if (this.store.getRegistration(jobId) || this.store.getJob(jobId)) continue;
-      const taskId = pr.branch.slice(prefix.length).trim() || `pr-${pr.number}`;
+      const taskId =
+        (decision.matchedPrefix
+          ? pr.branch.slice(decision.matchedPrefix.length)
+          : pr.branch
+        ).trim() || `pr-${pr.number}`;
       this.store.saveRegistration({
         jobId,
         repo: this.adapter.repo,
@@ -113,9 +124,33 @@ export class PatrolService {
         taskBrief: pr.title || taskId,
         acceptance: [],
         scope: [],
+        mergeAuthorized: decision.mergeAuthorized,
       });
-      events.push(`自动登记 PR #${pr.number}（分支 ${pr.branch}）`);
+      events.push(
+        `自动登记 PR #${pr.number}（${decision.reason}；${decision.mergeAuthorized ? "允许合并" : "仅审查不合并"}）`,
+      );
     }
+  }
+
+  /** 接管策略快照：配置 + 当前令牌对应的登录名（解析失败时退化为只按前缀 / label 判定）。 */
+  private async adoptPolicy(): Promise<AdoptPolicy> {
+    return {
+      branchPrefixes: this.config.autoAdoptBranchPrefixes,
+      selfAuthored: this.config.autoAdoptSelfAuthored,
+      labels: this.config.autoAdoptLabels,
+      viewerLogin: await this.resolveViewerLogin(),
+    };
+  }
+
+  /** `GET /user` 结果缓存：一次会话只查一次，失败也只查一次。 */
+  private async resolveViewerLogin(): Promise<string | null> {
+    if (this.viewerLogin !== undefined) return this.viewerLogin;
+    try {
+      this.viewerLogin = (await this.adapter.getViewerLogin?.()) ?? null;
+    } catch {
+      this.viewerLogin = null;
+    }
+    return this.viewerLogin;
   }
 
   /**
@@ -126,7 +161,8 @@ export class PatrolService {
    * - 完全空闲时按 `pollIntervalMs` 起指数退避探测新 PR，上限 64 分钟；
    * - 任何一轮有推进都重置退避。signal 中止后退出。
    */
-  async runLoop(signal: AbortSignal): Promise<void> {
+  async runLoop(signal: AbortSignal, options: { idleBackoffCapMs?: number } = {}): Promise<void> {
+    const idleCap = options.idleBackoffCapMs ?? IDLE_BACKOFF_MAX_MS;
     let externalBackoff = 0;
     let idleBackoff = 0;
     while (!signal.aborted) {
@@ -154,7 +190,7 @@ export class PatrolService {
         await sleep(signal, backoffMs(EXTERNAL_RECHECK_MS, externalBackoff));
         externalBackoff += 1;
       } else {
-        await sleep(signal, backoffMs(this.config.pollIntervalMs, idleBackoff));
+        await sleep(signal, Math.min(backoffMs(this.config.pollIntervalMs, idleBackoff), idleCap));
         idleBackoff += 1;
       }
     }
@@ -224,7 +260,7 @@ export class PatrolService {
     const openByNumber = new Map(prs.map((pr) => [pr.number, pr]));
 
     // 0. 自动登记：分支名命中 autoAdoptBranchPrefixes 任一前缀的开放 PR 视为 agent 产出，无需手动 register。
-    this.adoptAgentPullRequests(prs, events);
+    await this.adoptAgentPullRequests(prs, events);
 
     // 1. 为已登记来源的开放 PR 建任务（未登记的不自动接管）。
     for (const pr of prs) {
@@ -550,6 +586,15 @@ export class PatrolService {
       paused: this.store.isPaused(),
     });
     if (!gate.allowed) {
+      if (job.source.mergeAuthorized === false && job.status === "ready_to_merge") {
+        applyPatrolTransition(job, "terminated", {
+          reason: "仅审查：PR 来源未授权自动合并（作者非本人且无授权 label）",
+        });
+        this.store.saveJob(job);
+        await this.postStatusComment(job);
+        events.push(`${job.jobId} 审查通过但来源未授权合并，收敛为仅审查`);
+        return events;
+      }
       if (gate.reasons.some((reason) => reason.includes("合并冲突"))) {
         job.findings.push({
           findingId: "f-merge-conflict",
@@ -636,6 +681,7 @@ export class PatrolService {
       taskBrief: string;
       acceptance: string[];
       scope: string[];
+      mergeAuthorized?: boolean;
     },
   ): PatrolJob {
     const now = new Date().toISOString();
@@ -651,6 +697,9 @@ export class PatrolService {
         sessionId: registration.sessionId,
         origin: registration.origin,
         verified: true,
+        ...(registration.mergeAuthorized === undefined
+          ? {}
+          : { mergeAuthorized: registration.mergeAuthorized }),
       },
       taskBrief: registration.taskBrief,
       acceptance: registration.acceptance,

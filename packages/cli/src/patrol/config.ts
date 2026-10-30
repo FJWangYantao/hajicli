@@ -22,6 +22,13 @@ export interface PatrolConfig {
    * 默认与 worktree 分支前缀一致（`haji/`）；置空数组即关闭自动接管。
    */
   autoAdoptBranchPrefixes: string[];
+  /**
+   * 是否接管「当前令牌本人提交」的 PR（任意分支）。
+   * 默认 false：开启后你自己的 PR 也会被审查 / 自动合并，属于显式选择。
+   */
+  autoAdoptSelfAuthored: boolean;
+  /** 带任一 label 的开放 PR 视为已授权接管（也可授权自动合并）。默认空。 */
+  autoAdoptLabels: string[];
 }
 
 export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
@@ -33,6 +40,8 @@ export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
   pollIntervalMs: 60_000,
   mergeMethod: "merge",
   autoAdoptBranchPrefixes: [WORKTREE_BRANCH_PREFIX],
+  autoAdoptSelfAuthored: false,
+  autoAdoptLabels: [],
 };
 
 export function patrolConfigPath(cwd: string): string {
@@ -68,6 +77,11 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
         ? raw.mergeMethod
         : DEFAULT_PATROL_CONFIG.mergeMethod,
     autoAdoptBranchPrefixes: adoptPrefixesFrom(raw),
+    autoAdoptSelfAuthored:
+      typeof raw.autoAdoptSelfAuthored === "boolean"
+        ? raw.autoAdoptSelfAuthored
+        : DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
+    autoAdoptLabels: [...new Set(stringList(raw.autoAdoptLabels))],
   };
 }
 
@@ -80,11 +94,6 @@ function adoptPrefixesFrom(raw: Record<string, unknown>): string[] {
   const value = raw.autoAdoptBranchPrefixes ?? raw.autoAdoptBranchPrefix;
   if (value === undefined) return [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes];
   return stringOrList(value);
-}
-
-/** 返回分支命中的自动接管前缀；未命中返回 undefined。前缀为空即关闭自动接管。 */
-export function matchAdoptPrefix(branch: string, prefixes: readonly string[]): string | undefined {
-  return prefixes.find((prefix) => prefix !== "" && branch.startsWith(prefix));
 }
 
 /**
