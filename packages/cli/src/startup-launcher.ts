@@ -615,8 +615,8 @@ export function buildStartupLauncher(options: LauncherOptions): {
 }
 
 /**
- * 状态行：左侧「项目 分支 ~改 +增 −删 ?未跟踪 冲突 任务」，右侧「ctx ▰▱▱ 0% · ¥」。
- * 窄时先丢改动明细、再丢分支；临时提示整段顶替左侧。
+ * 状态行：左侧「项目 分支 ~改 +增行 −删行 ?未跟踪 冲突 任务」，右侧「ctx ▰▱▱ 0% · ¥」。
+ * +/− 是已跟踪文件的增删行数（未跟踪新文件只算 ? 文件数）；窄时先丢改动明细、再丢分支；临时提示整段顶替左侧。
  */
 function drawFooter(
   canvas: CellCanvas,
@@ -687,8 +687,8 @@ function drawFooter(
     ? (
         [
           [`~${workspace.modified}`, theme.yellow, workspace.modified],
-          [`+${workspace.added}`, theme.green, workspace.added],
-          [`−${workspace.deleted}`, theme.red, workspace.deleted],
+          [`+${workspace.insertions}`, theme.green, workspace.insertions],
+          [`−${workspace.deletions}`, theme.red, workspace.deletions],
           [`?${workspace.untracked}`, faintHex(), workspace.untracked],
         ] as const
       )

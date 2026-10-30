@@ -29,6 +29,7 @@ import {
   splitGraphemes,
   terminalWidth,
   truncateAnsiText,
+  truncateTailText,
   truncateText,
 } from "./terminal-text.js";
 import type { WorkspaceStatus } from "./workspace-status.js";
@@ -652,6 +653,22 @@ export function buildSidebarFrame(
     if (workspace.branch && upperBudget() > workReserve + 1) {
       push(`${SEQ.muted}${truncateText(clean(workspace.branch), contentW)}${SEQ.reset}`);
     }
+    // 增删行数单独一行上色（绿 + / 红 −）；文件计数留给下一行的修改/新增/删除。
+    // 只在确有富余行时插入，避免小窗口把文件计数整行挤掉。
+    if (
+      workspace.gitStatus === "ready" &&
+      (workspace.insertions > 0 || workspace.deletions > 0) &&
+      upperBudget() > workReserve + 2
+    ) {
+      push(
+        truncateAnsiText(
+          `${SEQ.green}+${workspace.insertions}${SEQ.reset}${SEQ.muted} 行${SEQ.reset}` +
+            `${SEQ.muted} · ${SEQ.reset}` +
+            `${SEQ.red}−${workspace.deletions}${SEQ.reset}${SEQ.muted} 行${SEQ.reset}`,
+          contentW,
+        ),
+      );
+    }
     const changes = [
       workspace.modified ? `修改 ${workspace.modified}` : "",
       workspace.added ? `新增 ${workspace.added}` : "",
@@ -671,6 +688,20 @@ export function buildSidebarFrame(
       Math.min(2, Math.max(1, upperBudget() - workReserve)),
     )) {
       push(`${workspace.conflicted ? SEQ.accent : SEQ.muted}${line}${SEQ.reset}`);
+    }
+    // 「改动」区：一行一个文件。路径过长时从头部省略，保住有信息量的文件名；
+    // 行数受剩余额度限制，放不下就用一行说明还剩多少个，不挤掉下面的上下文/费用。
+    const files = workspace.files.filter((file) => file.length > 0);
+    if (workspace.gitStatus === "ready" && files.length > 0 && upperBudget() >= 3) {
+      section("改动");
+      const capacity = Math.max(1, upperBudget() - 1);
+      const shown = files.length <= capacity ? files : files.slice(0, capacity - 1);
+      for (const file of shown) {
+        push(`${SEQ.muted}${truncateTailText(clean(file), contentW)}${SEQ.reset}`);
+      }
+      if (shown.length < files.length) {
+        push(`${SEQ.faint}… 还有 ${files.length - shown.length} 个文件${SEQ.reset}`);
+      }
     }
     blank(paper);
   }

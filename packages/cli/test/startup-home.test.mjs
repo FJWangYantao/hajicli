@@ -38,6 +38,13 @@ const workspace = {
   deleted: 0,
   untracked: 2,
   conflicted: 0,
+  insertions: 26,
+  deletions: 5,
+  files: [
+    "packages/cli/src/tui-sidebar.ts",
+    "README.md",
+    "src/a-very-long-file-name-that-needs-tail-truncation.ts",
+  ],
 };
 
 function withUI(columns, rows, callback) {
@@ -494,7 +501,7 @@ test("launcher keeps input primary, sessions separate and project status in the 
                 assert.ok(project > ui.inputSelectionTop);
                 assert.ok(project > recent);
                 assert.equal(hit.rowStart - 1, project);
-                assert.match(plain[project], /~3 \+1 \?2/);
+                assert.match(plain[project], /~3 \+26 −5 \?2/);
                 assert.ok(plain.slice(hit.rowStart).every((row) => !row.includes("工作区")));
               }
             });
@@ -540,7 +547,13 @@ test("workspace and real task states coexist with context and cost within each b
       assert.ok(frame.rows.every((row) => terminalWidth(row) <= 36));
       if (height === 40) {
         assert.match(text, /修改 3/);
+        assert.match(text, /\+26 行 · −5 行/);
         assert.match(text, /master/);
+        // 「改动」区一行一个文件；长路径从头部省略，保住文件名。
+        assert.match(text, /改动/);
+        assert.match(text, /tui-sidebar\.ts/);
+        assert.match(text, /README\.md/);
+        assert.match(text, /needs-tail-truncation\.ts/);
       }
     }
   }
