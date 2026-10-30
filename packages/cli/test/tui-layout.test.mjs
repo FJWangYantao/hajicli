@@ -30,6 +30,12 @@ test("resolves every width and height combination without exceeding the terminal
       assert.ok(layout.safeWidth <= columns - 1, `${columns}x${rows} safe width`);
       assert.equal(layout.safeHeight, rows, `${columns}x${rows} height`);
       assert.ok(layout.panelRows <= resolvePanelRowBudget(rows), `${columns}x${rows} panels`);
+      // 滚动条槽：只有 minimal 档不预留（连内边距都没有，再抠一列会明显压缩正文）。
+      assert.equal(
+        layout.gutterWidth,
+        expectedMode === "minimal" ? 0 : 1,
+        `${columns}x${rows} gutter`,
+      );
     }
   }
 });
@@ -66,6 +72,7 @@ test("forces minimal layout below 24 columns or 10 rows", () => {
       panelRows: 0,
       showHints: false,
       inputPaddingRows: 0,
+      gutterWidth: 0,
     });
   }
 });
@@ -81,6 +88,7 @@ test("reduces vertical detail before changing the width mode", () => {
     panelRows: 1,
     showHints: false,
     inputPaddingRows: 0,
+    gutterWidth: 1,
   });
 
   assert.deepEqual(resolveTuiLayout(120, 24), {
@@ -93,6 +101,7 @@ test("reduces vertical detail before changing the width mode", () => {
     panelRows: 4,
     showHints: true,
     inputPaddingRows: 0,
+    gutterWidth: 1,
   });
 
   assert.equal(resolveTuiLayout(120, 40).panelRows, 8);

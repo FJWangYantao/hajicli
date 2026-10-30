@@ -24,7 +24,7 @@ export function preferredDiffWidth(): number {
   const rows = process.stdout?.rows ?? 0;
   if (!columns) return 112;
   const layout = resolveTuiLayout(columns, Math.max(1, rows || 24));
-  const chatWidth = Math.max(1, layout.safeWidth - layout.chatPadding * 2);
+  const chatWidth = Math.max(1, layout.safeWidth - layout.chatPadding * 2 - layout.gutterWidth);
   return diffWidthFor(chatWidth);
 }
 

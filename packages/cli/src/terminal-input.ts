@@ -82,6 +82,13 @@ import {
 } from "./process-fold.js";
 import { liteDisplay, renderDelay } from "./remote-terminal.js";
 import {
+  buildScrollbarUpdate,
+  computeScrollbarThumb,
+  type ScrollbarPaint,
+  type ScrollbarSgr,
+  scrollOffsetFromThumbRow,
+} from "./scrollbar.js";
+import {
   applySelectionKey,
   buildSelectionRows,
   filterSelectionItems,
@@ -157,7 +164,7 @@ import {
   wrapAnsiWithState,
 } from "./terminal-text.js";
 import { type TextCell, TextSelectionModel } from "./text-selection.js";
-import { colors, fillUserMsgRowEol, themeEnter } from "./theme.js";
+import { colors, fillUserMsgRowEol, themeBg, themeEnter, themeReset } from "./theme.js";
 import {
   renderToolBlockRows,
   type ToolBlockRenderInfo,
@@ -449,6 +456,25 @@ export class TerminalUI {
   };
   /** 按下浮标时的屏幕行：松开仍落在浮标内才算一次点击。 */
   private pendingChatHintClick?: number;
+  /** 本帧滚动条的绘制几何（拖动反解、悬停判定用）；未显示时 undefined。 */
+  private chatScrollbarPaint?: ScrollbarPaint;
+  /** 上一帧已写到终端的滚动条几何：据此只补画变化的格子。 */
+  private renderedScrollbar?: ScrollbarPaint;
+  /**
+   * 本帧滚动条的屏幕命中区（1 基，含端点）。
+   * rowStart/rowEnd 为整条轨道，thumbStart/thumbEnd 为可拖动的那一段。
+   */
+  private chatScrollbarHit?: {
+    column: number;
+    rowStart: number;
+    rowEnd: number;
+    thumbStart: number;
+    thumbEnd: number;
+  };
+  /** 在 thumb 上按下时抓住的相对行，拖动时保持这个偏移，thumb 不会跳到指针上。 */
+  private pendingScrollbarDrag?: number;
+  /** 指针停在滚动条上：thumb 换成强调色。 */
+  private chatScrollbarHovered = false;
   private status = "";
   private activityFrame?: ActivityFrame;
   /** 渲染在已提交正文之后的实时区域，不写入 chatContent。 */
@@ -1820,7 +1846,7 @@ export class TerminalUI {
     );
     const leftAreaWidth =
       layout.safeWidth - (sidebarWidth > 0 ? sidebarWidth + SIDEBAR_GAP_WIDTH : 0);
-    return Math.max(1, leftAreaWidth - layout.chatPadding * 2);
+    return Math.max(1, leftAreaWidth - layout.chatPadding * 2 - layout.gutterWidth);
   }
 
   isInteractive(): boolean {
@@ -3054,6 +3080,99 @@ export class TerminalUI {
     };
   }
 
+  /**
+   * 计算本帧右侧滚动条的几何；不需要显示时返回 undefined。
+   *
+   * 总量用 `maxChatScrollOffset + 视口高`：两者都在 layoutChatViewport 里按当前帧定稿，
+   * 不必把折行结果再传一遍，也不会和「尾部还在增长」的中间态打架。
+   * 命中区按屏幕坐标（1 基）登记，供点击轨道与拖动 thumb 使用。
+   */
+  private computeChatScrollbarPaint(args: {
+    viewportHeight: number;
+    screenTop: number;
+    column: number;
+    enabled: boolean;
+  }): ScrollbarPaint | undefined {
+    const thumb =
+      args.enabled && this.maxChatScrollOffset > 0
+        ? computeScrollbarThumb({
+            total: this.maxChatScrollOffset + args.viewportHeight,
+            viewport: args.viewportHeight,
+            offset: this.chatScrollOffset,
+          })
+        : undefined;
+    if (!thumb) {
+      this.chatScrollbarHit = undefined;
+      return undefined;
+    }
+    const paint: ScrollbarPaint = {
+      column: args.column,
+      row: args.screenTop - 1,
+      height: args.viewportHeight,
+      thumbRow: thumb.top,
+      thumbSize: thumb.size,
+      active: this.chatScrollbarHovered || this.pendingScrollbarDrag !== undefined,
+    };
+    this.chatScrollbarHit = {
+      column: paint.column,
+      rowStart: paint.row + 1,
+      rowEnd: paint.row + paint.height,
+      thumbStart: paint.row + paint.thumbRow + 1,
+      thumbEnd: paint.row + paint.thumbRow + paint.thumbSize,
+    };
+    return paint;
+  }
+
+  /** 该格是否落在滚动条轨道（含 thumb）上。 */
+  private isOnChatScrollbar(column: number, row: number): boolean {
+    const hit = this.chatScrollbarHit;
+    return hit !== undefined && column === hit.column && row >= hit.rowStart && row <= hit.rowEnd;
+  }
+
+  /**
+   * 鼠标在滚动条上按下：thumb 上开始拖动，轨道上按方向翻一页。
+   * 返回 true 表示这一下已被滚动条消费，不再进入文本选区/折叠切换。
+   */
+  private handleScrollbarDown(column: number, row: number): boolean {
+    const hit = this.chatScrollbarHit;
+    if (!hit || !this.isOnChatScrollbar(column, row)) return false;
+    this.stopSelectionAutoScroll();
+    this.pendingMouseSelection = undefined;
+    this.pendingInputSelection = undefined;
+    this.pendingSidebarClick = undefined;
+    this.pendingChatHintClick = undefined;
+    this.selectionPointer = undefined;
+    this.textSelection.clear();
+    this.selectionLayout = undefined;
+    if (row >= hit.thumbStart && row <= hit.thumbEnd) {
+      this.pendingScrollbarDrag = row - hit.thumbStart;
+    } else {
+      this.pendingScrollbarDrag = undefined;
+      // 点在 thumb 上方 = 翻向更早的历史，与 PgUp 同向。
+      this.scrollChat(row < hit.thumbStart ? this.chatPageSize : -this.chatPageSize);
+    }
+    this.scheduleRender();
+    return true;
+  }
+
+  /** 拖动 thumb：按指针行反解偏移；抓取时记下的相对行保证 thumb 不跳到指针下。 */
+  private dragChatScrollbar(row: number): void {
+    const hit = this.chatScrollbarHit;
+    const paint = this.chatScrollbarPaint;
+    const grab = this.pendingScrollbarDrag;
+    if (!hit || !paint || grab === undefined) return;
+    const maxThumbRow = Math.max(0, paint.height - paint.thumbSize);
+    const thumbRow = Math.min(Math.max(0, row - hit.rowStart - grab), maxThumbRow);
+    const target = scrollOffsetFromThumbRow({
+      thumbRow,
+      viewport: paint.height,
+      thumbSize: paint.thumbSize,
+      maxOffset: this.maxChatScrollOffset,
+    });
+    // scrollChat 收的是相对行数：换成与当前偏移的差值，夹紧与合帧都交给它。
+    this.scrollChat(target - this.chatScrollOffset);
+  }
+
   private dispatchProtocolEvent(event: TerminalProtocolEvent): void {
     if (event.type === "keyboard") {
       this.keyInput.write(event.data);
@@ -3199,6 +3318,12 @@ export class TerminalUI {
     }
     this.updateSidebarHover(event.column, event.row);
     this.updateChatHover(event.column, event.row);
+    // 滚动条悬停：thumb 换成强调色。状态没变不重绘。
+    const overScrollbar = this.isOnChatScrollbar(event.column, event.row);
+    if (overScrollbar !== this.chatScrollbarHovered) {
+      this.chatScrollbarHovered = overScrollbar;
+      this.scheduleRender(true);
+    }
   }
 
   /** 滚轮：覆盖页打开时归覆盖页，否则合并成对话区滚动帧（拖选中端点随帧更新）。 */
@@ -3257,6 +3382,8 @@ export class TerminalUI {
       this.pendingInspectorClickRow = event.row;
       return;
     }
+    // 右侧滚动条：按下开始拖 thumb 或翻页，且不产生文本选区。
+    if (this.handleScrollbarDown(event.column, event.row)) return;
     // 侧栏可交互区域：按下只记 id 与屏幕行，松开落在同一行、同一区域才算一次点击，
     // 拖动经过时不会误触。深层区域（配置单价行、定价 agent 行）由命中顺序保证优先。
     const sidebarRegionId = this.sidebarRegionAt(event.column, event.row);
@@ -3313,6 +3440,10 @@ export class TerminalUI {
 
   /** 左键拖动：把待定的锚点转成真实选区，或推进进行中的选区。 */
   private handleLeftButtonDrag(event: TerminalMouseEvent): void {
+    if (this.pendingScrollbarDrag !== undefined) {
+      this.dragChatScrollbar(event.row);
+      return;
+    }
     if (this.pendingInputSelection) {
       const pending = this.pendingInputSelection;
       if (pending.column === event.column && pending.row === event.row) {
@@ -3359,6 +3490,11 @@ export class TerminalUI {
 
   /** 左键松开：按下时登记的待定状态在这里结算（同一处按下松开才算点击）。 */
   private handleLeftButtonUp(event: TerminalMouseEvent): void {
+    if (this.pendingScrollbarDrag !== undefined) {
+      this.pendingScrollbarDrag = undefined;
+      this.scheduleRender();
+      return;
+    }
     if (this.pendingQueueSteer) {
       const pressed = this.pendingQueueSteer;
       this.pendingQueueSteer = undefined;
@@ -4512,6 +4648,8 @@ export class TerminalUI {
     cursorState: string;
     /** 浮层卡片盖在对话区上时不能用视口滚动（卡片不随内容移动）。 */
     hasOverlayCard: boolean;
+    /** 本帧要画的滚动条；undefined 表示不显示（内容不溢出或界面档位不支持）。 */
+    scrollbar?: ScrollbarPaint;
   }): void {
     const { width, height, screenRows, chatRegionStart, chatHeight, visibleStart, cursorState } =
       args;
@@ -4526,27 +4664,42 @@ export class TerminalUI {
       !args.hasOverlayCard &&
       chatRegionStart === this.renderedChatRegionStart &&
       chatHeight === this.renderedChatRegionHeight;
-    const screenUpdate = canScrollViewport
-      ? (buildViewportScrollUpdate(
+    const regionUpdate = canScrollViewport
+      ? buildViewportScrollUpdate(
           this.renderedScreenRows,
           screenRows,
           chatRegionStart,
           chatHeight,
           viewportScrollRows,
-        ) ?? buildScreenUpdate(this.renderedScreenRows, screenRows))
-      : buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+        )
+      : undefined;
+    const screenUpdate =
+      regionUpdate ?? buildScreenUpdate(fullRefresh ? [] : this.renderedScreenRows, screenRows);
+    // 滚动条是独立的一层格子：视口整体搬移会让旧 thumb 跟着滚到任意一行，
+    // 所以这一步整段重画；其余情况下只补画被重画过的行与 thumb 的新旧区间。
+    const scrollbarUpdate = buildScrollbarUpdate({
+      previous: this.renderedScrollbar,
+      next: args.scrollbar,
+      repaintAll: fullRefresh || regionUpdate !== undefined,
+      rewrittenRows: this.scrollbarRewrittenRows(screenRows, args.scrollbar),
+      width,
+      height,
+      sgr: this.scrollbarSgr(),
+    });
 
     // 有被节流的图片滚动微调没落地时不能提前返回：那一帧的 syncInlineImages 输出
     // 就是本帧唯一要做的事（文本与光标都没变）。
     if (
       !fullRefresh &&
       !screenUpdate &&
+      !scrollbarUpdate &&
       cursorState === this.renderedCursorState &&
       !this.inlineImages.pendingNudge
     ) {
       this.renderedChatVisibleStart = visibleStart;
       this.renderedChatRegionStart = chatRegionStart;
       this.renderedChatRegionHeight = chatHeight;
+      this.renderedScrollbar = args.scrollbar;
       return;
     }
 
@@ -4555,6 +4708,7 @@ export class TerminalUI {
     let frame = "\x1b[?2026h\x1b[?25l";
     if (fullRefresh) frame += `${themeEnter()}\x1b[2J`;
     frame += screenUpdate;
+    frame += scrollbarUpdate;
     // 2J 按协议清掉屏幕上的图（部分实现连同数据）：重置后全部按未上传处理，强制重传。
     if (fullRefresh) this.resetInlineImageScreen();
     // 内联图同步层：文本层画完后，把可见图的 kitty placement 对齐到本帧屏幕位置。
@@ -4576,7 +4730,38 @@ export class TerminalUI {
     this.renderedChatVisibleStart = visibleStart;
     this.renderedChatRegionStart = chatRegionStart;
     this.renderedChatRegionHeight = chatHeight;
+    this.renderedScrollbar = args.scrollbar;
     if (!accepted) this.stdoutBackpressured = true;
+  }
+
+  /** 滚动条的 SGR：无色模式下全是空串，与主题模块的降级口径一致。 */
+  private scrollbarSgr(): ScrollbarSgr {
+    return {
+      background: themeBg(),
+      thumb: SEQ.muted,
+      activeThumb: SEQ.accent,
+      reset: themeReset(),
+    };
+  }
+
+  /**
+   * 本帧被 `screenUpdate` 整行重写过的轨道行（0 基屏幕行号）。
+   *
+   * 重写前会先 `\x1b[2K` 整行擦除，滚动条那一格也会被抹掉，所以这些行必须补画。
+   * 只比较轨道内的行：范围外跟滚动条无关。
+   */
+  private scrollbarRewrittenRows(
+    screenRows: readonly string[],
+    scrollbar: ScrollbarPaint | undefined,
+  ): Set<number> {
+    const rows = new Set<number>();
+    for (const paint of [this.renderedScrollbar, scrollbar]) {
+      if (!paint) continue;
+      for (let row = paint.row; row < paint.row + paint.height; row += 1) {
+        if (this.renderedScreenRows[row] !== screenRows[row]) rows.add(row);
+      }
+    }
+    return rows;
   }
 
   private renderFrame(): void {
@@ -4689,8 +4874,9 @@ export class TerminalUI {
     }
     // 对话区使用响应式内边距：内容按收窄后的宽度换行，
     // 渲染时再在每行前补空格；右侧由 buildScreenUpdate 的 \x1b[2K 自然露出主题背景。
+    // 最右侧的 gutterWidth 列常驻留给滚动条，不参与折行，宽度因此不会随是否溢出变化。
     const chatPadding = layout.chatPadding;
-    const chatWidth = Math.max(1, leftAreaWidth - chatPadding * 2);
+    const chatWidth = Math.max(1, leftAreaWidth - chatPadding * 2 - layout.gutterWidth);
     // 实时区域（工具草稿 / 工具格 / 推理预览）是独立块，与正文之间留一个空行：
     // 正文经 updateChatFrom 写入时不以换行结尾，只补一个换行会让它和工具块贴在一起。
     // 正式工具格提交前已有 writeBlankLine，这里只在还缺空行时补，避免出现连续空行。
@@ -4701,12 +4887,21 @@ export class TerminalUI {
     const activityRows = activityInChat
       ? ["", `${" ".repeat(chatPadding)}${this.buildActivityRow(chatWidth, false)}`]
       : [];
+    const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
+    const chatViewportHeight = chatHeight - (activityInChat ? CHAT_ACTIVITY_ROWS : 0);
     const { visibleChat, visibleStart, visibleEnd } = this.layoutChatViewport({
       contentWithStatus,
       chatWidth,
       chatPadding,
-      viewportHeight: chatHeight - (activityInChat ? CHAT_ACTIVITY_ROWS : 0),
-      screenTop: emergencyMinimal ? 1 : topRows.length + 2,
+      viewportHeight: chatViewportHeight,
+      screenTop: chatScreenTop,
+    });
+    // 滚动条几何在本帧视口确定之后才算：总量、视口高、当前偏移都在 layoutChatViewport 里定稿。
+    this.chatScrollbarPaint = this.computeChatScrollbarPaint({
+      viewportHeight: chatViewportHeight,
+      screenTop: chatScreenTop,
+      column: leftAreaWidth,
+      enabled: !minimal && !pageOpen && layout.gutterWidth > 0,
     });
     const chatPrefix = " ".repeat(chatPadding);
 
@@ -4763,7 +4958,6 @@ export class TerminalUI {
       : 0;
     // 整页视图（上下文详情 / 费用日志）：整块替换对话区
     // （活动行、折叠段、悬停卡片都不参与本帧）。命中区域按屏幕坐标（1 基）换算。
-    const chatScreenTop = emergencyMinimal ? 1 : topRows.length + 2;
     const pageRows = this.renderOverlayPage(leftAreaWidth, chatHeight, chatScreenTop);
     const home = homeVisible
       ? buildStartupHome(this.recentSessions, chatWidth, chatHeight, this.startupSelected)
@@ -4836,6 +5030,7 @@ export class TerminalUI {
       visibleEnd,
       cursorState,
       hasOverlayCard: Boolean(contextCard),
+      scrollbar: this.chatScrollbarPaint,
     });
   }
 
