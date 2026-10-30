@@ -161,7 +161,8 @@ import { resolveModelPricing } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import { createParallelClassifier } from "./parallel-policy.js";
-import { handlePatrolCommand } from "./patrol/commands.js";
+import { handlePatrolCommand, resolveToken as resolvePatrolToken } from "./patrol/commands.js";
+import { PatrolHint } from "./patrol/hint.js";
 import { handlePermissionCommand } from "./permission-commands.js";
 import {
   isToolAllowedPersistently,
@@ -1367,6 +1368,8 @@ async function main() {
     else serveOutputBuffer.push(line);
   };
 
+  /** 侧栏 PR 巡检入口；非 git 仓库或无法推断仓库时为 null（侧栏不显示）。 */
+  let patrolHint: PatrolHint | null = null;
   const ui = new TerminalUI({
     onResumeSession: (id) => resumeStartupSession(id),
     // 启动 Logo 会保留到用户发送第一条普通消息，斜杠命令不会触发隐藏。
@@ -1397,6 +1400,7 @@ async function main() {
       } else if (id === "cost.summary") openCostDetailsRef();
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
+      else if (id === "patrol.entry") void patrolHint?.start();
       else if (id.startsWith("cost.turn.")) {
         openTurnReportRef(id.slice("cost.turn.".length) as TurnMetric);
       }
@@ -1407,6 +1411,16 @@ async function main() {
   if (quietMode) {
     agentStatus.setEnabled(false);
     terminalTitle.setEnabled(false);
+  } else {
+    // 侧栏巡检入口：启动时探测一次（有 agent PR 且巡检没在跑才出现），点击即后台启动。
+    const hint = new PatrolHint({
+      cwd: process.cwd(),
+      resolveToken: () => resolvePatrolToken(),
+      onChange: (state) => ui.setPatrolState(state),
+      log: (line) => ui.writeLine(colors.gray(line)),
+    });
+    patrolHint = hint;
+    void hint.probe();
   }
   const activityIndicator = new ActivityIndicator({
     render: (frame) => ui.setActivity(frame),
@@ -4491,6 +4505,7 @@ async function main() {
     // 退出，崩溃路径此时句柄已释放，自然退出也不会被挂住。
     agentManager.abortAll();
     mcpManager.stopAll();
+    patrolHint?.dispose();
     traceServerController.abort();
   }
   if (fatalExit !== undefined) throw fatalExit;

@@ -160,6 +160,7 @@ import {
   resolveSidebarWidth,
   SIDEBAR_GAP_WIDTH,
   type SidebarGoalState,
+  type SidebarPatrolState,
   type SidebarPricingAgentState,
   type SidebarState,
 } from "./tui-sidebar.js";
@@ -490,6 +491,8 @@ export class TerminalUI {
   private costUnpricedModels: string[] = [];
   /** 后台定价 agent 的状态行；undefined 表示没有在跑也没有结果。 */
   private pricingAgentState?: SidebarPricingAgentState;
+  /** PR 巡检入口提醒；undefined 表示本会话不显示（非 git 仓库 / 无法推断仓库）。 */
+  private patrolState?: SidebarPatrolState;
   /**
    * 侧栏费用明细（请求/输入/缓存/谷时/输出/上一轮）是否展开。
    * 默认折叠：常驻只留「花费 + 需处理项」，逐条明细本就在费用日志页里。
@@ -1233,6 +1236,23 @@ export class TerminalUI {
   /** 后台定价 agent 的状态行（费用区那一行）；传 null 清掉。 */
   setPricingAgentState(state: SidebarPricingAgentState | null): void {
     this.pricingAgentState = state ?? undefined;
+    this.scheduleRender();
+  }
+
+  /**
+   * PR 巡检入口提醒（代理区之后那一行）；传 null 清掉。
+   * 状态未变化时不触发重绘：探测/轮询会周期性回调，避免空转。
+   */
+  setPatrolState(state: SidebarPatrolState | null): void {
+    const next = state ?? undefined;
+    const same =
+      next?.status === this.patrolState?.status &&
+      next?.pending === this.patrolState?.pending &&
+      next?.tasks === this.patrolState?.tasks &&
+      next?.merged === this.patrolState?.merged &&
+      next?.repo === this.patrolState?.repo;
+    if (same) return;
+    this.patrolState = next;
     this.scheduleRender();
   }
 
@@ -3803,6 +3823,7 @@ export class TerminalUI {
       hasUnpricedCost: this.costHasUnpriced,
       ...(this.costUnpricedModels.length > 0 ? { unpricedModels: this.costUnpricedModels } : {}),
       ...(this.pricingAgentState ? { pricingAgent: this.pricingAgentState } : {}),
+      ...(this.patrolState ? { patrol: this.patrolState } : {}),
       ...(this.costCachedPromptTokens > 0
         ? { cachedPromptTokens: this.costCachedPromptTokens }
         : {}),

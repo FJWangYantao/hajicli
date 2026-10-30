@@ -67,6 +67,34 @@ export class PatrolService {
     this.runTimeoutMs = options.runTimeoutMs ?? 30 * 60_000;
   }
 
+  /**
+   * 自动登记 agent 分支的 PR：只写 registry.json，仍走「来源登记是接管前提」的既有路径，
+   * 因此可随时 `/patrol unregister` 收回；未命中前缀的 PR 一律不接管。
+   */
+  private adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): void {
+    const prefix = this.config.autoAdoptBranchPrefix;
+    if (!prefix) return;
+    const now = new Date().toISOString();
+    for (const pr of prs) {
+      if (!pr.branch.startsWith(prefix)) continue;
+      const jobId = patrolJobId(this.adapter.repo, pr.number);
+      if (this.store.getRegistration(jobId) || this.store.getJob(jobId)) continue;
+      const taskId = pr.branch.slice(prefix.length).trim() || `pr-${pr.number}`;
+      this.store.saveRegistration({
+        jobId,
+        repo: this.adapter.repo,
+        prNumber: pr.number,
+        taskId,
+        origin: "haji",
+        registeredAt: now,
+        taskBrief: pr.title || taskId,
+        acceptance: [],
+        scope: [],
+      });
+      events.push(`自动登记 PR #${pr.number}（分支 ${pr.branch}）`);
+    }
+  }
+
   /** 常驻轮询；signal 中止后退出。tick 抛错只退避不退出。 */
   async runLoop(signal: AbortSignal): Promise<void> {
     let consecutiveFailures = 0;
@@ -95,6 +123,9 @@ export class PatrolService {
     const events: string[] = [];
     const prs = await this.adapter.listOpenPullRequests();
     const openByNumber = new Map(prs.map((pr) => [pr.number, pr]));
+
+    // 0. 自动登记：分支名命中 autoAdoptBranchPrefix 的开放 PR 视为 agent 产出，无需手动 register。
+    this.adoptAgentPullRequests(prs, events);
 
     // 1. 为已登记来源的开放 PR 建任务（未登记的不自动接管）。
     for (const pr of prs) {

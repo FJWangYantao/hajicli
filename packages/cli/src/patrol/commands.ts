@@ -4,13 +4,16 @@
  * 常驻服务（start）会阻塞当前回合直到中止，适合在独立终端运行；
  * 交互会话里推荐 `run-once` 单轮驱动（可配合外部 cron / 定时器）。
  */
-import fs from "node:fs";
-import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { isTerminalPatrolStatus, PatrolStore, patrolJobId } from "@hajicli/core";
 import { colors } from "../theme.js";
+import { resolvePatrolRepo } from "./config.js";
 import { GitHubPatrolAdapter } from "./github.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface PatrolCommandContext {
   cwd: string;
@@ -22,6 +25,18 @@ export interface PatrolCommandContext {
 }
 
 export async function handlePatrolCommand(
+  ctx: PatrolCommandContext,
+  input: { parts: string[] } | string[],
+): Promise<void> {
+  try {
+    await dispatchPatrolCommand(ctx, input);
+  } catch (error) {
+    // 配置损坏、GitHub 401/网络错误等都应落成一行可读错误，而不是把主循环带崩。
+    ctx.writeLine(colors.failLine(`巡检命令失败：${(error as Error).message}`));
+  }
+}
+
+async function dispatchPatrolCommand(
   ctx: PatrolCommandContext,
   input: { parts: string[] } | string[],
 ): Promise<void> {
@@ -60,18 +75,20 @@ export async function handlePatrolCommand(
 function usage(ctx: PatrolCommandContext): void {
   ctx.writeLine(colors.gray("用法："));
   ctx.writeLine(colors.gray("  /patrol                     查看巡检任务列表"));
+  ctx.writeLine(
+    colors.gray("  /patrol start [--interval <秒>]   一步启动常驻巡检（仓库与令牌自动推断）"),
+  );
+  ctx.writeLine(colors.gray("  /patrol run-once            单轮巡检（配合外部定时）"));
   ctx.writeLine(colors.gray("  /patrol inspect <PR>        查看单个任务详情"));
   ctx.writeLine(
     colors.gray(
       "  /patrol register <PR> --task <id> --brief <任务> [--accept <验收>]... [--scope <范围>]...",
     ),
   );
-  ctx.writeLine(colors.gray("                              登记来源（未登记的 PR 不会被接管）"));
-  ctx.writeLine(colors.gray("  /patrol unregister <PR>     取消登记"));
   ctx.writeLine(
-    colors.gray("  /patrol start [--interval <秒>]   启动常驻巡检（阻塞；建议独立终端）"),
+    colors.gray("                              登记非 agent 分支的 PR（haji/ 分支默认自动接管）"),
   );
-  ctx.writeLine(colors.gray("  /patrol run-once            单轮巡检（配合外部定时）"));
+  ctx.writeLine(colors.gray("  /patrol unregister <PR>     取消登记"));
   ctx.writeLine(colors.gray("  /patrol pause / resume      暂停 / 恢复"));
   ctx.writeLine(colors.gray("  /patrol retry <PR>          重置卡住 / 已终止的任务"));
 }
@@ -209,10 +226,12 @@ async function register(
     );
     return;
   }
-  const configRepo = readConfiguredRepo(ctx.cwd);
+  const configRepo = resolvePatrolRepo(ctx.cwd);
   if (!configRepo) {
     ctx.writeLine(
-      colors.failLine("缺少仓库配置：请在 .haji/patrol/config.json 设置 repo（owner/name）"),
+      colors.failLine(
+        "无法确定巡检仓库：在 .haji/patrol/config.json 设置 repo（owner/name），或在该 git 仓库配置 origin 远端",
+      ),
     );
     return;
   }
@@ -237,7 +256,7 @@ async function unregister(
   prArg?: string,
 ): Promise<void> {
   const number = Number(prArg);
-  const configRepo = readConfiguredRepo(ctx.cwd);
+  const configRepo = resolvePatrolRepo(ctx.cwd);
   if (!Number.isInteger(number) || !configRepo) {
     ctx.writeLine(colors.failLine("用法：/patrol unregister <PR 编号>"));
     return;
@@ -273,25 +292,15 @@ async function retry(ctx: PatrolCommandContext, store: PatrolStore, prArg?: stri
   ctx.writeLine(colors.okLine(`PR #${number} 已重置为待审查`));
 }
 
-function readConfiguredRepo(cwd: string): string | undefined {
-  try {
-    const config = JSON.parse(
-      fs.readFileSync(path.join(cwd, ".haji", "patrol", "config.json"), "utf8"),
-    ) as { repo?: string };
-    return typeof config.repo === "string" && config.repo ? config.repo : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
   const { values } = parseOptions(args);
   const intervalSeconds = Number(values.get("interval")?.[0]);
-  const service = buildService(
+  const built = await buildService(
     ctx,
     Number.isFinite(intervalSeconds) ? intervalSeconds * 1000 : undefined,
   );
-  if (!service) return;
+  if (!built) return;
+  const { service, repo } = built;
   const controller = new AbortController();
   const signal = ctx.signal;
   if (signal) {
@@ -300,7 +309,7 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
   }
   ctx.writeLine(
     colors.okLine(
-      `PR Patrol 启动（${service.config.repo}，每 ${Math.round(service.config.pollIntervalMs / 1000)}s 一轮）。Ctrl+C 停止。`,
+      `PR Patrol 启动（${repo}，每 ${Math.round(service.config.pollIntervalMs / 1000)}s 一轮）。Ctrl+C 停止。`,
     ),
   );
   try {
@@ -311,9 +320,9 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
 }
 
 async function runOnce(ctx: PatrolCommandContext): Promise<void> {
-  const service = buildService(ctx);
-  if (!service) return;
-  const result = await service.tick();
+  const built = await buildService(ctx);
+  if (!built) return;
+  const result = await built.service.tick();
   if (result.skipped === "paused") {
     ctx.writeLine(colors.warnLine("巡检处于暂停状态（/patrol resume 恢复）"));
     return;
@@ -323,17 +332,45 @@ async function runOnce(ctx: PatrolCommandContext): Promise<void> {
   if (result.events.length === 0) ctx.writeLine(colors.gray("  （无事件）"));
 }
 
-function buildService(ctx: PatrolCommandContext, intervalMs?: number): PatrolService | null {
-  const repo = readConfiguredRepo(ctx.cwd);
+/**
+ * 令牌：显式传入 > GH_TOKEN > GITHUB_TOKEN > `gh auth token`。
+ * 后者让「已经 gh auth login 过」的机器零配置启动巡检。
+ */
+export async function resolveToken(explicit?: string): Promise<string | undefined> {
+  const fromEnv = explicit || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (fromEnv) return fromEnv;
+  try {
+    const { stdout } = await execFileAsync("gh", ["auth", "token"], { encoding: "utf8" });
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function buildService(
+  ctx: PatrolCommandContext,
+  intervalMs?: number,
+): Promise<{ service: PatrolService; repo: string } | null> {
+  const repo = resolvePatrolRepo(ctx.cwd);
   if (!repo) {
     ctx.writeLine(
-      colors.failLine("缺少仓库配置：请在 .haji/patrol/config.json 设置 repo（owner/name）"),
+      colors.failLine(
+        "无法确定巡检仓库：在 .haji/patrol/config.json 设置 repo（owner/name），或在该 git 仓库配置 origin 远端",
+      ),
     );
     return null;
   }
-  const adapter = new GitHubPatrolAdapter({ repo, token: ctx.token });
+  const token = await resolveToken(ctx.token);
+  if (!token)
+    ctx.writeLine(
+      colors.warnLine(
+        "未找到 GitHub 令牌（GH_TOKEN / gh auth login）：只能读公开仓库，评论与合并会失败。",
+      ),
+    );
+  ctx.writeLine(colors.gray(`巡检仓库：${repo}${token ? "" : "（只读）"}`));
+  const adapter = new GitHubPatrolAdapter({ repo, token });
   const runners = createHeadlessRunners({ repoDir: ctx.cwd });
-  return new PatrolService({
+  const service = new PatrolService({
     cwd: ctx.cwd,
     store: new PatrolStore(`${ctx.cwd}/.haji/patrol`),
     adapter,
@@ -341,4 +378,5 @@ function buildService(ctx: PatrolCommandContext, intervalMs?: number): PatrolSer
     config: intervalMs ? { pollIntervalMs: intervalMs } : undefined,
     logger: (line) => ctx.writeLine(colors.gray(`  · ${line}`)),
   });
+  return { service, repo };
 }

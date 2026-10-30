@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,7 +49,7 @@ test("/patrol register：写入来源登记；缺配置报错", async () => {
       "测试覆盖",
     ],
   });
-  assert.ok(ctx.lines.some((line) => line.includes("缺少仓库配置")));
+  assert.ok(ctx.lines.some((line) => line.includes("无法确定巡检仓库")));
 
   withConfig(ctx);
   await handlePatrolCommand(ctx, {
@@ -147,4 +148,43 @@ test("巡检配置 trustedApps：省略时保留默认，显式空数组禁用�
   assert.deepEqual(loadPatrolConfig(cwd).trustedApps, []);
   write({ trustedApps: [" ci-app ", "other"] });
   assert.deepEqual(loadPatrolConfig(cwd).trustedApps, ["ci-app", "other"]);
+});
+test("/patrol register：无 config.json 时从 git remote 推断仓库", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-patrol-noremote-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", args, { cwd, stdio: "ignore" });
+  git("init", "-q");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "test");
+  git("remote", "add", "origin", "https://github.com/from/remote.git");
+
+  const lines = [];
+  const ctx = { cwd, writeLine: (text) => lines.push(text) };
+  await handlePatrolCommand(ctx, {
+    parts: ["patrol", "register", "8", "--task", "t-8", "--brief", "零配置登记"],
+  });
+  assert.ok(
+    lines.some((line) => line.includes("已登记 PR #8")),
+    `应登记成功：${lines.join(" | ")}`,
+  );
+  const store = new PatrolStore(path.join(cwd, ".haji", "patrol"));
+  const registration = store.getRegistration(patrolJobId("from/remote", 8));
+  assert.equal(registration.repo, "from/remote");
+  assert.equal(registration.taskId, "t-8");
+});
+test("/patrol：配置损坏时给出可读错误而不抛异常", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "haji-patrol-broken-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".haji", "patrol"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".haji", "patrol", "config.json"), "{ not json");
+
+  const lines = [];
+  const ctx = { cwd, writeLine: (text) => lines.push(text) };
+  await handlePatrolCommand(ctx, {
+    parts: ["patrol", "register", "9", "--task", "t-9", "--brief", "损坏配置"],
+  });
+  assert.ok(
+    lines.some((line) => line.includes("巡检命令失败")),
+    `应给出可读错误：${lines.join(" | ")}`,
+  );
 });

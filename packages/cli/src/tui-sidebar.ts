@@ -24,6 +24,7 @@ import {
 import { buildTaskPanelRows, type TaskPanelState } from "./terminal-panels.js";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
 import {
+  fitHint,
   SEQ,
   splitGraphemes,
   terminalWidth,
@@ -58,6 +59,11 @@ export interface SidebarState {
   unpricedModels?: readonly string[];
   /** 后台定价 agent 的当前状态；运行中时在费用区显示一行进度。 */
   pricingAgent?: SidebarPricingAgentState;
+  /**
+   * PR 巡检入口提醒：仓库可推断、但巡检没在跑时出现，点一下即自动配置并启动。
+   * 探测结果由调用方缓存后传入，渲染层不做任何 I/O。
+   */
+  patrol?: SidebarPatrolState;
   /** 会话累计输入/输出 tokens；用来解释费用构成（哪一头在烧钱）。 */
   promptTokens?: number;
   /** 其中命中缓存的输入 tokens（有缓存折扣的模型才可能 > 0）。 */
@@ -88,6 +94,22 @@ export interface SidebarPricingAgentState {
   detail?: string;
 }
 
+/**
+ * 侧栏 PR 巡检入口的状态。
+ * 只有 `ready` 是可操作状态（点一下自动配置并启动）；其余两种只做状态提示。
+ */
+export interface SidebarPatrolState {
+  status: "ready" | "running" | "no-token";
+  /** ready 时探测到的、分支命中 agent 前缀的开放 PR 数。 */
+  pending: number;
+  /** running 时的任务总数。 */
+  tasks?: number;
+  /** running 时已合并的任务数。 */
+  merged?: number;
+  /** 巡检仓库（owner/name），窄栏降级时只留它。 */
+  repo?: string;
+}
+
 /** 侧栏目标区块的状态：原文由 /goal 设定，状态只有进行中 / 已达成两档。 */
 export interface SidebarGoalState {
   text: string;
@@ -114,6 +136,8 @@ export type SidebarRingGeometry = SidebarHitArea;
 export type SidebarRegionId =
   | "extensions.mcp"
   | "extensions.skills"
+  /** PR 巡检入口行：点一下自动配置并启动后台巡检。 */
+  | "patrol.entry"
   | "context.ring"
   | "context.usage"
   | "cost.summary"
@@ -803,6 +827,46 @@ export function buildSidebarFrame(
       const agentRows = buildAgentPanelRows(state.agents, contentW, limit, now, { compact: true });
       for (const row of agentRows.slice(0, available)) push(row);
     }
+  }
+
+  // ── PR 巡检：可一键启动的入口行（代理之后、扩展之前）──
+  // 只占一行：可操作时用强调色 + ▸，不可操作（缺令牌 / 运行中）退成次要色。
+  if (state.patrol && upperBudget() >= 1) {
+    const patrol = state.patrol;
+    const entryRow = rows.length;
+    const text =
+      patrol.status === "running"
+        ? fitHint(
+            [
+              `巡检中 · ${patrol.tasks ?? 0} 个任务${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""}`,
+              `巡检中 · ${patrol.tasks ?? 0} 个任务`,
+              "巡检中",
+            ],
+            contentW,
+          )
+        : patrol.status === "no-token"
+          ? fitHint(
+              ["PR 巡检 · 需要 GitHub 令牌（gh auth login）", "PR 巡检 · 需令牌", "需令牌"],
+              contentW,
+            )
+          : fitHint(
+              [
+                patrol.pending > 0
+                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此启动`
+                  : "PR 巡检未启动 · 点此启动",
+                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 启动` : "PR 巡检 · 启动",
+                "启动巡检",
+              ],
+              contentW,
+            );
+    const actionable = patrol.status === "ready";
+    const color = actionable
+      ? isHovered("patrol.entry")
+        ? SEQ.boldAccent
+        : SEQ.accent
+      : SEQ.muted;
+    push(`${color}${actionable ? "▸ " : ""}${text}${SEQ.reset}`);
+    if (actionable) register("patrol.entry", entryRow, 1, "label");
   }
 
   renderExtensions();

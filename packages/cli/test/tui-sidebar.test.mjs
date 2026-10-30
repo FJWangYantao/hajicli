@@ -1041,3 +1041,52 @@ test("Ctrl+E is a no-op before any priced call", () => {
     cleanupTerminalUI(ui);
   }
 });
+
+test("patrol entry renders one actionable row with a hit region", () => {
+  const frame = buildSidebarFrame(
+    sidebarState({ patrol: { status: "ready", pending: 2, repo: "owner/repo" } }),
+    34,
+    32,
+  );
+  // 窄栏降级成短文案，宽栏保留完整说法：两档都必须是可点的一行。
+  assert.match(frame.rows.map(stripAnsi).join("\n"), /▸ 巡检 · 2 个 PR · 启动/);
+  assert.ok(frame.regions.some((region) => region.id === "patrol.entry"));
+
+  const wide = buildSidebarFrame(
+    sidebarState({ patrol: { status: "ready", pending: 2, repo: "owner/repo" } }),
+    48,
+    32,
+  );
+  assert.match(wide.rows.map(stripAnsi).join("\n"), /PR 巡检 · 2 个 agent PR 待接管 · 点此启动/);
+});
+
+test("patrol entry degrades text and stops being clickable when not actionable", () => {
+  const running = buildSidebarFrame(
+    sidebarState({ patrol: { status: "running", pending: 0, tasks: 3, merged: 1 } }),
+    34,
+    32,
+  );
+  assert.match(running.rows.map(stripAnsi).join("\n"), /巡检中 · 3 个任务 · 已合并 1/);
+  assert.ok(!running.regions.some((region) => region.id === "patrol.entry"));
+
+  const noToken = buildSidebarFrame(
+    sidebarState({ patrol: { status: "no-token", pending: 0 } }),
+    34,
+    32,
+  );
+  assert.match(noToken.rows.map(stripAnsi).join("\n"), /需令牌/);
+  assert.ok(!noToken.regions.some((region) => region.id === "patrol.entry"));
+});
+
+test("patrol entry never pushes context or cost out of view", () => {
+  for (const height of [18, 20, 24, 32, 40]) {
+    const withHint = buildSidebarFrame(
+      sidebarState({ patrol: { status: "ready", pending: 1, repo: "owner/repo" } }),
+      32,
+      height,
+    );
+    const text = withHint.rows.map(stripAnsi).join("\n");
+    assert.match(text, /上下文/, `height ${height}`);
+    assert.match(text, /费用/, `height ${height}`);
+  }
+});
