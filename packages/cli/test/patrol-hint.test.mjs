@@ -135,6 +135,7 @@ test("start：点击跑一次巡查，完成后回到 ready", async () => {
     resolveToken: async () => "token",
     onChange: sink.onChange,
     pollIntervalMs: 10,
+    minRunningMs: 5,
     createAdapter: () => fakeAdapter([]),
     createRunners: () => ({
       review: async () => ({ verdict: "pass", findings: [], summary: "" }),

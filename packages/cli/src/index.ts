@@ -1570,9 +1570,12 @@ async function main() {
       else if (id === "cost.config") openPricingConfigRef();
       else if (id === "cost.pricingAgent") openPricingAgentDetailsRef();
       else if (id === "patrol.entry") {
-        // 就绪时点一下即后台启动；运行中只进页面看任务（不重复打「已在运行」的提示）。
-        if (patrolHintState?.status !== "running") void patrolHint?.start();
-        ui.openPatrolPage(buildPatrolPageState());
+        // 就绪时点一下只启动巡查，侧栏保持可见并变色；运行中再点才进页面看任务。
+        if (patrolHintState?.status === "running") {
+          ui.openPatrolPage(buildPatrolPageState());
+        } else {
+          void patrolHint?.start();
+        }
       } else if (id.startsWith("cost.turn.")) {
         openTurnReportRef(id.slice("cost.turn.".length) as TurnMetric);
       }
