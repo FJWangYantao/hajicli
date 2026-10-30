@@ -148,7 +148,7 @@ test("haji mcp-serve 端到端：initialize 与 tools/list 走 stdio 回包", as
     const { code } = await serve.close();
     assert.equal(code, 0, `正常断开应以 0 退出，stderr：${serve.stderrText()}`);
   } finally {
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    fs.rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -161,7 +161,7 @@ test("haji mcp-serve 拒绝未知参数并以 1 退出", async () => {
     assert.match(serve.stderrText(), /未知的 mcp-serve 参数/);
     assert.equal(serve.stdoutLines.length, 0, "参数错误时不应输出协议帧");
   } finally {
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    fs.rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -174,6 +174,6 @@ test("haji mcp-serve --cwd 指向不存在的目录时报错退出", async () =>
     assert.equal(code, 1);
     assert.match(serve.stderrText(), /无法切换到工作目录/);
   } finally {
-    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    fs.rmSync(sandbox.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
