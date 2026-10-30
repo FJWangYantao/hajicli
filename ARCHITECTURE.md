@@ -110,7 +110,7 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 - **关键语义**：结论只锚定 head + 规则版本（base 漂移不触发重审，合并时重查 checks/mergeable）；普通修改默认 3 轮后升级裁决，裁决后修改默认 2 轮，耗尽终止并记录原因；执行 agent 可 `disputed` 提异议，裁决 agent 可 overrule（驳回误报）/ remediate / redo / descope / terminate。
 - **可观测性**：每个 run 落盘 `.haji/patrol/runs/<jobId>/<runId>.log`（start / finish 与失败摘要，换行压成单行）；侧栏运行中显示当前阶段与已耗时（如 `#12 审查中 · 3m`），巡检页显示最近一次运行摘要。
 - 来源登记是接管前提：`/patrol register <PR> --task <id> --brief <任务>`，未登记的 PR 不自动取得写入 / 合并资格；PR 正文不参与来源判定。
-- 测试：`patrol-core.test.mjs`（状态机 / 预算 / 门禁 / 存储）、`patrol-service.test.mjs`（假 GitHub + 剧本 runner 的闭环：通过合并、修复后合并、裁决驳回 / remediate、轮次耗尽终止、审查中新增提交、重启恢复、幂等合并、暂停、未登记不接管）、`patrol-github.test.mjs`（在 `packages/patrol-github/test/`）、`patrol-runners.test.mjs`、`patrol-commands.test.mjs`、`patrol-wake.test.mjs`（载荷解析 / SSE 唤醒源去重与超时 / `runLoop` 被事件提前打断 / 唤醒源故障退回轮询）。
+- 测试：`patrol-core.test.mjs`（状态机 / 预算 / 门禁 / 存储）、`patrol-service.test.mjs`（假 GitHub + 剧本 runner 的闭环：通过合并、修复后合并、裁决驳回 / remediate、轮次耗尽终止、审查中新增提交、重启恢复、幂等合并、暂停、未登记不接管）、`patrol-github.test.mjs`（在 `packages/patrol-github/test/`）、`patrol-runners.test.mjs`、`patrol-commands.test.mjs`、`patrol-wake.test.mjs`（载荷解析 / SSE 唤醒源去重与超时 / `runLoop` 被事件提前打断 / 唤醒源故障退回轮询）、`patrol-daemon-state.test.mjs`（守护进程心跳文件的原子写读、陈旧与 pid 失效判据、侧栏在守护进程在跑时只读状态不联网、`/patrol stop` 改提示 systemctl）。
 
 ## 上下文管理
 

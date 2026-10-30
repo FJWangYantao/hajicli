@@ -4333,9 +4333,16 @@ async function main() {
               cwd: process.cwd(),
               writeLine: (text) => immediateWriteLine(sanitizeTerminalText(text)),
               stopLoop: () => {
-                if (!patrolHint?.isRunning()) return false;
-                patrolHint.stop();
-                return true;
+                // 本会话的常驻优先；其次是外部守护进程（stop() 会提示改用 systemctl）。
+                if (patrolHint?.isRunning()) {
+                  patrolHint.stop();
+                  return true;
+                }
+                if (patrolHint?.isDaemonRunning()) {
+                  patrolHint.stop();
+                  return true;
+                }
+                return false;
               },
             },
             { parts },
