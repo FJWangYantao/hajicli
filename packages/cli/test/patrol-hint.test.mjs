@@ -128,7 +128,7 @@ test("probe：远端失败时静默隐藏入口", async () => {
   assert.deepEqual(sink.states, [null]);
 });
 
-test("start：后台启动巡检并上报 running，dispose 后停止", async () => {
+test("start：点击跑一次巡查，完成后回到 ready", async () => {
   const sink = collect();
   const hint = new PatrolHint({
     cwd: gitRepo(),
@@ -150,11 +150,11 @@ test("start：后台启动巡检并上报 running，dispose 后停止", async ()
     }),
   });
   await hint.start();
-  assert.equal(sink.last().status, "running");
-  assert.equal(sink.last().repo, "owner/repo");
-  // 运行中会周期性刷新任务计数（空 store → 0）。
+  // 点击瞬间进入 running；空仓库 drain 很快结束，随后回到 ready（入口可再次点击）。
+  assert.equal(sink.states[0].status, "running");
+  assert.equal(sink.states[0].repo, "owner/repo");
   await new Promise((resolve) => setTimeout(resolve, 40));
-  assert.ok(sink.states.some((state) => state?.status === "running" && state.tasks === 0));
+  assert.equal(sink.last().status, "ready");
   hint.dispose();
 });
 

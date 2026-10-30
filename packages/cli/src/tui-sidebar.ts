@@ -854,10 +854,10 @@ export function buildSidebarFrame(
           : fitHint(
               [
                 patrol.pending > 0
-                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此启动`
-                  : "PR 巡检未启动 · 点此启动",
-                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 启动` : "PR 巡检 · 启动",
-                "启动巡检",
+                  ? `PR 巡检 · ${patrol.pending} 个 agent PR 待接管 · 点此巡查`
+                  : "PR 巡检 · 点此巡查",
+                patrol.pending > 0 ? `巡检 · ${patrol.pending} 个 PR · 巡查` : "PR 巡检 · 巡查",
+                "巡查",
               ],
               contentW,
             );

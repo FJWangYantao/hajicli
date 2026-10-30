@@ -1049,7 +1049,7 @@ test("patrol entry renders one actionable row with a hit region", () => {
     32,
   );
   // 窄栏降级成短文案，宽栏保留完整说法：两档都必须是可点的一行。
-  assert.match(frame.rows.map(stripAnsi).join("\n"), /▸ 巡检 · 2 个 PR · 启动/);
+  assert.match(frame.rows.map(stripAnsi).join("\n"), /▸ 巡检 · 2 个 PR · 巡查/);
   assert.ok(frame.regions.some((region) => region.id === "patrol.entry"));
 
   const wide = buildSidebarFrame(
@@ -1057,7 +1057,7 @@ test("patrol entry renders one actionable row with a hit region", () => {
     48,
     32,
   );
-  assert.match(wide.rows.map(stripAnsi).join("\n"), /PR 巡检 · 2 个 agent PR 待接管 · 点此启动/);
+  assert.match(wide.rows.map(stripAnsi).join("\n"), /PR 巡检 · 2 个 agent PR 待接管 · 点此巡查/);
 });
 
 test("patrol entry degrades text and stops being clickable when not actionable", () => {

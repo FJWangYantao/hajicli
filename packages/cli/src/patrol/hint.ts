@@ -3,8 +3,8 @@
  *
  * 分工约定：
  * - 探测只做一次（启动时），绝不每帧联网；失败静默——侧栏不显示，而不是把错误糊到对话区。
- * - 启动走 `PatrolService.runLoop` 的后台任务，不阻塞输入；运行中每 5s 读本地 store 刷新计数
- *   （纯文件读取，不联网）。
+ * - 点击入口跑一次 `PatrolService.drain()`（后台，不阻塞输入），跑到没有可推进的步骤即停；
+ *   运行中每 5s 读本地 store 刷新阶段与计数（纯文件读取，不联网）。
  * - 不写任何配置文件：仓库由 `git remote origin` 推断，PR 由分支前缀自动登记（见 service.ts），
  *   所以「自动配置」的产物只有 `.haji/patrol/` 下的运行数据。
  */
@@ -107,10 +107,13 @@ export class PatrolHint {
     }
   }
 
-  /** 侧栏点击入口：后台启动巡检（幂等，重复点击不会起第二个循环）。 */
+  /**
+   * 侧栏点击入口：后台跑一次巡查（drain 到没有可推进的步骤即停），不是常驻循环。
+   * 幂等：巡查进行中重复点击只提示，不叠加第二次。
+   */
   async start(): Promise<void> {
     if (this.service) {
-      this.log?.("PR 巡检已在运行。");
+      this.log?.("PR 巡查进行中，完成后再点一次。");
       return;
     }
     const repo = this.repo ?? resolvePatrolRepo(this.cwd);
@@ -139,15 +142,23 @@ export class PatrolHint {
     this.controller = controller;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
     this.log?.(
-      `PR 巡检已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；空闲时指数退避探测新 PR。`,
+      `PR 巡查已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；本次跑到没有可推进的步骤为止。`,
     );
-    void service.runLoop(controller.signal).catch((error) => {
-      this.service = undefined;
-      this.controller = undefined;
-      this.stopTimer();
-      this.onChange({ status: "ready", pending: 0, repo });
-      this.log?.(`PR 巡检已停止：${(error as Error).message}`);
-    });
+    void service
+      .drain()
+      .then((result) => {
+        for (const event of result.events) this.log?.(event);
+        this.log?.(
+          `本次巡查推进 ${result.processed} 步${result.pendingExternal ? "，仍有任务在等外部状态（CI / 草稿 / head）" : ""}。`,
+        );
+      })
+      .catch((error) => this.log?.(`PR 巡查失败：${(error as Error).message}`))
+      .finally(() => {
+        this.service = undefined;
+        this.controller = undefined;
+        this.stopTimer();
+        if (!this.disposed) this.onChange({ status: "ready", pending: 0, repo });
+      });
     this.startTimer();
   }
 
