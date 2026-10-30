@@ -22,7 +22,7 @@
     "clean": "tsc --build --clean",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "test": "pnpm run build && node --test packages/cli/test/*.test.mjs",
+    "test": "pnpm run build && node scripts/run-tests.mjs",
     "check": "pnpm lint && pnpm test",
     "pack:check": "pnpm run build:full && node scripts/verify-packages.mjs"
   },
