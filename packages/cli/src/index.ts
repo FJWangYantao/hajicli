@@ -161,6 +161,7 @@ import { resolveModelPricing } from "./model-pricing.js";
 import { getNativeTerminalEngineStatus } from "./native-terminal-engine.js";
 import { runProviderOnboarding } from "./onboarding.js";
 import { createParallelClassifier } from "./parallel-policy.js";
+import { handlePatrolCommand } from "./patrol/commands.js";
 import { handlePermissionCommand } from "./permission-commands.js";
 import {
   isToolAllowedPersistently,
@@ -4080,6 +4081,16 @@ async function main() {
           handleWorktreeCommand(
             { cwd: process.cwd(), writeLine: immediateWriteLine, writeChat: immediateWriteChat },
             parts,
+          );
+          continue;
+        }
+        if (command === "patrol") {
+          await handlePatrolCommand(
+            {
+              cwd: process.cwd(),
+              writeLine: (text) => immediateWriteLine(sanitizeTerminalText(text)),
+            },
+            { parts },
           );
           continue;
         }

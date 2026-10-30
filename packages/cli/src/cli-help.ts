@@ -294,6 +294,47 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
     ],
   },
   {
+    command: "/patrol",
+    description: "PR 巡检：自动审查 agent PR、退回修改、最终裁决与合并门禁",
+    argHint: "[status|inspect|register|start|run-once|pause|resume|retry]",
+    menu: false,
+    subcommands: [
+      { command: "/patrol status", description: "查看巡检任务列表" },
+      {
+        command: "/patrol inspect",
+        description: "查看单个任务详情",
+        argHint: "<PR>",
+        argRequired: true,
+      },
+      {
+        command: "/patrol register",
+        description: "登记 PR 来源（未登记不接管）",
+        argHint: "<PR> --task <id> --brief <任务>",
+        argRequired: true,
+      },
+      {
+        command: "/patrol unregister",
+        description: "取消登记",
+        argHint: "<PR>",
+        argRequired: true,
+      },
+      {
+        command: "/patrol start",
+        description: "启动常驻巡检（阻塞；建议独立终端）",
+        argHint: "[--interval <秒>]",
+      },
+      { command: "/patrol run-once", description: "单轮巡检（配合外部定时）" },
+      { command: "/patrol pause", description: "暂停巡检" },
+      { command: "/patrol resume", description: "恢复巡检" },
+      {
+        command: "/patrol retry",
+        description: "重置卡住 / 已终止的任务",
+        argHint: "<PR>",
+        argRequired: true,
+      },
+    ],
+  },
+  {
     command: "/skills",
     description: "Skill 管理",
     subcommands: [
