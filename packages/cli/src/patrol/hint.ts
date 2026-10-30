@@ -84,6 +84,7 @@ export class PatrolHint {
     branchPrefixes: [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes],
     selfAuthored: DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
     labels: [...DEFAULT_PATROL_CONFIG.autoAdoptLabels],
+    all: DEFAULT_PATROL_CONFIG.autoAdoptAll,
     viewerLogin: null,
   };
 
@@ -102,6 +103,7 @@ export class PatrolHint {
 
   /** 提示文案里的接管条件；多前缀用 ` / ` 连接。 */
   private adoptLabel(): string {
+    if (this.policy.all) return "自动接管全部 PR（他人提交只审查、不自动合并）";
     const parts: string[] = [];
     if (this.policy.branchPrefixes.length > 0) {
       parts.push(`分支前缀 ${this.policy.branchPrefixes.join(" / ")}`);
@@ -123,12 +125,14 @@ export class PatrolHint {
         branchPrefixes: config.autoAdoptBranchPrefixes,
         selfAuthored: config.autoAdoptSelfAuthored,
         labels: config.autoAdoptLabels,
+        all: config.autoAdoptAll,
       };
     } catch {
       return {
         branchPrefixes: [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes],
         selfAuthored: DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
         labels: [...DEFAULT_PATROL_CONFIG.autoAdoptLabels],
+        all: DEFAULT_PATROL_CONFIG.autoAdoptAll,
       };
     }
   }

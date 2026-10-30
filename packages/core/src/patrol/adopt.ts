@@ -25,6 +25,11 @@ export interface AdoptPolicy {
   selfAuthored: boolean;
   /** 命中任一 label 即接管。 */
   labels: readonly string[];
+  /**
+   * 接管全部 PR（不论作者与分支）。只放宽「谁来审」，不改变合并授权：
+   * 他人提交仍要命中 label 或「前缀命中且解析不到登录名」才允许自动合并。
+   */
+  all?: boolean;
   /** 当前令牌对应的登录名；解析不到时为 null（只能靠前缀 / label 判定）。 */
   viewerLogin: string | null;
 }
@@ -51,14 +56,16 @@ export function decideAdoption(pr: AdoptablePullRequest, policy: AdoptPolicy): A
   const matchedPrefix = matchAdoptPrefix(pr.branch, policy.branchPrefixes);
   const matchedLabel = (pr.labels ?? []).find((label) => policy.labels.includes(label));
 
-  const adopted =
-    Boolean(matchedPrefix) || matchedLabel !== undefined || (own && policy.selfAuthored);
+  const adjacent = Boolean(matchedPrefix) || matchedLabel !== undefined;
+  const adopted = policy.all === true || adjacent || (own && policy.selfAuthored);
 
   // 授权合并的三种依据：本人提交、授权 label、或「解析不到登录名时退回前缀」。
+  // 「接管全部」不在这里加分支：别人的 PR 一律只审查，合并必须另有显式授权。
   const mergeAuthorized =
     own || matchedLabel !== undefined || (matchedPrefix !== undefined && viewer === null);
 
   const reasons: string[] = [];
+  if (policy.all === true) reasons.push("接管全部 PR");
   if (matchedPrefix) reasons.push(`分支前缀 ${matchedPrefix}`);
   if (matchedLabel) reasons.push(`label ${matchedLabel}`);
   if (own) reasons.push("本人提交");

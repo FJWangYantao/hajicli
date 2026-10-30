@@ -78,6 +78,8 @@ async function dispatchPatrolCommand(
       return watch(ctx, parts[2]);
     case "unwatch":
       return unwatch(ctx);
+    case "adopt-all":
+      return adoptAll(ctx, parts[2]);
     default:
       usage(ctx);
       ctx.writeLine(colors.failLine(`未知子命令: ${sub}`));
@@ -105,9 +107,14 @@ function usage(ctx: PatrolCommandContext): void {
     ),
   );
   ctx.writeLine(
-    colors.gray("                              登记非 agent 分支的 PR（haji/ 分支默认自动接管）"),
+    colors.gray(
+      "                              登记非 agent 分支的 PR（haji/ 分支默认自动接管；autoAdoptAll 开启则全部接管）",
+    ),
   );
   ctx.writeLine(colors.gray("  /patrol unregister <PR>     取消登记"));
+  ctx.writeLine(
+    colors.gray("  /patrol adopt-all [on|off]   接管全部 PR（默认关闭；他人提交只审查不合并）"),
+  );
   ctx.writeLine(colors.gray("  /patrol pause / resume      暂停 / 恢复"));
   ctx.writeLine(colors.gray("  /patrol retry <PR>          重置卡住 / 已终止的任务"));
 }
@@ -400,6 +407,42 @@ function unwatch(ctx: PatrolCommandContext): void {
   config.wakeUrl = "";
   savePatrolConfig(ctx.cwd, config);
   ctx.writeLine(colors.okLine("已关闭唤醒通道，巡检退回纯轮询（重启巡检后生效）"));
+}
+
+/**
+ * 接管全部 PR 的开关：只写配置，与 `/patrol watch` 一样不动正在跑的循环。
+ * 只放宽「谁来审」，合并授权仍按原分层——他人提交只审查，本人提交才允许自动合并。
+ */
+function adoptAll(ctx: PatrolCommandContext, arg?: string): void {
+  const config = loadPatrolConfig(ctx.cwd);
+  const value = (arg ?? "").trim().toLowerCase();
+  if (!value) {
+    ctx.writeLine(
+      colors.gray(
+        `当前接管全部 PR：${config.autoAdoptAll ? "已开启" : "已关闭"}（/patrol adopt-all on|off 切换）`,
+      ),
+    );
+    return;
+  }
+  const enabled = value === "on" || value === "true" || value === "1";
+  const disabled = value === "off" || value === "false" || value === "0";
+  if (!enabled && !disabled) {
+    ctx.writeLine(colors.failLine("用法：/patrol adopt-all on|off"));
+    return;
+  }
+  if (config.autoAdoptAll === enabled) {
+    ctx.writeLine(colors.gray(`接管全部 PR 已经是${enabled ? "开启" : "关闭"}状态`));
+    return;
+  }
+  config.autoAdoptAll = enabled;
+  savePatrolConfig(ctx.cwd, config);
+  ctx.writeLine(
+    colors.okLine(
+      enabled
+        ? "已开启：接管所有 PR 的审查（他人提交只审查、不自动合并；本人提交仍按原规则合并）。重启巡检后生效。"
+        : "已关闭：只接管分支前缀 / 授权 label / 本人提交命中的 PR。重启巡检后生效。",
+    ),
+  );
 }
 
 async function runOnce(ctx: PatrolCommandContext): Promise<void> {

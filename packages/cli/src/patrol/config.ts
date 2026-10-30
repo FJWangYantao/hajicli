@@ -30,6 +30,11 @@ export interface PatrolConfig {
   /** 带任一 label 的开放 PR 视为已授权接管（也可授权自动合并）。默认空。 */
   autoAdoptLabels: string[];
   /**
+   * 接管全部开放 PR（不论作者与分支）。默认 false：只接管上面三条条件命中的 PR。
+   * 开启后他人提交仍只审查不合并——合并授权独立判定，见 core 的 `decideAdoption`。
+   */
+  autoAdoptAll: boolean;
+  /**
    * webhook 唤醒通道（SSE，如 `https://smee.io/xxx`）：GitHub 事件到达即立刻复查，
    * 不必等下一个轮询周期。留空 = 纯轮询。轮询始终是兜底，不会因为配了就关掉。
    */
@@ -47,6 +52,7 @@ export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
   autoAdoptBranchPrefixes: [WORKTREE_BRANCH_PREFIX],
   autoAdoptSelfAuthored: false,
   autoAdoptLabels: [],
+  autoAdoptAll: false,
   wakeUrl: "",
 };
 
@@ -88,6 +94,8 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
         ? raw.autoAdoptSelfAuthored
         : DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
     autoAdoptLabels: [...new Set(stringList(raw.autoAdoptLabels))],
+    autoAdoptAll:
+      typeof raw.autoAdoptAll === "boolean" ? raw.autoAdoptAll : DEFAULT_PATROL_CONFIG.autoAdoptAll,
     wakeUrl: wakeUrlFrom(raw.wakeUrl),
   };
 }

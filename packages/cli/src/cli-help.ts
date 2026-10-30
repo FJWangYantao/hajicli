@@ -334,6 +334,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         description: "停止侧栏启动的常驻巡查（守护进程运行时提示 systemctl）",
       },
       { command: "/patrol run-once", description: "单轮巡检（配合外部定时）" },
+      {
+        command: "/patrol adopt-all",
+        description: "接管全部 PR（他人提交只审查不合并）",
+        argHint: "[on|off]",
+      },
       { command: "/patrol pause", description: "暂停巡检" },
       { command: "/patrol resume", description: "恢复巡检" },
       {
