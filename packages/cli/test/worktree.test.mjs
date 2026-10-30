@@ -23,7 +23,7 @@ import {
 import { handleWorktreeCommand } from "../dist/worktree-commands.js";
 
 function makeDir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 /**
