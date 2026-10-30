@@ -6,7 +6,7 @@
 
 import { performanceMonitor } from "@hajicli/core";
 import { sanitizeTerminalText } from "./terminal-sanitize.js";
-import { wrapAnsi } from "./terminal-text.js";
+import { terminalWidth, wrapAnsi } from "./terminal-text.js";
 import { buildAnsiStyles, getColorLevel, getTheme } from "./theme.js";
 
 /**
@@ -1001,13 +1001,7 @@ export class MarkdownStreamRenderer {
    * 计算字符串的真实终端可视宽度（仅过滤 ANSI 颜色转义码，精准保留代码下划线与所有可见字符）。
    */
   private getTextWidth(str: string): number {
-    const plain = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-    let width = 0;
-    for (const ch of plain) {
-      const cp = ch.codePointAt(0) ?? 0;
-      width += this.isWideChar(cp) ? 2 : 1;
-    }
-    return width;
+    return terminalWidth(str);
   }
 
   /**
@@ -1070,12 +1064,6 @@ export class MarkdownStreamRenderer {
    */
   private getRawMarkdownWidth(str: string): number {
     const plainANSI = str.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-    const plain = this.stripMarkdown(plainANSI);
-    let width = 0;
-    for (const ch of plain) {
-      const cp = ch.codePointAt(0) ?? 0;
-      width += this.isWideChar(cp) ? 2 : 1;
-    }
-    return width;
+    return terminalWidth(this.stripMarkdown(plainANSI));
   }
 }

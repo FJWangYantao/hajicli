@@ -3,6 +3,23 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { MarkdownStreamRenderer } from "../dist/markdown-renderer.js";
+import { terminalWidth } from "../dist/terminal-text.js";
+
+test("组合重音与 ZWJ Emoji 折行后所有边框保持对齐", () => {
+  for (const value of ["e\u0301".repeat(40), "👨‍👩‍👧‍👦".repeat(20)]) {
+    const rendered = renderTable(`| A | B |\n| --- | --- |\n| short | ${value} |`, 40);
+    const rows = rendered.split("\n");
+    assert.ok(rows.length > 5);
+    assert.deepEqual([...new Set(rows.map(terminalWidth))], [40]);
+    const cells = rows
+      .filter((row) => stripAnsi(row).startsWith("│"))
+      .slice(1)
+      .map((row) => stripAnsi(row).split("│")[2].trim())
+      .join("");
+    assert.equal(cells, value);
+  }
+});
+
 import {
   resetActiveTheme,
   resetThemeAppearance,
