@@ -10,6 +10,7 @@ import {
   AUTO_COMPACTION_TRIGGER_RATIO,
   DEFAULT_COMPACTION_TOKEN_THRESHOLD,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
+  describeSummaryError,
   estimateMessagesTokens,
   getContextCompactionThresholds,
   readCompactedContext,
@@ -192,6 +193,8 @@ test("L4 sends the full history to the model and preserves the latest two user t
 
     assert.deepEqual(summarizedMessages, messages);
     assert.equal(result.summaryMode, "model");
+    // 摘要成功时不应留下失败原因，否则降级提示会误报。
+    assert.equal(result.summaryError, undefined);
     assert.ok(result.layersApplied.includes("L4:模型结构化摘要"));
     assert.match(result.messages[0].content, /model generated task summary/);
     assert.equal(
@@ -236,10 +239,23 @@ test("L4 reports fallback mode when the model summary fails", async () => {
 
     assert.equal(result.summaryMode, "fallback");
     assert.ok(result.layersApplied.includes("L4:本地降级摘要"));
+    // 降级原因必须带出来：用户据此判断是额度、限流还是模型不可用。
+    assert.equal(result.summaryError, "provider unavailable");
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("summary failure reason is flattened into one line for the fallback hint", () => {
+  assert.equal(
+    describeSummaryError(new Error("HTTP 402\n  insufficient balance  ")),
+    "HTTP 402 insufficient balance",
+  );
+  assert.equal(describeSummaryError(""), "未知错误");
+  const long = describeSummaryError(new Error("x".repeat(500)));
+  assert.equal(long.length, 201);
+  assert.ok(long.endsWith("…"));
 });
 
 test("L4 preserves current and legacy unverified subagent context across repeated compaction", async () => {

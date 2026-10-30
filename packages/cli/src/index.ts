@@ -129,6 +129,7 @@ import {
   type PermissionGrant,
   readGitBranch,
   savePreference,
+  summarizeModelErrorShort,
   summarizeToolCall,
   summarizeToolResult,
 } from "./cli-runtime.js";
@@ -697,6 +698,8 @@ async function main() {
   let utilityProviderCache:
     | { model: string; providerName: string; instance: ObservableModelProvider }
     | undefined;
+  /** 已经警告过的杂活模型：同一模型只提醒一次，避免每次压缩都刷一行。 */
+  let utilityFallbackWarnedFor: string | undefined;
   const getUtilityRuntime = ():
     | { provider: ObservableModelProvider; model: string; providerName: string }
     | undefined => {
@@ -708,16 +711,27 @@ async function main() {
     );
     if (!utilityModel || utilityModel === selectedModel) return undefined;
     if (utilityProviderCache?.model !== utilityModel) {
+      // 同名模型可能既在内置注册表、又被自定义渠道声明（如 glm-5.2）：按 availableModels 登记的
+      // 渠道走，否则会抢到内置 provider，最后因为没配那把 Key 而白白回退主模型。
+      const declaredProvider = availableModels.find(
+        (model) => model.value === utilityModel,
+      )?.provider;
       try {
         utilityProviderCache = {
           model: utilityModel,
-          // 与 buildProvider(utilityModel) 的渠道推断同一口径（费用按它定价）。
-          providerName: detectProviderForModel(utilityModel, providerConfig),
-          instance: buildProvider(utilityModel),
+          // 与 buildProvider 的归属同一口径，费用才记到正确的渠道上。
+          providerName: detectProviderForModel(utilityModel, providerConfig, declaredProvider),
+          instance: buildProvider(utilityModel, undefined, declaredProvider),
         };
-      } catch {
-        // 杂活模型构建失败（如 Key 失效）时回退主模型，不阻断主流程。
+      } catch (error) {
+        // 构建失败（Key 失效、渠道没配）时回退主模型，但要说明原因：
+        // 静默回退会让用户以为「最便宜的杂活模型」在用，其实一直是主模型在花钱。
         utilityProviderCache = undefined;
+        if (utilityFallbackWarnedFor !== utilityModel) {
+          utilityFallbackWarnedFor = utilityModel;
+          const reason = error instanceof Error ? error.message : String(error);
+          showRuntimeWarning(`杂活模型 ${utilityModel} 不可用（${reason}），已回退主模型。`);
+        }
         return undefined;
       }
     }
@@ -884,8 +898,16 @@ async function main() {
       layers: [...result.layersApplied],
       ...(transcriptPath ? { transcriptPath } : {}),
       ...(result.summaryMode === "none" ? {} : { summaryMode: result.summaryMode }),
+      ...(result.summaryError ? { summaryError: result.summaryError } : {}),
     };
   };
+
+  /**
+   * 压缩降级提示里的失败原因：把原始错误再过一遍分类，让用户看到「账户额度不足 / 请求过于频繁」
+   * 这类可行动的结论，而不是上游那段原始报文。
+   */
+  const describeCompactionFailure = (error: string | undefined): string =>
+    error ? `（${summarizeModelErrorShort(new Error(error), 80)}）` : "";
 
   // 0. 用户 Hook（~/.haji/hooks.json + 已信任的 .haji/hooks.json）：PreToolUse 先于权限引擎，
   // 拦下了就不必再弹授权卡；其余事件挂在内置处理器之后，只产生副作用。
@@ -1052,7 +1074,11 @@ async function main() {
       // 压缩后上下文用量提醒重新计数（黄/红阈值可再次触发）。
       resetContextUsageWarnings();
       if (result.summaryMode === "fallback") {
-        ui.writeLine(colors.warnLine("模型摘要失败，本次使用了本地降级摘要。"));
+        ui.writeLine(
+          colors.warnLine(
+            `模型摘要失败${describeCompactionFailure(result.summaryError)}，本次使用了本地降级摘要。`,
+          ),
+        );
       }
     }
   });
@@ -1589,6 +1615,8 @@ async function main() {
   // Auto 模式：把主/杂活模型接成安全分类器。判定失败、超时、回复无法解析一律拒绝，
   // 与 auto-classifier 的 fail-closed 语义一致；用户中止回合时沿 abortSignal 取消请求。
   // 判定状态挂在对话区该工具格上（◈ 判定中 → 结论），不占用底栏状态行，也不写对话正文。
+  // 判定失败的原因只提示一次：auto 档下每个工具都会判定一次，同一原因刷屏会淹掉正文。
+  let lastJudgeErrorReason: string | undefined;
   permissionEngine.configureAuto({
     judge: async ({ system, user, signal }) => {
       const utility = utilityCall("权限判定");
@@ -1631,6 +1659,12 @@ async function main() {
                 ? "AI 放行"
                 : "AI 拦截";
       if (toolCallId) toolRunView.judged(toolCallId, `${verdict}${duration}`);
+      // 工具格上只放得下「判定失败」四个字，真正的原因（额度/限流/超时）写进正文一次。
+      if (event.source === "error" && event.reason && event.reason !== lastJudgeErrorReason) {
+        lastJudgeErrorReason = event.reason;
+        const detail = Array.from(event.reason.replace(/\s+/g, " ")).slice(0, 120).join("");
+        ui.writeLine(colors.warnLine(`自动模式判定失败 · ${detail}`));
+      }
     },
   });
   let planReadyForReview = false;
@@ -4070,7 +4104,9 @@ async function main() {
           );
           if (result.summaryMode === "fallback") {
             ui.writeLine(
-              colors.warnLine("模型摘要调用失败，当前结果为本地降级摘要；完整记录仍已落盘。"),
+              colors.warnLine(
+                `模型摘要调用失败${describeCompactionFailure(result.summaryError)}，当前结果为本地降级摘要；完整记录仍已落盘。`,
+              ),
             );
           }
           continue;

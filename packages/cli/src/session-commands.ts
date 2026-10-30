@@ -365,8 +365,14 @@ export function renderSessionHistory(
       );
     }
     if (compaction?.summaryMode === "fallback") {
+      // 回放时把当时的失败原因一并带上，否则跨会话只能看到「用了降级摘要」这个结论。
+      const reason = compaction.summaryError
+        ? `：${Array.from(compaction.summaryError).slice(0, 100).join("")}`
+        : "";
       appendHistoryLine(
-        colors.warnLine("  上次压缩使用的是本地降级摘要（模型摘要调用失败），完整记录仍已落盘。"),
+        colors.warnLine(
+          `  上次压缩使用的是本地降级摘要（模型摘要调用失败${reason}），完整记录仍已落盘。`,
+        ),
       );
     }
     if (transcriptPath) {

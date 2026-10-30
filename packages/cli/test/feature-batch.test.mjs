@@ -106,6 +106,53 @@ test("resolveUtilityModel prefers preference then cheapest then heuristic", () =
   assert.equal(resolveUtilityModel(undefined, [{ value: "only-model" }]), undefined);
 });
 
+test("utility routing prices candidates by their declared channel, not only the builtin table", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "haji-utility-pricing-"));
+  const pricingPath = path.join(root, "pricing.json");
+  fs.writeFileSync(
+    pricingPath,
+    JSON.stringify({
+      models: {
+        // 自建渠道的模型只有覆盖表里有价：只看内置注册表会把它们全部过滤掉，
+        // 最后选中一个归属被误判、渠道又没配 Key 的模型（glm-5.2 那种情况）。
+        "globaldeepseek/global:deepseek-v4.1-flash": {
+          inputPerMTokens: 0.3,
+          outputPerMTokens: 1.2,
+        },
+        "zai/glm-5.2": { inputPerMTokens: 2, outputPerMTokens: 8 },
+      },
+    }),
+    "utf8",
+  );
+  // 覆盖表按 mtime 缓存：给临时文件一个独有时间戳，避免命中真实 pricing.json 的缓存。
+  const stamp = new Date(1_700_000_000_000);
+  fs.utimesSync(pricingPath, stamp, stamp);
+  const previous = process.env.HAJI_PRICING_PATH;
+  process.env.HAJI_PRICING_PATH = pricingPath;
+  try {
+    assert.equal(
+      resolveUtilityModel(undefined, [
+        { value: "glm-5.2", provider: "zai" },
+        { value: "global:deepseek-v4.1-flash", provider: "globaldeepseek" },
+      ]),
+      "global:deepseek-v4.1-flash",
+      "渠道价参与比较后，最便宜的应该是 deepseek flash 而不是 glm-5.2",
+    );
+    // 渠道价按 <provider>/<model> 区分：同一个模型换个渠道，价格不同，排序也应跟着变。
+    assert.equal(
+      resolveUtilityModel(undefined, [
+        { value: "glm-5.2", provider: "zai" },
+        { value: "global:deepseek-v4.1-flash", provider: "other-channel" },
+      ]),
+      "glm-5.2",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.HAJI_PRICING_PATH;
+    else process.env.HAJI_PRICING_PATH = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function withTempWorkspace(run) {
   const previousCwd = process.cwd();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "haji-feat-"));

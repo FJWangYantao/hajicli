@@ -149,12 +149,18 @@ test("本地降级摘要在恢复时明确标注", async () => {
   await seedSession(dir, {
     usage: {
       compactionCount: 1,
-      lastCompaction: { ...COMPACTION, summaryMode: "fallback" },
+      lastCompaction: {
+        ...COMPACTION,
+        summaryMode: "fallback",
+        summaryError: "HTTP 402 账户额度不足",
+      },
     },
   });
 
   const text = await renderResume(dir);
   assert.match(text, /本地降级摘要/);
+  // 跨会话回放也要带上当时的失败原因，否则只能看到「用了降级摘要」这个结论。
+  assert.match(text, /模型摘要调用失败：HTTP 402 账户额度不足/);
 });
 
 // /resume 与 /clear 的压缩记录同步是 index.ts 注入的实现，这里守着接线不被改回去。

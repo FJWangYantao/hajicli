@@ -54,6 +54,8 @@ export interface SessionCompaction {
   transcriptPath?: string;
   /** 摘要来源；`fallback` 表示模型摘要失败、用了本地降级摘要。 */
   summaryMode?: "model" | "fallback";
+  /** 模型摘要失败的原因；`summaryMode` 为 `fallback` 时才有，/resume 回放时一并显示。 */
+  summaryError?: string;
 }
 
 /** 会话内用量：/resume 时据此把侧栏的费用、压缩次数与上轮耗时复原。 */

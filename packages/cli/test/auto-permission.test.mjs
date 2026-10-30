@@ -110,6 +110,32 @@ test("an external abort cancels the judgment without waiting for the judge", asy
   assert.match(result.reason, /中止/);
 });
 
+test("judge failures carry the upstream reason into the denial so the CLI can explain it", async () => {
+  const events = [];
+  const engine = new PermissionEngine({
+    judge: async () => {
+      throw new Error("402 Insufficient Balance");
+    },
+    cwd: process.cwd(),
+    onJudge: (event) => events.push(event),
+  });
+
+  const result = await engine.evaluate({
+    mode: "auto",
+    toolName: "bash",
+    args: { command: "npm test" },
+    toolCallId: "call_402",
+  });
+
+  assert.equal(result.action, "deny");
+  assert.match(result.reason, /402 Insufficient Balance/);
+  const done = events.at(-1);
+  assert.equal(done.source, "error");
+  assert.equal(done.allowed, false);
+  // 工具格上的「判定失败」只是标签；正文提示直接读 event.reason，所以原因必须原样带出。
+  assert.match(done.reason, /402 Insufficient Balance/);
+});
+
 test("deterministic hard blocks never reach the LLM", async () => {
   let calls = 0;
   const events = [];
