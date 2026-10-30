@@ -123,6 +123,12 @@ export class MarkdownRenderThrottle {
  */
 const UNSAFE_CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
+/**
+ * 表格每列至少要能放下的内容宽度（列数太多、终端太窄时不再画表格，
+ * 退回逐行「字段: 值」记录，否则每列 3 列宽装中文完全没法读）。
+ */
+const TABLE_MIN_COLUMN_WIDTH = 6;
+
 /** 行首为 ``` 的行数（等价于 `text.match(/^```/gm)` 的计数）。 */
 function countFenceLines(text: string): number {
   let count = 0;
@@ -906,10 +912,11 @@ export class MarkdownStreamRenderer {
       }
     }
 
-    // 若表格总宽度超过终端可用宽度，按比例压缩各列
+    // 表格放不下时不再截断单元格，而是按列分配宽度后让单元格内换行。
+    // 只有连「每列 6 列内容」都保证不了（列数太多 / 终端太窄）时才退化成逐行记录。
     const maxWidth = this.getMaxWidth();
     const borderOverhead = 3 * colCount + 1;
-    if (maxWidth < 40 || borderOverhead + colCount * 3 > maxWidth) {
+    if (maxWidth < 40 || borderOverhead + colCount * TABLE_MIN_COLUMN_WIDTH > maxWidth) {
       const headerRow = contentRows[0];
       if (contentRows.length === 1) {
         return [headerRow.map((cell) => this.renderInlineStyles(cell)).join(" · ")];
@@ -931,32 +938,10 @@ export class MarkdownStreamRenderer {
       }
       return stacked;
     }
-    const maxContentWidth = Math.max(colCount * 3, maxWidth - borderOverhead);
-    const sumWidths = colWidths.reduce((a, b) => a + b, 0);
-
-    if (sumWidths > maxContentWidth) {
-      const scaledWidths = colWidths.map((w) => {
-        const ratio = sumWidths > 0 ? w / sumWidths : 1 / colCount;
-        return Math.max(3, Math.floor(ratio * maxContentWidth));
-      });
-      let currentSum = scaledWidths.reduce((a, b) => a + b, 0);
-      let idx = 0;
-      while (currentSum < maxContentWidth && idx < colCount) {
-        scaledWidths[idx]++;
-        currentSum++;
-        idx = (idx + 1) % colCount;
-      }
-      while (currentSum > maxContentWidth && scaledWidths.some((w) => w > 3)) {
-        for (let c = colCount - 1; c >= 0; c--) {
-          if (scaledWidths[c] > 3 && currentSum > maxContentWidth) {
-            scaledWidths[c]--;
-            currentSum--;
-          }
-        }
-      }
-      for (let c = 0; c < colCount; c++) {
-        colWidths[c] = scaledWidths[c];
-      }
+    const maxContentWidth = Math.max(colCount * TABLE_MIN_COLUMN_WIDTH, maxWidth - borderOverhead);
+    const allocated = this.allocateTableColumns(colWidths, maxContentWidth);
+    for (let c = 0; c < colCount; c++) {
+      colWidths[c] = allocated[c];
     }
 
     const output: string[] = [];
@@ -965,21 +950,34 @@ export class MarkdownStreamRenderer {
     const topBorder = `┌${colWidths.map((w) => "─".repeat(w + 2)).join("┬")}┐`;
     output.push(`${ANSI.gray}${topBorder}${ANSI.reset}`);
 
+    // 一行逻辑表格行按「最高单元格」展开成多条物理行；窄表（各格都放得下）仍是单行，
+    // 输出与改造前逐字节一致。
+    const renderRow = (row: string[], isHeader: boolean): void => {
+      const wrappedCells: string[][] = [];
+      for (let c = 0; c < colCount; c++) {
+        const styled = this.renderInlineStyles(row[c] || "", true);
+        wrappedCells.push(this.wrapCellLines(styled, colWidths[c]));
+      }
+      let height = 1;
+      for (const cellLines of wrappedCells) height = Math.max(height, cellLines.length);
+      for (let lineIndex = 0; lineIndex < height; lineIndex++) {
+        const cells: string[] = [];
+        for (let c = 0; c < colCount; c++) {
+          const line = wrappedCells[c][lineIndex] ?? "";
+          const pad = " ".repeat(Math.max(0, colWidths[c] - this.getTextWidth(line)));
+          // 内边距留在样式之外，与改造前的字节序保持一致（表格宽窄不变时输出逐字节相同）。
+          cells.push(
+            isHeader ? ` ${ANSI.bold}${ANSI.cyan}${line}${ANSI.reset}${pad} ` : ` ${line}${pad} `,
+          );
+        }
+        output.push(
+          `${ANSI.gray}│${ANSI.reset}${cells.join(`${ANSI.gray}│${ANSI.reset}`)}${ANSI.gray}│${ANSI.reset}`,
+        );
+      }
+    };
+
     // 表头行
-    const headerRow = contentRows[0];
-    const headerCells = [];
-    for (let c = 0; c < colCount; c++) {
-      const rawText = headerRow[c] || "";
-      const styledText = this.renderInlineStyles(rawText, true);
-      const truncatedText = this.truncateVisual(styledText, colWidths[c]);
-      const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
-      headerCells.push(
-        ` ${ANSI.bold}${ANSI.cyan}${truncatedText}${ANSI.reset}${" ".repeat(padLen)} `,
-      );
-    }
-    output.push(
-      `${ANSI.gray}│${ANSI.reset}${headerCells.join(`${ANSI.gray}│${ANSI.reset}`)}${ANSI.gray}│${ANSI.reset}`,
-    );
+    renderRow(contentRows[0], true);
 
     // 如果包含数据行，渲染中间分隔线与表体行
     if (contentRows.length > 1) {
@@ -987,20 +985,8 @@ export class MarkdownStreamRenderer {
       const midBorder = `├${colWidths.map((w) => "─".repeat(w + 2)).join("┼")}┤`;
       output.push(`${ANSI.gray}${midBorder}${ANSI.reset}`);
 
-      // 表体行
       for (let r = 1; r < contentRows.length; r++) {
-        const row = contentRows[r];
-        const cells = [];
-        for (let c = 0; c < colCount; c++) {
-          const rawText = row[c] || "";
-          const styledText = this.renderInlineStyles(rawText, true);
-          const truncatedText = this.truncateVisual(styledText, colWidths[c]);
-          const padLen = Math.max(0, colWidths[c] - this.getTextWidth(truncatedText));
-          cells.push(` ${truncatedText}${" ".repeat(padLen)} `);
-        }
-        output.push(
-          `${ANSI.gray}│${ANSI.reset}${cells.join(`${ANSI.gray}│${ANSI.reset}`)}${ANSI.gray}│${ANSI.reset}`,
-        );
+        renderRow(contentRows[r], false);
       }
     }
 
@@ -1022,6 +1008,61 @@ export class MarkdownStreamRenderer {
       width += this.isWideChar(cp) ? 2 : 1;
     }
     return width;
+  }
+
+  /**
+   * 按终端宽度给表格各列分配内容宽度（water-filling）。
+   *
+   * 旧的「按内容宽度占比缩放」会把短列压到比自身内容还窄，连表头都被截成 `负责…`；
+   * 这里改成：每列先拿 `budget / 列数` 的均分额度，够用的列停在自然宽度并退出，
+   * 剩余额度再均分给仍然放不下的列，循环到额度用尽。于是短列永不被压缩，长列吸收全部
+   * 压缩量、由单元格内换行消化。所有列都达到自然宽度时总额度用不完，表格自然收紧。
+   */
+  private allocateTableColumns(naturalWidths: number[], budget: number): number[] {
+    // 放得下就完全按自然宽度走：这是改造前「不缩放」的分支，输出必须逐字节不变，
+    // 所以这里连最小宽度都不补（旧行为允许 1 列宽的窄列）。
+    const sum = naturalWidths.reduce((a, b) => a + b, 0);
+    if (sum <= budget) return naturalWidths.slice();
+
+    const natural = naturalWidths.map((w) => Math.max(3, w));
+    const widths = natural.map(() => 0);
+    let remaining = budget;
+    let open = natural.map((_, index) => index);
+
+    while (open.length > 0 && remaining > 0) {
+      const share = Math.floor(remaining / open.length);
+      if (share <= 0) {
+        // 剩余额度比列数还少：从第一列起每列补 1 列，避免死循环。
+        for (const index of open) {
+          if (remaining <= 0) break;
+          widths[index] += 1;
+          remaining -= 1;
+        }
+        break;
+      }
+      let progressed = false;
+      for (const index of open) {
+        const give = Math.min(natural[index] - widths[index], share);
+        if (give <= 0) continue;
+        widths[index] += give;
+        remaining -= give;
+        progressed = true;
+      }
+      open = open.filter((index) => widths[index] < natural[index]);
+      if (!progressed) break;
+    }
+
+    return widths;
+  }
+
+  /**
+   * 把单元格内容折成多行：放得下就原样返回单行（保证窄表输出不变），
+   * 放不下交给 `wrapAnsi`——它已处理 CJK 双宽、ANSI 样式跨行续接与超长 token 硬切，
+   * 与代码块折行保持同一口径。
+   */
+  private wrapCellLines(styled: string, width: number): string[] {
+    if (this.getTextWidth(styled) <= width) return [styled];
+    return wrapAnsi(styled, width);
   }
 
   /**
