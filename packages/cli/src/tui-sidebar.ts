@@ -860,12 +860,17 @@ export function buildSidebarFrame(
               contentW,
             );
     const actionable = patrol.status === "ready";
-    const color = actionable
-      ? isHovered("patrol.entry")
-        ? SEQ.boldAccent
-        : SEQ.accent
-      : SEQ.muted;
-    push(`${color}${actionable ? "▸ " : ""}${text}${SEQ.reset}`);
+    // 配色按状态区分：巡检中橙（主题 yellow 为琥珀橙）、有待接管 PR 绿、
+    // 未启动灰；缺令牌用橙提示「需要处理」，避免和「已就绪但没活干」混为一谈。
+    const color =
+      patrol.status === "running" || patrol.status === "no-token"
+        ? SEQ.yellow
+        : patrol.pending > 0
+          ? SEQ.green
+          : SEQ.muted;
+    // 悬停只加粗不改色，保证三种状态的色义不被 hover 覆盖（mono 下 bold 为空序列）。
+    const paint = actionable && isHovered("patrol.entry") ? `${SEQ.bold}${color}` : color;
+    push(`${paint}${actionable ? "▸ " : ""}${text}${SEQ.reset}`);
     if (actionable) register("patrol.entry", entryRow, 1, "label");
   }
 

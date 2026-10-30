@@ -1078,6 +1078,26 @@ test("patrol entry degrades text and stops being clickable when not actionable",
   assert.ok(!noToken.regions.some((region) => region.id === "patrol.entry"));
 });
 
+test("patrol entry color encodes state: running amber, pending green, idle muted", () => {
+  setActiveColorLevel("truecolor");
+  try {
+    const patrolRow = (patrol) => {
+      const frame = buildSidebarFrame(sidebarState({ patrol }), 40, 32);
+      return frame.rows.find((line) => stripAnsi(line).includes("巡检"));
+    };
+    // 巡检中：橙（主题 yellow 的琥珀橙）。
+    assert.ok(patrolRow({ status: "running", pending: 0, tasks: 2 }).includes(SEQ.yellow));
+    // 探测到待接管 PR：绿。
+    assert.ok(patrolRow({ status: "ready", pending: 2, repo: "owner/repo" }).includes(SEQ.green));
+    // 未启动且没活干：灰。
+    assert.ok(patrolRow({ status: "ready", pending: 0, repo: "owner/repo" }).includes(SEQ.muted));
+    // 缺令牌：橙，和「已就绪但没活干」区分开。
+    assert.ok(patrolRow({ status: "no-token", pending: 0 }).includes(SEQ.yellow));
+  } finally {
+    setActiveColorLevel("mono");
+  }
+});
+
 test("patrol entry never pushes context or cost out of view", () => {
   for (const height of [18, 20, 24, 32, 40]) {
     const withHint = buildSidebarFrame(
