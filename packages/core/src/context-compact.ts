@@ -22,6 +22,26 @@ export interface CompactionResult {
   freedPercentage: number;
   layersApplied: string[];
   summaryMode: "none" | "model" | "fallback";
+  /** 模型摘要失败的原因（仅 `summaryMode` 为 `fallback` 时存在）：用来回答「为什么降级」。 */
+  summaryError?: string;
+}
+
+/**
+ * 摘要失败原因的单行摘要：折叠空白并截断，供提示与落盘共用。
+ * 上游错误常带多行堆栈或整段响应体，原样打印会冲掉对话区。
+ */
+export function describeSummaryError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const oneLine = message.replace(/\s+/g, " ").trim();
+  if (!oneLine) return "未知错误";
+  return oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine;
+}
+
+/** `compactHistory` 的结果：压缩后的消息与摘要失败原因分开给，调用方不必自己 catch。 */
+export interface CompactHistoryResult {
+  messages: ChatMessage[];
+  /** 模型摘要失败的原因；摘要成功或未注入摘要模型时缺省。 */
+  summaryError?: string;
 }
 
 /** 估算消息数组的总字符数（粗略 4 字符 ≈ 1 Token） */
@@ -396,7 +416,7 @@ export async function compactHistory(
   messages: ChatMessage[],
   summaryProvider?: (messages: ChatMessage[]) => Promise<string>,
   recentSource: ChatMessage[] = messages,
-): Promise<ChatMessage[]> {
+): Promise<CompactHistoryResult> {
   const transcriptDir = path.join(process.cwd(), ".haji", "transcripts");
   let transcriptPath = "";
   try {
@@ -407,13 +427,16 @@ export async function compactHistory(
   } catch {}
 
   let summaryText = "";
+  let summaryError: string | undefined;
   if (summaryProvider) {
     try {
       summaryText = await summaryProvider(messages);
       if (!summaryText.trim()) {
         throw new Error("摘要模型返回了空内容");
       }
-    } catch {
+    } catch (error) {
+      // 降级仍然继续，但原因必须带出去：否则用户只看到「本地降级摘要」，无从判断是额度、限流还是超长。
+      summaryError = describeSummaryError(error);
       summaryText = generateFallbackSummary(messages);
     }
   } else {
@@ -440,7 +463,10 @@ export async function compactHistory(
   };
   const recentMessages = selectRecentConversation(recentSource, 2);
 
-  return repairToolCallPairs([systemMsg, ...recentMessages]);
+  return {
+    messages: repairToolCallPairs([systemMsg, ...recentMessages]),
+    ...(summaryError ? { summaryError } : {}),
+  };
 }
 
 function selectRecentConversation(messages: ChatMessage[], userTurns: number): ChatMessage[] {
@@ -488,6 +514,7 @@ export async function runCompactionPipeline(
   const fullMessages = repairToolCallPairs(messages);
   let currentMessages = fullMessages;
   let summaryMode: CompactionResult["summaryMode"] = "none";
+  let summaryError: string | undefined;
 
   if (fullMessages !== messages) {
     layersApplied.push("协议:工具调用配对修复");
@@ -531,7 +558,9 @@ export async function runCompactionPipeline(
           return summary;
         }
       : undefined;
-    currentMessages = await compactHistory(fullMessages, summaryProvider, recentMessages);
+    const compacted = await compactHistory(fullMessages, summaryProvider, recentMessages);
+    currentMessages = compacted.messages;
+    summaryError = compacted.summaryError;
     summaryMode = modelSummaryCompleted ? "model" : "fallback";
     layersApplied.push(modelSummaryCompleted ? "L4:模型结构化摘要" : "L4:本地降级摘要");
   }
@@ -557,5 +586,6 @@ export async function runCompactionPipeline(
     freedPercentage,
     layersApplied,
     summaryMode,
+    ...(summaryError ? { summaryError } : {}),
   };
 }
