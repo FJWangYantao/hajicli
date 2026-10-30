@@ -1,9 +1,20 @@
 # 更新记录
 
-## 1.6.0（2026-10-29）
+## 1.6.0（2026-10-30）
 
 ### 新功能
 
+- **PR 巡检（Patrol）**：自动接管**已登记来源**的 agent PR —— 独立审查、退回修改、争议升级最终裁决、
+  合并门禁、合并或有理由地终止，全程没有人工裁决节点。`haji/` 分支默认自动接管，也可按 label、
+  本人提交（需显式开启）或 `/patrol register <PR> --task <id> --brief <任务>` 指定；
+  未登记的 PR 不取得写入与合并资格，PR 正文不参与来源判定。合并前还要过一遍程序侧确定性检查
+  （非草稿、无冲突、`head` 与结论版本一致、必需 CI 全绿且来源可信、未被暂停、预算未耗尽）。
+  三种跑法：`/patrol run-once` 单轮（配 cron）、侧栏「PR 巡检」常驻（显示当前阶段与已耗时）、
+  `scripts/patrol-daemon.mjs` 由 `systemd --user` 托管（心跳写 `.haji/patrol/daemon.json`，
+  haji 侧栏据此只读状态、不再重复联网）。`/patrol watch <url>` 接入 webhook 唤醒通道，
+  GitHub 事件到达即复查；轮询始终兜底，通道故障不影响巡检。
+  预算上限（修改轮次 / 裁决轮次 / 费用 / 时长）命中即终止并记录原因，每次运行落盘
+  `.haji/patrol/runs/<jobId>/<runId>.log`。
 - **用户 Hooks**：`~/.haji/hooks.json` / `.haji/hooks.json` 配置 `PreToolUse`、`PostToolUse`、
   `UserPromptSubmit`、`Stop` 四个时机的 shell 命令。退出码 2 时 `PreToolUse` 拦下工具调用（原因回给模型）、
   `PostToolUse` 把 stderr 回注；`UserPromptSubmit` 的 stdout 作补充上下文。Hook 只能拦、不能替用户放行。
@@ -44,6 +55,9 @@
 
 - `index.ts` 拆出 `serve-mode.ts`、`permission-commands.ts`、`extension-commands.ts`；
   `terminal-input.ts` 拆出 `frame-compose.ts`、`selection-picker.ts` 等无状态模块，`renderFrame` 按阶段拆分。
+- 新增包 `@hajicli/patrol-github`：GitHub 适配器只依赖 `fetch` 与 core 的 `PatrolForgeAdapter` 契约，
+  不含 CLI / TUI 依赖；巡检协议、状态机、预算、合并门禁与存储放在 `core/src/patrol/`，
+  CLI 侧的编排、runner、唤醒通道与守护进程心跳各自成模块。新增 GitLab / Gitea 等平台按同一契约另开包即可。
 - `scripts/ab-run.mjs` 修正 `-p` JSON 结果解析（此前每次运行都记成失败）。
 
 ## 1.5.0（2026-10-28）

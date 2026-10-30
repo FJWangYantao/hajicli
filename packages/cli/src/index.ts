@@ -4273,7 +4273,7 @@ async function main() {
           // 压缩要等摘要模型（几秒到几十秒）：先把输入行还回去，用户可以先写下一句；
           // 回车会进 pendingInputs，压缩结束后由主循环按队列处理，草稿则随 cancelInput 保留。
           startBackgroundInput();
-          ui.writeLine(colors.boldPurple("正在执行四层上下文压缩管线..."));
+          ui.writeLine(colors.boldPurple("compacting..."));
           lastSummaryModel = undefined;
           const result = await runCompactionPipeline(messages, {
             forceL4: true,
