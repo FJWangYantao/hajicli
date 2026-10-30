@@ -330,6 +330,11 @@ export const COMMAND_SURFACE: readonly CommandSurfaceEntry[] = [
         argHint: "[--interval <秒>]",
       },
       { command: "/patrol run-once", description: "单轮巡检（配合外部定时）" },
+      {
+        command: "/patrol adopt-all",
+        description: "接管全部 PR（他人提交只审查不合并）",
+        argHint: "[on|off]",
+      },
       { command: "/patrol pause", description: "暂停巡检" },
       { command: "/patrol resume", description: "恢复巡检" },
       {

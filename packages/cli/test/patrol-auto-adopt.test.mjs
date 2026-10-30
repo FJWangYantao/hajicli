@@ -293,4 +293,53 @@ test("decideAdoption：接管与合并授权分层判定", () => {
     decideAdoption({ branch: "feat/y", author: "me" }, { ...policy, selfAuthored: false }).adopted,
     false,
   );
+  // 接管全部：他人非前缀分支也接管，但仍不授权合并。
+  assert.deepEqual(
+    decideAdoption({ branch: "feat/z", author: "other" }, { ...policy, all: true }),
+    {
+      adopted: true,
+      mergeAuthorized: false,
+      reason: "接管全部 PR",
+    },
+  );
+  // 接管全部 + 本人提交：接管并授权合并（合并授权仍按原分层）。
+  assert.deepEqual(decideAdoption({ branch: "feat/z", author: "me" }, { ...policy, all: true }), {
+    adopted: true,
+    mergeAuthorized: true,
+    reason: "接管全部 PR / 本人提交",
+  });
+});
+
+test("自动接管：autoAdoptAll 接管任意作者的 PR，但只有本人允许自动合并", async () => {
+  const tmp = tmpHome();
+  const forge = new FakeForge(
+    [
+      makePr(41, "head4141", { branch: "feat/other", author: "someone" }),
+      makePr(42, "head4242", { branch: "feat/mine", author: "me" }),
+    ],
+    { viewerLogin: "me" },
+  );
+  const service = makeService(tmp, forge, { autoAdoptAll: true });
+
+  const result = await service.tick();
+  const other = service.store.getRegistration(patrolJobId(REPO, 41));
+  const mine = service.store.getRegistration(patrolJobId(REPO, 42));
+  assert.ok(other, "开启 autoAdoptAll 后他人 PR 也应被接管");
+  assert.equal(other.taskId, "feat/other", "未命中前缀时 taskId 取整条分支名");
+  assert.equal(other.mergeAuthorized, false, "他人提交只审查，不授权合并");
+  assert.ok(mine, "本人 PR 同样被接管");
+  assert.equal(mine.mergeAuthorized, true, "本人提交仍允许自动合并");
+  assert.ok(
+    result.events.some((line) => line.includes("接管全部 PR") && line.includes("仅审查不合并")),
+    `日志应说明接管全部且他人仅审查：${result.events.join(" | ")}`,
+  );
+
+  // 他人 PR 审查通过后收敛为仅审查，绝不调用合并接口。
+  await service.tick();
+  assert.equal(service.store.getJob(patrolJobId(REPO, 41))?.status, "terminated");
+  assert.deepEqual(
+    forge.mergeCalls.filter((call) => call.number === 41),
+    [],
+    "不得合并他人 PR",
+  );
 });

@@ -140,6 +140,7 @@ export class PatrolService {
       branchPrefixes: this.config.autoAdoptBranchPrefixes,
       selfAuthored: this.config.autoAdoptSelfAuthored,
       labels: this.config.autoAdoptLabels,
+      all: this.config.autoAdoptAll,
       viewerLogin: await this.resolveViewerLogin(),
     };
   }
@@ -312,7 +313,7 @@ export class PatrolService {
     const prs = await this.adapter.listOpenPullRequests();
     const openByNumber = new Map(prs.map((pr) => [pr.number, pr]));
 
-    // 0. 自动登记：分支名命中 autoAdoptBranchPrefixes 任一前缀的开放 PR 视为 agent 产出，无需手动 register。
+    // 0. 自动登记：命中接管条件（分支前缀 / 授权 label / 本人提交 / 接管全部）的开放 PR 无需手动 register。
     await this.adoptAgentPullRequests(prs, events);
 
     // 1. 为已登记来源的开放 PR 建任务（未登记的不自动接管）。

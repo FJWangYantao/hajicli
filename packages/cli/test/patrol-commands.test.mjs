@@ -239,3 +239,33 @@ test("/patrol watch / unwatch：写入并清除唤醒通道", async () => {
   await handlePatrolCommand(ctx, { parts: ["patrol", "watch"] });
   assert.ok(ctx.lines.some((line) => line.includes("用法")));
 });
+
+test("/patrol adopt-all：写开关、回读状态、拒绝非法参数", async () => {
+  const ctx = makeCtx();
+  // 默认关闭：无配置时直接查询也不该报错。
+  await handlePatrolCommand(ctx, { parts: ["patrol", "adopt-all"] });
+  assert.ok(
+    ctx.lines.some((line) => line.includes("已关闭")),
+    `默认应显示已关闭：${ctx.lines.join(" | ")}`,
+  );
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "adopt-all", "on"] });
+  assert.equal(loadPatrolConfig(ctx.cwd).autoAdoptAll, true);
+  assert.ok(
+    ctx.lines.some((line) => line.includes("已开启")),
+    `应提示已开启：${ctx.lines.join(" | ")}`,
+  );
+
+  // 开关只放宽接管：提示里必须说明他人提交不自动合并。
+  assert.ok(ctx.lines.some((line) => line.includes("不自动合并")));
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "adopt-all"] });
+  assert.ok(ctx.lines.some((line) => line.includes("已开启")));
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "adopt-all", "off"] });
+  assert.equal(loadPatrolConfig(ctx.cwd).autoAdoptAll, false);
+  assert.ok(ctx.lines.some((line) => line.includes("已关闭")));
+
+  await handlePatrolCommand(ctx, { parts: ["patrol", "adopt-all", "maybe"] });
+  assert.ok(ctx.lines.some((line) => line.includes("用法：/patrol adopt-all")));
+});

@@ -169,11 +169,13 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   是接管前提**，PR 正文不参与来源判定。改 patrol 相关代码时 core / cli 接线与测试同一提交齐活。
 - **接管与合并授权分层**（`core/src/patrol/adopt.ts` 的 `decideAdoption`，service 与侧栏探测共用）：
   - 接管（谁来审）= 分支前缀命中 ∥ 本人提交（`autoAdoptSelfAuthored`，默认 false）∥ 命中授权
-    label（`autoAdoptLabels`，默认空）；`autoAdoptBranchPrefixes` 默认 `["haji/"]`，兼容旧键
-    `autoAdoptBranchPrefix`，空数组 = 关闭该路径。命中前缀时前缀之后的部分作 taskId。
+    label（`autoAdoptLabels`，默认空）∥ `autoAdoptAll`（默认 false，接管全部开放 PR）；
+    `autoAdoptBranchPrefixes` 默认 `["haji/"]`，兼容旧键 `autoAdoptBranchPrefix`，
+    空数组 = 关闭该路径。命中前缀时前缀之后的部分作 taskId。
   - 自动合并授权 = 本人提交 ∥ 授权 label ∥（前缀命中且解析不到登录名）。**分支前缀只证明命名空间
     是我们的，不证明提交者是本人**：别人用 `haji/` 前缀提的 PR 会被接管审查，但登记时
     `mergeAuthorized: false`，门禁拒绝合并、审查通过后收敛为 `terminated`（仅审查）。
+    `autoAdoptAll` 同样只放宽接管，他人提交一律只审查不合并。
   - 手动 `/patrol register` 是显式授权，写 `mergeAuthorized: true`；缺省（旧状态文件）视为允许。
   - 登录名来自适配器的 `getViewerLogin()`（GitHub 走 `GET /user`，缓存含失败）。
   - 侧栏提示文案与探测计数读同一份配置与策略（`hint.ts`）。
