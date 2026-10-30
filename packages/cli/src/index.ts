@@ -1508,11 +1508,13 @@ async function main() {
     }
     return jobs.map((job) => {
       const lastRun = job.runs[job.runs.length - 1];
-      const lastRunText = lastRun?.summary
-        ? `最近：${lastRun.summary}`
-        : lastRun
-          ? `最近：${lastRun.status}`
-          : undefined;
+      const lastRunText = lastRun
+        ? lastRun.status === "running"
+          ? `运行中：${{ review: "审查", fix: "修复", adjudicate: "裁决" }[lastRun.role] ?? lastRun.role}`
+          : lastRun.summary
+            ? `最近：${lastRun.summary}`
+            : `最近：${lastRun.status}`
+        : undefined;
       return {
         prNumber: job.prNumber,
         branch: job.branch,

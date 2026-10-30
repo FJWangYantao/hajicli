@@ -309,7 +309,7 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
   }
   ctx.writeLine(
     colors.okLine(
-      `PR Patrol 启动（${repo}，每 ${Math.round(service.config.pollIntervalMs / 1000)}s 一轮）。Ctrl+C 停止。`,
+      `PR Patrol 启动（${repo}）。有任务时连续推进，空闲时指数退避探测新 PR（上限 64 分钟）。Ctrl+C 停止。`,
     ),
   );
   try {
@@ -322,14 +322,17 @@ async function start(ctx: PatrolCommandContext, args: string[]): Promise<void> {
 async function runOnce(ctx: PatrolCommandContext): Promise<void> {
   const built = await buildService(ctx);
   if (!built) return;
-  const result = await built.service.tick();
-  if (result.skipped === "paused") {
+  if (built.service.store.isPaused()) {
     ctx.writeLine(colors.warnLine("巡检处于暂停状态（/patrol resume 恢复）"));
     return;
   }
-  ctx.writeLine(colors.okLine(`本轮处理 ${result.processed} 个任务：`));
+  const result = await built.service.drain();
+  ctx.writeLine(colors.okLine(`本次巡检推进 ${result.processed} 步：`));
   for (const event of result.events) ctx.writeLine(colors.gray(`  · ${event}`));
   if (result.events.length === 0) ctx.writeLine(colors.gray("  （无事件）"));
+  if (result.pendingExternal) {
+    ctx.writeLine(colors.gray("  仍有任务在等外部状态（CI / 草稿转正 / head 变化）。"));
+  }
 }
 
 /**

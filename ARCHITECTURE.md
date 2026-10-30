@@ -104,8 +104,9 @@ packages/core  (@hajicli/core：会话、代理、压缩、经验、权限、Hoo
 自动接管**已登记来源**的 agent PR：独立审查 → 退回修改 → 争议升级最终裁决 → 合并门禁 → 合并 / 有理由地终止，全程无人工裁决节点。
 
 - **core 侧 `packages/core/src/patrol/`**：协议类型（`PatrolJob` / `PatrolFinding` / `PatrolDecision` / `PatrolVersion` / 租约 / 动作幂等记录）、状态机（`state-machine.ts`，合法转换 + 守卫：`ready_to_merge` 必须有当前版本通过性结论且无阻塞问题）、预算（`budget.ts`，轮次 / 费用 / 时长，普通阶段预留裁决额度）、合并门禁（`merge-gate.ts`，程序侧确定性检查：非草稿、head 与结论版本一致、可信来源的必需 CI 全绿、无冲突、未暂停）、持久化（`patrol-store.ts`，`.haji/patrol/state.json` + `registry.json`，原子写；重启自动恢复：running run → aborted、死租约清除、executing 动作回退 intended）。
-- **cli 侧 `packages/cli/src/patrol/`**：GitHub REST 适配器（`github.ts`，fetch + `GH_TOKEN`，merge 带 sha 条件、已合并识别为幂等成功）、runner（`runners.ts`，结构化 fenced JSON 输出解析——非法输出一律降级 inconclusive / failed 不放行；生产实现起无头 haji 进程在独立 worktree）、编排服务（`service.ts`，`tick()` = 轮询对账 → 逐任务推进；同目标分支一轮串行合并；远端动作先存意图再执行）、命令（`commands.ts`）。
+- **cli 侧 `packages/cli/src/patrol/`**：GitHub REST 适配器（`github.ts`，fetch + `GH_TOKEN`，merge 带 sha 条件、已合并识别为幂等成功）、runner（`runners.ts`，结构化 fenced JSON 输出解析——非法输出一律降级 inconclusive / failed 不放行；生产实现起无头 haji 进程在独立 worktree）、编排服务（`service.ts`，事件驱动：`drain()` 连续推进到本轮无状态变化为止，`tick()` 保留为单轮对账 + 推进；`runLoop` 有进展立即继续，等外部（CI / 草稿 / head 变化）时从 20s 起指数退避复查，完全空闲时按 `pollIntervalMs` 起指数退避探测新 PR、上限 64 分钟；同目标分支一轮串行合并；远端动作先存意图再执行）、命令（`commands.ts`，`/patrol run-once` 走 `drain()` 跑到无进展）。
 - **关键语义**：结论只锚定 head + 规则版本（base 漂移不触发重审，合并时重查 checks/mergeable）；普通修改默认 3 轮后升级裁决，裁决后修改默认 2 轮，耗尽终止并记录原因；执行 agent 可 `disputed` 提异议，裁决 agent 可 overrule（驳回误报）/ remediate / redo / descope / terminate。
+- **可观测性**：每个 run 落盘 `.haji/patrol/runs/<jobId>/<runId>.log`（start / finish 与失败摘要，换行压成单行）；侧栏运行中显示当前阶段与已耗时（如 `#12 审查中 · 3m`），巡检页显示最近一次运行摘要。
 - 来源登记是接管前提：`/patrol register <PR> --task <id> --brief <任务>`，未登记的 PR 不自动取得写入 / 合并资格；PR 正文不参与来源判定。
 - 测试：`patrol-core.test.mjs`（状态机 / 预算 / 门禁 / 存储）、`patrol-service.test.mjs`（假 GitHub + 剧本 runner 的闭环：通过合并、修复后合并、裁决驳回 / remediate、轮次耗尽终止、审查中新增提交、重启恢复、幂等合并、暂停、未登记不接管）、`patrol-github.test.mjs`、`patrol-runners.test.mjs`、`patrol-commands.test.mjs`。
 

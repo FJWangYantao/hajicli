@@ -1122,3 +1122,24 @@ test("patrol entry never pushes context or cost out of view", () => {
     assert.match(text, /费用/, `height ${height}`);
   }
 });
+
+test("patrol entry shows current activity when running", () => {
+  const wide = buildSidebarFrame(
+    sidebarState({
+      patrol: { status: "running", pending: 0, tasks: 3, merged: 1, activity: "#12 审查中 · 3m" },
+    }),
+    48,
+    32,
+  );
+  assert.match(wide.rows.map(stripAnsi).join("\n"), /巡检中 · #12 审查中 · 3m · 已合并 1/);
+  assert.ok(wide.regions.some((region) => region.id === "patrol.entry"));
+
+  const narrow = buildSidebarFrame(
+    sidebarState({
+      patrol: { status: "running", pending: 0, tasks: 3, activity: "#12 审查中 · 3m" },
+    }),
+    34,
+    32,
+  );
+  assert.match(narrow.rows.map(stripAnsi).join("\n"), /#12 审查中/);
+});

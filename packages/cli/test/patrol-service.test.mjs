@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { normalizePatrolLimits, PatrolStore, patrolJobId } from "@hajicli/core";
-import { PatrolService } from "../dist/patrol/service.js";
+import { backoffMs, PatrolService } from "../dist/patrol/service.js";
 
 const REPO = "owner/repo";
 
@@ -589,4 +589,120 @@ test("合并返回 merged:false：动作保持失败，后续 tick 重试成功�
   assert.equal(service.store.getJob(jobId).status, "merged");
   assert.equal(service.store.getAction(`${jobId}:merge:retry-head`).status, "done");
   assert.equal(calls.review.length, 1);
+});
+
+// ---- 事件驱动 drain：一次调用连续推进，不再按固定周期空等 ----
+
+test("drain：一次调用连续推进到合并，无需多轮 tick", async () => {
+  const tmp = tmpHome();
+  const pr = makePr(1, "a".repeat(40));
+  const adapter = new FakeForge([pr]);
+  const { runners, calls } = scriptRunners({
+    review: [{ verdict: "pass", findings: [], summary: "通过" }],
+  });
+  const service = makeService(tmp, adapter, runners);
+  register(service.store, 1);
+
+  const result = await service.drain();
+
+  assert.equal(result.progressed, true);
+  assert.equal(result.pendingExternal, false);
+  assert.equal(service.store.getJob(patrolJobId(REPO, 1)).status, "merged");
+  assert.equal(adapter.mergeCalls.length, 1);
+  assert.equal(calls.review.length, 1);
+});
+
+test("drain：CI 未完成时停在门禁，pendingExternal=true 且不合并", async () => {
+  const tmp = tmpHome();
+  const pr = makePr(1, "b".repeat(40));
+  const adapter = new FakeForge([pr]);
+  adapter.checksByHead.set(pr.headSha, [
+    { name: "ci", status: "pending", appSlug: "github-actions" },
+  ]);
+  const { runners } = scriptRunners({
+    review: [{ verdict: "pass", findings: [], summary: "通过" }],
+  });
+  const service = makeService(tmp, adapter, runners);
+  register(service.store, 1);
+
+  const result = await service.drain();
+
+  assert.equal(service.store.getJob(patrolJobId(REPO, 1)).status, "ready_to_merge");
+  assert.equal(result.pendingExternal, true);
+  assert.equal(adapter.mergeCalls.length, 0);
+
+  // 外部状态没变：再次 drain 不应产生进展，也不能无限循环。
+  const again = await service.drain();
+  assert.equal(again.progressed, false);
+  assert.equal(again.pendingExternal, true);
+});
+
+test("drain：没有可接管 PR 时立即结束", async () => {
+  const tmp = tmpHome();
+  const adapter = new FakeForge([]);
+  const { runners } = scriptRunners({});
+  const service = makeService(tmp, adapter, runners);
+
+  const result = await service.drain();
+
+  assert.equal(result.processed, 0);
+  assert.equal(result.progressed, false);
+  assert.equal(result.pendingExternal, false);
+  assert.equal(result.events.length, 0);
+});
+
+test("drain：草稿 PR 只等待转正，不会无限推进", async () => {
+  const tmp = tmpHome();
+  const pr = makePr(1, "c".repeat(40), { draft: true });
+  const adapter = new FakeForge([pr]);
+  const { runners } = scriptRunners({});
+  const service = makeService(tmp, adapter, runners);
+  register(service.store, 1);
+
+  let listCalls = 0;
+  const listOpen = adapter.listOpenPullRequests.bind(adapter);
+  adapter.listOpenPullRequests = async () => {
+    listCalls += 1;
+    return listOpen();
+  };
+
+  const result = await service.drain();
+
+  assert.equal(service.store.getJob(patrolJobId(REPO, 1)).status, "discovered");
+  assert.equal(result.pendingExternal, true);
+  // 建任务算一次进展，随后因状态不变立即退出，最多 2 轮拉取。
+  assert.ok(listCalls <= 2, `草稿 PR 不应无限轮询，实际拉取 ${listCalls} 次`);
+});
+
+test("退避：指数增长并封顶 64 分钟", () => {
+  const base = 60_000;
+  assert.equal(backoffMs(base, 0), 60_000);
+  assert.equal(backoffMs(base, 1), 120_000);
+  assert.equal(backoffMs(base, 2), 240_000);
+  assert.equal(backoffMs(base, 6), 64 * 60_000);
+  assert.equal(backoffMs(base, 7), 64 * 60_000);
+  // 等外部状态的 20s 起跳同样封顶。
+  assert.equal(backoffMs(20_000, 0), 20_000);
+  assert.equal(backoffMs(20_000, 10), 64 * 60_000);
+});
+
+test("run 日志落盘：每个 run 写 start / finish", async () => {
+  const tmp = tmpHome();
+  const pr = makePr(1, "d".repeat(40));
+  const adapter = new FakeForge([pr]);
+  const { runners } = scriptRunners({
+    review: [{ verdict: "pass", findings: [], summary: "通过" }],
+  });
+  const service = makeService(tmp, adapter, runners);
+  register(service.store, 1);
+
+  await service.drain();
+
+  const job = service.store.getJob(patrolJobId(REPO, 1));
+  const run = job.runs[0];
+  const logPath = path.join(tmp, ".haji", "patrol", "runs", job.jobId, `${run.runId}.log`);
+  assert.ok(fs.existsSync(logPath), `run 日志应落盘：${logPath}`);
+  const text = fs.readFileSync(logPath, "utf8");
+  assert.match(text, /start role=review attempt=1 pr=#1/);
+  assert.match(text, /finish status=succeeded summary=通过/);
 });

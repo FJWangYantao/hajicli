@@ -106,6 +106,8 @@ export interface SidebarPatrolState {
   tasks?: number;
   /** running 时已合并的任务数。 */
   merged?: number;
+  /** running 时「当前在做什么」，如 `#12 审查中 · 3m`；无进行中任务时缺省。 */
+  activity?: string;
   /** 巡检仓库（owner/name），窄栏降级时只留它。 */
   repo?: string;
 }
@@ -838,9 +840,9 @@ export function buildSidebarFrame(
       patrol.status === "running"
         ? fitHint(
             [
-              `巡检中 · ${patrol.tasks ?? 0} 个任务${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""} · 点此查看`,
-              `巡检中 · ${patrol.tasks ?? 0} 个任务 · 查看`,
-              "巡检中",
+              `巡检中 · ${patrol.activity ?? `${patrol.tasks ?? 0} 个任务`}${patrol.merged ? ` · 已合并 ${patrol.merged}` : ""} · 点此查看`,
+              `巡检中 · ${patrol.activity ?? `${patrol.tasks ?? 0} 个任务`}`,
+              patrol.activity ?? "巡检中",
             ],
             contentW,
           )

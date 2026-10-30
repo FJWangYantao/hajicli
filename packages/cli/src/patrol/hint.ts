@@ -9,7 +9,7 @@
  *   所以「自动配置」的产物只有 `.haji/patrol/` 下的运行数据。
  */
 import path from "node:path";
-import { PatrolStore, patrolJobId } from "@hajicli/core";
+import { isTerminalPatrolStatus, type PatrolJob, PatrolStore, patrolJobId } from "@hajicli/core";
 import { WORKTREE_BRANCH_PREFIX } from "../worktree.js";
 import { resolvePatrolRepo } from "./config.js";
 import { GitHubPatrolAdapter } from "./github.js";
@@ -26,6 +26,8 @@ export interface PatrolHintState {
   tasks?: number;
   /** running 时已合并的任务数。 */
   merged?: number;
+  /** running 时「当前在做什么」，如 `#12 审查中 · 3m`；无进行中任务时缺省。 */
+  activity?: string;
   /** 巡检仓库（owner/name）。 */
   repo?: string;
 }
@@ -136,7 +138,9 @@ export class PatrolHint {
     this.service = service;
     this.controller = controller;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
-    this.log?.(`PR 巡检已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR。`);
+    this.log?.(
+      `PR 巡检已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；空闲时指数退避探测新 PR。`,
+    );
     void service.runLoop(controller.signal).catch((error) => {
       this.service = undefined;
       this.controller = undefined;
@@ -173,15 +177,45 @@ export class PatrolHint {
     if (!this.repo || !this.service) return;
     try {
       const jobs = new PatrolStore(path.join(this.cwd, ".haji", "patrol")).listJobs();
+      const activity = describeActivity(jobs);
       this.onChange({
         status: "running",
         pending: 0,
         tasks: jobs.length,
         merged: jobs.filter((job) => job.status === "merged").length,
+        ...(activity ? { activity } : {}),
         repo: this.repo,
       });
     } catch {
       // 运行数据读失败不影响巡检本身；保持上一帧状态即可。
     }
   }
+}
+
+const RUN_ROLE_LABELS: Record<string, string> = {
+  review: "审查中",
+  fix: "修复中",
+  adjudicate: "裁决中",
+  merge: "合并中",
+};
+
+/**
+ * 侧栏「当前在做什么」：优先取运行中的 run，其次合并门禁 / 草稿等待。
+ * 含已耗时（分钟取整），分钟不变时字符串不变，避免 5s 轮询空转重绘。
+ */
+export function describeActivity(jobs: PatrolJob[]): string | undefined {
+  for (const job of jobs) {
+    if (isTerminalPatrolStatus(job.status)) continue;
+    const run = [...job.runs].reverse().find((item) => item.status === "running");
+    if (run) {
+      const label = RUN_ROLE_LABELS[run.role] ?? run.role;
+      const mins = Math.floor((Date.now() - Date.parse(run.startedAt)) / 60_000);
+      return `#${job.prNumber} ${label}${Number.isFinite(mins) && mins >= 1 ? ` · ${mins}m` : ""}`;
+    }
+    if (job.status === "ready_to_merge" || job.status === "merging") {
+      return `#${job.prNumber} 合并门禁`;
+    }
+    if (job.draft) return `#${job.prNumber} 草稿等待`;
+  }
+  return undefined;
 }
