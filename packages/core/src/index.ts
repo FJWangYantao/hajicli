@@ -12,6 +12,7 @@ export * from "./failed-output.js";
 export * from "./hook-engine.js";
 export * from "./observable-provider.js";
 export * from "./path-scope.js";
+export * from "./patrol/index.js";
 export * from "./performance-monitor.js";
 export * from "./permission-engine.js";
 export * from "./prompt-manager.js";

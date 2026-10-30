@@ -24,6 +24,7 @@ test("top-level completion list narrows to hubs and high-frequency actions", () 
     "/model",
     "/config",
     "/agents",
+    "/patrol",
     "/skills",
     "/memory",
     "/diag",

@@ -150,6 +150,21 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   （列表标「已归档 · 工作树 <名称>」）。原树已删，所以 `loadSession` 命中归档时**把文件复制回
   当前主目录续写、不切目录**，归档副本保持原样（测试：`session-usage.test.mjs`、`worktree.test.mjs`）。
 
+## PR 巡检（`/patrol`，packages/{core,cli}/src/patrol/）
+
+- 自动接管**已登记来源**的 agent PR：独立审查 → 退回修改 → 争议升级最终裁决（overrule / remediate /
+  redo / descope / terminate）→ 合并门禁 → 合并 / 有理由终止；全程无人工裁决节点。
+- **结论只锚定 head + 规则版本**（`samePatrolVersion` 不看 baseSha）：目标分支推进不触发重审，
+  合并时由门禁重查 checks / mergeable；但 PR head 变化必须作废旧结论（`resetPatrolJobForNewCommit`）。
+- **状态机是唯一改状态的通道**（`applyPatrolTransition`，守卫集中在 core）；外部事件（PR 被合并 /
+  关闭、幂等动作已 done）在 service 里直接收敛终态，不走转换表。
+- **runner 的结构化输出不可信**：解析失败或自相矛盾（pass 却带阻塞问题）一律降级
+  inconclusive / failed，绝不允许伪装通过（`patrol-runners.test.mjs` 固化该语义）。
+- 远端动作先存意图再执行（`PatrolStore.beginAction` → executing → done/failed），
+  同 actionId 已 done 时必须跳过——merge 崩溃恢复靠它避免重复合并。
+- 存储落 `.haji/patrol/`（state.json / registry.json / config.json）；**来源登记（registry.json）
+  是接管前提**，PR 正文不参与来源判定。改 patrol 相关代码时 core / cli 接线与测试同一提交齐活。
+
 ## 斜杠指令：立即执行通道（回合进行中）
 
 回合进行中的输入默认进 `pendingInputs` 排队，等本轮结束再分发（`/compact`、`/clear` 必须如此）。
