@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { SCROLLBAR_THUMB } from "../dist/scrollbar.js";
 import { TerminalUI } from "../dist/terminal-input.js";
 import { terminalWidth } from "../dist/terminal-text.js";
 import { setThemePreset } from "../dist/theme.js";
@@ -900,4 +901,226 @@ test("鼠标拖选松开即自动复制，并保留高亮", async () => {
       cleanupTerminalUI(ui);
     }
   });
+});
+
+/** 输出里的「绝对定位格子」：`\x1b[行;列H` 后跟到的下一段内容。 */
+function positionedCells(output) {
+  const cells = [];
+  const pattern = /\x1b\[(\d+);(\d+)H/g;
+  let match = pattern.exec(output);
+  while (match) {
+    const start = match.index + match[0].length;
+    const next = pattern.exec(output);
+    cells.push({
+      row: Number(match[1]),
+      column: Number(match[2]),
+      body: output.slice(start, next ? next.index : output.length),
+    });
+    match = next;
+  }
+  return cells;
+}
+
+function thumbCells(output) {
+  return positionedCells(output).filter((cell) => cell.body.includes(SCROLLBAR_THUMB));
+}
+
+test("对话区溢出时在最右侧常驻槽画滚动条，不占正文宽度", () => {
+  const longChat = Array.from({ length: 200 }, (_, index) => `row ${index}`).join("\n");
+  const frame = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(false);
+    ui.chatContent = longChat;
+  });
+  try {
+    const paint = frame.ui.chatScrollbarPaint;
+    assert.ok(paint, "内容超过一屏时必须有滚动条");
+    // 120 列 wide 档：safeWidth=119、没有侧栏 → 左区 119，正文 119−2×2−1(槽)=114。
+    assert.equal(paint.column, 119);
+    assert.equal(frame.ui.chatViewport.width, 114);
+    assert.equal(
+      paint.height,
+      frame.ui.chatViewport.visibleEnd - frame.ui.chatViewport.visibleStart,
+    );
+    // 贴底时 thumb 在轨道末尾。
+    assert.equal(paint.thumbRow + paint.thumbSize, paint.height);
+
+    const cells = thumbCells(frame.writes.join(""));
+    assert.ok(cells.length >= 1, "首帧写出了 thumb");
+    assert.deepEqual(
+      [...new Set(cells.map((cell) => cell.column))],
+      [119],
+      "thumb 只落在最右侧槽列",
+    );
+    assert.equal(
+      cells[cells.length - 1].row,
+      paint.row + paint.height,
+      "贴底时 thumb 画到轨道最后一行",
+    );
+
+    // 正文行的宽度只用 114 列：正文右侧始终留出槽位，不随是否溢出变化。
+    const contentRow = frame.ui.renderedScreenRows.find((row) => row.includes("row 199"));
+    assert.ok(contentRow !== undefined);
+    assert.ok(terminalWidth(contentRow) <= 118, `正文行不该伸进槽位: ${terminalWidth(contentRow)}`);
+  } finally {
+    cleanupTerminalUI(frame.ui);
+  }
+
+  // 内容不足一屏：不画滚动条。
+  const short = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(false);
+    ui.chatContent = "CHAT LINE";
+  });
+  try {
+    assert.equal(short.ui.chatScrollbarPaint, undefined);
+    assert.deepEqual(thumbCells(short.writes.join("")), []);
+  } finally {
+    cleanupTerminalUI(short.ui);
+  }
+});
+
+test("整页视图打开时收起滚动条：页面占用对话区，不该再画一条轴", () => {
+  const longChat = Array.from({ length: 200 }, (_, index) => `row ${index}`).join("\n");
+  const frame = renderFrame(120, 30, (ui) => {
+    ui.setSidebarEnabled(false);
+    ui.chatContent = longChat;
+    ui.setContextItemsProvider(() => [
+      {
+        category: "file",
+        label: "文件",
+        tokens: 1200,
+        items: [{ label: "read AGENTS.md", tokens: 800, detail: "# AGENTS.md" }],
+      },
+    ]);
+    assert.equal(ui.openContextInspector(), true);
+  });
+  try {
+    assert.equal(frame.ui.chatScrollbarPaint, undefined);
+    assert.deepEqual(thumbCells(frame.writes.join("")), []);
+  } finally {
+    cleanupTerminalUI(frame.ui);
+  }
+});
+
+test("滚动时仍走视口增量刷新，滚动条只补画自己的格子", () => {
+  const longChat = Array.from({ length: 200 }, (_, index) => `row ${index}`).join("\n");
+  const ui = createTerminalUI();
+  try {
+    withFakeStdout(120, 30, (writes) => {
+      ui.setSidebarEnabled(false);
+      ui.chatContent = longChat;
+      ui.renderFrame();
+      const paint = ui.chatScrollbarPaint;
+      assert.ok(paint);
+
+      writes.length = 0;
+      ui.scrollChat(ui.chatPageSize);
+      ui.renderFrame();
+      const frame = writes.join("");
+
+      // 终端滚动区域序列还在：视口增量刷新的前提没被滚动条破坏。
+      assert.match(frame, /\x1b\[\d+;\d+r/, "仍应使用终端滚动区域搬移旧行");
+      // 只有新露出的那几行需要 \x1b[2K 重写，而不是整屏。
+      const erases = frame.match(/\x1b\[2K/g) ?? [];
+      assert.ok(erases.length <= ui.chatPageSize + 2, `重写行数过多: ${erases.length}`);
+
+      const cells = thumbCells(frame);
+      assert.ok(cells.length >= 1, "滚动后补画了 thumb");
+      assert.deepEqual([...new Set(cells.map((cell) => cell.column))], [paint.column]);
+      assert.ok(
+        cells.length <= paint.height,
+        `滚动帧只该重写滚动条自己的格子，实际 ${cells.length}`,
+      );
+    });
+  } finally {
+    cleanupTerminalUI(ui);
+  }
+});
+
+test("点轨道翻页、拖 thumb 定位，都不产生文本选区", () => {
+  const longChat = Array.from({ length: 200 }, (_, index) => `row ${index}`).join("\n");
+  const ui = createTerminalUI();
+  try {
+    withFakeStdout(120, 30, () => {
+      ui.setSidebarEnabled(false);
+      ui.chatContent = longChat;
+      ui.renderFrame();
+      const hit = ui.chatScrollbarHit;
+      assert.ok(hit, "滚动条命中区已登记");
+      assert.equal(hit.column, 119);
+
+      // 点击 thumb 上方的轨道：翻向更早的历史，与 PgUp 同向。
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "down",
+        button: 0,
+        column: hit.column,
+        row: hit.rowStart,
+      });
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "up",
+        button: 0,
+        column: hit.column,
+        row: hit.rowStart,
+      });
+      assert.equal(ui.chatScrollOffset, Math.min(ui.maxChatScrollOffset, ui.chatPageSize));
+      assert.equal(ui.textSelection.dragging, false, "点滚动条不应起选区");
+
+      ui.renderFrame();
+      const scrolled = ui.chatScrollbarHit;
+      assert.ok(scrolled);
+      // 拖住 thumb 一路拖到轨道顶端：应落在最早期历史。
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "down",
+        button: 0,
+        column: scrolled.column,
+        row: scrolled.thumbStart,
+      });
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "move",
+        button: 32,
+        column: scrolled.column,
+        row: scrolled.rowStart,
+      });
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "up",
+        button: 0,
+        column: scrolled.column,
+        row: scrolled.rowStart,
+      });
+      assert.equal(ui.chatScrollOffset, ui.maxChatScrollOffset);
+      assert.equal(ui.textSelection.dragging, false);
+
+      // 拖到顶后 thumb 贴在轨道顶端；再点 thumb 下方的轨道回翻一页，朝底部走。
+      ui.renderFrame();
+      assert.equal(ui.chatScrollbarPaint.thumbRow, 0);
+      const top = ui.chatScrollbarHit;
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "down",
+        button: 0,
+        column: top.column,
+        row: top.rowEnd,
+      });
+      ui.handleMouseEvent({
+        type: "mouse",
+        action: "up",
+        button: 0,
+        column: top.column,
+        row: top.rowEnd,
+      });
+      assert.equal(ui.chatScrollOffset, ui.maxChatScrollOffset - ui.chatPageSize);
+
+      // 回到底部：thumb 回到轨道末尾。
+      ui.chatScrollOffset = 0;
+      ui.renderFrame();
+      const bottom = ui.chatScrollbarPaint;
+      assert.equal(bottom.thumbRow + bottom.thumbSize, bottom.height);
+    });
+  } finally {
+    cleanupTerminalUI(ui);
+  }
 });

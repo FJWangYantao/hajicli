@@ -14,6 +14,13 @@ export interface TuiLayout {
   panelRows: number;
   showHints: boolean;
   inputPaddingRows: number;
+  /**
+   * 对话区右侧常驻的滚动条槽宽（列）。
+   *
+   * 常驻而不是「溢出时才占」：宽度一变就要重排正文，内容刚好跨过一屏时
+   * 会反复抖动。这一列平时只是空白背景，溢出时才画 thumb。
+   */
+  gutterWidth: number;
 }
 
 interface TuiLayoutProfile {
@@ -23,6 +30,7 @@ interface TuiLayoutProfile {
   panelRows: number;
   showHints: boolean;
   inputPaddingRows: number;
+  gutterWidth: number;
 }
 
 const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
@@ -34,6 +42,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     showHints: true,
     // 输入区不再额外留空行：单行输入紧贴活动行与状态栏，减少纵向占用。
     inputPaddingRows: 0,
+    gutterWidth: 1,
   },
   comfortable: {
     chatPadding: 2,
@@ -42,6 +51,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     panelRows: 6,
     showHints: true,
     inputPaddingRows: 0,
+    gutterWidth: 1,
   },
   compact: {
     chatPadding: 1,
@@ -50,6 +60,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     panelRows: 4,
     showHints: true,
     inputPaddingRows: 0,
+    gutterWidth: 1,
   },
   narrow: {
     chatPadding: 1,
@@ -58,6 +69,7 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     panelRows: 2,
     showHints: false,
     inputPaddingRows: 0,
+    gutterWidth: 1,
   },
   minimal: {
     chatPadding: 0,
@@ -66,6 +78,8 @@ const PROFILES: Readonly<Record<TuiLayoutMode, TuiLayoutProfile>> = {
     panelRows: 0,
     showHints: false,
     inputPaddingRows: 0,
+    // 最窄档连内边距都没有：再抠一列给滚动条会明显压缩正文，宁可不画。
+    gutterWidth: 0,
   },
 };
 
@@ -146,5 +160,6 @@ export function resolveTuiLayout(columns: number, rows: number): TuiLayout {
     panelRows: Math.min(profile.panelRows, resolvePanelRowBudget(safeRows)),
     showHints: profile.showHints && !short,
     inputPaddingRows: short ? 0 : profile.inputPaddingRows,
+    gutterWidth: profile.gutterWidth,
   };
 }
