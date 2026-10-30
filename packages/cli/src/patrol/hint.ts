@@ -41,6 +41,8 @@ export interface PatrolHintOptions {
   log?: (line: string) => void;
   /** 运行中刷新任务计数的间隔，默认 5s。 */
   pollIntervalMs?: number;
+  /** 「巡查中」状态至少可见的时长（毫秒），默认 1500；没活时 drain 会瞬间结束。 */
+  minRunningMs?: number;
   /** 测试注入点：默认走 GitHub REST 适配器。 */
   createAdapter?: (repo: string, token: string) => PatrolForgeAdapter;
   /** 测试注入点：默认起无头 haji 进程。 */
@@ -53,6 +55,7 @@ export class PatrolHint {
   private readonly onChange: (state: PatrolHintState | null) => void;
   private readonly log?: (line: string) => void;
   private readonly pollIntervalMs: number;
+  private readonly minRunningMs: number;
   private readonly createAdapter: (repo: string, token: string) => PatrolForgeAdapter;
   private readonly createRunners: () => PatrolRunners;
   private repo?: string;
@@ -67,6 +70,7 @@ export class PatrolHint {
     this.onChange = options.onChange;
     this.log = options.log;
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
+    this.minRunningMs = options.minRunningMs ?? 1_500;
     this.createAdapter =
       options.createAdapter ?? ((repo, token) => new GitHubPatrolAdapter({ repo, token }));
     this.createRunners =
@@ -144,16 +148,26 @@ export class PatrolHint {
     this.log?.(
       `PR 巡查已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；本次跑到没有可推进的步骤为止。`,
     );
+    const startedAt = Date.now();
     void service
       .drain()
       .then((result) => {
         for (const event of result.events) this.log?.(event);
+        if (result.processed === 0 && !result.pendingExternal) {
+          this.log?.(
+            `没有可接管的 agent PR（分支前缀 ${WORKTREE_BRANCH_PREFIX} 或已 /patrol register 登记）。`,
+          );
+          return;
+        }
         this.log?.(
           `本次巡查推进 ${result.processed} 步${result.pendingExternal ? "，仍有任务在等外部状态（CI / 草稿 / head）" : ""}。`,
         );
       })
       .catch((error) => this.log?.(`PR 巡查失败：${(error as Error).message}`))
-      .finally(() => {
+      .finally(async () => {
+        // 没活时 drain 会瞬间结束：让「巡查中」至少可见 minRunningMs，避免点了像没反应。
+        const remain = this.minRunningMs - (Date.now() - startedAt);
+        if (remain > 0) await delay(remain);
         this.service = undefined;
         this.controller = undefined;
         this.stopTimer();
@@ -229,4 +243,12 @@ export function describeActivity(jobs: PatrolJob[]): string | undefined {
     if (job.draft) return `#${job.prNumber} 草稿等待`;
   }
   return undefined;
+}
+
+/** 可被进程退出打断的等待（timer unref，不挂住退出）。 */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }
