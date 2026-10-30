@@ -1,6 +1,7 @@
 # AGENTS.md — hajicli 仓库约定
 
 pnpm workspace monorepo：`packages/core`（`@hajicli/core`）、`packages/plugins`（`@hajicli/plugins`）、
+`packages/patrol-github`（`@hajicli/patrol-github`，巡检的 GitHub forge 适配器）、
 `packages/cli`（发布包名 `hajicli`，bin 为 `haji`）。TypeScript strict + project references。
 整体架构与各子系统导览见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -11,18 +12,20 @@ pnpm workspace monorepo：`packages/core`（`@hajicli/core`）、`packages/plugi
 | 构建（TS） | `pnpm run build`（= `tsc --build` + `scripts/postbuild.mjs` 给 bin 补执行位，按 references 增量编译到各包 `dist/`） |
 | 原生终端引擎 | `pnpm run build:native`（产出 `packages/cli/dist/haji_terminal_engine.<platform>-<arch>.node`） |
 | 全量构建 | `pnpm run build:full` |
-| 测试 | `pnpm test`（内部会先 build，再 `node --test packages/cli/test/*.test.mjs`） |
+| 测试 | `pnpm test`（内部会先 build，再由 `scripts/run-tests.mjs` 跑 `packages/*/test/*.test.mjs`） |
 | 单文件测试 | `node --test packages/cli/test/provider-config.test.mjs`（**必须先 build**，测试 import `../dist/*.js`） |
 | 发版自检 | `pnpm run pack:check`（= `build:full` + `scripts/verify-packages.mjs`，校验 tarball 不含 `src/` `test/` `.haji/` `*.tsbuildinfo`） |
 | 截图给用户看 | `pnpm shot <url\|html>`（`--full` 整页；窗口程序用 `--app "<gui 命令>"`，仅 Linux + Xvfb）→ 再用 `read` 工具读取输出的图片路径，终端会内联渲染 |
 
 ## 版本号同步（关键）
 
-**任何改动 + 升版本后，三处 version 必须一致：**
+**任何改动 + 升版本后，各包 version 必须一致（`scripts/verify-packages.mjs` 会校验）：**
 
 - `package.json`（monorepo 根）
 - `packages/cli/package.json`（发布包 `hajicli`）
-- `packages/plugins/package.json`（`@hajicli/core` 同步看 `packages/core/package.json`）
+- `packages/plugins/package.json`
+- `packages/core/package.json`（`@hajicli/core`）
+- `packages/patrol-github/package.json`（`@hajicli/patrol-github`）
 
 本机（asus）全局 `haji` 不是 registry 副本，而是指向仓库的 **junction**（npm 前缀在 `E:\nodejs`）：
 
@@ -164,6 +167,25 @@ node -e "console.log(require('./packages/cli/package.json').version)"
   同 actionId 已 done 时必须跳过——merge 崩溃恢复靠它避免重复合并。
 - 存储落 `.haji/patrol/`（state.json / registry.json / config.json）；**来源登记（registry.json）
   是接管前提**，PR 正文不参与来源判定。改 patrol 相关代码时 core / cli 接线与测试同一提交齐活。
+- **接管与合并授权分层**（`core/src/patrol/adopt.ts` 的 `decideAdoption`，service 与侧栏探测共用）：
+  - 接管（谁来审）= 分支前缀命中 ∥ 本人提交（`autoAdoptSelfAuthored`，默认 false）∥ 命中授权
+    label（`autoAdoptLabels`，默认空）；`autoAdoptBranchPrefixes` 默认 `["haji/"]`，兼容旧键
+    `autoAdoptBranchPrefix`，空数组 = 关闭该路径。命中前缀时前缀之后的部分作 taskId。
+  - 自动合并授权 = 本人提交 ∥ 授权 label ∥（前缀命中且解析不到登录名）。**分支前缀只证明命名空间
+    是我们的，不证明提交者是本人**：别人用 `haji/` 前缀提的 PR 会被接管审查，但登记时
+    `mergeAuthorized: false`，门禁拒绝合并、审查通过后收敛为 `terminated`（仅审查）。
+  - 手动 `/patrol register` 是显式授权，写 `mergeAuthorized: true`；缺省（旧状态文件）视为允许。
+  - 登录名来自适配器的 `getViewerLogin()`（GitHub 走 `GET /user`，缓存含失败）。
+  - 侧栏提示文案与探测计数读同一份配置与策略（`hint.ts`）。
+- **webhook 唤醒只做加速，轮询仍是对账来源**（`core/src/patrol/wake.ts` 契约 + `cli/src/patrol/wake.ts` 的
+  SSE 客户端）：配 `wakeUrl`（`/patrol watch <url>`）后 `runLoop` 的等待变成「事件或退避到期，先到者胜」，
+  GitHub 事件秒级触发复查；但事件会丢、会乱序、会在进程重启期间到达，所以**任何情况下都不能因为
+  配了唤醒就关掉轮询**，唤醒源抛错时必须退化为纯 sleep（`patrol-wake.test.mjs` 固化）。
+  - 通道是**出站** SSE（smee 形态），本地不开端口、不需要公网入站；smee.io 只适合开发，
+    长期跑换自建中继，只需替换 `cli/src/patrol/wake.ts`，契约不变。
+  - 只对白名单事件唤醒（`pull_request` / `pull_request_review` / `check_suite` / `workflow_run` /
+    `issue_comment`），其余事件直接丢弃，避免打爆 GitHub API；`x-github-delivery` 用于重投去重。
+  - 暂停期间不响应唤醒（暂停是显式意图）。
 
 ## 斜杠指令：立即执行通道（回合进行中）
 

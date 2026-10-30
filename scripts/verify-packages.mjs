@@ -7,12 +7,12 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const packageDirs = ["packages/core", "packages/plugins", "packages/cli"];
+const packageDirs = ["packages/core", "packages/patrol-github", "packages/plugins", "packages/cli"];
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const tar = process.platform === "win32" ? "tar.exe" : "tar";
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "hajicli-pack-"));
 
-// 第一步：monorepo 根与三个包的 version 必须一致（AGENTS.md 约定的四处同步），
+// 第一步：monorepo 根与各子包的 version 必须一致（AGENTS.md 约定的版本同步），
 // 防止只改了部分 package.json 就打标签发版。
 const manifestPaths = ["package.json", ...packageDirs.map((dir) => path.join(dir, "package.json"))];
 const versionByPath = new Map();
@@ -23,10 +23,10 @@ for (const relPath of manifestPaths) {
 const uniqueVersions = new Set(versionByPath.values());
 if (uniqueVersions.size !== 1) {
   const detail = [...versionByPath.entries()].map(([f, v]) => `${f}: ${v}`).join("\n  ");
-  throw new Error(`版本号不一致，发版前必须同步四处 version：\n  ${detail}`);
+  throw new Error(`版本号不一致，发版前必须同步各包 version：\n  ${detail}`);
 }
 const releaseVersion = [...uniqueVersions][0];
-console.log(`✓ 四处 package.json 版本一致: ${releaseVersion}`);
+console.log(`✓ 各包 package.json 版本一致: ${releaseVersion}`);
 
 // 标签触发时（release workflow），tag 名必须与包版本一致，防止打错标签发布。
 if (process.env.GITHUB_REF_TYPE === "tag") {

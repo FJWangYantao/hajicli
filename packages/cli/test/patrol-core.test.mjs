@@ -273,6 +273,19 @@ test("合并门禁：head 变化 / 草稿 / 冲突 / 暂停拒绝", () => {
   assert.match(evaluatePatrolMergeGate(paused).reasons.join("\n"), /暂停/);
 });
 
+test("合并门禁：来源未授权自动合并时拒绝（只审查）", () => {
+  const unauthorized = gateInput();
+  unauthorized.job.source.mergeAuthorized = false;
+  const result = evaluatePatrolMergeGate(unauthorized);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join("\n"), /未授权自动合并/);
+
+  // 缺省（旧状态文件 / 手动登记）视为允许，不引入回归。
+  const legacy = gateInput();
+  delete legacy.job.source.mergeAuthorized;
+  assert.equal(evaluatePatrolMergeGate(legacy).allowed, true);
+});
+
 test("合并门禁：必需检查缺失 / 失败 / 来源不受信都拒绝", () => {
   const missing = gateInput({ checks: [] });
   assert.match(evaluatePatrolMergeGate(missing).reasons.join("\n"), /必需检查缺失/);

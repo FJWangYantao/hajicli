@@ -110,6 +110,33 @@ test("probe：数出待接管的 agent PR，忽略其它分支", async () => {
   assert.equal(sink.last().pending, 2);
 });
 
+test("probe：按接管策略计数（label 授权），不只认分支前缀", async () => {
+  const cwd = gitRepo();
+  fs.mkdirSync(path.join(cwd, ".haji", "patrol"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".haji", "patrol", "config.json"),
+    JSON.stringify({ repo: "owner/repo", autoAdoptLabels: ["patrol"] }),
+  );
+  const sink = collect();
+  const hint = new PatrolHint({
+    cwd,
+    resolveToken: async () => "token",
+    onChange: sink.onChange,
+    createAdapter: () => ({
+      ...fakeAdapter([
+        { ...pullRequest(1, "feat/labeled"), author: "someone", labels: ["patrol"] },
+        { ...pullRequest(2, "feat/plain"), author: "someone", labels: [] },
+        { ...pullRequest(3, "haji/session-c"), author: "someone" },
+      ]),
+      getViewerLogin: async () => "me",
+    }),
+  });
+  await hint.probe();
+  hint.dispose();
+  assert.equal(sink.last().status, "ready");
+  assert.equal(sink.last().pending, 2, "label 命中与前缀命中的 PR 都算待接管");
+});
+
 test("probe：远端失败时静默隐藏入口", async () => {
   const sink = collect();
   const hint = new PatrolHint({
@@ -128,32 +155,55 @@ test("probe：远端失败时静默隐藏入口", async () => {
   assert.deepEqual(sink.states, [null]);
 });
 
-test("start：点击跑一次巡查，完成后回到 ready", async () => {
-  const sink = collect();
-  const hint = new PatrolHint({
-    cwd: gitRepo(),
+function fakeRunners() {
+  return {
+    review: async () => ({ verdict: "pass", findings: [], summary: "" }),
+    fix: async () => ({ status: "failed", summary: "" }),
+    adjudicate: async () => ({
+      verdict: "terminate",
+      reasons: [],
+      rejectedFindingIds: [],
+      orders: [],
+      acceptance: [],
+      summary: "",
+    }),
+  };
+}
+
+function residentHint(sink, cwd = gitRepo(), prs = []) {
+  return new PatrolHint({
+    cwd,
     resolveToken: async () => "token",
     onChange: sink.onChange,
     pollIntervalMs: 10,
     minRunningMs: 5,
-    createAdapter: () => fakeAdapter([]),
-    createRunners: () => ({
-      review: async () => ({ verdict: "pass", findings: [], summary: "" }),
-      fix: async () => ({ status: "failed", summary: "" }),
-      adjudicate: async () => ({
-        verdict: "terminate",
-        reasons: [],
-        rejectedFindingIds: [],
-        orders: [],
-        acceptance: [],
-        summary: "",
-      }),
-    }),
+    createAdapter: () => fakeAdapter(prs),
+    createRunners: fakeRunners,
   });
+}
+
+test("start：点击即进入常驻，没活时转为 waiting", async () => {
+  const sink = collect();
+  const hint = residentHint(sink);
   await hint.start();
-  // 点击瞬间进入 running；空仓库 drain 很快结束，随后回到 ready（入口可再次点击）。
+  // 点击瞬间进入 running；空仓库没有可推进任务，随后转 waiting 并保持常驻。
   assert.equal(sink.states[0].status, "running");
   assert.equal(sink.states[0].repo, "owner/repo");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(sink.last().status, "waiting");
+  assert.equal(hint.isRunning(), true, "waiting 期间循环仍在跑，不能被当成已结束");
+  hint.dispose();
+});
+
+test("start：再点一次即停止并回到 ready", async () => {
+  const sink = collect();
+  const hint = residentHint(sink);
+  await hint.start();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(hint.isRunning(), true);
+
+  await hint.start();
+  assert.equal(hint.isRunning(), false, "再次点击应停止常驻巡查");
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(sink.last().status, "ready");
   hint.dispose();

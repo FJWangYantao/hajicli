@@ -15,6 +15,7 @@
   "files": [],
   "references": [
     { "path": "./packages/core" },
+    { "path": "./packages/patrol-github" },
     { "path": "./packages/plugins" },
     { "path": "./packages/cli" }
   ]

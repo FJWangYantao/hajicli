@@ -6,19 +6,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const testDir = path.join(root, "packages", "cli", "test");
+const packagesDir = path.join(root, "packages");
 const files = fs
-  .readdirSync(testDir)
-  .filter((name) => name.endsWith(".test.mjs"))
+  .readdirSync(packagesDir)
+  .map((name) => path.join(packagesDir, name, "test"))
+  .filter((dir) => fs.existsSync(dir))
+  .flatMap((dir) =>
+    fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith(".test.mjs"))
+      .map((name) => path.join(dir, name)),
+  )
   .sort();
-if (files.length === 0) throw new Error("未找到 CLI 测试文件");
-const result = spawnSync(
-  process.execPath,
-  ["--test", ...files.map((name) => path.join(testDir, name))],
-  {
-    cwd: root,
-    stdio: "inherit",
-  },
-);
+if (files.length === 0) throw new Error("未找到测试文件");
+const result = spawnSync(process.execPath, ["--test", ...files], {
+  cwd: root,
+  stdio: "inherit",
+});
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

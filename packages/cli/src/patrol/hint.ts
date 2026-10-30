@@ -3,24 +3,35 @@
  *
  * 分工约定：
  * - 探测只做一次（启动时），绝不每帧联网；失败静默——侧栏不显示，而不是把错误糊到对话区。
- * - 点击入口跑一次 `PatrolService.drain()`（后台，不阻塞输入），跑到没有可推进的步骤即停；
- *   运行中每 5s 读本地 store 刷新阶段与计数（纯文件读取，不联网）。
- * - 不写任何配置文件：仓库由 `git remote origin` 推断，PR 由分支前缀自动登记（见 service.ts），
+ * - 点击入口启动**常驻**巡查：`runLoop()` 有活连续推进、没活按 `pollIntervalMs` 探测新 PR
+ *   （不吃 64 分钟指数退避，保证「PR 一来就跑」）；再点一次或 `/patrol stop` 停止。
+ * - 常驻期间每 5s 读本地 store 刷新状态（纯文件读取，不联网）：有非终态任务显示「巡检中」，
+ *   没有则显示「等待中」，让「在等」这件事可见。
+ * - 不写任何配置文件：仓库由 `git remote origin` 推断，PR 由接管策略自动登记（见 service.ts），
  *   所以「自动配置」的产物只有 `.haji/patrol/` 下的运行数据。
  */
 import path from "node:path";
-import { isTerminalPatrolStatus, type PatrolJob, PatrolStore, patrolJobId } from "@hajicli/core";
-import { WORKTREE_BRANCH_PREFIX } from "../worktree.js";
-import { resolvePatrolRepo } from "./config.js";
-import { GitHubPatrolAdapter } from "./github.js";
+import {
+  type AdoptPolicy,
+  decideAdoption,
+  isTerminalPatrolStatus,
+  type PatrolJob,
+  PatrolStore,
+  type PatrolWakeSource,
+  patrolJobId,
+} from "@hajicli/core";
+import { GitHubPatrolAdapter } from "@hajicli/patrol-github";
+import { DEFAULT_PATROL_CONFIG, loadPatrolConfig, resolvePatrolRepo } from "./config.js";
 import { createHeadlessRunners } from "./runners.js";
 import { PatrolService } from "./service.js";
 import type { PatrolForgeAdapter, PatrolRunners } from "./types.js";
+import { createSmeeWakeSource } from "./wake.js";
 
 /** 侧栏入口状态；结构与 `SidebarPatrolState` 一致（渲染层只读，不反向依赖本模块）。 */
 export interface PatrolHintState {
-  status: "ready" | "running" | "no-token";
-  /** ready 时探测到的、分支命中 agent 前缀的开放 PR 数。 */
+  /** waiting = 常驻循环在跑，但当前没有可推进的任务（正在按间隔探测新 PR）。 */
+  status: "ready" | "running" | "waiting" | "no-token";
+  /** ready 时探测到的、命中接管策略的开放 PR 数。 */
   pending: number;
   /** running 时的任务总数。 */
   tasks?: number;
@@ -61,8 +72,19 @@ export class PatrolHint {
   private repo?: string;
   private service?: PatrolService;
   private controller?: AbortController;
+  /** 本轮常驻的唤醒通道（配置了 wakeUrl 才有）；停止时必须 close，否则 SSE 连接会挂住。 */
+  private wake?: PatrolWakeSource;
   private timer?: ReturnType<typeof setInterval>;
   private disposed = false;
+  /** 本轮常驻的启动时刻：用于「巡检中」至少可见 minRunningMs。 */
+  private startedAt = 0;
+  /** 当前生效的接管策略（探测 / 启动时从配置 + 令牌登录名解析）。 */
+  private policy: AdoptPolicy = {
+    branchPrefixes: [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes],
+    selfAuthored: DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
+    labels: [...DEFAULT_PATROL_CONFIG.autoAdoptLabels],
+    viewerLogin: null,
+  };
 
   constructor(options: PatrolHintOptions) {
     this.cwd = options.cwd;
@@ -75,6 +97,60 @@ export class PatrolHint {
       options.createAdapter ?? ((repo, token) => new GitHubPatrolAdapter({ repo, token }));
     this.createRunners =
       options.createRunners ?? (() => createHeadlessRunners({ repoDir: this.cwd }));
+  }
+
+  /** 提示文案里的接管条件；多前缀用 ` / ` 连接。 */
+  private adoptLabel(): string {
+    const parts: string[] = [];
+    if (this.policy.branchPrefixes.length > 0) {
+      parts.push(`分支前缀 ${this.policy.branchPrefixes.join(" / ")}`);
+    }
+    if (this.policy.selfAuthored) {
+      parts.push(`本人提交${this.policy.viewerLogin ? `（${this.policy.viewerLogin}）` : ""}`);
+    }
+    if (this.policy.labels.length > 0) parts.push(`label ${this.policy.labels.join(" / ")}`);
+    return parts.length > 0
+      ? `自动接管${parts.join(" 或 ")}的 PR`
+      : "未配置自动接管条件，只处理 /patrol register 登记过的 PR";
+  }
+
+  /** 读配置里的接管条件；配置损坏时退回默认值，不影响提示渲染。 */
+  private readPolicyBase(): Omit<AdoptPolicy, "viewerLogin"> {
+    try {
+      const config = loadPatrolConfig(this.cwd);
+      return {
+        branchPrefixes: config.autoAdoptBranchPrefixes,
+        selfAuthored: config.autoAdoptSelfAuthored,
+        labels: config.autoAdoptLabels,
+      };
+    } catch {
+      return {
+        branchPrefixes: [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes],
+        selfAuthored: DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
+        labels: [...DEFAULT_PATROL_CONFIG.autoAdoptLabels],
+      };
+    }
+  }
+
+  /** 读配置里的唤醒通道；配置损坏时视为未配置——唤醒是加速项，不该阻断巡检。 */
+  private readWakeUrl(): string {
+    try {
+      return loadPatrolConfig(this.cwd).wakeUrl;
+    } catch {
+      return "";
+    }
+  }
+
+  /** 解析当前策略：配置 + 令牌对应的登录名（读不到时按「无法判定作者」处理）。 */
+  private async resolvePolicy(adapter: PatrolForgeAdapter): Promise<AdoptPolicy> {
+    let viewerLogin: string | null = null;
+    try {
+      viewerLogin = (await adapter.getViewerLogin?.()) ?? null;
+    } catch {
+      viewerLogin = null;
+    }
+    this.policy = { ...this.readPolicyBase(), viewerLogin };
+    return this.policy;
   }
 
   /**
@@ -100,8 +176,10 @@ export class PatrolHint {
       const prs = await adapter.listOpenPullRequests();
       if (this.disposed) return;
       const store = new PatrolStore(path.join(this.cwd, ".haji", "patrol"));
+      const policy = await this.resolvePolicy(adapter);
+      if (this.disposed) return;
       const pending = prs.filter((pr) => {
-        if (!pr.branch.startsWith(WORKTREE_BRANCH_PREFIX)) return false;
+        if (!decideAdoption(pr, policy).adopted) return false;
         return !store.getJob(patrolJobId(repo, pr.number));
       }).length;
       this.onChange({ status: "ready", pending, repo });
@@ -112,12 +190,17 @@ export class PatrolHint {
   }
 
   /**
-   * 侧栏点击入口：后台跑一次巡查（drain 到没有可推进的步骤即停），不是常驻循环。
-   * 幂等：巡查进行中重复点击只提示，不叠加第二次。
+   * 侧栏点击入口：启动**常驻**巡查（后台，不阻塞输入）。
+   *
+   * 有活连续推进；没活按 `pollIntervalMs` 探测新 PR——刻意不吃 64 分钟指数退避，
+   * 否则「点完就等着」会退化成半小时才发现新 PR。
+   *
+   * 停止走 `stop()`：侧栏在运行中 / 等待中点击是「进页面看任务」（保留查看入口），
+   * 停止用 `/patrol stop`；这里的 `this.service` 分支只是防止重复启动的兜底。
    */
   async start(): Promise<void> {
     if (this.service) {
-      this.log?.("PR 巡查进行中，完成后再点一次。");
+      this.stop();
       return;
     }
     const repo = this.repo ?? resolvePatrolRepo(this.cwd);
@@ -134,46 +217,70 @@ export class PatrolHint {
       return;
     }
     this.repo = repo;
+    const adapter = this.createAdapter(repo, token);
+    await this.resolvePolicy(adapter);
+    if (this.disposed) return;
     const controller = new AbortController();
     const service = new PatrolService({
       cwd: this.cwd,
       store: new PatrolStore(path.join(this.cwd, ".haji", "patrol")),
-      adapter: this.createAdapter(repo, token),
+      adapter,
       runners: this.createRunners(),
       logger: (line) => this.log?.(line),
     });
     this.service = service;
     this.controller = controller;
+    this.startedAt = Date.now();
+    const wakeUrl = this.readWakeUrl();
+    const wake = wakeUrl
+      ? createSmeeWakeSource(wakeUrl, { logger: (line) => this.log?.(line) })
+      : undefined;
+    this.wake = wake;
     this.onChange({ status: "running", pending: 0, tasks: 0, merged: 0, repo });
     this.log?.(
-      `PR 巡查已启动（${repo}），自动接管 ${WORKTREE_BRANCH_PREFIX} 分支的 PR；本次跑到没有可推进的步骤为止。`,
+      `PR 巡查已启动（${repo}），${this.adoptLabel()}；没活时每 ${Math.round(this.pollIntervalMs / 1000)}s 探测新 PR，再点一次或 /patrol stop 停止。`,
     );
-    const startedAt = Date.now();
+    if (wake) this.log?.(`已接入唤醒通道（${wakeUrl}）：GitHub 事件到达即复查，轮询仍作兜底。`);
     void service
-      .drain()
-      .then((result) => {
-        for (const event of result.events) this.log?.(event);
-        if (result.processed === 0 && !result.pendingExternal) {
-          this.log?.(
-            `没有可接管的 agent PR（分支前缀 ${WORKTREE_BRANCH_PREFIX} 或已 /patrol register 登记）。`,
-          );
-          return;
-        }
-        this.log?.(
-          `本次巡查推进 ${result.processed} 步${result.pendingExternal ? "，仍有任务在等外部状态（CI / 草稿 / head）" : ""}。`,
-        );
-      })
+      .runLoop(controller.signal, { idleBackoffCapMs: this.pollIntervalMs, wake })
       .catch((error) => this.log?.(`PR 巡查失败：${(error as Error).message}`))
-      .finally(async () => {
-        // 没活时 drain 会瞬间结束：让「巡查中」至少可见 minRunningMs，避免点了像没反应。
-        const remain = this.minRunningMs - (Date.now() - startedAt);
-        if (remain > 0) await delay(remain);
+      .finally(() => {
+        // 已被 stop() 清理、或已被下一次点击接管：不动状态，避免覆盖新的常驻。
+        if (this.service !== service) return;
         this.service = undefined;
         this.controller = undefined;
+        this.wake = undefined;
+        wake?.close();
         this.stopTimer();
-        if (!this.disposed) this.onChange({ status: "ready", pending: 0, repo });
+        if (this.disposed) return;
+        this.onChange({ status: "ready", pending: 0, repo });
       });
     this.startTimer();
+  }
+
+  /** 停止常驻巡查（侧栏再次点击 / `/patrol stop`）；没有在跑时只提示。 */
+  stop(): void {
+    if (!this.service) {
+      this.log?.("PR 巡查没有在运行。");
+      return;
+    }
+    // 同步清掉运行态：`isRunning()` 必须立刻为 false，不能等 runLoop 的 finally。
+    this.service = undefined;
+    this.controller?.abort();
+    this.controller = undefined;
+    this.wake?.close();
+    this.wake = undefined;
+    this.stopTimer();
+    this.log?.("PR 巡查已停止（点侧栏入口可重新开始）。");
+    if (this.disposed) return;
+    this.onChange({ status: "ready", pending: 0, ...(this.repo ? { repo: this.repo } : {}) });
+    // 停止后重新探测一次，把「还有几个待接管」刷新成最新值。
+    void this.probe();
+  }
+
+  /** 常驻巡查是否在运行；供 `/patrol stop` 等命令判断。 */
+  isRunning(): boolean {
+    return this.service !== undefined;
   }
 
   /** 停止巡检并释放定时器；退出流程必须调用，否则 interval 会挂住进程。 */
@@ -182,6 +289,8 @@ export class PatrolHint {
     this.stopTimer();
     this.controller?.abort();
     this.controller = undefined;
+    this.wake?.close();
+    this.wake = undefined;
     this.service = undefined;
   }
 
@@ -202,9 +311,12 @@ export class PatrolHint {
     if (!this.repo || !this.service) return;
     try {
       const jobs = new PatrolStore(path.join(this.cwd, ".haji", "patrol")).listJobs();
+      const active = jobs.filter((job) => !isTerminalPatrolStatus(job.status)).length;
       const activity = describeActivity(jobs);
+      // 没有非终态任务 = 在等新 PR；刚启动时先保持「巡检中」minRunningMs，避免点了像没反应。
+      const waiting = active === 0 && Date.now() - this.startedAt >= this.minRunningMs;
       this.onChange({
-        status: "running",
+        status: waiting ? "waiting" : "running",
         pending: 0,
         tasks: jobs.length,
         merged: jobs.filter((job) => job.status === "merged").length,
@@ -243,12 +355,4 @@ export function describeActivity(jobs: PatrolJob[]): string | undefined {
     if (job.draft) return `#${job.prNumber} 草稿等待`;
   }
   return undefined;
-}
-
-/** 可被进程退出打断的等待（timer unref，不挂住退出）。 */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-  });
 }

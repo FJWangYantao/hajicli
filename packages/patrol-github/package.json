@@ -1,0 +1,35 @@
+{
+  "name": "@hajicli/patrol-github",
+  "version": "1.6.0",
+  "license": "MIT",
+  "description": "GitHub forge adapter for hajicli PR patrol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FJWangYantao/hajicli.git",
+    "directory": "packages/patrol-github"
+  },
+  "author": "TaoCaptain",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc --build ../.. && node --test test/*.test.mjs",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "@hajicli/core": "workspace:^"
+  }
+}

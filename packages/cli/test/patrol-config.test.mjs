@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { matchAdoptPrefix } from "@hajicli/core";
 import {
+  loadPatrolConfig,
   parseRepoFromRemote,
   repoFromGitRemote,
   resolvePatrolRepo,
@@ -69,4 +71,76 @@ test("resolvePatrolRepo：无配置时回退到 origin，两者都没有则 unde
   const cwd = gitInit(tmpDir(), "git@github.com:FJWangYantao/hajicli.git");
   assert.equal(resolvePatrolRepo(cwd), "FJWangYantao/hajicli");
   assert.equal(resolvePatrolRepo(gitInit(tmpDir(), null)), undefined);
+});
+
+function writeConfig(cwd, config) {
+  fs.mkdirSync(path.join(cwd, ".haji", "patrol"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".haji", "patrol", "config.json"), JSON.stringify(config));
+  return cwd;
+}
+
+test("autoAdoptBranchPrefixes：缺省为 haji/，支持数组与单个字符串", () => {
+  assert.deepEqual(loadPatrolConfig(tmpDir()).autoAdoptBranchPrefixes, ["haji/"]);
+
+  const list = writeConfig(tmpDir(), {
+    autoAdoptBranchPrefixes: ["feat/", " fix/ ", ""],
+  });
+  assert.deepEqual(loadPatrolConfig(list).autoAdoptBranchPrefixes, ["feat/", "fix/"]);
+
+  const single = writeConfig(tmpDir(), { autoAdoptBranchPrefixes: "feat/" });
+  assert.deepEqual(loadPatrolConfig(single).autoAdoptBranchPrefixes, ["feat/"]);
+
+  const empty = writeConfig(tmpDir(), { autoAdoptBranchPrefixes: [] });
+  assert.deepEqual(loadPatrolConfig(empty).autoAdoptBranchPrefixes, []);
+});
+
+test("autoAdoptBranchPrefixes：兼容旧键 autoAdoptBranchPrefix", () => {
+  const legacy = writeConfig(tmpDir(), { autoAdoptBranchPrefix: "feat/" });
+  assert.deepEqual(loadPatrolConfig(legacy).autoAdoptBranchPrefixes, ["feat/"]);
+
+  const legacyArray = writeConfig(tmpDir(), { autoAdoptBranchPrefix: ["feat/", "fix/"] });
+  assert.deepEqual(loadPatrolConfig(legacyArray).autoAdoptBranchPrefixes, ["feat/", "fix/"]);
+
+  // 新键优先于旧键。
+  const both = writeConfig(tmpDir(), {
+    autoAdoptBranchPrefix: "feat/",
+    autoAdoptBranchPrefixes: ["fix/"],
+  });
+  assert.deepEqual(loadPatrolConfig(both).autoAdoptBranchPrefixes, ["fix/"]);
+});
+
+test("autoAdoptSelfAuthored / autoAdoptLabels：默认关闭接管本人提交与 label", () => {
+  const base = loadPatrolConfig(tmpDir());
+  assert.equal(base.autoAdoptSelfAuthored, false);
+  assert.deepEqual(base.autoAdoptLabels, []);
+
+  const on = writeConfig(tmpDir(), {
+    autoAdoptSelfAuthored: true,
+    autoAdoptLabels: ["patrol", " patrol ", ""],
+  });
+  const config = loadPatrolConfig(on);
+  assert.equal(config.autoAdoptSelfAuthored, true);
+  assert.deepEqual(config.autoAdoptLabels, ["patrol"]);
+});
+
+test("matchAdoptPrefix：返回命中前缀，未命中或前缀为空返回 undefined", () => {
+  assert.equal(matchAdoptPrefix("feat/x", ["feat/", "fix/"]), "feat/");
+  assert.equal(matchAdoptPrefix("chore/x", ["feat/", "fix/"]), undefined);
+  assert.equal(matchAdoptPrefix("feat/x", []), undefined);
+  assert.equal(matchAdoptPrefix("haji/x", [""]), undefined);
+});
+test("wakeUrl：默认空，只接受 http(s)，非法值归一为空", () => {
+  assert.equal(loadPatrolConfig(tmpDir()).wakeUrl, "");
+
+  const ok = writeConfig(tmpDir(), { wakeUrl: "https://smee.io/chan" });
+  assert.equal(loadPatrolConfig(ok).wakeUrl, "https://smee.io/chan");
+
+  // 两侧空白去掉，避免复制粘贴带空格导致连不上。
+  const spaced = writeConfig(tmpDir(), { wakeUrl: "  https://smee.io/chan  " });
+  assert.equal(loadPatrolConfig(spaced).wakeUrl, "https://smee.io/chan");
+
+  // 非 http(s) / 非 URL / 非字符串一律视为未配置。
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: "ftp://host/x" })).wakeUrl, "");
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: "不是地址" })).wakeUrl, "");
+  assert.equal(loadPatrolConfig(writeConfig(tmpDir(), { wakeUrl: 42 })).wakeUrl, "");
 });

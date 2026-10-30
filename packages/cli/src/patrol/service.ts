@@ -12,8 +12,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  type AdoptPolicy,
   applyAdjudicationToFindings,
   applyPatrolTransition,
+  decideAdoption,
   evaluatePatrolMergeGate,
   isTerminalPatrolStatus,
   latestApplicableDecision,
@@ -24,6 +26,8 @@ import {
   type PatrolJob,
   PatrolStore,
   type PatrolUsage,
+  type PatrolWakeEvent,
+  type PatrolWakeSource,
   patrolBudgetStatus,
   patrolJobId,
   planNextStatusAfterReview,
@@ -77,6 +81,8 @@ export class PatrolService {
   private readonly runTimeoutMs: number;
   private readonly runsDir: string;
   private readonly disputes = new Map<string, string>();
+  /** `GET /user` 的登录名缓存；undefined = 尚未解析，null = 解析失败。 */
+  private viewerLogin?: string | null;
 
   constructor(options: PatrolServiceOptions) {
     const cwd = options.cwd ?? process.cwd();
@@ -90,18 +96,26 @@ export class PatrolService {
   }
 
   /**
-   * 自动登记 agent 分支的 PR：只写 registry.json，仍走「来源登记是接管前提」的既有路径，
-   * 因此可随时 `/patrol unregister` 收回；未命中前缀的 PR 一律不接管。
+   * 自动登记可接管的 PR：只写 registry.json，仍走「来源登记是接管前提」的既有路径，
+   * 因此可随时 `/patrol unregister` 收回。
+   *
+   * 接管条件（见 core 的 `decideAdoption`）：分支前缀命中 ∥ 本人提交（可配置）∥ 命中授权 label。
+   * 合并授权单独判定：只有「本人提交 / 授权 label / 前缀命中且解析不到登录名」才允许自动合并，
+   * 别人用同样前缀提的 PR 会被接管审查，但不会被自动合并。
    */
-  private adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): void {
-    const prefix = this.config.autoAdoptBranchPrefix;
-    if (!prefix) return;
+  private async adoptAgentPullRequests(prs: ForgePullRequest[], events: string[]): Promise<void> {
+    const policy = await this.adoptPolicy();
     const now = new Date().toISOString();
     for (const pr of prs) {
-      if (!pr.branch.startsWith(prefix)) continue;
+      const decision = decideAdoption(pr, policy);
+      if (!decision.adopted) continue;
       const jobId = patrolJobId(this.adapter.repo, pr.number);
       if (this.store.getRegistration(jobId) || this.store.getJob(jobId)) continue;
-      const taskId = pr.branch.slice(prefix.length).trim() || `pr-${pr.number}`;
+      const taskId =
+        (decision.matchedPrefix
+          ? pr.branch.slice(decision.matchedPrefix.length)
+          : pr.branch
+        ).trim() || `pr-${pr.number}`;
       this.store.saveRegistration({
         jobId,
         repo: this.adapter.repo,
@@ -112,9 +126,33 @@ export class PatrolService {
         taskBrief: pr.title || taskId,
         acceptance: [],
         scope: [],
+        mergeAuthorized: decision.mergeAuthorized,
       });
-      events.push(`自动登记 PR #${pr.number}（分支 ${pr.branch}）`);
+      events.push(
+        `自动登记 PR #${pr.number}（${decision.reason}；${decision.mergeAuthorized ? "允许合并" : "仅审查不合并"}）`,
+      );
     }
+  }
+
+  /** 接管策略快照：配置 + 当前令牌对应的登录名（解析失败时退化为只按前缀 / label 判定）。 */
+  private async adoptPolicy(): Promise<AdoptPolicy> {
+    return {
+      branchPrefixes: this.config.autoAdoptBranchPrefixes,
+      selfAuthored: this.config.autoAdoptSelfAuthored,
+      labels: this.config.autoAdoptLabels,
+      viewerLogin: await this.resolveViewerLogin(),
+    };
+  }
+
+  /** `GET /user` 结果缓存：一次会话只查一次，失败也只查一次。 */
+  private async resolveViewerLogin(): Promise<string | null> {
+    if (this.viewerLogin !== undefined) return this.viewerLogin;
+    try {
+      this.viewerLogin = (await this.adapter.getViewerLogin?.()) ?? null;
+    } catch {
+      this.viewerLogin = null;
+    }
+    return this.viewerLogin;
   }
 
   /**
@@ -124,12 +162,19 @@ export class PatrolService {
    * - 仍有任务在等外部（CI / 草稿转正 / head 变化）时，从 20s 起指数退避复查；
    * - 完全空闲时按 `pollIntervalMs` 起指数退避探测新 PR，上限 64 分钟；
    * - 任何一轮有推进都重置退避。signal 中止后退出。
+   * - 传入 `wake` 时，等待可被 webhook 事件提前打断；轮询仍是兜底（事件会丢、会乱序）。
    */
-  async runLoop(signal: AbortSignal): Promise<void> {
+  async runLoop(
+    signal: AbortSignal,
+    options: { idleBackoffCapMs?: number; wake?: PatrolWakeSource } = {},
+  ): Promise<void> {
+    const idleCap = options.idleBackoffCapMs ?? IDLE_BACKOFF_MAX_MS;
+    const wake = options.wake;
     let externalBackoff = 0;
     let idleBackoff = 0;
     while (!signal.aborted) {
       // 暂停期间固定按 pollIntervalMs 复查，避免退避到 64 分钟后恢复延迟。
+      // 暂停是显式意图，这段时间不响应唤醒事件。
       if (this.store.isPaused()) {
         await sleep(signal, this.config.pollIntervalMs);
         continue;
@@ -150,12 +195,57 @@ export class PatrolService {
         idleBackoff = 0;
       }
       if (result.pendingExternal) {
-        await sleep(signal, backoffMs(EXTERNAL_RECHECK_MS, externalBackoff));
-        externalBackoff += 1;
+        const woke = await this.waitForWake(
+          signal,
+          backoffMs(EXTERNAL_RECHECK_MS, externalBackoff),
+          wake,
+        );
+        if (woke) {
+          externalBackoff = 0;
+          idleBackoff = 0;
+        } else {
+          externalBackoff += 1;
+        }
       } else {
-        await sleep(signal, backoffMs(this.config.pollIntervalMs, idleBackoff));
-        idleBackoff += 1;
+        const woke = await this.waitForWake(
+          signal,
+          Math.min(backoffMs(this.config.pollIntervalMs, idleBackoff), idleCap),
+          wake,
+        );
+        if (woke) {
+          idleBackoff = 0;
+        } else {
+          idleBackoff += 1;
+        }
       }
+    }
+  }
+
+  /**
+   * 等到「退避到期」或「唤醒事件到达」，先到者胜。
+   * 没有唤醒源、或唤醒源抛错时退化为纯 sleep——**绝不能因为唤醒通道坏了就不干活**。
+   */
+  private async waitForWake(
+    signal: AbortSignal,
+    ms: number,
+    wake?: PatrolWakeSource,
+  ): Promise<PatrolWakeEvent | undefined> {
+    if (!wake) {
+      await sleep(signal, ms);
+      return undefined;
+    }
+    try {
+      const event = await wake.wait(signal, ms);
+      if (event) {
+        const target = event.prNumber === undefined ? "" : ` #${event.prNumber}`;
+        const action = event.action ? `（${event.action}）` : "";
+        this.logger(`收到 ${event.event}${action}${target} 事件，立即复查`);
+      }
+      return event ?? undefined;
+    } catch (error) {
+      this.logger(`唤醒通道不可用（${(error as Error).message}），退回轮询`);
+      await sleep(signal, ms);
+      return undefined;
     }
   }
 
@@ -222,8 +312,8 @@ export class PatrolService {
     const prs = await this.adapter.listOpenPullRequests();
     const openByNumber = new Map(prs.map((pr) => [pr.number, pr]));
 
-    // 0. 自动登记：分支名命中 autoAdoptBranchPrefix 的开放 PR 视为 agent 产出，无需手动 register。
-    this.adoptAgentPullRequests(prs, events);
+    // 0. 自动登记：分支名命中 autoAdoptBranchPrefixes 任一前缀的开放 PR 视为 agent 产出，无需手动 register。
+    await this.adoptAgentPullRequests(prs, events);
 
     // 1. 为已登记来源的开放 PR 建任务（未登记的不自动接管）。
     for (const pr of prs) {
@@ -549,6 +639,15 @@ export class PatrolService {
       paused: this.store.isPaused(),
     });
     if (!gate.allowed) {
+      if (job.source.mergeAuthorized === false && job.status === "ready_to_merge") {
+        applyPatrolTransition(job, "terminated", {
+          reason: "仅审查：PR 来源未授权自动合并（作者非本人且无授权 label）",
+        });
+        this.store.saveJob(job);
+        await this.postStatusComment(job);
+        events.push(`${job.jobId} 审查通过但来源未授权合并，收敛为仅审查`);
+        return events;
+      }
       if (gate.reasons.some((reason) => reason.includes("合并冲突"))) {
         job.findings.push({
           findingId: "f-merge-conflict",
@@ -635,6 +734,7 @@ export class PatrolService {
       taskBrief: string;
       acceptance: string[];
       scope: string[];
+      mergeAuthorized?: boolean;
     },
   ): PatrolJob {
     const now = new Date().toISOString();
@@ -650,6 +750,9 @@ export class PatrolService {
         sessionId: registration.sessionId,
         origin: registration.origin,
         verified: true,
+        ...(registration.mergeAuthorized === undefined
+          ? {}
+          : { mergeAuthorized: registration.mergeAuthorized }),
       },
       taskBrief: registration.taskBrief,
       acceptance: registration.acceptance,

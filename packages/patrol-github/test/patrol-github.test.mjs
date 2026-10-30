@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GitHubPatrolAdapter, mapCheckStatus } from "../dist/patrol/github.js";
+import { GitHubPatrolAdapter, mapCheckStatus } from "../dist/index.js";
 
 function jsonResponse(status, body) {
   return {
@@ -63,6 +63,51 @@ test("适配器：列出开放 PR 并映射字段", async () => {
   assert.equal(prs[0].branch, "agent/fix");
   assert.equal(prs[0].targetBranch, "master");
   assert.equal(prs[0].draft, false);
+});
+
+test("适配器：映射 PR 作者与 label（对象 / 字符串两种形态）", async () => {
+  const { adapter } = makeAdapter([
+    {
+      path: "/repos/owner/repo/pulls?state=open&per_page=100",
+      body: [
+        {
+          number: 8,
+          state: "open",
+          draft: false,
+          title: "feat",
+          head: { sha: "cccc2222", ref: "haji/feat" },
+          base: { sha: "dddd0000", ref: "master" },
+          user: { login: "alice" },
+          labels: [{ name: "patrol" }, { name: "" }, "auto-merge"],
+        },
+        {
+          number: 9,
+          state: "open",
+          draft: true,
+          title: "no-labels",
+          head: { sha: "eeee3333", ref: "feat/bare" },
+          base: { sha: "ffff0000", ref: "master" },
+        },
+      ],
+    },
+  ]);
+  const prs = await adapter.listOpenPullRequests();
+  assert.equal(prs[0].author, "alice");
+  assert.deepEqual(prs[0].labels, ["patrol", "auto-merge"]);
+  assert.equal(prs[1].author, undefined);
+  assert.deepEqual(prs[1].labels, []);
+});
+
+test("适配器：getViewerLogin 读取 /user 并缓存，失败退化为 null", async () => {
+  const ok = makeAdapter([{ path: "/user", body: { login: "alice" } }]);
+  assert.equal(await ok.adapter.getViewerLogin(), "alice");
+  assert.equal(await ok.adapter.getViewerLogin(), "alice");
+  assert.equal(ok.calls.length, 1, "登录名应缓存，只查一次");
+
+  const denied = makeAdapter([]);
+  assert.equal(await denied.adapter.getViewerLogin(), null);
+  assert.equal(await denied.adapter.getViewerLogin(), null);
+  assert.equal(denied.calls.length, 1, "失败也应缓存，避免每轮重试");
 });
 
 test("适配器：check-runs 映射与 404 容忍", async () => {

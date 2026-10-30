@@ -18,10 +18,22 @@ export interface PatrolConfig {
   pollIntervalMs: number;
   mergeMethod: "merge" | "squash" | "rebase";
   /**
-   * 自动登记前缀：分支名命中的开放 PR 视为 agent 产出，无需 `/patrol register`。
-   * 默认与 worktree 分支前缀一致（`haji/`），置空字符串即关闭自动接管。
+   * 自动登记前缀（多个）：分支名命中任一前缀的开放 PR 视为 agent 产出，无需 `/patrol register`。
+   * 默认与 worktree 分支前缀一致（`haji/`）；置空数组即关闭自动接管。
    */
-  autoAdoptBranchPrefix: string;
+  autoAdoptBranchPrefixes: string[];
+  /**
+   * 是否接管「当前令牌本人提交」的 PR（任意分支）。
+   * 默认 false：开启后你自己的 PR 也会被审查 / 自动合并，属于显式选择。
+   */
+  autoAdoptSelfAuthored: boolean;
+  /** 带任一 label 的开放 PR 视为已授权接管（也可授权自动合并）。默认空。 */
+  autoAdoptLabels: string[];
+  /**
+   * webhook 唤醒通道（SSE，如 `https://smee.io/xxx`）：GitHub 事件到达即立刻复查，
+   * 不必等下一个轮询周期。留空 = 纯轮询。轮询始终是兜底，不会因为配了就关掉。
+   */
+  wakeUrl: string;
 }
 
 export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
@@ -32,7 +44,10 @@ export const DEFAULT_PATROL_CONFIG: PatrolConfig = {
   limits: normalizePatrolLimits(),
   pollIntervalMs: 60_000,
   mergeMethod: "merge",
-  autoAdoptBranchPrefix: WORKTREE_BRANCH_PREFIX,
+  autoAdoptBranchPrefixes: [WORKTREE_BRANCH_PREFIX],
+  autoAdoptSelfAuthored: false,
+  autoAdoptLabels: [],
+  wakeUrl: "",
 };
 
 export function patrolConfigPath(cwd: string): string {
@@ -67,11 +82,38 @@ export function loadPatrolConfig(cwd: string): PatrolConfig {
       raw.mergeMethod === "squash" || raw.mergeMethod === "rebase" || raw.mergeMethod === "merge"
         ? raw.mergeMethod
         : DEFAULT_PATROL_CONFIG.mergeMethod,
-    autoAdoptBranchPrefix:
-      typeof raw.autoAdoptBranchPrefix === "string"
-        ? raw.autoAdoptBranchPrefix.trim()
-        : DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefix,
+    autoAdoptBranchPrefixes: adoptPrefixesFrom(raw),
+    autoAdoptSelfAuthored:
+      typeof raw.autoAdoptSelfAuthored === "boolean"
+        ? raw.autoAdoptSelfAuthored
+        : DEFAULT_PATROL_CONFIG.autoAdoptSelfAuthored,
+    autoAdoptLabels: [...new Set(stringList(raw.autoAdoptLabels))],
+    wakeUrl: wakeUrlFrom(raw.wakeUrl),
   };
+}
+
+/** 唤醒通道只接受 http(s)；非法值归一为空，等价于「未配置」。 */
+function wakeUrlFrom(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "https:" || url.protocol === "http:" ? trimmed : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 自动接管前缀：新键 `autoAdoptBranchPrefixes`（数组或单个字符串）优先，
+ * 兼容旧键 `autoAdoptBranchPrefix`；两者都缺省时用默认值。
+ * 显式 `[]` / `""` 表示关闭自动接管，不会被当成「未配置」。
+ */
+function adoptPrefixesFrom(raw: Record<string, unknown>): string[] {
+  const value = raw.autoAdoptBranchPrefixes ?? raw.autoAdoptBranchPrefix;
+  if (value === undefined) return [...DEFAULT_PATROL_CONFIG.autoAdoptBranchPrefixes];
+  return stringOrList(value);
 }
 
 /**
@@ -127,4 +169,9 @@ function stringList(value: unknown): string[] {
         .map((item) => item.trim())
         .filter(Boolean)
     : [];
+}
+
+/** 单个字符串视作一元列表，其余按数组处理。 */
+function stringOrList(value: unknown): string[] {
+  return typeof value === "string" ? stringList([value]) : stringList(value);
 }

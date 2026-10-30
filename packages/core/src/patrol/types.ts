@@ -144,6 +144,11 @@ export interface PatrolSourceRegistration {
   acceptance: string[];
   /** 允许修改的范围（路径前缀 / 模块说明）。 */
   scope: string[];
+  /**
+   * 是否允许自动合并；缺省视为允许（手动 `/patrol register` 是显式授权）。
+   * 自动登记时由接管策略给出：仅分支前缀命中、作者又不是本人时为 false（只审查）。
+   */
+  mergeAuthorized?: boolean;
 }
 
 /** 巡检任务主体。 */
@@ -159,6 +164,11 @@ export interface PatrolJob {
     sessionId?: string;
     origin: "haji" | "external";
     verified: boolean;
+    /**
+     * 是否允许自动合并。`false` 表示只审查 / 只评论，绝不合并（如「分支前缀命中但作者不是本人」）。
+     * 缺省视为允许（兼容旧状态文件与手动 `/patrol register`）。
+     */
+    mergeAuthorized?: boolean;
   };
   taskBrief: string;
   acceptance: string[];

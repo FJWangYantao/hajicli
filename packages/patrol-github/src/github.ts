@@ -6,8 +6,7 @@
  * - merge 带 headSha 条件（GitHub 的 sha 参数），远端 head 不匹配时 GitHub 返回 409，
  *   适配层把它转成错误而不是误合并；「已被合并」识别为幂等成功。
  */
-import type { PatrolCheckInfo } from "@hajicli/core";
-import type { ForgePullRequest, PatrolForgeAdapter } from "./types.js";
+import type { ForgePullRequest, PatrolCheckInfo, PatrolForgeAdapter } from "@hajicli/core";
 
 export interface GitHubPatrolOptions {
   /** `owner/name`。 */
@@ -31,6 +30,8 @@ interface GhPullRequest {
   mergeable?: boolean | null;
   head?: { sha?: string; ref?: string };
   base?: { sha?: string; ref?: string };
+  user?: { login?: string } | null;
+  labels?: Array<{ name?: string } | string>;
 }
 
 interface GhCheckRun {
@@ -50,6 +51,8 @@ export class GitHubPatrolAdapter implements PatrolForgeAdapter {
   private readonly token: string | undefined;
   private readonly apiBase: string;
   private readonly fetchImpl: typeof fetch;
+  /** `/user` 结果缓存（含失败）：一次会话只查一次。 */
+  private viewerLogin?: string | null;
 
   constructor(options: GitHubPatrolOptions) {
     if (!/^[^/\s]+\/[^/\s]+$/.test(options.repo)) {
@@ -158,7 +161,24 @@ export class GitHubPatrolAdapter implements PatrolForgeAdapter {
       title: pr.title ?? "",
       mergeable: pr.mergeable ?? null,
       updatedAt: pr.updated_at ?? "",
+      ...(pr.user?.login ? { author: pr.user.login } : {}),
+      labels: normalizeLabels(pr.labels),
     };
+  }
+
+  /**
+   * 当前令牌对应的登录名（`GET /user`）；读不到（无 token / 401 / 404）时返回 null，
+   * 调用方据此退化为「只按分支前缀 / label 判定」。结果缓存，避免每轮都打接口。
+   */
+  async getViewerLogin(): Promise<string | null> {
+    if (this.viewerLogin !== undefined) return this.viewerLogin;
+    try {
+      const user = await this.requestJson<{ login?: string }>("/user");
+      this.viewerLogin = user?.login ?? null;
+    } catch {
+      this.viewerLogin = null;
+    }
+    return this.viewerLogin;
   }
 
   private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -223,6 +243,14 @@ export function mapCheckStatus(
       // completed 但没有 conclusion：按未完成处理。
       return "pending";
   }
+}
+
+/** label 可能是对象数组或字符串数组，统一成名字列表（丢掉空名）。 */
+function normalizeLabels(labels: GhPullRequest["labels"]): string[] {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map((label) => (typeof label === "string" ? label : (label?.name ?? "")))
+    .filter((name) => name !== "");
 }
 
 async function toApiError(response: Response): Promise<GitHubApiError> {

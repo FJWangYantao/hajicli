@@ -53,6 +53,9 @@ export function evaluatePatrolMergeGate(input: PatrolMergeGateInput): PatrolMerg
   const { job, pr } = input;
 
   if (input.paused) reasons.push("巡检已暂停（pause）");
+  if (job.source.mergeAuthorized === false) {
+    reasons.push("PR 来源未授权自动合并（作者非本人且无授权 label），仅审查不合并");
+  }
   if (pr.state !== "open") reasons.push(`PR 状态为 ${pr.state}`);
   if (pr.draft) reasons.push("PR 仍是草稿");
   if (pr.mergeable === false) reasons.push("PR 存在合并冲突");
